@@ -1,17 +1,17 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-13 (D-038 implemented; M3-08 scoped closure gate passes and is required CI; M3 NOT complete until its gate review) · **Branch:** v2/architecture-rebuild · **Milestone:** M3. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md) section "Current recovery state".
+**Last updated:** 2026-11-13 (M3 ACCEPTED as scoped development scope under D-039; M4 planned, not authorized) · **Branch:** v2/architecture-rebuild · **Milestone:** M3 accepted (scoped); M4 next, awaiting owner decisions. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md) section "Current recovery state".
 
 ## Current
 
-- **Verified code baseline:** `146260e` (M3-07 and M3-08 gate preparation), CI run [43475168083](https://github.com/infinri/Writ/actions/runs/43475168083), all 6 jobs success. Previous: `6be251c` (M3-05) run 43465393620. Checkpoint `9dda1d0` run 43475928301, 6/6. D-037 work (E-072): `dd11ed1` run [43484993389](https://github.com/infinri/Writ/actions/runs/43484993389), 6/6 (verified code baseline); docs checkpoint `a30f089` run [43485655070](https://github.com/infinri/Writ/actions/runs/43485655070), 6/6. The separate website workflow fails at the Pages deploy (github-pages environment protection rejects this branch); it is not required CI and protections are not to be changed.
+- **Accepted M3 code:** `b60bf33` (D-039), required CI run [43518287362](https://github.com/infinri/Writ/actions/runs/43518287362), 6/6, closure gate GATE PASS with report verification. Earlier: D-038 `5ac6675` run 43498619705; D-037 `dd11ed1` run 43484993389; M3-07 `146260e` run 43475168083. The separate website workflow fails at the Pages deploy (environment protection); not required CI and protections are not to be changed.
 - **Production crates:** `writ-kernel` (M2, accepted, unchanged since), `writ-broker` and `writ-ledger-sqlite` (M3-00..M3-05 and D-035: ingress, use-time authorization, policy gate, trusted time, approvals with provenance, grants, execute lifecycle with revalidation, owned and ledger-bound effect store, evidence-based reconciliation, transition service with authenticated records, administration and effect prerequisites; evidence E-058..E-068). Schemas: ledger `writ-ledger-5`, effects `writ-effects-2`. M1 prototypes frozen as comparison material.
 - **Language:** **Rust** selected (ADR-0002 ACCEPTED 2026-11-12, D-030). Go prototype kept as comparison material only.
-- **Decisions:** D-035, D-036 and D-037 approved and implemented; D-038 (OQ-13..OQ-17, 25-case M4 carry-over, remaining closure work) approved and implemented (E-073); none to be requested again. ADR-0008 APPROVED IN PRINCIPLE.
+- **Decisions:** D-035..D-039 approved; D-039 conditions met (E-074); none to be requested again. ADR-0008 APPROVED IN PRINCIPLE.
 - **M3-07 implemented (E-069):** runner, process lifecycle gate, unlock-before-close ownership locks; production configuration refuses every job until a contained sandbox exists (M5). Exact-SHA CI: `146260e` run 43475168083, 6/6 (after the E-071 CI-host fix).
-- **M3-08 (E-072, E-073):** scoped closure gate PASSES locally (`6c79819`): exact 17, adapted 64, approved differences 21, deferred to M4 25 (not passes), unexplained 0, unclassified 0; companions 33/33; required CI step, passed on `5ac6675` run [43498619705](https://github.com/infinri/Writ/actions/runs/43498619705), 6/6. Broker property gate 18,430 checks, 0 failed; production-native transition properties; independent review findings fixed.
-- **Open in M3:** the owner's M3 gate review; M3-06 (c)..(e) belong to M4, M6, M7. See SESSION-HANDOFF section 2.
-- **Next task:** SESSION-HANDOFF section 6.
+- **M3-08 DONE (E-072..E-074):** scoped closure gate: exact 17, adapted 64, approved differences 21, deferred to M4 25 (carried, not passes), unexplained 0, unclassified 0; companions 33/33; required CI step with corrected report verification. Not 127/127 exact parity; not production enforcement.
+- **M3 status:** ACCEPTED for its documented development scope (D-039). Carried obligations CO-M4-01..CO-HR-01 in TASKS (assigned to M4..M10 gates); M4 plan [M4-START-PLAN](M4-START-PLAN.md) awaits owner decisions O-1..O-14.
+- **Next task:** owner review of M4-START-PLAN and decisions O-1..O-14; no M4 implementation before that.
 - **Enterprise direction:** [readiness plan](../security/ENTERPRISE-READINESS.md), ENT-OWNER-01 and ENT-00..ENT-08. PostgreSQL targets enterprise operational state, SQLite remains local/offline; durable multi-worker coordination requires separate future acceptance. Controls, SOC 2 scope and any examination remain planned, not implemented or attested.
 - **Historical benchmarks (M1, complete):** three official M1-06 run sets plus the process-concurrency correction (E-046, E-052, E-054) and real-edit M1-07 build timings (E-053); bundles in `m1/bench/evidence/`.
 
@@ -47,8 +47,8 @@ SANDBOX PREPARED / LIVE VERIFICATION NOT EXECUTED; sandbox **torn down** 2026-11
 
 ## Last verification
 
-Local (2026-11-13, D-037 tree, E-072): workspace tests 378 passed (4 ignored), kill tests 4/4 alone, property gate 14,924 checks 0 failed, closure gate FAIL on 3 unexplained, parity 320/320, dependency gate 0 problems, docs OK. Earlier (integrated M3-07 tree): workspace tests 360 passed 3 times (4 ignored), kill tests 4/4 alone, process-lifecycle stress 3/3, kernel parity 320/320, dependency gate 0 problems, closure self-tests 10 OK, docs check OK (E-069, E-070). Exact-SHA CI: `146260e` run 43475168083, 6/6; `7eb995f` failed (E-071, fixed). Previous: `82971fd` run 43466394626 and `6be251c` run 43465393620, each 6/6.
+Local (2026-11-13, `b60bf33`, E-074): workspace tests 394 passed (4 ignored), kill tests 4/4 alone, closure self-tests 40, property self-tests 31, closure gate PASS and report verifies, property gate 18,430 checks 0 failed, parity 320/320, dependency gate 0 problems, docs OK. CI run 43518287362, 6/6.
 
 ## Next exact action
 
-Owner decisions on OQ-13..OQ-17 ([M3-08-CLOSURE-MAP](M3-08-CLOSURE-MAP.md)); then SESSION-HANDOFF section 6 step 2. Historical instructions (M1-08, M3-07 design, D-037 implementation) are complete.
+Owner review of [M4-START-PLAN](M4-START-PLAN.md) (decisions O-1..O-14). Historical instructions (M1-08, M3-07 design, D-037..D-039 implementation) are complete.

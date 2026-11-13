@@ -2,7 +2,7 @@
 
 Read this first after compaction or in a new session, then [WORK-STATE](WORK-STATE.md). This file is the authoritative recovery entry point. Only the section "Current recovery state" gives current instructions; everything under "Historical record" is preserved evidence and superseded instructions, never a current next step.
 
-## Current recovery state (checkpoint 2026-11-13, D-038 implemented; M3-08 scoped closure gate passes and is required CI; M3 NOT complete until its gate review)
+## Current recovery state (checkpoint 2026-11-13, M3 ACCEPTED as scoped development scope under D-039; M4 planned, not authorized)
 
 ### 1. Repository and CI (verify on recovery with the commands in section 7)
 
@@ -10,6 +10,7 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 |---|---|
 | Branch | `v2/architecture-rebuild` only; never `main`; fast-forward pushes only, never force |
 | D-037 commits | `644b4aa` (D-037 recorded) .. this checkpoint: `67fe4d9`, `7532b5c`, `d882c86`, `43d18be`, `baf8d86`, `6620a52`, `4f8d109`, `01c40a4`, `0a7c0fe`, then the docs checkpoint (E-072). **Verified code baseline `dd11ed179e8596a3e6be9bf577c873c53b40edb8`: run https://github.com/infinri/Writ/actions/runs/43484993389, 6/6.** The documentation commit recording this has its own CI run |
+| **Accepted M3 code (D-039)** | `b60bf33983b96ccfbc5c1464dcf32687c789703e`: run https://github.com/infinri/Writ/actions/runs/43518287362, 6/6, closure gate GATE PASS and `report current and passing`. Commits `68c72b4` (D-039), `3fc0616`, `d3fad61`, `7a1463e`, `522bf5c`, `b60bf33`; the documentation commit recording acceptance has its own CI run |
 | D-037 checkpoint | docs `a30f0898d88e1b82e03417bbafc7b436ece1982b`: run https://github.com/infinri/Writ/actions/runs/43485655070, 6/6 |
 | D-038 commits | `80fe5a9`, `4e32902`, `80b9eaf`, `325b125`, `321ed39`, `912794a`, `210a03d`, `95a68a2`, `8d17c09`, `d056d69`, `34cdc12`, `6c79819`, docs `5ac6675`. **Verified baseline `5ac66755fed000f7d6c6cdd98c88fa878ab24959`: run https://github.com/infinri/Writ/actions/runs/43498619705, 6/6, closure gate step GATE PASS.** The documentation commit recording this has its own CI run |
 | Previous verified code baseline | `146260e` run 43475168083 (6/6); checkpoint `9dda1d0` run https://github.com/infinri/Writ/actions/runs/43475928301 (6/6); `6be251c` run 43465393620 (6/6) |
@@ -26,12 +27,12 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 - **M3-05 implemented under D-036 (E-068):** verified locally (310 tests passed 3 times, kill tests 3/3, parity 320/320, gate 0 problems); exact-SHA CI on `6be251c` green (run 43465393620, 6/6). The 66 transition-scenarios and 6 protocol-transition cases are not yet run against production code (M3-08).
 - **M3-06:** contracts approved in D-034 with semantic validation in `broker::contracts`; authenticated AcceptanceRecord `authenticated-acceptance-record/1` (D-036). (a) runner attestations end to end: done with the test-only uncontained profile (M3-07); (b) EvaluationRecord scope: **superseded for the authorization path by D-038 item 1** (authenticated embedded evaluations authoritative, never ingested; enforcement map and gaps in M3-ACCEPTANCE-CONTRACTS); (c) registry publication by authorized humans (M6); (d) evidence-digest resolution (M7); (e) human criteria refused until authenticated signoff (M4); (f) JSON Schema in `docs/contracts/proposed/` (E-072); promotion out of `proposed/` is an owner action.
 - **M3-07 implemented (E-069):** runner as a broker effect (`runner.evaluate`) producing `runner-attestation/1` under the registry-named runner key from trusted state; process-wide lifecycle gate plus unlock-before-close ownership locks (E-066 resolved in production code); `LocalProcessSandbox` (bounded, descriptors checked) is uncontained, so `RunnerRequirements::production()` refuses every job until a contained sandbox exists (M5); the uncontained profile is compiled only for tests. Reviewed by an independent subagent; findings fixed or documented (M3-ACCEPTANCE-CONTRACTS "Mechanical runner").
-- **M3-08 D-037 and D-038 implemented (E-072, E-073):** scoped closure gate PASSES: exact 17, adapted 64, approved differences 21, deferred to M4 25 (obligations, not passes), unexplained 0, unclassified 0; companions 33/33; required CI step. Broker property gate (stage-aware C4, restart-persistent outages, storage-fault concurrent groups; 18,430 checks, 0 failed), production-native transition properties, `d038_tests`. Independent review: all findings fixed and re-checked. Details: [M3-08-CLOSURE-MAP](M3-08-CLOSURE-MAP.md).
-- **M3 is not complete.**
+- **M3-08 DONE (E-072..E-074):** scoped closure gate (exact 17, adapted 64, approved differences 21, deferred to M4 25 as carried obligations, unexplained 0, unclassified 0; companions 33/33), required CI with corrected report verification; property gates and production tests as in [M3-08-CLOSURE-MAP](M3-08-CLOSURE-MAP.md).
+- **M3 ACCEPTED (D-039) for its documented development scope**: not 127/127 exact parity, not production enforcement. Carried obligations CO-M4-01..CO-HR-01 in [TASKS](TASKS.md) section "M3 carried obligations".
 
 ### 3. Decisions in force (do not request again)
 
-D-030 Rust selected, **ADR-0002 ACCEPTED** (scoped to the trusted kernel and broker); D-031 kernel readings; D-032..D-034 M3 decisions; **D-035** (reservation retention, effect-store ownership, permit presentation, failure precedence, approver provenance) and **D-036** (authenticated records, no promotion permits, no client-asserted reconciliation, b-36 exception, trusted workflow inputs) approved and implemented; **D-037** (M3-08 closure: test seeding, harness bundles, test evidence, M4 human-signoff carry-over, production differences, harness compositions, ledger differences) approved and implemented (E-072); **D-038** (OQ-13 option A, one promotion `REVISION_CONFLICT`, `WORKFLOW_UNKNOWN` for sc-27, integrity precedence for sc-26, stage-aware C4 precedence, 25-case M4 carry-over confirmed, remaining closure work) approved and implemented (E-073). ADR-0008 **APPROVED IN PRINCIPLE**. Release and production **NO-GO**. Stop for any new semantic or trust-boundary decision.
+D-030 Rust selected, **ADR-0002 ACCEPTED** (scoped to the trusted kernel and broker); D-031 kernel readings; D-032..D-034 M3 decisions; **D-035** (reservation retention, effect-store ownership, permit presentation, failure precedence, approver provenance) and **D-036** (authenticated records, no promotion permits, no client-asserted reconciliation, b-36 exception, trusted workflow inputs) approved and implemented; **D-037** (M3-08 closure: test seeding, harness bundles, test evidence, M4 human-signoff carry-over, production differences, harness compositions, ledger differences) approved and implemented (E-072); **D-038** (OQ-13 option A, one promotion `REVISION_CONFLICT`, `WORKFLOW_UNKNOWN` for sc-27, integrity precedence for sc-26, stage-aware C4 precedence, 25-case M4 carry-over confirmed, remaining closure work) approved and implemented (E-073); **D-039** (M3 gate review: scoped acceptance, report-verification correction, carried obligations, effect-guarantee wording) approved, conditions met (E-074). ADR-0008 **APPROVED IN PRINCIPLE**. Release and production **NO-GO**. Stop for any new semantic or trust-boundary decision.
 
 ### 4. Schemas, migrations and source map
 
@@ -51,11 +52,11 @@ A contained runner sandbox (filesystem, network, process-tree and resource conta
 
 ### 6. Authorized next action and continuation checklist
 
-D-038 is implemented and reviewed; nothing awaits an owner decision except the M3 gate review itself. Worker worktrees and branches are removed after integration.
+M3 is accepted (D-039). No M4 implementation is authorized yet.
 
-1. Recover: section 7 "state" commands; HEAD equals `origin/v2/architecture-rebuild`; confirm the last pushed SHA's required CI by run id, including the step "M3-08 scoped closure gate" (record in E-073 and WORK-STATE if not yet recorded).
-2. Present the M3 gate-review package to the owner: all 127 classifications ([M3-08-CLOSURE-MAP](M3-08-CLOSURE-MAP.md)), companion results, generated coverage, fault and crash evidence (E-066, E-072, E-073), exact-SHA required CI, the 25 M4 obligations (`m3/closure/exceptions.json` deferred entries) and the production limitations (section 5). Keep exact parity, adapted coverage, differences and deferrals distinct. M3 stays open until the owner completes that review.
-3. Open, not blocking the review: property limits listed in the closure map (no effect-store faults inside concurrent groups; same-type key interchangeability; concurrent-phase invalidation order).
+1. Recover: section 7 "state" commands; HEAD equals `origin/v2/architecture-rebuild`; confirm the last pushed SHA's required CI by run id.
+2. Owner review of [M4-START-PLAN](M4-START-PLAN.md): decisions O-1..O-14 (identity provider and protocol, channel trust, session model, signoff binding, revocation latency, refusal codes, roles, service accounts, multi-approver rules, waivers, approval client, deployment topology, break-glass, pre-schema grants) and the two proposed gate assignments (CO-PROP-01 to M5, CO-PROP-02 to M4). Record the answers as a new decision before writing M4 code.
+3. Keep the carried obligations (TASKS "M3 carried obligations") open until each gate closes them with its own evidence; any change to `m3/closure/bundles/trusted-records.json` or a `cascade` reason needs an independent review (CO-HR-01).
 4. After each step: update TEST-EVIDENCE, TASKS, this file and WORK-STATE; commit explicit paths only; fast-forward push; verify CI on the exact SHA.
 
 ### 7. Commands
@@ -72,7 +73,7 @@ m3/tools/run-with-clean-fds.sh cargo test --workspace --locked   # sandbox needs
 m3/tools/run-with-clean-fds.sh cargo test -p writ-ledger-sqlite --locked --lib kill_tests -- --ignored --test-threads=1   # alone, single-threaded (E-066)
 python3 -m unittest discover -s m3/closure && python3 -m unittest discover -s m3/props   # gate and property self-tests (self-tests passing is not the gate passing)
 cargo build --release --locked -p writ-ledger-sqlite --example m3_line_adapter
-python3 m3/closure/check.py --proto target/release/examples/m3_line_adapter --repeat 2   # actual gate: PASS, scoped M3, not 127/127 (E-073)
+python3 m3/closure/check.py --proto target/release/examples/m3_line_adapter --repeat 2 --report /tmp/m3-08.json && python3 m3/closure/check.py --proto target/release/examples/m3_line_adapter --verify-report /tmp/m3-08.json   # PASS, scoped M3, not 127/127 (E-073, E-074)
 m3/tools/run-with-clean-fds.sh python3 m3/props/run.py --profile ci --proto "$PWD/target/release/examples/m3_line_adapter" --out /tmp/m3-props.json
 python3 kernel/tools/check_deps.py --osv --sbom /tmp/sbom.json
 cargo build --release --locked --example m1_line_adapter && python3 m1/driver/parity.py --proto "$PWD/target/release/examples/m1_line_adapter" --manifest m1/fixtures/manifest.json --repeat 2 --sets canonical-vector,strict-json,golden-decisions,transition-decisions,acceptance-binding,external-refusal,protocol-decide,protocol-acceptance
