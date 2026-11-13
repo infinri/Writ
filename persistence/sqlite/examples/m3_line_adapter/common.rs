@@ -2,6 +2,7 @@
 //! wrapper around the production ledger, test authorities, the per-case world and the
 //! I-1 adaptation labels.
 
+use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -206,11 +207,66 @@ pub enum Point {
     Promote,
 }
 
+/// A storage fault for one lifecycle transaction of the calling thread only (generated
+/// `concurrent_faults` groups; never used by a frozen fixture). It fires at most once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StorageFault {
+    /// The transaction cannot begin (C4 for this operation only).
+    Unavailable(Point),
+    /// `COMMIT` issued and reported failed; nothing was committed (outcome unknown to the broker).
+    CommitLost(Point),
+    /// `COMMIT` issued and reported failed although it committed (outcome unknown to the broker).
+    CommitUnknown(Point),
+}
+
+impl StorageFault {
+    pub fn parse(name: &str) -> Option<StorageFault> {
+        let (tx, kind) = name.split_once('_')?;
+        let point = match tx {
+            "reserve" => Point::Reserve,
+            "dispatch" => Point::Dispatch,
+            "observe" => Point::Observe,
+            _ => return None,
+        };
+        match kind {
+            "unavailable" => Some(StorageFault::Unavailable(point)),
+            "commit_lost" => Some(StorageFault::CommitLost(point)),
+            "commit_unknown" => Some(StorageFault::CommitUnknown(point)),
+            _ => None,
+        }
+    }
+}
+
+thread_local! {
+    static STORAGE_FAULT: Cell<Option<StorageFault>> = const { Cell::new(None) };
+}
+
+/// Run `f` with `fault` armed for the calling thread; disarmed afterwards.
+pub fn with_storage_fault<T>(fault: Option<StorageFault>, f: impl FnOnce() -> T) -> T {
+    STORAGE_FAULT.with(|c| c.set(fault));
+    let out = f();
+    STORAGE_FAULT.with(|c| c.set(None));
+    out
+}
+
+/// Take the calling thread's fault if `want` selects it.
+fn take_fault(want: impl Fn(StorageFault) -> bool) -> Option<StorageFault> {
+    STORAGE_FAULT.with(|c| match c.get() {
+        Some(f) if want(f) => {
+            c.set(None);
+            Some(f)
+        }
+        _ => None,
+    })
+}
+
 pub struct Ledger {
     inner: SqliteLedger,
     armed: Mutex<Option<Point>>,
     dead: AtomicBool,
-    pub down: AtomicBool,
+    /// Dependency status (M1 BROKER.md: configuration outside the broker process): shared
+    /// with the case, so it survives `restart_broker` until `set_dependency ledger up`.
+    pub down: Arc<AtomicBool>,
     labels: Arc<Labels>,
 }
 
@@ -222,12 +278,12 @@ fn store_down(name: &str) -> StoreError {
 }
 
 impl Ledger {
-    fn new(inner: SqliteLedger, labels: Arc<Labels>) -> Ledger {
+    fn new(inner: SqliteLedger, down: Arc<AtomicBool>, labels: Arc<Labels>) -> Ledger {
         Ledger {
             inner,
             armed: Mutex::new(None),
             dead: AtomicBool::new(false),
-            down: AtomicBool::new(false),
+            down,
             labels,
         }
     }
@@ -260,7 +316,39 @@ impl Ledger {
                 return Err(fail());
             }
         }
+        if let Some(p) = point {
+            match take_fault(
+                |f| matches!(f, StorageFault::Unavailable(q) | StorageFault::CommitLost(q) if q == p),
+            ) {
+                Some(StorageFault::Unavailable(_)) => {
+                    self.labels.add(C4);
+                    return Err(fail());
+                }
+                Some(_) => {
+                    self.labels.add(C5);
+                    return Err(TxFailure::commit_unknown(store_down(name)));
+                }
+                None => {}
+            }
+        }
         Ok(())
+    }
+
+    /// After the inner transaction at `point` committed: a thread fault
+    /// `CommitUnknown(point)` reports the issued commit as failed with an unknown outcome.
+    fn settle<T>(
+        &self,
+        name: &str,
+        point: Point,
+        r: Result<Result<T, Refusal>, TxFailure>,
+    ) -> Result<Result<T, Refusal>, TxFailure> {
+        if matches!(r, Ok(Ok(_)))
+            && take_fault(|f| f == StorageFault::CommitUnknown(point)).is_some()
+        {
+            self.labels.add(C5);
+            return Err(TxFailure::commit_unknown(store_down(name)));
+        }
+        r
     }
 
     /// Gate a write that stays available while the ledger is `down`.
@@ -284,7 +372,7 @@ impl GrantLedger for Ledger {
         request: &ReserveRequest<'_>,
     ) -> Result<Result<ReserveOutcome, Refusal>, TxFailure> {
         self.gate("reserve", Some(Point::Reserve))?;
-        self.inner.reserve(request)
+        self.settle("reserve", Point::Reserve, self.inner.reserve(request))
     }
 }
 
@@ -294,12 +382,14 @@ impl ExecuteLedger for Ledger {
         intent: &DispatchIntent<'_>,
     ) -> Result<Result<Dispatched, Refusal>, TxFailure> {
         self.gate("dispatch", Some(Point::Dispatch))?;
-        self.inner.dispatch(intent)
+        self.settle("dispatch", Point::Dispatch, self.inner.dispatch(intent))
     }
 
     fn observe_effect(&self, observation: &Observation<'_>) -> Result<(), TxFailure> {
         self.gate("observe", Some(Point::Observe))?;
-        self.inner.observe_effect(observation)
+        let r = self.inner.observe_effect(observation).map(Ok);
+        self.settle("observe", Point::Observe, r)
+            .map(|r: Result<(), Refusal>| r.unwrap_or(()))
     }
 
     fn pending_receipts(&self, gate: &ExclusiveHold<'_>) -> Result<Vec<PendingReceipt>, TxFailure> {
@@ -468,6 +558,8 @@ pub struct World {
     permit_key: PermitKey,
     pub ring: MemoryKeyRing,
     pub labels: Arc<Labels>,
+    /// Injected `ledger: down` status, kept across close and reopen (restart).
+    pub ledger_down: Arc<AtomicBool>,
 }
 
 pub type ProdBroker<'a> = Broker<'a, Ledger, SqliteEffectStore>;
@@ -488,10 +580,11 @@ impl World {
             .map_err(|e| format!("ledger create: {e}"))?;
         let effects = SqliteEffectStore::create(&dir.join("effects.db"), ledger.ledger_id())
             .map_err(|e| format!("effects create: {e}"))?;
+        let ledger_down = Arc::new(AtomicBool::new(false));
         Ok(World {
             dir,
             stores: Some(Stores {
-                ledger: Ledger::new(ledger, labels.clone()),
+                ledger: Ledger::new(ledger, ledger_down.clone(), labels.clone()),
                 effects,
             }),
             active: ActivePolicy::new(policy),
@@ -499,6 +592,7 @@ impl World {
             permit_key,
             ring,
             labels,
+            ledger_down,
         })
     }
 
@@ -532,7 +626,7 @@ impl World {
         let effects = SqliteEffectStore::open(&self.dir.join("effects.db"), ledger.ledger_id())
             .map_err(|e| format!("effects reopen: {e}"))?;
         self.stores = Some(Stores {
-            ledger: Ledger::new(ledger, self.labels.clone()),
+            ledger: Ledger::new(ledger, self.ledger_down.clone(), self.labels.clone()),
             effects,
         });
         Ok(())

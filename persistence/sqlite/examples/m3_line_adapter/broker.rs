@@ -18,8 +18,8 @@ use writ_broker::writ_kernel::policy::load_bundle;
 
 use crate::common::{
     adapter_error, int, malformed, pairs, production_difference, refused, result, text, unhex,
-    unsupported, ChannelAuthority, Labels, Point, ProdBroker, World, ADAPTER_SEALED, C1, C2, C6,
-    C7, C8, DIFFERENCE,
+    unsupported, with_storage_fault, ChannelAuthority, Labels, Point, ProdBroker, StorageFault,
+    World, ADAPTER_SEALED, C1, C2, C6, C7, C8, DIFFERENCE,
 };
 
 const BROKER_STATE: [&str; 7] = [
@@ -39,6 +39,22 @@ const BROKER_FAULTS: [&str; 4] = [
 ];
 const DEPENDENCIES: [&str; 2] = ["policy", "ledger"];
 
+/// Generated-only operations (no frozen fixture uses these op names, D-038 I-4):
+/// `concurrent_faults` is a concurrent group of executes whose operations may carry a
+/// per-operation `storage_fault` (common::StorageFault, `<reserve|dispatch|observe>_
+/// <unavailable|commit_lost|commit_unknown>`); `ledger_detail` closes the stores, reads the
+/// ledger and effect store read-only at that quiescent boundary and reopens them (a
+/// `restart_broker` that also answers the durable per-key state).
+fn fault_usable(op: &Value) -> bool {
+    op.get("op").and_then(Value::as_str) == Some("execute")
+        && op.get("fault").is_none()
+        && op.get("storage_fault").is_none_or(|f| {
+            f.as_str()
+                .and_then(crate::common::StorageFault::parse)
+                .is_some()
+        })
+}
+
 fn dependency_status(v: &Value) -> bool {
     matches!(v.as_str(), Some("up" | "down"))
 }
@@ -56,6 +72,10 @@ fn broker_step_usable(op: &Value) -> bool {
             .get("operations")
             .and_then(Value::as_arr)
             .is_some_and(|ops| ops.iter().all(broker_step_usable)),
+        Some("concurrent_faults") => op
+            .get("operations")
+            .and_then(Value::as_arr)
+            .is_some_and(|ops| !ops.is_empty() && ops.iter().all(fault_usable)),
         Some("set_dependency") => {
             op.get("name")
                 .and_then(Value::as_str)
@@ -433,6 +453,13 @@ impl BrokerCase {
                 Err(r) => refused(r.code()),
             }),
             "concurrent" => self.concurrent(op)?,
+            "concurrent_faults" => self.concurrent_faults(op)?,
+            "ledger_detail" => {
+                self.world.close();
+                let detail = self.ledger_detail();
+                self.world.reopen()?;
+                Step::Done(detail?)
+            }
             "restart_broker" => {
                 self.world.reopen()?;
                 Step::Done(result("restarted"))
@@ -491,16 +518,35 @@ impl BrokerCase {
                 ),
             ));
         }
+        self.group(ops, |_| None)
+    }
+
+    /// A concurrent group whose executes carry per-operation storage faults (validated by
+    /// `broker_input_usable`); each fault applies to its own thread's transactions only.
+    fn concurrent_faults(&self, op: &Value) -> Result<Step, String> {
+        let ops = op.get("operations").and_then(Value::as_arr).unwrap_or(&[]);
+        self.group(ops, |o| {
+            o.get("storage_fault")
+                .and_then(Value::as_str)
+                .and_then(StorageFault::parse)
+        })
+    }
+
+    fn group(
+        &self,
+        ops: &[Value],
+        fault: impl Fn(&Value) -> Option<StorageFault> + Sync,
+    ) -> Result<Step, String> {
         let broker = self.world.broker()?;
         let barrier = Barrier::new(ops.len());
         let outcomes: Vec<Result<(Value, Option<Permit>), Step>> = std::thread::scope(|scope| {
             let handles: Vec<_> = ops
                 .iter()
                 .map(|o| {
-                    let (broker, barrier) = (&broker, &barrier);
+                    let (broker, barrier, fault) = (&broker, &barrier, &fault);
                     scope.spawn(move || {
                         barrier.wait();
-                        self.execute(broker, o)
+                        with_storage_fault(fault(o), || self.execute(broker, o))
                     })
                 })
                 .collect();
@@ -525,6 +571,124 @@ impl BrokerCase {
             ("outcomes", Value::Obj(outcomes)),
             ("result", json::s("concurrent")),
         ])))
+    }
+
+    /// Durable per-key state, read only while every store is closed (quiescent).
+    fn ledger_detail(&self) -> Result<Value, String> {
+        let l = self.world.reader("ledger.db")?;
+        let e = self.world.reader("effects.db")?;
+        let rows =
+            |c: &rusqlite::Connection, sql: &str, n: usize| -> Result<Vec<Vec<Value>>, String> {
+                let mut st = c.prepare(sql).map_err(|e| format!("{sql}: {e}"))?;
+                let out = st
+                    .query_map([], |r| {
+                        (0..n)
+                            .map(|i| {
+                                Ok(match r.get::<_, rusqlite::types::Value>(i)? {
+                                    rusqlite::types::Value::Integer(v) => Value::Int(v),
+                                    rusqlite::types::Value::Text(t) => json::s(&t),
+                                    _ => Value::Null,
+                                })
+                            })
+                            .collect::<Result<Vec<_>, rusqlite::Error>>()
+                    })
+                    .map_err(|e| format!("{sql}: {e}"))?;
+                out.collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| format!("{sql}: {e}"))
+            };
+        let keyed = |c: &rusqlite::Connection, sql: &str| -> Result<Map, String> {
+            Ok(rows(c, sql, 2)?
+                .into_iter()
+                .filter_map(|r| match (r.first(), r.get(1)) {
+                    (Some(Value::Str(k)), Some(v)) => Some((k.clone(), v.clone())),
+                    _ => None,
+                })
+                .collect())
+        };
+        let mut receipts = Map::new();
+        for r in rows(
+            &l,
+            "SELECT r.tenant_id || '/' || r.idempotency_key, r.status, \
+             (SELECT count(*) FROM receipt_events v WHERE v.tenant_id = r.tenant_id \
+              AND v.idempotency_key = r.idempotency_key AND v.cause = 'dispatch'), \
+             (SELECT p.permit_number FROM receipt_permits p WHERE p.tenant_id = r.tenant_id \
+              AND p.idempotency_key = r.idempotency_key) FROM receipts r",
+            4,
+        )? {
+            if let [Value::Str(k), status, dispatches, permit] = r.as_slice() {
+                receipts.insert(
+                    k.clone(),
+                    json::obj([
+                        ("dispatches", dispatches.clone()),
+                        ("permit", permit.clone()),
+                        ("status", status.clone()),
+                    ]),
+                );
+            }
+        }
+        let failures = rows(
+            &l,
+            "SELECT transaction_name, stage, progress, possible_progress, outcome_unknown \
+             FROM failure_records ORDER BY audit_seq",
+            5,
+        )?
+        .into_iter()
+        .map(|r| {
+            let names = [
+                "transaction",
+                "stage",
+                "progress",
+                "possible_progress",
+                "outcome_unknown",
+            ];
+            Value::Obj(names.iter().map(|n| n.to_string()).zip(r).collect())
+        })
+        .collect();
+        Ok(json::obj([
+            (
+                "consumed",
+                Value::Obj(keyed(
+                    &e,
+                    "SELECT tenant_id || '/' || idempotency_key || '/' || result, count(*) \
+                     FROM consumed_permits GROUP BY 1",
+                )?),
+            ),
+            (
+                "dispatch_events",
+                int(crate::common::count(
+                    &l,
+                    "SELECT count(*) FROM receipt_events WHERE cause = 'dispatch'",
+                )?),
+            ),
+            (
+                "effects",
+                Value::Obj(keyed(
+                    &e,
+                    "SELECT tenant_id || '/' || idempotency_key, count(*) FROM effects GROUP BY 1",
+                )?),
+            ),
+            ("failures", Value::Arr(failures)),
+            (
+                "grant_use_rows",
+                Value::Obj(keyed(
+                    &l,
+                    "SELECT label, count(*) FROM grant_uses GROUP BY 1",
+                )?),
+            ),
+            (
+                "grant_uses",
+                Value::Obj(keyed(&l, "SELECT label, uses FROM grants")?),
+            ),
+            ("receipts", Value::Obj(receipts)),
+            (
+                "refusals",
+                int(crate::common::count(
+                    &l,
+                    "SELECT count(*) FROM audit_refusals",
+                )?),
+            ),
+            ("result", json::s("ledger_detail")),
+        ]))
     }
 
     /// Final counts, read only after every store of the case is closed (quiescent).

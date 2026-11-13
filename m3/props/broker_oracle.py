@@ -28,9 +28,21 @@ Approved differences applied in the oracle instead of the M1 expectation:
   active one, or with no active policy); grant-backed permits expire at
   min(grant expiry, issue time + 30 s). The exact expiry instant stays unasserted (M1).
 
-Adapter limitation (not a semantic choice): the adapter drives concurrent groups of
-unfaulted executes only, so generated concurrent groups have their faults removed
-(the M1 abstract model then has no crash or failure branch in the group).
+C4 and restarts (D-038 items 5 and 7):
+- every C4 execute step (`ledger: down`, sealed) has exactly one expected answer
+  (`c4_expected`, stage-aware); `inserted_c4_inspection` twins put `ledger_detail` (a
+  quiescent read-only inspection, otherwise a transparent restart) around each C4 step and
+  prove the refusal reserved, consumed, dispatched and applied nothing, was audited, and left
+  no possible progress (failure record `reserve begin no_change no_change`, or none);
+- restarts while a dependency is down are generated and kept: the injected status persists
+  until `set_dependency ... up`, so steps after the restart still see the outage.
+
+Concurrent groups: the M1 groups run with their M1 faults removed (the `concurrent` op drives
+unfaulted executes only; the M1 crash fault takes down the whole ledger and is not per
+operation). Storage faults in groups use the generated-only `concurrent_faults` op
+(`gen_fault_group`, `check_fault_group`): per-operation faults at T-reserve, T-dispatch and
+T-observe (begin unavailable; commit issued and lost; commit issued and applied with an
+unknown outcome), then recovery (restart, retries, reconcile).
 """
 from __future__ import annotations
 
@@ -101,17 +113,17 @@ def adapt_sequence(case: dict) -> dict:
               and not (0 <= s["of_step"] < len(steps) and steps[s["of_step"]].get("op") == "execute")}
     case["meta"]["excluded"] = {"apply_without_permit": len(drop), "present_permit_of_non_execute": len(absent)}
     drop |= absent
-    # Adapter limitation: restart builds a new storage wrapper, so the C4 `ledger: down`
-    # injection does not survive restart_broker (M1: dependency status is configuration
-    # outside the broker process). Such restarts are removed rather than modelled.
-    down = False
-    for i, s in enumerate(steps):
-        if s.get("op") == "set_dependency" and s.get("name") == "ledger":
-            down = s.get("status") == "down"
-        elif s.get("op") == "restart_broker" and down:
-            drop.add(i)
-            case["meta"]["restart_removed_ledger_down"] = case["meta"].get("restart_removed_ledger_down", 0) + 1
-    return remove_steps(case, drop)
+    # Restarts while a dependency is down are kept (D-038 item 7): the adapter keeps the
+    # injected status across restart_broker until `set_dependency ... up` (M1 BROKER.md:
+    # dependency status is configuration outside the broker process). They are counted.
+    c = remove_steps(case, drop)
+    down = {"ledger": False, "policy": False}
+    for s in c["input"]["steps"]:
+        if s.get("op") == "set_dependency":
+            down[s["name"]] = s.get("status") == "down"
+        elif s.get("op") == "restart_broker" and any(down.values()):
+            c["meta"]["restart_under_outage"] = c["meta"].get("restart_under_outage", 0) + 1
+    return c
 
 
 def insert_refusal(rng, case: dict) -> dict:
@@ -200,6 +212,50 @@ def gen_b36(rng, idx: int) -> dict:
             "input": {"initial": m1.initial(), "steps": steps},
             "meta": {"family": "sequence", "info": info, "simple": True,
                      "excluded": {"apply_without_permit": 0, "present_permit_of_non_execute": 0}}}
+
+
+def gen_outage_restart(rng, idx: int) -> dict:
+    """Focused D-038 item 7 sequences from the M1 builders: a dependency goes down, executes
+    of every decision class run before and after one or more restarts, and only an explicit
+    `set_dependency ... up` recovers (after which the same requests run normally)."""
+    deps = {"ledger": "up", "policy": "up"}
+    steps, info = [], []
+    grants = {}
+
+    def add(op, inf):
+        steps.append(op)
+        info.append(inf)
+
+    def ex():
+        v = rng.choice(list(m1.VARIANTS))
+        g = grants.get(v) if m1.VARIANTS[v][2] == "require_approval" and rng.random() < 0.7 else None
+        add(m1.execute(m1.request(v, rng.choice(["k1", "k2", "k3"])), g),
+            {"kind": "execute", "variant": v, "seal": "valid", "deps": dict(deps), "grant": g, "fault": None,
+             "now": m1.T0})
+
+    for v, g in (("P1", "g1"), ("X1", "g2")):
+        if rng.random() < 0.7:
+            grants[v] = g
+            add(m1.approve(m1.request(v, "k1"), g), {"kind": "approve", "mode": "ok", "variant": v})
+    for name in rng.sample(["ledger", "policy"], rng.choice([1, 2])):
+        deps[name] = "down"
+        add({"op": "set_dependency", "name": name, "status": "down"}, {"kind": "deps"})
+        for _ in range(rng.randint(0, 2)):
+            ex()
+    for _ in range(rng.randint(1, 3)):
+        add({"op": "restart_broker"}, {"kind": "restart"})
+        for _ in range(rng.randint(1, 3)):
+            ex()
+    for name in [n for n in deps if deps[n] == "down" and rng.random() < 0.7]:
+        deps[name] = "up"
+        add({"op": "set_dependency", "name": name, "status": "up"}, {"kind": "deps"})
+        for _ in range(rng.randint(1, 2)):
+            ex()
+    return {"id": f"bro-{idx:06d}", "command": "broker-scenario",
+            "input": {"initial": m1.initial(), "steps": steps},
+            "meta": {"family": "sequence", "info": info, "simple": False, "restart_under_outage": sum(
+                1 for s in steps if s.get("op") == "restart_broker"),
+                "excluded": {"apply_without_permit": 0, "present_permit_of_non_execute": 0}}}
 
 
 def gen_concurrent(rng, idx: int, n: int) -> dict:
@@ -378,30 +434,82 @@ def is_c4(inf: dict) -> bool:
     return inf["kind"] == "execute" and inf["seal"] == "valid" and inf["deps"]["ledger"] == "down"
 
 
+DECISION_STAGE = "decision"
+RESERVE_OR_LATER = "reserve_or_later"
+
+
+def ledger_up_answer(inf: dict) -> tuple[str, str | None]:
+    """(stage, code) of the answer the M1 reference model (`check_ops` rules, ledger taken as
+    up) gives the same execute step. The stage is derived from the rule that decides it, not
+    from a code list (D-038 I-3 as corrected by the lead): ingress verification, the use-time
+    decision (policy unavailable, every deny or invalid decision reason) and require_approval
+    without a grant are decided before T-reserve (`Broker::execute_held`: `observe`,
+    `authorize`, `ReserveRequest::new`); every other answer (grant refusals, idempotency
+    conflict, reconciliation required, replay, resume, effect) is decided at or after T-reserve
+    and depends on history, so its code is not needed."""
+    if inf["seal"] != "valid":
+        return DECISION_STAGE, "INGRESS_UNAUTHENTICATED"
+    if inf["deps"]["policy"] == "down":
+        return DECISION_STAGE, "POLICY_UNAVAILABLE"
+    cls, deny = m1.VARIANTS[inf["variant"]][2], m1.VARIANTS[inf["variant"]][3]
+    if cls == "deny":
+        return DECISION_STAGE, deny
+    if cls == "require_approval" and inf["grant"] is None:
+        return DECISION_STAGE, "APPROVAL_REQUIRED"
+    return RESERVE_OR_LATER, None
+
+
+def ledger_up_code(inf: dict) -> str | None:
+    return ledger_up_answer(inf)[1]
+
+
+def c4_expected(inf: dict) -> str:
+    """D-038 I-3: a refusal decided before T-reserve is returned unchanged under C4; anything
+    decided at or after T-reserve is LEDGER_UNAVAILABLE (T-reserve fails at begin)."""
+    stage, code = ledger_up_answer(inf)
+    return code if stage == DECISION_STAGE else "LEDGER_UNAVAILABLE"
+
+
 def check_c4(res: Results, pname: str, case: dict, out) -> None:
     """`ledger: down` in the adapter is C4, partial transaction unavailability (D-037 item 7):
     lifecycle transactions fail at begin, the refusal audit and time floor stay available.
-    M1 BROKER.md execute step 2 puts LEDGER_UNAVAILABLE before the decision; under C4 a
-    refusal that needs no lifecycle transaction (deny, POLICY_UNAVAILABLE, APPROVAL_REQUIRED)
-    is answered by the decision instead. Not an approved exception: the oracle asserts fail
-    closed (refused with LEDGER_UNAVAILABLE or the decision's own code, never an effect) and the
-    report counts how often the decision's code wins (`c4_decision_code_before_ledger`)."""
-    for i, (inf, r) in enumerate(zip(case["meta"]["info"], out["steps"])):
-        if not is_c4(inf):
+    D-038 item 5 (I-3): exactly one expected code per C4 execute step (`c4_expected`); the
+    earlier either-code allowance is gone. `c4_stage_tally` counts the expected codes per stage.
+    D-038 item 7: C4 steps after a `restart_broker` taken while the ledger was down (not
+    recovered since) are also counted under `broker.m3.restart_does_not_heal_ledger_outage`;
+    executes with the ledger up after a restart taken while the policy was down (not recovered
+    since) must be POLICY_UNAVAILABLE (`broker.m3.restart_does_not_heal_policy_outage`)."""
+    tally = getattr(res, "c4_stage_tally", None)
+    if tally is None:
+        tally = res.c4_stage_tally = Counter()
+    down = {"ledger": False, "policy": False}
+    restarted_down = dict(down)
+    for i, (op, inf, r) in enumerate(zip(case["input"]["steps"], case["meta"]["info"], out["steps"])):
+        kind = op.get("op")
+        if kind == "set_dependency":
+            down[op["name"]] = op["status"] == "down"
+            if not down[op["name"]]:
+                restarted_down[op["name"]] = False
+        elif kind == "restart_broker":
+            restarted_down = {n: restarted_down[n] or down[n] for n in down}
+        if inf["kind"] != "execute" or inf["seal"] != "valid":
             continue
-        cls, deny = m1.VARIANTS[inf["variant"]][2], m1.VARIANTS[inf["variant"]][3]
-        allowed = {"LEDGER_UNAVAILABLE"}
-        if inf["deps"]["policy"] == "down":
-            allowed.add("POLICY_UNAVAILABLE")
-        elif cls == "deny":
-            allowed.add(deny)
-        elif cls == "require_approval" and inf["grant"] is None:
-            allowed.add("APPROVAL_REQUIRED")
-        ok = isinstance(r, dict) and r.get("result") == "refused" and r.get("code") in allowed
-        res.check("broker.m3.c4_ledger_down_fails_closed", pname, ok, case["id"],
-                  {"step": i, "got": r, "allowed": sorted(allowed)}, case=None if ok else case)
-        if ok and r["code"] != "LEDGER_UNAVAILABLE":
-            res.c4_decision_first = getattr(res, "c4_decision_first", 0) + 1
+        if is_c4(inf):
+            code = c4_expected(inf)
+            want = {"code": code, "result": "refused"}
+            ok = r == want
+            res.check("broker.m3.c4_stage_aware_precedence", pname, ok, case["id"],
+                      {"step": i, "got": r, "want": want, "ledger_up_code": ledger_up_code(inf)},
+                      case=None if ok else case)
+            tally[f"{ledger_up_answer(inf)[0]}:{code}"] += 1
+            if restarted_down["ledger"]:
+                res.check("broker.m3.restart_does_not_heal_ledger_outage", pname, ok, case["id"],
+                          {"step": i, "got": r, "want": want}, case=None if ok else case)
+        elif restarted_down["policy"] and inf["deps"]["policy"] == "down":
+            want = {"code": "POLICY_UNAVAILABLE", "result": "refused"}
+            ok = r == want
+            res.check("broker.m3.restart_does_not_heal_policy_outage", pname, ok, case["id"],
+                      {"step": i, "got": r, "want": want}, case=None if ok else case)
 
 
 def check_twin(res: Results, pname: str, case: dict, out, base) -> None:
@@ -445,6 +553,304 @@ def check_group(res: Results, pname: str, case: dict, out) -> str | None:
     res.check("broker.concurrent_group_equals_a_serialization", pname, ok, cid,
               {"outcomes": observed, "final": out.get("final")}, case=None if ok else case)
     return ",".join(f"{k}={v}" for k, v in sorted((observed or {}).items()))
+
+
+# -------------------------------------------- C4 inspection twins (D-038 item 5)
+
+DETAIL = "ledger_detail"
+STATE_KEYS = ("receipts", "grant_uses", "grant_use_rows", "consumed", "effects", "dispatch_events")
+C4_FAILURE = {"outcome_unknown": 0, "possible_progress": "no_change", "progress": "no_change",
+              "stage": "begin", "transaction": "reserve"}
+
+
+def insert_c4_inspection(case: dict) -> dict | None:
+    """Twin of a sequence with `ledger_detail` right before and right after each C4 execute."""
+    info = case["meta"]["info"]
+    c4 = {i for i, inf in enumerate(info) if is_c4(inf)}
+    if not c4:
+        return None
+    c = clone(case)
+    steps, new_index, positions = [], {}, []
+    for i, s in enumerate(c["input"]["steps"]):
+        if i in c4:
+            steps.append({"op": DETAIL})
+            positions.append(len(steps))
+        new_index[i] = len(steps)
+        steps.append(s)
+        if i in c4:
+            steps.append({"op": DETAIL})
+    for s in steps:
+        if s.get("op") == "present_permit":
+            s["of_step"] = new_index[s["of_step"]]
+    c["input"]["steps"] = steps
+    c["id"] = case["id"] + "-c4inspect"
+    c["meta"] = {"family": "inserted_c4_inspection", "twin_of": case["id"], "positions": positions}
+    return c
+
+
+def is_detail(x) -> bool:
+    return isinstance(x, dict) and x.get("result") == DETAIL
+
+
+def check_c4_inspection(res: Results, pname: str, case: dict, out, base) -> None:
+    cid = case["id"]
+    pos = case["meta"]["positions"]
+    ins = sorted({p - 1 for p in pos} | {p + 1 for p in pos})
+    ok = all(isinstance(x, dict) and isinstance(x.get("steps"), list) for x in (out, base)) and \
+        len(out["steps"]) == len(base["steps"]) + len(ins) and all(is_detail(out["steps"][k]) for k in ins)
+    if ok:
+        rest = [s for k, s in enumerate(out["steps"]) if k not in set(ins)]
+        first = next((k for k, s in enumerate(case["input"]["steps"]) if s.get("op") == "concurrent"), None)
+        if first is None:
+            ok = rest == base["steps"] and out.get("final") == base.get("final")
+        else:  # a concurrent group fixes no order: the answers before it
+            n = sum(1 for k in range(first) if case["input"]["steps"][k].get("op") != DETAIL)
+            ok = rest[:n] == base["steps"][:n]
+    res.check("broker.m3.ledger_detail_is_transparent", pname, ok, cid, {"with": out, "without": base},
+              case=None if ok else case)
+    if not ok:
+        return
+    for p in pos:
+        before, r, after = out["steps"][p - 1], out["steps"][p], out["steps"][p + 1]
+        diff = {k: (before.get(k), after.get(k)) for k in STATE_KEYS if before.get(k) != after.get(k)}
+        res.check("broker.m3.c4_refusal_reserves_consumes_dispatches_applies_nothing", pname, not diff, cid,
+                  {"step": p, "got": r, "changed": diff}, case=case if diff else None)
+        ok = after.get("refusals") == before.get("refusals", -2) + 1
+        res.check("broker.m3.c4_refusal_audited", pname, ok, cid,
+                  {"step": p, "before": before.get("refusals"), "after": after.get("refusals")},
+                  case=None if ok else case)
+        fb, fa = before.get("failures") or [], after.get("failures") or []
+        new = fa[len(fb):] if fa[:len(fb)] == fb else None
+        want = [C4_FAILURE] if isinstance(r, dict) and r.get("code") == "LEDGER_UNAVAILABLE" else []
+        ok = new == want
+        res.check("broker.m3.c4_refusal_leaves_no_possible_progress", pname, ok, cid,
+                  {"step": p, "got": r, "new_failure_records": new, "want": want}, case=None if ok else case)
+
+
+# ------------------------------- concurrent groups with storage faults (D-038 item 7)
+
+STORAGE_FAULTS = tuple(f"{tx}_{k}" for tx in ("reserve", "dispatch", "observe")
+                       for k in ("unavailable", "commit_lost", "commit_unknown"))
+FAULT_LU = "LEDGER_UNAVAILABLE[storage-fault]"  # model label; M1's search refuses a bare one
+RESERVE_REFUSALS = {"IDEMPOTENCY_CONFLICT", "RECONCILIATION_REQUIRED", "GRANT_UNKNOWN", "GRANT_MISMATCH",
+                    "GRANT_EXHAUSTED"}
+TENANT = "fixture-tenant/"
+
+
+def fault_model_step(orig, state, t):
+    """M1 `model_step` extended with the adapter's per-operation storage faults (the fault
+    fires only when its transaction runs; `unavailable` fails at begin, `commit_lost` reports
+    an unknown commit that committed nothing, `commit_unknown` one that committed)."""
+    fault = t[4]
+    if fault not in STORAGE_FAULTS:
+        return orig(state, t, None)
+    tx, kind = fault.split("_", 1)
+    base = tuple(t[:4]) + (None,) + tuple(t[5:])
+    ns, out = orig(state, base, None)
+
+    def override(name):
+        return orig(state, tuple(t[:4]) + (f"{name}:",) + tuple(t[5:]), None)[0]
+
+    if out == "APPROVAL_REQUIRED":  # decided before T-reserve
+        return state, out
+    if tx == "reserve":
+        if kind != "commit_unknown" or out == "replayed":
+            return state, FAULT_LU
+        if out in RESERVE_REFUSALS:  # refused inside T-reserve: rolled back, nothing to commit
+            return state, out
+        return override("after_reserve"), FAULT_LU
+    if out != "effect_completed":  # refused or replayed at T-reserve: the fault never fires
+        return ns, out
+    if tx == "dispatch":
+        return override("after_reserve" if kind != "commit_unknown" else "adapter_unavailable"), FAULT_LU
+    if kind != "commit_unknown":
+        return override("observe_unavailable"), FAULT_LU
+    return ns, FAULT_LU  # T-observe committed: observed, effect applied, answer unknown
+
+
+def fault_serializable(case: dict, observed: dict, final: dict):
+    obs = {(FAULT_LU if k == "LEDGER_UNAVAILABLE" else k): v for k, v in observed.items()}
+    orig = m1.model_step
+    m1.model_step = lambda state, t, fps=None: fault_model_step(orig, state, t)
+    try:
+        return m1.serializable(case, obs, final)
+    finally:
+        m1.model_step = orig
+
+
+def gen_fault_group(rng, idx: int, n: int) -> dict:
+    """An M1 concurrent group (approvals, then n executes) with M1 faults removed and storage
+    faults added (each M1 operation type gets one or two faults; each operation of the type
+    runs with one of them or none), driven by `concurrent_faults`; then `ledger_detail` (A),
+    recovery (optional restart, retries, reconcile, optional restart, retries, reconcile) and
+    `ledger_detail` (B)."""
+    c = m1.gen_concurrent(rng, idx, n)
+    steps = c["input"]["steps"]
+    grp = steps[-1]
+    gi = len(steps) - 1
+    grp["op"] = "concurrent_faults"
+    choices = {}
+    reps = {}
+    for op, t in zip(grp["operations"], c["meta"]["op_types"]):
+        op.pop("fault", None)
+        base = tuple(t[:4])
+        if base not in choices:
+            choices[base] = [None] + rng.sample(STORAGE_FAULTS, rng.choice([1, 2]))
+        f = rng.choice(choices[base])
+        t[4] = f
+        if f:
+            op["storage_fault"] = f
+        reps.setdefault(base + (t[5],), op)
+        if f:  # retries favor a faulted operation of the key (uncertain or reserved receipts)
+            reps[base + (t[5],)] = op
+    keys = sorted(reps, key=repr)
+    rng.shuffle(keys)
+    keys.sort(key=lambda k: "storage_fault" not in reps[k])
+    picks = keys[:8]
+    retry = [(list(k), {"op": "execute", "request": reps[k]["request"], "seal": reps[k]["seal"],
+                        **({"grant_ref": reps[k]["grant_ref"]} if "grant_ref" in reps[k] else {})}) for k in picks]
+    steps.append({"op": DETAIL})
+    plan = []
+    for phase in ("pre", "post"):
+        if rng.random() < 0.5:
+            steps.append({"op": "restart_broker"})
+        for k, op in retry:
+            plan.append((len(steps), k))
+            steps.append(clone(op))
+        steps.append({"op": "reconcile"})
+    steps.append({"op": DETAIL})
+    c["id"] = f"brf-{idx:06d}-x{n}"
+    c["meta"].update(family="fault_group", group_index=gi, retries=plan)
+    return c
+
+
+def detail_final(d: dict) -> dict:
+    return {"receipts": dict(Counter(r["status"] for r in d["receipts"].values())),
+            "grant_uses": d["grant_uses"], "effects_applied": sum(d["effects"].values()),
+            "consumed_permits": sum(d["consumed"].values())}
+
+
+def check_detail_safety(res: Results, pname: str, case: dict, d: dict, where: str) -> None:
+    cid = case["id"]
+
+    def chk(inv, bad):
+        res.check(inv, pname, not bad, cid, {"at": where, "violations": bad[:5]}, case=case if bad else None)
+
+    rows = d.get("grant_use_rows") or {}
+    chk("broker.m3.fault_no_grant_overuse",
+        [(g, n, rows.get(g, 0)) for g, n in d["grant_uses"].items() if not (0 <= n <= 1 and rows.get(g, 0) == n)])
+    chk("broker.m3.fault_at_most_one_dispatch_per_key",
+        [k for k, r in d["receipts"].items() if r["dispatches"] > 1] +
+        ([("dispatch_events", d["dispatch_events"])]
+         if d["dispatch_events"] != sum(r["dispatches"] for r in d["receipts"].values()) else []))
+    consumed = Counter()
+    for k, n in d["consumed"].items():
+        consumed[k.rsplit("/", 1)[0]] += n
+    chk("broker.m3.fault_no_duplicate_effect",
+        [k for k, n in d["effects"].items() if n > 1] + [k for k, n in consumed.items() if n > 1])
+    bad = []
+    for k, n in d["effects"].items():
+        r = d["receipts"].get(k)
+        if not (d["consumed"].get(k + "/applied") == 1 and r and r["dispatches"] == 1 and r["permit"] is not None
+                and r["status"] != "reserved"):
+            bad.append(("effect", k))
+    for k in consumed:
+        r = d["receipts"].get(k)
+        if not (r and r["dispatches"] == 1 and r["permit"] is not None and r["status"] != "reserved"):
+            bad.append(("consumed", k))
+    chk("broker.m3.fault_effect_only_with_dispatched_receipt_and_consumed_permit", bad)
+
+
+def check_fault_group(res: Results, pname: str, case: dict, out) -> str | None:
+    """Serializability of the faulted group against detail A (extended M1 model), safety of
+    A and B, and a sequential model of the recovery steps from A that must end at B."""
+    cid = case["id"]
+    ok = isinstance(out, dict) and not is_unsupported(out) and "adapter_error" not in out and \
+        isinstance(out.get("steps"), list) and len(out["steps"]) == len(case["input"]["steps"])
+    res.check("broker.m3.answered_in_domain", pname, ok, cid, out, case=None if ok else case)
+    if not ok:
+        return None
+    steps, got = case["input"]["steps"], out["steps"]
+    gi = case["meta"]["group_index"]
+    grp, a, b = got[gi], got[gi + 1], got[-1]
+    ok = all(r == {"result": "grant_issued"} for r in got[:gi]) and isinstance(grp, dict) and \
+        grp.get("result") == "concurrent" and isinstance(grp.get("outcomes"), dict) and is_detail(a) and is_detail(b)
+    res.check("broker.m3.fault_group_shape", pname, ok, cid, got[gi:gi + 2], case=None if ok else case)
+    if not ok:
+        return None
+    observed = grp["outcomes"]
+    ser = fault_serializable(case, observed, detail_final(a))
+    if ser is None:
+        res.check("broker.concurrent_serialization_search_completed", pname, False, cid, {"outcomes": observed})
+    else:
+        res.check("broker.m3.fault_group_equals_a_serialization", pname, ser, cid,
+                  {"outcomes": observed, "detail": a}, case=None if ser else case)
+    check_detail_safety(res, pname, case, a, "after group")
+    check_detail_safety(res, pname, case, b, "after recovery")
+
+    owners = {}
+    for t in case["meta"]["op_types"]:
+        owners.setdefault(TENANT + t[5], set()).add(tuple(t[:4]))
+    state = {k: {"status": r["status"], "consumed": next((x for x in ("applied", "failed")
+                                                          if a["consumed"].get(f"{k}/{x}")), None)}
+             for k, r in a["receipts"].items()}
+    retries = {i: k for i, k in case["meta"]["retries"]}
+    refusals = sum(n for k, n in observed.items() if k not in m1.NON_REFUSAL)
+    for i in range(gi + 2, len(steps) - 1):
+        op, r = steps[i], got[i]
+        if isinstance(r, dict) and r.get("result") == "refused":
+            refusals += 1
+        if op["op"] == "restart_broker":
+            ok = r == {"result": "restarted"}
+            res.check("broker.m3.fault_recovery_restart", pname, ok, cid, {"step": i, "got": r},
+                      case=None if ok else case)
+        elif op["op"] == "reconcile":
+            pending = [k for k, s in state.items() if s["status"] == "dispatched"]
+            want = {"count": len(pending), "result": "reconciled"}
+            ok = r == want
+            res.check("broker.m3.fault_reconcile_resolves_only_from_evidence", pname, ok, cid,
+                      {"step": i, "got": r, "want": want}, case=None if ok else case)
+            for k in pending:
+                s = state[k]
+                s["status"] = {"applied": "observed_success", "failed": "observed_failure"}.get(s["consumed"],
+                                                                                              "unknown_reconcile")
+        elif op["op"] == "execute":
+            t = retries[i]
+            key = TENANT + t[4]
+            s = state.get(key)
+            cls = m1.VARIANTS[t[0]][2]
+            shared = owners.get(key, set()) != {tuple(t[:4])}
+            conflict = {"IDEMPOTENCY_CONFLICT"} if shared else set()
+            code = r.get("code") if isinstance(r, dict) and r.get("result") == "refused" else None
+            if s is None:
+                ok = r == {"result": "effect_completed"} or (
+                    cls == "require_approval" and code in {"GRANT_UNKNOWN", "GRANT_MISMATCH", "GRANT_EXHAUSTED"})
+                inv = "broker.m3.fault_recovery_retry_answer"
+            elif s["status"] == "reserved":
+                ok = r == {"result": "effect_completed"} or code in conflict
+                inv = "broker.m3.fault_recovery_retry_answer"
+            elif s["status"] in ("dispatched", "unknown_reconcile"):
+                ok = code in {"RECONCILIATION_REQUIRED"} | conflict
+                inv = "broker.m3.fault_uncertain_receipt_never_redispatched"
+            else:
+                ok = r == REPLAY["completed" if s["status"] == "observed_success" else "failed"] or code in conflict
+                inv = "broker.m3.fault_recovery_retry_answer"
+            res.check(inv, pname, ok, cid, {"step": i, "got": r, "state": s, "shared_key": shared},
+                      case=None if ok else case)
+            if r == {"result": "effect_completed"}:
+                state[key] = {"status": "observed_success", "consumed": "applied"}
+    want = {k: s["status"] for k, s in state.items()}
+    have = {k: r["status"] for k, r in b["receipts"].items()}
+    want_c = {f"{k}/{s['consumed']}": 1 for k, s in state.items() if s["consumed"]}
+    want_e = {k: 1 for k, s in state.items() if s["consumed"] == "applied"}
+    ok = have == want and b["consumed"] == want_c and b["effects"] == want_e
+    res.check("broker.m3.fault_recovery_final_state", pname, ok, cid,
+              {"receipts": have, "want": want, "consumed": b["consumed"], "want_consumed": want_c},
+              case=None if ok else case)
+    ok = b["refusals"] == refusals
+    res.check("broker.refusals_counted_exactly", pname, ok, cid, {"final": b["refusals"], "counted": refusals},
+              case=None if ok else case)
+    return ",".join(f"{k}={v}" for k, v in sorted(observed.items()))
 
 
 # ------------------------------------------------------------------------ run
@@ -499,6 +905,7 @@ def run(proto: Proto, rng, n: int, res: Results, repeats: int) -> dict:
 
     generated = gen_base(rng, n)
     generated += [gen_b36(rng, i) for i in range(1, max(20, n // 8) + 1)]
+    generated += [gen_outage_restart(rng, i) for i in range(1, max(20, n // 16) + 1)]
     base, pruned = prune(proto, generated, res)
     cases = []
     for c in base:
@@ -506,6 +913,9 @@ def run(proto: Proto, rng, n: int, res: Results, repeats: int) -> dict:
         if c["meta"].pop("simple"):
             cases.append(m1.insert_twin(rng, c, "restart"))
             cases.append(insert_refusal(rng, c))
+        twin = insert_c4_inspection(c)
+        if twin is not None:
+            cases.append(twin)
     for c in cases:
         assert not any(s.get("op") in EXCLUDED_OPS for s in c["input"]["steps"])
     outs = [run_cases(proto, cases, res) for _ in range(2)]
@@ -521,6 +931,8 @@ def run(proto: Proto, rng, n: int, res: Results, repeats: int) -> dict:
     for c in cases:
         if c["meta"]["family"] == "sequence":
             check_sequence(res, proto.name, c, out.get(c["id"]))
+        elif c["meta"]["family"] == "inserted_c4_inspection":
+            check_c4_inspection(res, proto.name, c, out.get(c["id"]), out.get(c["meta"]["twin_of"]))
         else:
             check_twin(res, proto.name, c, out.get(c["id"]), out.get(c["meta"]["twin_of"]))
 
@@ -536,6 +948,7 @@ def run(proto: Proto, rng, n: int, res: Results, repeats: int) -> dict:
             if sig is not None:
                 dist.setdefault(c["id"], Counter())[sig] += 1
                 dist.setdefault(f"x{c['meta']['n']}", Counter())[sig] += 1
+    fstats = run_fault_groups(proto, rng, max(FAULT_GROUPS_MIN, n // FAULT_GROUPS_PER), res, repeats)
     stats.update({
         "probes": len(probe_cases), "sequences": len(base), "twins": len(cases) - len(base),
         "concurrent_groups": len(conc), "concurrent_sizes": dict(Counter(c["meta"]["n"] for c in conc)),
@@ -545,11 +958,38 @@ def run(proto: Proto, rng, n: int, res: Results, repeats: int) -> dict:
             "present_permit_of_non_execute": sum(c["meta"]["excluded"]["present_permit_of_non_execute"]
                                                  for c in base),
             "present_permit_of_execute_without_permit": pruned,
-            "restart_while_ledger_down": sum(c["meta"].get("restart_removed_ledger_down", 0) for c in base)},
-        "c4_decision_code_before_ledger": getattr(res, "c4_decision_first", 0),
+            "restart_while_ledger_down": 0},
+        "restarts_under_outage_kept": sum(c["meta"].get("restart_under_outage", 0) for c in base),
+        "c4_inspection_twins": sum(1 for c in cases if c["meta"]["family"] == "inserted_c4_inspection"),
+        "c4_expected_codes_by_stage": dict(sorted(getattr(res, "c4_stage_tally", Counter()).items())),
         "operations": dict(Counter(s.get("op") for c in cases for s in c["input"]["steps"])),
         "concurrency_distribution": {k: dict(v) for k, v in dist.items() if not k.startswith("brc-")},
         "concurrency_groups_with_multiple_outcomes": sum(1 for k, v in dist.items()
                                                          if k.startswith("brc-") and len(v) > 1),
+        **fstats,
     })
     return stats
+
+
+FAULT_GROUPS_MIN = 6
+FAULT_GROUPS_PER = 40
+FAULT_GROUP_SIZES = (16, 32, 64)
+
+
+def run_fault_groups(proto: Proto, rng, count: int, res: Results, repeats: int) -> dict:
+    groups = [gen_fault_group(rng, i, rng.choice(FAULT_GROUP_SIZES)) for i in range(1, count + 1)]
+    with_lu = without = 0
+    faults = Counter(t[4] or "none" for c in groups for t in c["meta"]["op_types"])
+    for _ in range(repeats):
+        out = run_cases(proto, groups, res)
+        for c in groups:
+            sig = check_fault_group(res, proto.name, c, out.get(c["id"]))
+            if sig is not None:
+                if "LEDGER_UNAVAILABLE" in sig:
+                    with_lu += 1
+                else:
+                    without += 1
+    return {"fault_groups": len(groups), "fault_group_sizes": dict(Counter(c["meta"]["n"] for c in groups)),
+            "fault_group_operations_by_fault": dict(sorted(faults.items())),
+            "fault_group_runs_with_storage_refusals": with_lu, "fault_group_runs_without": without,
+            "fault_group_retries": sum(len(c["meta"]["retries"]) for c in groups)}
