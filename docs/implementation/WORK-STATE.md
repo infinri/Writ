@@ -1,14 +1,14 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-12 (M2 kernel M2-00..M2-06 implemented; M1 complete, ADR-0002 ACCEPTED) · **Branch:** v2/architecture-rebuild · **Milestone:** M2 in progress. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
+**Last updated:** 2026-11-12 (M3 in progress, not complete: M3-00..M3-04 implemented; D-035 approved, not implemented) · **Branch:** v2/architecture-rebuild · **Milestone:** M3. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
 
 ## Current
 
-- **Verified published baseline:** see SESSION-HANDOFF section A (latest exact-SHA CI recorded there).
-- **Prototypes:** D-027..D-029 implemented; `run_ns` boundary corrected (E-048); chaos workload E with real SIGKILL (E-049); verified locally E-050 and in CI at `bbdd092`.
+- **Verified published baseline:** `8ead392269a08a2025d7382639261f7efa46b080`, CI run 43340059204 (all 6 jobs, incl. the isolated process-kill step); the docs checkpoint after it has CI pending until verified.
+- **Production crates:** `writ-kernel` (M2, accepted), `writ-broker` and `writ-ledger-sqlite` (M3-00..M3-04: ingress, use-time authorization, policy gate, trusted time, approvals and grants, execute lifecycle, separate effect store; evidence E-058..E-066). M1 prototypes frozen as comparison material.
 - **Language:** **Rust** selected for the trusted kernel and broker (ADR-0002 ACCEPTED 2026-11-12, D-030). Go prototype kept as comparison material only.
 - **Benchmarks:** three official M1-06 run sets plus the order-controlled process-concurrency correction (E-046, E-052, E-054) and real-edit M1-07 build timings (E-053); all guard-passed, 0 correctness failures; bundles in `m1/bench/evidence/`.
-- **Next task:** publish and CI-verify M2-02..M2-06 (E-056); owner confirmation of the three readings in `kernel/FIXTURE-MAP.md`; then the M2 gate review (determinism, deny precedence, invalid input, property tests). M3 not started.
+- **Next task:** implement D-035 (reservation retention, effect-store ownership, permit presentation and reconciliation, adapter failure precedence, approver provenance), then M3-05..M3-08; M3-07 owns the production inherited-descriptor and restart-coordination obligation (E-066).
 - **Enterprise direction:** [readiness plan](../security/ENTERPRISE-READINESS.md), ENT-OWNER-01 and ENT-00..ENT-08. PostgreSQL targets enterprise operational state, SQLite remains local/offline; durable multi-worker coordination requires separate future acceptance. Controls, SOC 2 scope and any examination remain planned, not implemented or attested.
 
 ## Security findings
