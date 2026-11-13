@@ -835,6 +835,15 @@ fn a_fault_after_the_started_commit_never_reruns_and_reconciliation_records_noth
             Err(unavailable("runner_finish", name)),
             "{stage:?}"
         );
+        // The permit was consumed and the job ran: every finish failure reports an
+        // unknown adapter outcome, so the possible progress includes the effect.
+        let failure = e.evidence.failure().unwrap().1.clone();
+        assert!(failure.outcome_unknown, "{stage:?}");
+        assert_eq!(
+            e.evidence.possible_progress().as_str(),
+            "dispatched_with_effect"
+        );
+        assert!(e.evidence.reconciliation_required());
         assert_eq!(w.fake.runs.load(Ordering::SeqCst), 1);
         let record = w.runner.record("permit-1").unwrap().unwrap();
         assert_eq!(record.state, RunState::Started);

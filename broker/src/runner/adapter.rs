@@ -875,7 +875,14 @@ impl<S: RunnerStore + ?Sized> EffectAdapter for RunnerAdapter<'_, S> {
             permit_id: effect.permit_id().to_string(),
             result: self.evaluate(&effect),
         };
-        self.store.finish(&outcome)?;
+        // A failure to record the outcome happens after the consuming commit:
+        // the permit is consumed and the job may have run, so the adapter
+        // transaction's outcome is reported as unknown (D-035 item 4), which
+        // makes the possible progress `dispatched_with_effect`.
+        self.store.finish(&outcome).map_err(|f| TxFailure {
+            outcome_unknown: true,
+            ..f
+        })?;
         Ok(Ok(outcome.effect_result()))
     }
 
