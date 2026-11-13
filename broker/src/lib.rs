@@ -25,10 +25,20 @@
 //!   the grant binding and its C-4 integrity check, per-key locks, and atomic
 //!   single-use consumption in the T-reserve transaction of a
 //!   [`store::GrantLedger`] ([`grants::GrantService`]).
+//!
+//! Execute lifecycle (M3-04):
+//! - [`execute`]: T-dispatch, permit issue, T-adapter, T-observe,
+//!   `present_permit`, reconciliation under the exclusive gate, D-026
+//!   transaction evidence ([`execute::Broker`]); at most one dispatch per
+//!   idempotency key, never a redispatch after uncertainty.
+//! - [`effects`]: the controlled effect adapter interface (its own store of
+//!   consumed permits and effects, reached only through the adapter).
 
 pub mod authorize;
 pub mod clock;
 pub mod contracts;
+pub mod effects;
+pub mod execute;
 pub mod grants;
 pub mod ingress;
 pub mod keys;

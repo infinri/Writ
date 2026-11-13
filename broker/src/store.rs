@@ -8,7 +8,9 @@
 use std::fmt;
 
 use crate::clock::ClockEvent;
+use crate::execute::{DispatchIntent, Observation};
 use crate::grants::{GrantInsert, NewGrant, ReserveOutcome, ReserveRequest};
+use crate::policy::ExclusiveHold;
 use crate::refusal::Refusal;
 /// The kernel timestamp used by the trusted-time operations.
 pub use writ_kernel::time::Timestamp;
@@ -37,6 +39,78 @@ pub enum StoreError {
 impl StoreError {
     /// The external refusal code for every store error.
     pub const EXTERNAL_CODE: &'static str = "LEDGER_UNAVAILABLE";
+
+    /// Diagnostic code of a receipt transition that matched no row, or a stored
+    /// status outside the schema: an application state conflict, never reported
+    /// as SQLite corruption (D-029).
+    pub const STATE_CONFLICT: &'static str = "STATE_CONFLICT";
+
+    /// The diagnostic code (`SQLITE_BUSY`, `io`, `STATE_CONFLICT`, ...);
+    /// `OWNED_ELSEWHERE` or `FENCED` for ownership errors.
+    pub fn code(&self) -> &str {
+        match self {
+            StoreError::OwnedElsewhere => "OWNED_ELSEWHERE",
+            StoreError::Fenced { .. } => "FENCED",
+            StoreError::Unavailable { code, .. } => code,
+        }
+    }
+}
+
+/// Where a logical transaction failed (D-026 evidence `at`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TxStage {
+    /// The transaction could not begin (connection, `BEGIN IMMEDIATE`).
+    Begin,
+    /// A statement or check between begin and end failed (including the
+    /// fencing check and state conflicts); rolled back.
+    Body,
+    /// `COMMIT` (or `ROLLBACK`) failed; nothing of the transaction is kept.
+    Commit,
+}
+
+impl TxStage {
+    /// `begin`, `body` or `commit`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TxStage::Begin => "begin",
+            TxStage::Body => "body",
+            TxStage::Commit => "commit",
+        }
+    }
+}
+
+/// A failed logical transaction: the stage it failed at and the sanitized
+/// store error (fail closed; externally `LEDGER_UNAVAILABLE`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TxFailure {
+    /// Where it failed.
+    pub stage: TxStage,
+    /// The sanitized error (category and code only).
+    pub error: StoreError,
+}
+
+impl TxFailure {
+    /// A failure of `error` at `stage`.
+    pub fn new(stage: TxStage, error: StoreError) -> TxFailure {
+        TxFailure { stage, error }
+    }
+
+    /// `true` when the store reported SQLite busy (lock contention, D-026 `busy`).
+    pub fn is_busy(&self) -> bool {
+        self.error.code() == "SQLITE_BUSY"
+    }
+}
+
+impl From<TxFailure> for StoreError {
+    fn from(f: TxFailure) -> StoreError {
+        f.error
+    }
+}
+
+impl fmt::Display for TxFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} at {}", self.error, self.stage.as_str())
+    }
 }
 
 impl fmt::Display for StoreError {
@@ -109,9 +183,40 @@ pub trait GrantLedger: Sync {
     /// and insert one `grant_uses` row; insert the receipt `reserved` and its
     /// `reserve` event; commit. Every refusal rolls back. A stored grant that
     /// fails [`crate::grants::binding_intact`] (C-4) is a store error with the
-    /// diagnostic code `integrity`, never a refusal and never a grant use.
+    /// diagnostic code `integrity`, never a refusal and never a grant use. A
+    /// failure reports the stage it happened at (D-026 evidence).
     fn reserve(
         &self,
         request: &ReserveRequest<'_>,
-    ) -> Result<Result<ReserveOutcome, Refusal>, StoreError>;
+    ) -> Result<Result<ReserveOutcome, Refusal>, TxFailure>;
+}
+
+/// The execute lifecycle after T-reserve (M3-04; LEDGER-SQLITE.md T-dispatch,
+/// T-observe, reconcile), on the same shared ledger as [`GrantLedger`].
+///
+/// Each method is one fenced `BEGIN IMMEDIATE` logical transaction. A receipt
+/// transition that matches no row (the receipt is not in the expected status
+/// or binds another fingerprint) rolls back and fails at [`TxStage::Body`]
+/// with the code [`StoreError::STATE_CONFLICT`] (D-029). Arguments are built
+/// only by the broker: [`DispatchIntent`] and [`Observation`] from a
+/// guard-bound authorization, [`ExclusiveHold`] only by taking the
+/// coordination gate exclusively.
+pub trait ExecuteLedger: GrantLedger {
+    /// The `dispatch` logical transaction: increment the `next_permit` counter
+    /// and read it; change the intent's receipt from `reserved` to
+    /// `dispatched` (exactly one row, same fingerprint); append its `dispatch`
+    /// event; commit. Returns the permit number. Committed before any effect
+    /// can start (C-3).
+    fn dispatch(&self, intent: &DispatchIntent<'_>) -> Result<u64, TxFailure>;
+
+    /// The `observe` logical transaction: change the receipt from `dispatched`
+    /// to `observed_success` or `observed_failure` (exactly one row), append
+    /// its `observe` event; commit.
+    fn observe_effect(&self, observation: &Observation<'_>) -> Result<(), TxFailure>;
+
+    /// The `reconcile` logical transaction, under the exclusive coordination
+    /// gate: every `dispatched` receipt becomes `unknown_reconcile` with a
+    /// `reconcile` event; returns the number of receipts changed. It never
+    /// creates a receipt or marks an effect completed.
+    fn reconcile(&self, gate: &ExclusiveHold<'_>) -> Result<u64, TxFailure>;
 }

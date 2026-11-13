@@ -56,7 +56,7 @@
 //! - The C-4 integrity diagnostic code is `integrity` (M1 reported
 //!   `SQLITE_CORRUPT`, which D-029 reserves for genuine SQLite corruption).
 //! - The approver identity and channel are checked but not persisted with the
-//!   grant (the `writ-ledger-2` grants table has no column for them).
+//!   grant (the ledger's grants table has no column for them).
 
 use std::collections::HashSet;
 use std::sync::{Condvar, Mutex, PoisonError};
@@ -674,10 +674,10 @@ pub struct GrantIssued {
 /// provides the grant transactions ([`GrantLedger`]) and, through `&L`, the
 /// trusted-time floor and refusal audit ([`LedgerStore`]).
 pub struct GrantService<'a, L: ?Sized> {
-    active: &'a ActivePolicy,
-    clock: &'a (dyn EffectiveClock + Sync),
-    ledger: &'a L,
-    key_locks: KeyLocks,
+    pub(crate) active: &'a ActivePolicy,
+    pub(crate) clock: &'a (dyn EffectiveClock + Sync),
+    pub(crate) ledger: &'a L,
+    pub(crate) key_locks: KeyLocks,
 }
 
 impl<'a, L> GrantService<'a, L>
@@ -713,7 +713,7 @@ where
 
     /// Audit `result`'s refusal in its own transaction (failure ignored:
     /// the answer stays the refusal, storage rule 2).
-    fn audited<T>(&self, result: Result<T, Refusal>) -> Result<T, Refusal> {
+    pub(crate) fn audited<T>(&self, result: Result<T, Refusal>) -> Result<T, Refusal> {
         if let Err(refusal) = &result {
             let mut ledger: &L = self.ledger;
             let _ = LedgerStore::record_refusal(&mut ledger, refusal.code());
@@ -824,7 +824,7 @@ where
             .lock(request.tenant_id(), request.idempotency_key());
         self.ledger
             .reserve(&request)
-            .map_err(Refusal::LedgerUnavailable)?
+            .map_err(|f| Refusal::LedgerUnavailable(f.error))?
     }
 }
 

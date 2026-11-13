@@ -33,19 +33,19 @@ const ADAPTER: &str = "writ-host-adapter:fixture";
 const UI: &str = "approval-ui";
 const ALICE: &str = "human:alice";
 
-fn ts(s: &str) -> Timestamp {
+pub(crate) fn ts(s: &str) -> Timestamp {
     Timestamp::parse_rfc3339(s).unwrap()
 }
 
-fn now() -> Timestamp {
+pub(crate) fn now() -> Timestamp {
     ts("2026-11-05T12:00:00Z")
 }
 
-fn revision() -> StateRevision {
+pub(crate) fn revision() -> StateRevision {
     StateRevision::new(5).unwrap()
 }
 
-fn label(s: &str) -> GrantLabel {
+pub(crate) fn label(s: &str) -> GrantLabel {
     GrantLabel::new(s).unwrap()
 }
 
@@ -73,7 +73,7 @@ fn request(kind: &str, uri: &str, resource: &str, idem: &str) -> Value {
 }
 
 /// `repository.publish` to main: `require_approval` under the reference bundle.
-fn publish(idem: &str) -> Value {
+pub(crate) fn publish(idem: &str) -> Value {
     request(
         "repository.publish",
         "git://main",
@@ -83,7 +83,7 @@ fn publish(idem: &str) -> Value {
 }
 
 /// `file.write` in the workspace: `allow` under the reference bundle.
-fn file_write(idem: &str) -> Value {
+pub(crate) fn file_write(idem: &str) -> Value {
     request(
         "file.write",
         "file:///work/src/app.py",
@@ -92,7 +92,7 @@ fn file_write(idem: &str) -> Value {
     )
 }
 
-fn set(v: &Value, path: &[&str], value: Value) -> Value {
+pub(crate) fn set(v: &Value, path: &[&str], value: Value) -> Value {
     let mut out = v.clone();
     let mut cur = &mut out;
     for (i, key) in path.iter().enumerate() {
@@ -108,7 +108,7 @@ fn set(v: &Value, path: &[&str], value: Value) -> Value {
     out
 }
 
-fn verify(req: &Value) -> VerifiedRequest {
+pub(crate) fn verify(req: &Value) -> VerifiedRequest {
     let key = || IngressKey::from_bytes(vec![0x11; 32]).unwrap();
     let mut ring = MemoryKeyRing::new();
     ring.register(ADAPTER, key());
@@ -123,17 +123,17 @@ fn reference_value() -> Value {
     .unwrap()
 }
 
-fn reference() -> LoadedBundle {
+pub(crate) fn reference() -> LoadedBundle {
     load_bundle(&reference_value()).unwrap()
 }
 
 /// The reference bundle under another version: same statements, another digest.
-fn reference_v2() -> LoadedBundle {
+pub(crate) fn reference_v2() -> LoadedBundle {
     load_bundle(&set(&reference_value(), &["version"], json::s("0.9.0"))).unwrap()
 }
 
 /// Publishing forbidden.
-fn publish_forbidden() -> LoadedBundle {
+pub(crate) fn publish_forbidden() -> LoadedBundle {
     let statements = json::parse(
         br#"[{"statement_id":"freeze","effect":"forbid","action_kinds":["repository.publish"],"reason_code":"PUBLISH_FROZEN"}]"#,
     )
@@ -146,14 +146,14 @@ fn publish_forbidden() -> LoadedBundle {
 // Trusted clock and approval authority.
 
 /// An injected effective clock whose time the test moves.
-struct TestClock(Mutex<Timestamp>);
+pub(crate) struct TestClock(Mutex<Timestamp>);
 
 impl TestClock {
-    fn at(t: Timestamp) -> TestClock {
+    pub(crate) fn at(t: Timestamp) -> TestClock {
         TestClock(Mutex::new(t))
     }
 
-    fn set(&self, t: Timestamp) {
+    pub(crate) fn set(&self, t: Timestamp) {
         *self.0.lock().unwrap() = t;
     }
 }
@@ -170,9 +170,9 @@ impl EffectiveClock for TestClock {
 }
 
 /// Trusted approval channels: (channel, principal, credential, kind).
-struct Channels(Vec<(&'static str, &'static str, &'static [u8], PrincipalKind)>);
+pub(crate) struct Channels(Vec<(&'static str, &'static str, &'static [u8], PrincipalKind)>);
 
-fn channels() -> Channels {
+pub(crate) fn channels() -> Channels {
     Channels(vec![
         (UI, ALICE, b"cred-alice", PrincipalKind::Human),
         // The M1 fixture channel lists the requesting agent's id as a human
@@ -232,7 +232,7 @@ impl ApprovalAuthority for Confused {
     }
 }
 
-fn alice() -> ApprovalPresentation<'static> {
+pub(crate) fn alice() -> ApprovalPresentation<'static> {
     ApprovalPresentation {
         channel: UI,
         approver: ALICE,
@@ -243,11 +243,11 @@ fn alice() -> ApprovalPresentation<'static> {
 // ---------------------------------------------------------------------------
 // Ledger inspection.
 
-fn count(l: &SqliteLedger, sql: &str) -> i64 {
+pub(crate) fn count(l: &SqliteLedger, sql: &str) -> i64 {
     l.db().conn.query_row(sql, [], |r| r.get(0)).unwrap()
 }
 
-fn uses(l: &SqliteLedger, g: &str) -> Option<i64> {
+pub(crate) fn uses(l: &SqliteLedger, g: &str) -> Option<i64> {
     l.db()
         .conn
         .query_row("SELECT uses FROM grants WHERE label = ?1", [g], |r| {
@@ -260,19 +260,19 @@ fn grant_rows(l: &SqliteLedger) -> i64 {
     count(l, "SELECT count(*) FROM grants")
 }
 
-fn use_rows(l: &SqliteLedger) -> i64 {
+pub(crate) fn use_rows(l: &SqliteLedger) -> i64 {
     count(l, "SELECT count(*) FROM grant_uses")
 }
 
-fn receipt_rows(l: &SqliteLedger) -> i64 {
+pub(crate) fn receipt_rows(l: &SqliteLedger) -> i64 {
     count(l, "SELECT count(*) FROM receipts")
 }
 
-fn event_rows(l: &SqliteLedger) -> i64 {
+pub(crate) fn event_rows(l: &SqliteLedger) -> i64 {
     count(l, "SELECT count(*) FROM receipt_events")
 }
 
-fn audited(l: &SqliteLedger, code: &str) -> i64 {
+pub(crate) fn audited(l: &SqliteLedger, code: &str) -> i64 {
     l.db()
         .conn
         .query_row(
@@ -304,7 +304,7 @@ fn assert_untouched(l: &SqliteLedger, g: &str) {
 // ---------------------------------------------------------------------------
 // Service helpers.
 
-type Svc<'a> = GrantService<'a, SqliteLedger>;
+pub(crate) type Svc<'a> = GrantService<'a, SqliteLedger>;
 
 fn approve_as(
     svc: &Svc<'_>,
@@ -330,7 +330,7 @@ fn approve_as(
     )
 }
 
-fn approve(svc: &Svc<'_>, req: &Value, g: &str) -> Result<GrantIssued, Refusal> {
+pub(crate) fn approve(svc: &Svc<'_>, req: &Value, g: &str) -> Result<GrantIssued, Refusal> {
     approve_as(svc, req, g, Verdict::Approved, None, &alice(), &channels())
 }
 
@@ -1284,7 +1284,7 @@ impl GrantLedger for Wrap<'_> {
     fn reserve(
         &self,
         request: &ReserveRequest<'_>,
-    ) -> Result<Result<ReserveOutcome, Refusal>, StoreError> {
+    ) -> Result<Result<ReserveOutcome, Refusal>, writ_broker::store::TxFailure> {
         (self.hook)(Phase::Before);
         let out = self.grants.reserve(request);
         (self.hook)(Phase::After);

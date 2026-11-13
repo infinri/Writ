@@ -23,6 +23,11 @@
 //! [`SharedPolicy`] (a pending activation would make that a deadlock). Guards
 //! are released on every return path, including failures, when they drop.
 //!
+//! Reconciliation (M3-04, D-029) takes the gate exclusively
+//! ([`ActivePolicy::exclusive`], crate-private; the [`ExclusiveHold`] it returns
+//! is the only proof a store accepts for its `reconcile` transaction), so it
+//! never runs while an execution or a permit presentation holds the gate.
+//!
 //! The gate is process-local; it does not coordinate other processes using the
 //! same ledger (the D-029 limitation).
 //!
@@ -30,7 +35,7 @@
 //! matching bundle. If an activation was interrupted (a poisoned gate), shared
 //! holders see [`Policy::Absent`] until the next completed activation.
 
-use std::sync::{PoisonError, RwLock, RwLockReadGuard};
+use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use writ_kernel::contracts::StateRevision;
 use writ_kernel::decision::Policy;
@@ -138,6 +143,15 @@ impl ActivePolicy {
         Ok(effect(authorized))
     }
 
+    /// Take the gate exclusively for reconciliation (D-029): waits until every
+    /// shared holder (execution, permit presentation) has returned and holds
+    /// back new ones until the hold is dropped. The policy is unchanged.
+    pub(crate) fn exclusive(&self) -> ExclusiveHold<'_> {
+        ExclusiveHold {
+            _guard: self.gate.write().unwrap_or_else(PoisonError::into_inner),
+        }
+    }
+
     /// Activate or replace the policy. Takes the gate exclusively: waits until
     /// every [`SharedPolicy`] has been released, and holds back new shared
     /// holders until the replacement is complete. Returns the previous policy.
@@ -149,6 +163,20 @@ impl ActivePolicy {
         self.gate.clear_poison();
         previous
     }
+}
+
+/// The gate held exclusively by reconciliation. Only the broker can take it
+/// ([`ActivePolicy::exclusive`] is crate-private and the field is private), so
+/// a store's `reconcile` transaction cannot be reached without it:
+///
+/// ```compile_fail
+/// fn forge<'a>(g: std::sync::RwLockWriteGuard<'a, writ_broker::policy::PolicyState>) {
+///     let _ = writ_broker::policy::ExclusiveHold { _guard: g };
+/// }
+/// ```
+#[derive(Debug)]
+pub struct ExclusiveHold<'a> {
+    _guard: RwLockWriteGuard<'a, PolicyState>,
 }
 
 /// The gate held shared: one consistent view of the active policy for the

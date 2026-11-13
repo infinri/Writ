@@ -1,4 +1,5 @@
-//! Writ V2 local ledger profile on SQLite (M3-01; grants and T-reserve M3-03).
+//! Writ V2 local ledger profile on SQLite (M3-01; grants and T-reserve M3-03; execute
+//! lifecycle and the controlled effect adapter's store M3-04).
 //!
 //! **Ledger identity** (docs/implementation/M3-START-PLAN.md "Coordination boundary"):
 //! a ledger is identified by the canonical path of an existing regular file (every
@@ -66,7 +67,17 @@
 //! unrepresentable stored expiry or an unknown stored receipt status is
 //! `transaction reserve` / `integrity` (fail closed, no grant use, no receipt).
 //!
-//! **Trusted time (schema `writ-ledger-2`):** `time_floor` holds the high-water mark `H`
+//! **Execute lifecycle (M3-04, schema `writ-ledger-3`):** [`ExecuteLedger`] adds the fenced
+//! `dispatch` (`next_permit` incremented, receipt `reserved` to `dispatched`, `dispatch`
+//! event), `observe` (`dispatched` to `observed_success` or `observed_failure`, `observe`
+//! event) and `reconcile` (every `dispatched` receipt to `unknown_reconcile`, one
+//! `reconcile` event each) transactions. A transition that matches no row rolls back with
+//! the diagnostic code `STATE_CONFLICT` (D-029). Every transaction failure reports its stage
+//! (begin, body, commit) for the broker's D-026 evidence. The simulated adapter tables of
+//! `writ-ledger-2` are gone from the ledger: consumed permits and effects live in the
+//! controlled effect adapter's own store, [`SqliteEffectStore`] (module `effects`).
+//!
+//! **Trusted time (since schema `writ-ledger-2`):** `time_floor` holds the high-water mark `H`
 //! (at most one row, raised only, in the fenced `time_floor` transaction, which returns the
 //! stored maximum); `clock_events` holds startup, drift and acknowledgement records (fenced
 //! `clock_event` transaction). See docs/implementation/M3-TRUSTED-TIME.md.
@@ -85,18 +96,24 @@ use rusqlite::{
     Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
 };
 use writ_broker::clock::{timestamp_from_parts, ClockEvent};
+use writ_broker::execute::{DispatchIntent, Observation};
 use writ_broker::grants::{
     GrantCheck, GrantInsert, NewGrant, ReceiptStatus, ReserveOutcome, ReserveRequest, StoredGrant,
     StoredReceipt,
 };
+use writ_broker::policy::ExclusiveHold;
 use writ_broker::refusal::Refusal;
 use writ_broker::store::Timestamp;
-pub use writ_broker::store::{GrantLedger, LedgerStore, StoreError};
+pub use writ_broker::store::{ExecuteLedger, GrantLedger, LedgerStore, StoreError};
+
+mod effects;
+pub use effects::{SqliteEffectStore, EFFECTS_SCHEMA, EFFECTS_SCHEMA_VERSION};
+use writ_broker::store::{TxFailure, TxStage};
 
 /// The production schema, applied once to a newly created ledger inside one transaction.
 pub const SCHEMA: &str = include_str!("schema.sql");
 /// The schema version this crate writes and accepts.
-pub const SCHEMA_VERSION: &str = "writ-ledger-2";
+pub const SCHEMA_VERSION: &str = "writ-ledger-3";
 
 /// A SQLite ledger owned by this process; safe to share between its threads.
 pub struct SqliteLedger {
@@ -125,6 +142,9 @@ enum BodyError {
     Sql(rusqlite::Error),
     /// Stored content violates the ledger's own invariants (C-4).
     Integrity,
+    /// A receipt transition matched no row, or a stored status is outside the schema
+    /// where a transition expected one (D-029 `STATE_CONFLICT`).
+    StateConflict,
 }
 
 #[cfg(test)]
@@ -153,9 +173,10 @@ impl From<rusqlite::Error> for BodyError {
 /// given name fail once, at begin (before `BEGIN IMMEDIATE`), in the body (after the
 /// fenced body ran its statements) or at commit (instead of `COMMIT`), with a
 /// SQLite-like primary result code that goes through the same error mapping as a real
-/// engine error. A failed transaction is rolled back when it drops. Partial-progress
-/// accounting across several transactions of one operation is demonstrated when M3-04
-/// adds the multi-transaction lifecycle.
+/// engine error. A failed transaction is rolled back when it drops. The same mechanism
+/// arms the effect store's `adapter` transaction. Partial-progress accounting across the
+/// transactions of one execution (M3-04) is tested in `execute_tests`; a `hang` fault
+/// instead blocks at the stage so that `kill_tests` can SIGKILL a real process there.
 #[cfg(test)]
 mod fault {
     /// Where the transaction fails.
@@ -173,11 +194,34 @@ mod fault {
         pub stage: Stage,
         /// SQLite primary result code (for example `rusqlite::ffi::SQLITE_IOERR`).
         pub code: std::ffi::c_int,
+        /// Instead of failing, announce `AT <transaction> <stage>` on stdout and block
+        /// forever at the stage (the real process-kill tests SIGKILL the process there).
+        /// `Begin` blocks before `BEGIN IMMEDIATE`; `Body` and `Commit` block with the
+        /// transaction open, after its statements and before `COMMIT`.
+        pub hang: bool,
     }
 
     /// The code to raise when `armed` fails at `stage`.
     pub fn injected(armed: &Option<Fault>, stage: Stage) -> Option<std::ffi::c_int> {
-        armed.as_ref().filter(|f| f.stage == stage).map(|f| f.code)
+        armed
+            .as_ref()
+            .filter(|f| f.stage == stage && !f.hang)
+            .map(|f| f.code)
+    }
+
+    /// Block forever if `armed` hangs at `stage` (after announcing it).
+    pub fn hang(armed: &Option<Fault>, stage: Stage) {
+        if let Some(f) = armed.as_ref().filter(|f| f.stage == stage && f.hang) {
+            use std::io::Write;
+            let out = std::io::stdout();
+            let mut out = out.lock();
+            let _ = writeln!(out, "AT {} {:?}", f.transaction, f.stage);
+            let _ = out.flush();
+            drop(out);
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+            }
+        }
     }
 
     /// The SQLite-like error the fault raises.
@@ -378,6 +422,75 @@ fn finish(mut conn: Connection, lock: File) -> Result<SqliteLedger, StoreError> 
     })
 }
 
+/// Run one `BEGIN IMMEDIATE` logical transaction named `name` on the connection behind
+/// `inner`, whose body decides to commit or roll back. With `epoch`, the transaction
+/// first checks the stored owner epoch (fencing). The connection mutex is held for the
+/// whole transaction. Any failure rolls back and fails closed, reporting its stage:
+/// `begin` (mutex poisoned, `BEGIN IMMEDIATE`), `body` (fencing check, statements,
+/// integrity and state conflicts) or `commit` (`COMMIT` or `ROLLBACK`).
+fn transact_on<T>(
+    inner: &Mutex<Inner>,
+    epoch: Option<u64>,
+    name: &str,
+    body: impl FnOnce(&Transaction<'_>) -> Result<End<T>, BodyError>,
+) -> Result<T, TxFailure> {
+    let category = format!("transaction {name}");
+    let at = |stage: TxStage, code: &str| TxFailure::new(stage, unavailable(&category, code));
+    let mut inner = inner.lock().map_err(|_| at(TxStage::Begin, "poisoned"))?;
+    #[cfg(test)]
+    let armed = inner.take_fault(name);
+    #[cfg(test)]
+    fault::hang(&armed, fault::Stage::Begin);
+    #[cfg(test)]
+    if let Some(code) = fault::injected(&armed, fault::Stage::Begin) {
+        return Err(at(TxStage::Begin, code_name(&fault::error(code))));
+    }
+    let tx = inner
+        .conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| at(TxStage::Begin, code_name(&e)))?;
+    if let Some(mine) = epoch {
+        let stored = meta_value(&tx, "owner_epoch")
+            .map_err(|e| at(TxStage::Body, code_name(&e)))?
+            .and_then(|e| e.parse::<u64>().ok())
+            .ok_or_else(|| at(TxStage::Body, "schema"))?;
+        if stored != mine {
+            return Err(TxFailure::new(
+                TxStage::Body,
+                StoreError::Fenced { mine, stored },
+            ));
+        }
+    }
+    let end = body(&tx).map_err(|e| match e {
+        BodyError::Sql(e) => at(TxStage::Body, code_name(&e)),
+        BodyError::Integrity => at(TxStage::Body, "integrity"),
+        BodyError::StateConflict => at(TxStage::Body, StoreError::STATE_CONFLICT),
+    })?;
+    #[cfg(test)]
+    for (stage, reported) in [
+        (fault::Stage::Body, TxStage::Body),
+        (fault::Stage::Commit, TxStage::Commit),
+    ] {
+        fault::hang(&armed, stage);
+        if let Some(code) = fault::injected(&armed, stage) {
+            // `tx` drops here without committing: rolled back.
+            return Err(at(reported, code_name(&fault::error(code))));
+        }
+    }
+    match end {
+        End::Commit(out) => {
+            tx.commit()
+                .map_err(|e| at(TxStage::Commit, code_name(&e)))?;
+            Ok(out)
+        }
+        End::Rollback(out) => {
+            tx.rollback()
+                .map_err(|e| at(TxStage::Commit, code_name(&e)))?;
+            Ok(out)
+        }
+    }
+}
+
 impl SqliteLedger {
     /// Create a new ledger at `path`, which must not exist (its directory must).
     ///
@@ -465,61 +578,17 @@ impl SqliteLedger {
         body: impl FnOnce(&Transaction<'_>) -> rusqlite::Result<T>,
     ) -> Result<T, StoreError> {
         self.transact(name, |tx| Ok(End::Commit(body(tx)?)))
+            .map_err(StoreError::from)
     }
 
     /// Run one fenced `BEGIN IMMEDIATE` logical transaction named `name` whose body
-    /// decides to commit or roll back. The connection mutex is held for the whole
-    /// transaction. Any body error rolls back and fails closed.
+    /// decides to commit or roll back ([`transact_on`] with this owner's epoch).
     fn transact<T>(
         &self,
         name: &str,
         body: impl FnOnce(&Transaction<'_>) -> Result<End<T>, BodyError>,
-    ) -> Result<T, StoreError> {
-        let category = format!("transaction {name}");
-        let mut inner = self.lock(&category)?;
-        #[cfg(test)]
-        let armed = inner.take_fault(name);
-        #[cfg(test)]
-        if let Some(code) = fault::injected(&armed, fault::Stage::Begin) {
-            return Err(unavailable(&category, code_name(&fault::error(code))));
-        }
-        let tx = inner
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|e| unavailable(&category, code_name(&e)))?;
-        let stored = meta_value(&tx, "owner_epoch")
-            .map_err(|e| unavailable(&category, code_name(&e)))?
-            .and_then(|e| e.parse::<u64>().ok())
-            .ok_or_else(|| unavailable(&category, "schema"))?;
-        if stored != self.epoch {
-            return Err(StoreError::Fenced {
-                mine: self.epoch,
-                stored,
-            });
-        }
-        let end = body(&tx).map_err(|e| match e {
-            BodyError::Sql(e) => unavailable(&category, code_name(&e)),
-            BodyError::Integrity => unavailable(&category, "integrity"),
-        })?;
-        #[cfg(test)]
-        for stage in [fault::Stage::Body, fault::Stage::Commit] {
-            if let Some(code) = fault::injected(&armed, stage) {
-                // `tx` drops here without committing: rolled back.
-                return Err(unavailable(&category, code_name(&fault::error(code))));
-            }
-        }
-        match end {
-            End::Commit(out) => {
-                tx.commit()
-                    .map_err(|e| unavailable(&category, code_name(&e)))?;
-                Ok(out)
-            }
-            End::Rollback(out) => {
-                tx.rollback()
-                    .map_err(|e| unavailable(&category, code_name(&e)))?;
-                Ok(out)
-            }
-        }
+    ) -> Result<T, TxFailure> {
+        transact_on(&self.inner, Some(self.epoch), name, body)
     }
 
     /// Arm a one-shot fault (test only).
@@ -530,6 +599,20 @@ impl SqliteLedger {
                 transaction: transaction.to_string(),
                 stage,
                 code,
+                hang: false,
+            });
+        }
+    }
+
+    /// Arm a one-shot hang (test only; see [`fault::Fault::hang`]).
+    #[cfg(test)]
+    fn inject_hang(&self, transaction: &str, stage: fault::Stage) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.fault = Some(fault::Fault {
+                transaction: transaction.to_string(),
+                stage,
+                code: 0,
+                hang: true,
             });
         }
     }
@@ -687,12 +770,13 @@ impl GrantLedger for SqliteLedger {
             )?;
             Ok(End::Commit(GrantInsert::Inserted))
         })
+        .map_err(StoreError::from)
     }
 
     fn reserve(
         &self,
         request: &ReserveRequest<'_>,
-    ) -> Result<Result<ReserveOutcome, Refusal>, StoreError> {
+    ) -> Result<Result<ReserveOutcome, Refusal>, TxFailure> {
         let key = (request.tenant_id(), request.idempotency_key());
         self.transact("reserve", |tx| {
             let found: Option<(String, Option<String>, String)> = tx
@@ -769,6 +853,89 @@ impl GrantLedger for SqliteLedger {
     }
 }
 
+impl ExecuteLedger for SqliteLedger {
+    fn dispatch(&self, intent: &DispatchIntent<'_>) -> Result<u64, TxFailure> {
+        let key = (intent.tenant_id(), intent.idempotency_key());
+        self.transact("dispatch", |tx| {
+            let counted = tx.execute(
+                "UPDATE counters SET value = value + 1 WHERE name = 'next_permit'",
+                [],
+            )?;
+            if counted != 1 {
+                return Err(BodyError::Integrity);
+            }
+            let number: i64 = tx.query_row(
+                "SELECT value FROM counters WHERE name = 'next_permit'",
+                [],
+                |r| r.get(0),
+            )?;
+            let number = u64::try_from(number).map_err(|_| BodyError::Integrity)?;
+            let changed = tx.execute(
+                "UPDATE receipts SET status = 'dispatched' \
+                 WHERE tenant_id = ?1 AND idempotency_key = ?2 AND fingerprint = ?3 \
+                 AND status = 'reserved'",
+                (key.0, key.1, intent.fingerprint()),
+            )?;
+            if changed != 1 {
+                return Err(BodyError::StateConflict);
+            }
+            tx.execute(
+                "INSERT INTO receipt_events (tenant_id, idempotency_key, status, cause) \
+                 VALUES (?1, ?2, 'dispatched', 'dispatch')",
+                key,
+            )?;
+            Ok(End::Commit(number))
+        })
+    }
+
+    fn observe_effect(&self, observation: &Observation<'_>) -> Result<(), TxFailure> {
+        let intent = observation.intent();
+        let key = (intent.tenant_id(), intent.idempotency_key());
+        let status = observation.status().as_str();
+        self.transact("observe", |tx| {
+            if !matches!(
+                observation.status(),
+                ReceiptStatus::ObservedSuccess | ReceiptStatus::ObservedFailure
+            ) {
+                return Err(BodyError::StateConflict);
+            }
+            let changed = tx.execute(
+                "UPDATE receipts SET status = ?4 \
+                 WHERE tenant_id = ?1 AND idempotency_key = ?2 AND fingerprint = ?3 \
+                 AND status = 'dispatched'",
+                (key.0, key.1, intent.fingerprint(), status),
+            )?;
+            if changed != 1 {
+                return Err(BodyError::StateConflict);
+            }
+            tx.execute(
+                "INSERT INTO receipt_events (tenant_id, idempotency_key, status, cause) \
+                 VALUES (?1, ?2, ?3, 'observe')",
+                (key.0, key.1, status),
+            )?;
+            Ok(End::Commit(()))
+        })
+    }
+
+    fn reconcile(&self, _gate: &ExclusiveHold<'_>) -> Result<u64, TxFailure> {
+        self.transact("reconcile", |tx| {
+            tx.execute(
+                "INSERT INTO receipt_events (tenant_id, idempotency_key, status, cause) \
+                 SELECT tenant_id, idempotency_key, 'unknown_reconcile', 'reconcile' \
+                 FROM receipts WHERE status = 'dispatched' ORDER BY tenant_id, idempotency_key",
+                [],
+            )?;
+            let changed = tx.execute(
+                "UPDATE receipts SET status = 'unknown_reconcile' WHERE status = 'dispatched'",
+                [],
+            )?;
+            Ok(End::Commit(
+                u64::try_from(changed).map_err(|_| BodyError::Integrity)?,
+            ))
+        })
+    }
+}
+
 /// The stored floor as a timestamp; an unrepresentable row is a schema error.
 fn floor_timestamp((secs, nanos): (i64, i64), category: &str) -> Result<Timestamp, StoreError> {
     u32::try_from(nanos)
@@ -779,6 +946,12 @@ fn floor_timestamp((secs, nanos): (i64, i64), category: &str) -> Result<Timestam
 
 #[cfg(test)]
 mod grant_tests;
+
+#[cfg(test)]
+mod execute_tests;
+
+#[cfg(test)]
+mod kill_tests;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -1035,14 +1208,14 @@ mod tests {
     }
 
     #[test]
-    fn new_ledger_is_writ_ledger_2_without_a_floor() {
+    fn new_ledger_is_writ_ledger_3_without_a_floor() {
         let db = tmp("v2");
         let l = SqliteLedger::create(&db).unwrap();
         assert_eq!(
             meta_value(&l.db().conn, "schema_version")
                 .unwrap()
                 .as_deref(),
-            Some("writ-ledger-2")
+            Some("writ-ledger-3")
         );
         assert_eq!(l.time_floor().unwrap(), None);
         assert_eq!(clock_event_kinds(&l), Vec::<String>::new());

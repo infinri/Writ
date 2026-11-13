@@ -120,6 +120,10 @@ fn missing_metadata_is_refused() {
             "previous-version",
             "UPDATE meta SET value = 'writ-ledger-1' WHERE key = 'schema_version';",
         ),
+        (
+            "writ-ledger-2",
+            "UPDATE meta SET value = 'writ-ledger-2' WHERE key = 'schema_version';",
+        ),
     ] {
         let d = tmp(&format!("meta-{name}"));
         let db = d.join("ledger.db");
@@ -141,7 +145,10 @@ fn expected_names_with_wrong_definitions_or_extra_objects_are_refused() {
         ("extra-table", format!("{SCHEMA}CREATE TABLE extra (x INTEGER);")),
         ("extra-index", format!("{SCHEMA}CREATE INDEX ix ON audit_refusals (code);")),
         // a missing table
-        ("missing-table", format!("{SCHEMA}DROP TABLE adapter_effects;")),
+        ("missing-table", format!("{SCHEMA}DROP TABLE grant_uses;")),
+        // a writ-ledger-2 ledger still holding the simulated adapter tables (M3-04 moved
+        // them to the effect adapter's own store)
+        ("adapter-tables", format!("{SCHEMA}CREATE TABLE adapter_consumed_permits (permit_id TEXT PRIMARY KEY) STRICT;")),
         // the trusted-time floor without its single-row constraint
         ("multi-row-floor", SCHEMA.replacen("id       INTEGER PRIMARY KEY CHECK (id = 1)", "id       INTEGER PRIMARY KEY", 1)),
         // clock events accepting any kind

@@ -1,5 +1,5 @@
-//! Broker refusals of the decision-free core (M3-02) and of approvals and
-//! grant consumption (M3-03).
+//! Broker refusals of the decision-free core (M3-02), of approvals and grant
+//! consumption (M3-03) and of the execute lifecycle (M3-04).
 //!
 //! A refusal carries the internal code that goes to the access-controlled
 //! audit record. Agents and hosts receive only [`Refusal::external_code`], the
@@ -38,6 +38,9 @@ pub enum Refusal {
     /// owner decision A of 2026-11-12). Carries no digest: the refusal never
     /// reveals the active bundle.
     PermitStale,
+    /// The permit id was already consumed by the effect adapter (M3-04): a
+    /// permit authorizes at most one effect.
+    PermitReplayed,
     /// Trusted time could not be established: a clock-source failure, an
     /// overflow, an unacknowledged startup rollback or a persisted-floor
     /// failure ([`crate::clock::ClockError`]). Fail closed; externally the
@@ -83,6 +86,7 @@ impl Refusal {
             Refusal::PermitInvalid => "PERMIT_INVALID",
             Refusal::PermitExpired => "PERMIT_EXPIRED",
             Refusal::PermitStale => "PERMIT_STALE",
+            Refusal::PermitReplayed => "PERMIT_REPLAYED",
             Refusal::TimeUnavailable => "TIME_UNAVAILABLE",
             Refusal::ApprovalRequired => "APPROVAL_REQUIRED",
             Refusal::HumanUnauthenticated(_) => "HUMAN_UNAUTHENTICATED",
@@ -143,6 +147,11 @@ mod tests {
                 "PROMOTION_REFUSED",
             ),
             (Refusal::PermitStale, "PERMIT_STALE", "PROMOTION_REFUSED"),
+            (
+                Refusal::PermitReplayed,
+                "PERMIT_REPLAYED",
+                "PROMOTION_REFUSED",
+            ),
             (
                 Refusal::TimeUnavailable,
                 "TIME_UNAVAILABLE",

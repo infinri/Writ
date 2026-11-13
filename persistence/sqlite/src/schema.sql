@@ -1,7 +1,10 @@
--- Writ production SQLite ledger, schema writ-ledger-2 (M3-01, M3-02 trusted time).
+-- Writ production SQLite ledger, schema writ-ledger-3 (M3-01, M3-02 trusted time, M3-04).
 -- Tables as in the M1 ledger (m1/fixtures/broker/ledger.sql, D-023), plus the single-owner
 -- fencing epoch (M3-START-PLAN "Coordination boundary") and, since writ-ledger-2, the
 -- trusted-time high-water mark and clock audit records (M3-TRUSTED-TIME revision 2).
+-- Since writ-ledger-3 (M3-04) the simulated effect adapter state (consumed permit ids and
+-- effects) is no longer in the ledger: it lives in the controlled effect adapter's own
+-- store (effects.sql), which the broker reaches only through the adapter.
 -- Applied once to a new database inside one transaction.
 
 CREATE TABLE meta (
@@ -54,22 +57,11 @@ CREATE TABLE audit_refusals (
   code TEXT NOT NULL
 ) STRICT;
 
--- Named counters: 'next_permit' (last issued permit number).
+-- Named counters: 'next_permit' (last issued permit number; raised in T-dispatch, never
+-- reused, so a new permit id never repeats a consumed one).
 CREATE TABLE counters (
   name  TEXT PRIMARY KEY,
   value INTEGER NOT NULL
-) STRICT;
-
--- SIMULATED effect adapter state (an external system in production): consumed
--- permit ids and the count of applied effects. Kept in the same file so a broker
--- restart cannot forget them; this is not a real external exactly-once guarantee.
-CREATE TABLE adapter_consumed_permits (
-  permit_id TEXT PRIMARY KEY
-) STRICT;
-
-CREATE TABLE adapter_effects (
-  seq       INTEGER PRIMARY KEY AUTOINCREMENT,
-  permit_id TEXT NOT NULL REFERENCES adapter_consumed_permits (permit_id)
 ) STRICT;
 
 -- Trusted-time high-water mark H (M3-TRUSTED-TIME rule 4): at most one row, absent until
@@ -95,6 +87,6 @@ CREATE TABLE clock_events (
   operator  TEXT
 ) STRICT;
 
-INSERT INTO meta (key, value) VALUES ('schema_version', 'writ-ledger-2');
+INSERT INTO meta (key, value) VALUES ('schema_version', 'writ-ledger-3');
 INSERT INTO counters (name, value) VALUES ('next_permit', 0);
 INSERT INTO meta (key, value) VALUES ('owner_epoch', '0');
