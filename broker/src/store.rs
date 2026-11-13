@@ -7,6 +7,10 @@
 
 use std::fmt;
 
+use crate::clock::ClockEvent;
+/// The kernel timestamp used by the trusted-time operations.
+pub use writ_kernel::time::Timestamp;
+
 /// Why a ledger cannot serve.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StoreError {
@@ -58,4 +62,15 @@ pub trait LedgerStore {
 
     /// Append one refusal audit record (the `audit` logical transaction, D-024 rule 2).
     fn record_refusal(&mut self, code: &str) -> Result<(), StoreError>;
+
+    /// The persisted trusted-time high-water mark `H`; `None` before the first
+    /// observation (M3-TRUSTED-TIME rule 4). A read: not fenced.
+    fn time_floor(&self) -> Result<Option<Timestamp>, StoreError>;
+
+    /// Raise the high-water mark to `at` if `at` is later (the `time_floor`
+    /// logical transaction, fenced). Never lowers it; returns the stored maximum.
+    fn raise_time_floor(&mut self, at: Timestamp) -> Result<Timestamp, StoreError>;
+
+    /// Append one clock audit record (the `clock_event` logical transaction, fenced).
+    fn record_clock_event(&mut self, event: &ClockEvent) -> Result<(), StoreError>;
 }

@@ -12,7 +12,8 @@
 //! owner decision A of 2026-11-12 under D-018 A3), after strict parsing
 //! ([`Permit::from_value`], `PERMIT_INVALID`): fingerprint differs from the
 //! presented request: `PERMIT_REQUEST_MISMATCH`; MAC invalid: `PERMIT_INVALID`;
-//! trusted time at or after expiry: `PERMIT_EXPIRED`; bound bundle digest is
+//! trusted time unavailable: `TIME_UNAVAILABLE`; trusted time at or after
+//! expiry: `PERMIT_EXPIRED`; bound bundle digest is
 //! not the currently active authorization bundle: `PERMIT_STALE`.
 //!
 //! Absent, rejected or unverifiable active policy is never treated as a
@@ -78,11 +79,16 @@ impl PermitId {
 pub enum PermitIssueError {
     /// The body could not be encoded or signed.
     Signing,
+    /// Trusted time was unavailable (`TIME_UNAVAILABLE`).
+    TimeUnavailable,
 }
 
 impl fmt::Display for PermitIssueError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("permit signing failed")
+        f.write_str(match self {
+            PermitIssueError::Signing => "permit signing failed",
+            PermitIssueError::TimeUnavailable => "trusted time unavailable",
+        })
     }
 }
 
@@ -136,7 +142,10 @@ impl Permit {
         clock: &dyn TrustedClock,
         key: &PermitKey,
     ) -> Result<Permit, PermitIssueError> {
-        let ttl = clock.now().plus_seconds(PERMIT_TTL_SECONDS);
+        let ttl = clock
+            .now()
+            .map_err(|_| PermitIssueError::TimeUnavailable)?
+            .plus_seconds(PERMIT_TTL_SECONDS);
         let expires = authorized
             .request()
             .deadline_at
@@ -186,7 +195,7 @@ impl Permit {
         // Signed by this broker, so the expiry is one it wrote; fail closed regardless.
         let expires_at =
             Timestamp::parse_rfc3339(&self.expires_at).ok_or(Refusal::PermitInvalid)?;
-        if clock.now() >= expires_at {
+        if clock.now().map_err(|e| e.refusal())? >= expires_at {
             return Err(Refusal::PermitExpired);
         }
         if active.active_bundle_sha() != Some(self.policy_bundle_sha.as_str()) {
@@ -613,7 +622,7 @@ mod tests {
         assert!(first.is_ok());
         assert_eq!(first, second);
         assert_eq!(p, before);
-        assert_eq!(clock.now(), now());
+        assert_eq!(clock.now(), Ok(now()));
         assert_eq!(
             shared.active_bundle_sha(),
             Some(reference_bundle().sha.as_str())

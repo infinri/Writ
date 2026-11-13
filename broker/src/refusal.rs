@@ -34,6 +34,11 @@ pub enum Refusal {
     /// owner decision A of 2026-11-12). Carries no digest: the refusal never
     /// reveals the active bundle.
     PermitStale,
+    /// Trusted time could not be established: a clock-source failure, an
+    /// overflow, an unacknowledged startup rollback or a persisted-floor
+    /// failure ([`crate::clock::ClockError`]). Fail closed; externally the
+    /// kernel's generic mapping.
+    TimeUnavailable,
 }
 
 impl Refusal {
@@ -46,6 +51,7 @@ impl Refusal {
             Refusal::PermitInvalid => "PERMIT_INVALID",
             Refusal::PermitExpired => "PERMIT_EXPIRED",
             Refusal::PermitStale => "PERMIT_STALE",
+            Refusal::TimeUnavailable => "TIME_UNAVAILABLE",
         }
     }
 
@@ -94,6 +100,11 @@ mod tests {
             ),
             (Refusal::PermitStale, "PERMIT_STALE", "PROMOTION_REFUSED"),
             (
+                Refusal::TimeUnavailable,
+                "TIME_UNAVAILABLE",
+                "PROMOTION_REFUSED",
+            ),
+            (
                 Refusal::Decision {
                     status: DecisionStatus::Invalid,
                     reason: ReasonCode::Kernel(KernelCode::CompositeNotSupported),
@@ -124,6 +135,15 @@ mod tests {
         assert_eq!(external_code("PERMIT_STALE"), "PROMOTION_REFUSED");
         assert_eq!(
             Refusal::PermitStale.external_code(),
+            writ_kernel::refusal::PROMOTION_REFUSED
+        );
+    }
+
+    #[test]
+    fn time_unavailable_uses_the_kernel_generic_mapping() {
+        assert!(!writ_kernel::refusal::PASS_THROUGH.contains(&"TIME_UNAVAILABLE"));
+        assert_eq!(
+            Refusal::TimeUnavailable.external_code(),
             writ_kernel::refusal::PROMOTION_REFUSED
         );
     }

@@ -1,5 +1,5 @@
 {
-  "comment": "Reviewed dependency allow-list for writ-broker (broker/DEPENDENCIES.md). The closure covers normal and build dependencies; path dependencies on workspace members are not listed. M3-02 adds hmac and sha2 (and writ-kernel by path); versions as reviewed for M1 (M1-07). BSD-3-Clause is approved for subtle 2.6.1 only (owner decision D-033), not as a general licence.",
+  "comment": "Reviewed dependency allow-list for writ-broker (broker/DEPENDENCIES.md). The closure covers normal and build dependencies; path dependencies on workspace members are not listed. M3-02 adds hmac and sha2 (and writ-kernel by path); versions as reviewed for M1 (M1-07). BSD-3-Clause is approved for subtle 2.6.1 only (owner decision D-033), not as a general licence. Trusted time (owner decision 2026-11-12) adds rustix 1.1.6 (features: time only) and its closure; 'Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT' is approved for rustix 1.1.6 and linux-raw-sys 0.12.1 only, not as a general licence.",
   "approved_licenses": [
     "MIT",
     "MIT OR Apache-2.0",
@@ -63,7 +63,39 @@
     },
     "libc": {
       "version": "0.2.191",
-      "role": "transitive (cpufeatures, target-specific: aarch64 Linux and Android only)"
+      "role": "transitive, target-specific (cpufeatures: aarch64 Linux and Android; rustix and errno: libc backend targets); not compiled for the broker on x86_64 Linux"
+    },
+    "rustix": {
+      "version": "1.1.6",
+      "checksum": "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa",
+      "role": "direct runtime (safe clock_gettime(CLOCK_BOOTTIME) for the trusted-time elapsed source); default features off, feature `time` only; build script runs rustc feature probes only; released 2026-10-27; licence approved for this package only (owner decision 2026-11-12), used under its MIT option",
+      "licence_approved": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+    },
+    "linux-raw-sys": {
+      "version": "0.12.1",
+      "checksum": "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53",
+      "role": "transitive (rustix linux_raw backend on Linux; features auxvec, elf, errno, general, ioctl, no_std); released 2025-12-23; licence approved for this package only (owner decision 2026-11-12), used under its MIT option",
+      "licence_approved": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+    },
+    "bitflags": {
+      "version": "2.13.2",
+      "checksum": "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06",
+      "role": "transitive (rustix; default features off); same version as approved for writ-ledger-sqlite (rusqlite); released 2026-09-10"
+    },
+    "errno": {
+      "version": "0.3.14",
+      "checksum": "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb",
+      "role": "transitive, target-specific (rustix libc backend: non-Linux Unix targets, the rustix_use_libc cfg, and Windows); not compiled on x86_64 Linux; pinned below 0.3.15 (released 2026-11-12) by the 14-day release-age rule; released 2025-09-09"
+    },
+    "windows-sys": {
+      "version": "0.61.2",
+      "checksum": "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc",
+      "role": "transitive, Windows targets only (rustix, errno); not compiled on Linux; released 2025-10-06"
+    },
+    "windows-link": {
+      "version": "0.2.1",
+      "checksum": "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5",
+      "role": "transitive, Windows targets only (windows-sys); not compiled on Linux; released 2025-10-06"
     }
   }
 }

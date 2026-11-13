@@ -9,7 +9,9 @@
 //! Decision-free core (M3-02):
 //! - [`keys`]: ingress keys per adapter ([`keys::KeyRing`]) and the permit key, supplied explicitly.
 //! - [`ingress`]: seal verification (D-010) and the D-012 request fingerprint.
-//! - [`clock`]: the [`clock::TrustedClock`] interface (injected clock only).
+//! - [`clock`]: trusted time: the fallible [`clock::TrustedClock`] interface, the
+//!   local-profile [`clock::HostClock`] (base plus `CLOCK_BOOTTIME` elapsed time),
+//!   the persisted high-water mark ([`clock::observe`]) and operator acknowledgement.
 //! - [`authorize`]: use-time re-decision through `writ-kernel`, bound to a
 //!   shared hold of the policy gate.
 //! - [`policy`]: the active authorization policy behind a shared/exclusive coordination gate.

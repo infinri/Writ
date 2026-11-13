@@ -1,7 +1,8 @@
--- Writ production SQLite ledger, schema writ-ledger-1 (M3-01).
+-- Writ production SQLite ledger, schema writ-ledger-2 (M3-01, M3-02 trusted time).
 -- Tables as in the M1 ledger (m1/fixtures/broker/ledger.sql, D-023), plus the single-owner
--- fencing epoch (M3-START-PLAN "Coordination boundary"). Applied once to a new database
--- inside one transaction.
+-- fencing epoch (M3-START-PLAN "Coordination boundary") and, since writ-ledger-2, the
+-- trusted-time high-water mark and clock audit records (M3-TRUSTED-TIME revision 2).
+-- Applied once to a new database inside one transaction.
 
 CREATE TABLE meta (
   key   TEXT PRIMARY KEY,
@@ -71,6 +72,29 @@ CREATE TABLE adapter_effects (
   permit_id TEXT NOT NULL REFERENCES adapter_consumed_permits (permit_id)
 ) STRICT;
 
-INSERT INTO meta (key, value) VALUES ('schema_version', 'writ-ledger-1');
+-- Trusted-time high-water mark H (M3-TRUSTED-TIME rule 4): at most one row, absent until
+-- the first observation; only ever raised (fenced `time_floor` transaction).
+CREATE TABLE time_floor (
+  id       INTEGER PRIMARY KEY CHECK (id = 1),
+  floor_s  INTEGER NOT NULL,                 -- seconds since 1970-01-01T00:00:00Z
+  floor_ns INTEGER NOT NULL CHECK (floor_ns BETWEEN 0 AND 999999999)
+) STRICT;
+
+-- Clock audit records: startup outcome, drift diagnostics, operator acknowledgements.
+-- Timestamps in the kernel's RFC 3339 UTC form.
+CREATE TABLE clock_events (
+  seq       INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind      TEXT NOT NULL CHECK (kind IN
+              ('startup', 'startup_rollback_absorbed', 'startup_rollback_blocked',
+               'rollback_detected', 'forward_jump_detected', 'drift_normal', 'acknowledged',
+               'acknowledgement_unauthenticated', 'acknowledgement_unauthorized',
+               'acknowledgement_stale')),
+  effective TEXT,
+  wall      TEXT,
+  floor     TEXT,
+  operator  TEXT
+) STRICT;
+
+INSERT INTO meta (key, value) VALUES ('schema_version', 'writ-ledger-2');
 INSERT INTO counters (name, value) VALUES ('next_permit', 0);
 INSERT INTO meta (key, value) VALUES ('owner_epoch', '0');

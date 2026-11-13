@@ -43,6 +43,11 @@
 //! fn f(l: &writ_ledger_sqlite::SqliteLedger) { let _ = &l.conn; }
 //! ```
 //!
+//! **Trusted time (schema `writ-ledger-2`):** `time_floor` holds the high-water mark `H`
+//! (at most one row, raised only, in the fenced `time_floor` transaction, which returns the
+//! stored maximum); `clock_events` holds startup, drift and acknowledgement records (fenced
+//! `clock_event` transaction). See docs/implementation/M3-TRUSTED-TIME.md.
+//!
 //! Engine and settings follow D-023 (SQLite 3.54.1, WAL, `synchronous=FULL`,
 //! `busy_timeout=5000`, `foreign_keys=ON`, `trusted_schema=OFF`).
 
@@ -53,12 +58,14 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, TransactionBehavior};
+use writ_broker::clock::{timestamp_from_parts, ClockEvent};
+use writ_broker::store::Timestamp;
 pub use writ_broker::store::{LedgerStore, StoreError};
 
 /// The production schema, applied once to a newly created ledger inside one transaction.
 pub const SCHEMA: &str = include_str!("schema.sql");
 /// The schema version this crate writes and accepts.
-pub const SCHEMA_VERSION: &str = "writ-ledger-1";
+pub const SCHEMA_VERSION: &str = "writ-ledger-2";
 
 /// A SQLite ledger owned by this process.
 pub struct SqliteLedger {
@@ -463,12 +470,131 @@ impl LedgerStore for SqliteLedger {
                 .map(|_| ())
         })
     }
+
+    fn time_floor(&self) -> Result<Option<Timestamp>, StoreError> {
+        let row = match self.conn.query_row(
+            "SELECT floor_s, floor_ns FROM time_floor WHERE id = 1",
+            [],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+        ) {
+            Ok(row) => row,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+            Err(e) => return Err(unavailable("read", code_name(&e))),
+        };
+        floor_timestamp(row, "read").map(Some)
+    }
+
+    fn raise_time_floor(&mut self, at: Timestamp) -> Result<Timestamp, StoreError> {
+        let row = self.write("time_floor", |tx| {
+            tx.execute(
+                "INSERT INTO time_floor (id, floor_s, floor_ns) VALUES (1, ?1, ?2) \
+                 ON CONFLICT (id) DO UPDATE SET floor_s = excluded.floor_s, floor_ns = excluded.floor_ns \
+                 WHERE (excluded.floor_s, excluded.floor_ns) > (time_floor.floor_s, time_floor.floor_ns)",
+                (at.unix_seconds(), i64::from(at.subsec_nanos())),
+            )?;
+            tx.query_row(
+                "SELECT floor_s, floor_ns FROM time_floor WHERE id = 1",
+                [],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+            )
+        })?;
+        floor_timestamp(row, "transaction time_floor")
+    }
+
+    fn record_clock_event(&mut self, event: &ClockEvent) -> Result<(), StoreError> {
+        let text = |t: Option<Timestamp>| t.map(|t| t.to_string());
+        self.write("clock_event", |tx| {
+            tx.execute(
+                "INSERT INTO clock_events (kind, effective, wall, floor, operator) VALUES (?1, ?2, ?3, ?4, ?5)",
+                (
+                    event.kind.as_str(),
+                    text(event.effective),
+                    text(event.wall),
+                    text(event.floor),
+                    event.operator.as_deref(),
+                ),
+            )
+            .map(|_| ())
+        })
+    }
+}
+
+/// The stored floor as a timestamp; an unrepresentable row is a schema error.
+fn floor_timestamp((secs, nanos): (i64, i64), category: &str) -> Result<Timestamp, StoreError> {
+    u32::try_from(nanos)
+        .ok()
+        .and_then(|n| timestamp_from_parts(secs, n))
+        .ok_or_else(|| unavailable(category, "schema"))
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use writ_broker::clock::{
+        observe, ClockError, ClockEventKind, EffectiveClock, ElapsedSource, HostClock,
+        StartOutcome, WallSource,
+    };
+    use writ_broker::refusal::Refusal;
+
+    fn ts(s: &str) -> Timestamp {
+        Timestamp::parse_rfc3339(s).unwrap()
+    }
+
+    fn event(kind: ClockEventKind) -> ClockEvent {
+        ClockEvent {
+            kind,
+            effective: None,
+            wall: None,
+            floor: None,
+            operator: None,
+        }
+    }
+
+    fn clock_event_kinds(l: &SqliteLedger) -> Vec<String> {
+        let mut s = l
+            .conn
+            .prepare("SELECT kind FROM clock_events ORDER BY seq")
+            .unwrap();
+        s.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    const NANOS: i128 = 1_000_000_000;
+
+    /// Injected wall or elapsed source (nanoseconds); `None` fails the read.
+    #[derive(Clone)]
+    struct Manual(Rc<Cell<Option<i128>>>);
+
+    impl WallSource for Manual {
+        fn wall_nanos(&self) -> Result<i128, ClockError> {
+            self.0.get().ok_or(ClockError::Source)
+        }
+    }
+
+    impl ElapsedSource for Manual {
+        fn elapsed_nanos(&self) -> Result<i128, ClockError> {
+            self.0.get().ok_or(ClockError::Source)
+        }
+    }
+
+    /// Start a host clock with the wall clock at `wall` (plus `offset` seconds).
+    fn host(
+        ledger: &mut SqliteLedger,
+        wall: &str,
+        offset: i64,
+    ) -> (HostClock<Manual, Manual>, Manual) {
+        let t = ts(wall);
+        let w = i128::from(t.unix_seconds() + offset) * NANOS + i128::from(t.subsec_nanos());
+        let elapsed = Manual(Rc::new(Cell::new(Some(50 * NANOS))));
+        let clock =
+            HostClock::start(Manual(Rc::new(Cell::new(Some(w)))), elapsed.clone(), ledger).unwrap();
+        (clock, elapsed)
+    }
 
     fn tmp(name: &str) -> PathBuf {
         let d =
@@ -488,14 +614,23 @@ mod tests {
         let mut b = SqliteLedger::open(&db).unwrap();
         assert_eq!(b.owner_epoch(), 2);
         // Every public state-changing operation of the store (LedgerStore methods).
+        let fenced = Some(StoreError::Fenced { mine: 1, stored: 2 });
+        assert_eq!(a.record_refusal("Y").err(), fenced);
+        assert_eq!(a.raise_time_floor(ts("2026-11-05T12:00:00Z")).err(), fenced);
         assert_eq!(
-            a.record_refusal("Y").err(),
-            Some(StoreError::Fenced { mine: 1, stored: 2 })
+            a.record_clock_event(&event(ClockEventKind::Startup)).err(),
+            fenced
         );
         b.record_refusal("Z").unwrap();
         assert_eq!(b.refusal_count().unwrap(), 2);
         // Read operations do not change state and are allowed for the stale instance.
         assert_eq!(a.refusal_count().unwrap(), 2);
+        assert_eq!(
+            a.time_floor().unwrap(),
+            None,
+            "the fenced raise left nothing"
+        );
+        assert_eq!(clock_event_kinds(&a), Vec::<String>::new());
     }
 
     #[test]
@@ -635,5 +770,231 @@ mod tests {
             Some(fault::Stage::Commit)
         );
         assert!(l.fault.is_none());
+    }
+
+    #[test]
+    fn new_ledger_is_writ_ledger_2_without_a_floor() {
+        let db = tmp("v2");
+        let l = SqliteLedger::create(&db).unwrap();
+        assert_eq!(
+            meta_value(&l.conn, "schema_version").unwrap().as_deref(),
+            Some("writ-ledger-2")
+        );
+        assert_eq!(l.time_floor().unwrap(), None);
+        assert_eq!(clock_event_kinds(&l), Vec::<String>::new());
+    }
+
+    #[test]
+    fn time_floor_is_raised_never_lowered_and_survives_restart() {
+        let db = tmp("floor");
+        let mut a = SqliteLedger::create(&db).unwrap();
+        let t = ts("2026-11-05T12:00:00.25Z");
+        assert_eq!(a.raise_time_floor(t).unwrap(), t);
+        for lower in [
+            "2026-11-05T12:00:00.249999999Z",
+            "2026-11-05T11:00:00Z",
+            "1970-01-01T00:00:00Z",
+            "0000-01-01T00:00:00Z",
+        ] {
+            assert_eq!(a.raise_time_floor(ts(lower)).unwrap(), t, "{lower}");
+            assert_eq!(a.time_floor().unwrap(), Some(t), "{lower}");
+        }
+        assert_eq!(a.raise_time_floor(t).unwrap(), t, "equal is a no-op");
+        let later = ts("2026-11-05T12:00:00.250000001Z");
+        assert_eq!(a.raise_time_floor(later).unwrap(), later);
+        drop(a);
+        let mut b = SqliteLedger::open(&db).unwrap();
+        assert_eq!(
+            b.time_floor().unwrap(),
+            Some(later),
+            "durable across restart"
+        );
+        assert_eq!(b.raise_time_floor(t).unwrap(), later);
+        let rows: i64 = b
+            .conn
+            .query_row("SELECT count(*) FROM time_floor", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+    }
+
+    #[test]
+    fn unrepresentable_stored_floor_fails_closed() {
+        let db = tmp("floor-range");
+        let l = SqliteLedger::create(&db).unwrap();
+        l.conn
+            .execute(
+                "INSERT INTO time_floor (id, floor_s, floor_ns) VALUES (1, ?1, 0)",
+                [i64::MAX],
+            )
+            .unwrap();
+        assert_eq!(
+            l.time_floor().err(),
+            Some(StoreError::Unavailable {
+                category: "read".into(),
+                code: "schema".into(),
+            })
+        );
+        assert!(l
+            .conn
+            .execute("UPDATE time_floor SET floor_ns = 1000000000", [])
+            .is_err());
+        assert!(l
+            .conn
+            .execute(
+                "INSERT INTO time_floor (id, floor_s, floor_ns) VALUES (2, 0, 0)",
+                []
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn clock_events_are_recorded_in_the_ledger() {
+        let db = tmp("events");
+        let mut l = SqliteLedger::create(&db).unwrap();
+        l.record_clock_event(&ClockEvent {
+            kind: ClockEventKind::Acknowledged,
+            effective: None,
+            wall: Some(ts("2026-11-04T12:00:00Z")),
+            floor: Some(ts("2026-11-05T12:00:00.5Z")),
+            operator: Some("operator:admin".into()),
+        })
+        .unwrap();
+        let row: (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = l
+            .conn
+            .query_row(
+                "SELECT kind, effective, wall, floor, operator FROM clock_events",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (
+                "acknowledged".into(),
+                None,
+                Some("2026-11-04T12:00:00Z".into()),
+                Some("2026-11-05T12:00:00.5Z".into()),
+                Some("operator:admin".into()),
+            )
+        );
+        // Every kind the broker can record is accepted by the schema.
+        for kind in [
+            ClockEventKind::Startup,
+            ClockEventKind::StartupRollbackAbsorbed,
+            ClockEventKind::StartupRollbackBlocked,
+            ClockEventKind::RollbackDetected,
+            ClockEventKind::ForwardJumpDetected,
+            ClockEventKind::DriftNormal,
+            ClockEventKind::Acknowledged,
+            ClockEventKind::AcknowledgementUnauthenticated,
+            ClockEventKind::AcknowledgementUnauthorized,
+            ClockEventKind::AcknowledgementStale,
+        ] {
+            l.record_clock_event(&event(kind)).unwrap();
+        }
+        assert_eq!(clock_event_kinds(&l).len(), 11);
+        assert!(l
+            .conn
+            .execute("INSERT INTO clock_events (kind) VALUES ('reset')", [])
+            .is_err());
+    }
+
+    /// An expiry decision persists its time in its own `time_floor` transaction before
+    /// the governed operation's result is final. The governed operation (here its
+    /// refusal audit) then fails by injection at each stage; the floor stays, survives
+    /// a restart, and the expired item stays expired after a clock rollback.
+    #[test]
+    fn expiry_observation_persists_despite_injected_transaction_failure_and_restart() {
+        let expires = ts("2026-11-05T12:00:30Z");
+        for (i, stage) in [
+            fault::Stage::Begin,
+            fault::Stage::Body,
+            fault::Stage::Commit,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let db = tmp(&format!("expiry-{i}"));
+            let mut l = SqliteLedger::create(&db).unwrap();
+            let (clock, elapsed) = host(&mut l, "2026-11-05T12:00:00Z", 0);
+            elapsed.0.set(Some(80 * NANOS));
+            let at = observe(&clock, &mut l).unwrap().at();
+            assert!(at >= expires, "expired at {at}");
+            l.inject("audit", stage, rusqlite::ffi::SQLITE_IOERR);
+            assert!(l.record_refusal("PERMIT_EXPIRED").is_err(), "{stage:?}");
+            assert_eq!(l.refusal_count().unwrap(), 0, "{stage:?}: rolled back");
+            assert_eq!(l.time_floor().unwrap(), Some(expires), "{stage:?}");
+            drop(clock);
+            drop(l);
+            // Restart with the wall clock 100 s behind the floor: absorbed, still expired.
+            let mut l = SqliteLedger::open(&db).unwrap();
+            assert_eq!(l.time_floor().unwrap(), Some(expires));
+            let (clock, _) = host(&mut l, "2026-11-05T12:00:30Z", -100);
+            assert_eq!(clock.outcome(), StartOutcome::AbsorbedRollback);
+            assert!(observe(&clock, &mut l).unwrap().at() >= expires);
+            drop(clock);
+            drop(l);
+            // Restart with the wall clock 121 s behind the floor: fail closed.
+            let mut l = SqliteLedger::open(&db).unwrap();
+            let (clock, _) = host(&mut l, "2026-11-05T12:00:30Z", -121);
+            assert_eq!(clock.outcome(), StartOutcome::Blocked);
+            let err = observe(&clock, &mut l).unwrap_err();
+            assert_eq!(err.refusal(), Refusal::TimeUnavailable);
+            assert_eq!(l.time_floor().unwrap(), Some(expires), "never lowered");
+            assert_eq!(
+                clock_event_kinds(&l),
+                vec![
+                    "startup",
+                    "startup_rollback_absorbed",
+                    "startup_rollback_blocked"
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn injected_floor_failure_gives_time_unavailable_and_keeps_the_floor() {
+        for (i, stage) in [
+            fault::Stage::Begin,
+            fault::Stage::Body,
+            fault::Stage::Commit,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let db = tmp(&format!("floor-fault-{i}"));
+            let mut l = SqliteLedger::create(&db).unwrap();
+            let (clock, elapsed) = host(&mut l, "2026-11-05T12:00:00Z", 0);
+            elapsed.0.set(Some(60 * NANOS));
+            l.inject("time_floor", stage, rusqlite::ffi::SQLITE_FULL);
+            let err = observe(&clock, &mut l).unwrap_err();
+            assert_eq!(
+                err,
+                ClockError::Floor(StoreError::Unavailable {
+                    category: "transaction time_floor".into(),
+                    code: "SQLITE_FULL".into(),
+                }),
+                "{stage:?}"
+            );
+            assert_eq!(err.refusal(), Refusal::TimeUnavailable);
+            assert_eq!(err.refusal().external_code(), "PROMOTION_REFUSED");
+            assert_eq!(
+                l.time_floor().unwrap(),
+                Some(ts("2026-11-05T12:00:00Z")),
+                "{stage:?}: rolled back to the previous floor"
+            );
+            assert!(l.conn.is_autocommit());
+            assert_eq!(
+                observe(&clock, &mut l).unwrap().at(),
+                ts("2026-11-05T12:00:10Z")
+            );
+            assert!(clock.read().is_ok());
+        }
     }
 }

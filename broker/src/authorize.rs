@@ -198,6 +198,7 @@ impl<'g> Authorized<'g> {
 }
 
 /// Decide `verified` now, under `inputs` and the time read once from `clock`.
+/// Unavailable time is refused as `TIME_UNAVAILABLE` before any decision.
 /// Any status other than `allow` or `require_approval` is refused with the
 /// decision's reason code. The result is bound to the hold `inputs` came from.
 pub fn authorize<'g>(
@@ -205,11 +206,12 @@ pub fn authorize<'g>(
     inputs: &TrustedInputs<'g>,
     clock: &dyn TrustedClock,
 ) -> Result<Authorized<'g>, Refusal> {
+    let now = clock.now().map_err(|e| e.refusal())?;
     let decision = decision::decide(
         verified.request(),
         inputs.policy(),
         inputs.state_revision,
-        clock.now(),
+        now,
     );
     let status = match decision.status {
         DecisionStatus::Allow => UseTimeStatus::Allow,

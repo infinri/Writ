@@ -185,3 +185,78 @@ pub fn reorder_text(v: &Value) -> String {
         other => other.to_json_text(),
     }
 }
+
+/// An in-memory [`crate::store::LedgerStore`] with one-shot transaction faults
+/// and a record of every stored floor value (to prove it is never lowered).
+#[derive(Debug, Default)]
+pub struct MemoryLedger {
+    pub floor: Option<Timestamp>,
+    pub floor_history: Vec<Timestamp>,
+    pub events: Vec<crate::clock::ClockEvent>,
+    pub refusals: Vec<String>,
+    /// The next transaction with this name fails once (`time_floor`, `clock_event`, `audit`).
+    pub fail: Option<&'static str>,
+    /// Reads of the floor fail while set.
+    pub fail_reads: bool,
+}
+
+impl MemoryLedger {
+    fn fault(&mut self, name: &'static str) -> Result<(), crate::store::StoreError> {
+        if self.fail == Some(name) {
+            self.fail = None;
+            return Err(crate::store::StoreError::Unavailable {
+                category: format!("transaction {name}"),
+                code: "SQLITE_IOERR".into(),
+            });
+        }
+        Ok(())
+    }
+
+    pub fn kinds(&self) -> Vec<crate::clock::ClockEventKind> {
+        self.events.iter().map(|e| e.kind).collect()
+    }
+
+    /// `true` when the stored floor never decreased.
+    pub fn floor_never_lowered(&self) -> bool {
+        self.floor_history.windows(2).all(|w| w[0] <= w[1])
+    }
+}
+
+impl crate::store::LedgerStore for MemoryLedger {
+    fn owner_epoch(&self) -> u64 {
+        1
+    }
+
+    fn record_refusal(&mut self, code: &str) -> Result<(), crate::store::StoreError> {
+        self.fault("audit")?;
+        self.refusals.push(code.to_string());
+        Ok(())
+    }
+
+    fn time_floor(&self) -> Result<Option<Timestamp>, crate::store::StoreError> {
+        if self.fail_reads {
+            return Err(crate::store::StoreError::Unavailable {
+                category: "read".into(),
+                code: "SQLITE_IOERR".into(),
+            });
+        }
+        Ok(self.floor)
+    }
+
+    fn raise_time_floor(&mut self, at: Timestamp) -> Result<Timestamp, crate::store::StoreError> {
+        self.fault("time_floor")?;
+        let stored = self.floor.map_or(at, |h| h.max(at));
+        self.floor = Some(stored);
+        self.floor_history.push(stored);
+        Ok(stored)
+    }
+
+    fn record_clock_event(
+        &mut self,
+        event: &crate::clock::ClockEvent,
+    ) -> Result<(), crate::store::StoreError> {
+        self.fault("clock_event")?;
+        self.events.push(event.clone());
+        Ok(())
+    }
+}

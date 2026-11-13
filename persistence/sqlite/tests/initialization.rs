@@ -116,6 +116,10 @@ fn missing_metadata_is_refused() {
             "wrong-version",
             "UPDATE meta SET value = '1' WHERE key = 'schema_version';",
         ),
+        (
+            "previous-version",
+            "UPDATE meta SET value = 'writ-ledger-1' WHERE key = 'schema_version';",
+        ),
     ] {
         let d = tmp(&format!("meta-{name}"));
         let db = d.join("ledger.db");
@@ -138,6 +142,13 @@ fn expected_names_with_wrong_definitions_or_extra_objects_are_refused() {
         ("extra-index", format!("{SCHEMA}CREATE INDEX ix ON audit_refusals (code);")),
         // a missing table
         ("missing-table", format!("{SCHEMA}DROP TABLE adapter_effects;")),
+        // the trusted-time floor without its single-row constraint
+        ("multi-row-floor", SCHEMA.replacen("id       INTEGER PRIMARY KEY CHECK (id = 1)", "id       INTEGER PRIMARY KEY", 1)),
+        // clock events accepting any kind
+        ("open-event-kind", SCHEMA.replacen("kind      TEXT NOT NULL CHECK (kind IN", "kind      TEXT NOT NULL CHECK (1 OR kind IN", 1)),
+        // a writ-ledger-1 ledger (no trusted-time tables)
+        ("missing-floor", format!("{SCHEMA}DROP TABLE time_floor;")),
+        ("missing-clock-events", format!("{SCHEMA}DROP TABLE clock_events;")),
     ];
     for (name, sql) in cases {
         assert_ne!(sql, SCHEMA, "{name}: mutation did not apply");
