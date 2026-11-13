@@ -115,5 +115,83 @@ class Contracts(unittest.TestCase):
         self.assertFalse(ok(e, mutated(e, lambda d: d.__setitem__("mode", "verified"))))
 
 
+AAR_SCHEMA = json.loads((HERE / "authenticated-acceptance-record-1.schema.json").read_text())
+# Produced by the code: the Rust test
+# acceptance::tests::the_schema_example_is_the_record_the_code_produces_and_verifies asserts this file
+# equals the record broker::acceptance signs and that verify_record accepts it.
+AAR_VALID = json.loads((HERE / "examples" / "authenticated-acceptance-record.valid.json").read_text())
+
+
+def aar_ok(doc):
+    return jsonschema.Draft202012Validator(AAR_SCHEMA).is_valid(doc)
+
+
+def aar(fn):
+    d = copy.deepcopy(AAR_VALID)
+    fn(d)
+    return d
+
+
+class AuthenticatedAcceptanceRecord(unittest.TestCase):
+    """authenticated-acceptance-record/1 (D-036 item 1, M3-06 item f). Structural only: MAC, projection
+    digest, unique criterion ids, one evaluation per criterion and the attestation-for-trust-M rule are
+    checked in broker::acceptance::verify_record."""
+
+    def test_schema_is_valid_draft_2020_12_and_the_code_produced_record_validates(self):
+        jsonschema.Draft202012Validator.check_schema(AAR_SCHEMA)
+        self.assertTrue(aar_ok(AAR_VALID))
+        self.assertTrue(aar_ok(aar(lambda d: d.__setitem__("mode", "advisory"))), "advisory is refused semantically")
+        self.assertTrue(aar_ok(aar(lambda d: d["auth"].__setitem__("mac", "A" * 64))), "the verifier accepts either hex case")
+
+    def test_closed_objects_reject_unknown_members(self):
+        for path in ((), ("auth",), ("record",), ("record", "transition")):
+            def add(d, path=path):
+                for k in path:
+                    d = d[k]
+                d["extra"] = 1
+            self.assertFalse(aar_ok(aar(add)), path)
+        self.assertFalse(aar_ok(aar(lambda d: d["evaluations"][0].__setitem__("extra", 1))))
+        self.assertFalse(aar_ok(aar(lambda d: d["record"]["criteria"][0].__setitem__("extra", 1))))
+
+    def test_every_member_is_required(self):
+        for f in list(AAR_VALID):
+            self.assertFalse(aar_ok(aar(lambda d: d.pop(f))), f)
+        for f in list(AAR_VALID["auth"]):
+            self.assertFalse(aar_ok(aar(lambda d: d["auth"].pop(f))), f)
+        for f in list(AAR_VALID["record"]):
+            self.assertFalse(aar_ok(aar(lambda d: d["record"].pop(f))), f)
+        for f in list(AAR_VALID["evaluations"][0]):
+            self.assertFalse(aar_ok(aar(lambda d: d["evaluations"][0].pop(f))), f)
+        for f in list(AAR_VALID["record"]["criteria"][0]):
+            self.assertFalse(aar_ok(aar(lambda d: d["record"]["criteria"][0].pop(f))), f)
+
+    def test_constants_algorithm_and_tag(self):
+        for k, v in (("contract_version", "authenticated-acceptance-record/2"), ("purpose", "writ.runner-attestation.v1"),
+                     ("mode", "verified"), ("issuer", "Acceptance")):
+            self.assertFalse(aar_ok(aar(lambda d: d.__setitem__(k, v))), k)
+        for alg in ("hmac-sha1", "ed25519", "HMAC-SHA256", "none", ""):
+            self.assertFalse(aar_ok(aar(lambda d: d["auth"].__setitem__("alg", alg))), alg)
+        for mac in ("a" * 63, "a" * 65, "zz" * 32, ""):
+            self.assertFalse(aar_ok(aar(lambda d: d["auth"].__setitem__("mac", mac))), mac)
+        self.assertFalse(aar_ok(aar(lambda d: d["record"].__setitem__("contract_version", "m1-draft-2"))))
+
+    def test_field_types_are_strict(self):
+        e = lambda k, v: (lambda d: d["evaluations"][0].__setitem__(k, v))
+        r = lambda k, v: (lambda d: d["record"].__setitem__(k, v))
+        c = lambda k, v: (lambda d: d["record"]["criteria"][0].__setitem__(k, v))
+        for fn in (e("attestation_id", ""), e("attestation_id", 1), e("registry_revision", -1), e("registry_revision", 2 ** 53),
+                   e("evaluator_version", ""), e("evaluator_version", "1 0"), e("evidence_digests", ["sha256:" + "B" * 64]),
+                   e("criterion_id", "Build"), e("evaluator_id", "1runner"),
+                   r("state_revision", -1), r("acceptance_policy_version", "v3"), r("status", "verified"),
+                   r("issued_at", "2026-11-07T10:00:00+00:00"), r("criteria", []), r("workflow_id", "1wf"),
+                   c("status", "passed"), c("evaluator_trust", "X"), c("mandatory", "true"), c("required_class", "manual")):
+            self.assertFalse(aar_ok(aar(fn)))
+        self.assertFalse(aar_ok(aar(lambda d: d.__setitem__("evaluations", []))))
+
+    def test_mandatory_model_assisted_criterion_is_refused(self):
+        self.assertFalse(aar_ok(aar(lambda d: d["record"]["criteria"][0].__setitem__("required_class", "model_assisted"))))
+        self.assertTrue(aar_ok(aar(lambda d: d["record"]["criteria"][0].update(required_class="model_assisted", mandatory=False))))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -617,3 +617,19 @@ fn the_attestation_must_bind_exactly_this_promotion() {
         Err(AcceptanceCode::AttestationBindingMismatch)
     );
 }
+
+/// M3-06 item f: the checked-in example of
+/// `docs/contracts/proposed/authenticated-acceptance-record-1.schema.json`
+/// (validated against that schema by
+/// `docs/contracts/proposed/test_proposed_contracts.py`) is exactly the record
+/// this code produces, and the verifier accepts it.
+#[test]
+fn the_schema_example_is_the_record_the_code_produces_and_verifies() {
+    let text = include_str!(
+        "../../../docs/contracts/proposed/examples/authenticated-acceptance-record.valid.json"
+    );
+    let example = parse(text.as_bytes()).unwrap();
+    let produced = json::canonical(&good_record()).unwrap();
+    assert_eq!(json::canonical(&example).unwrap(), produced, "{produced}");
+    assert!(verify_record(&example, &record_keys()).is_ok());
+}

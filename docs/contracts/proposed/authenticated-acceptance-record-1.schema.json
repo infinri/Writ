@@ -1,0 +1,325 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://writ.dev/contracts/proposed/authenticated-acceptance-record-1.schema.json",
+  "title": "Authenticated AcceptanceRecord authenticated-acceptance-record/1 (PROPOSED, M3-06 item f, D-036 item 1; implemented in broker::acceptance)",
+  "description": "Structural check only. broker::acceptance::verify_record also checks, in order: key lookup and HMAC-SHA256 over the UTF-8 D-006 canonical JSON of the document without auth.mac; the record projection through the kernel contract (strict calendar times, unique criterion ids); exactly one evaluation per record criterion, each naming that criterion's evaluator, with attestation_id non-null exactly when the criterion's evaluator_trust is M; mode advisory refused (INV-39). A valid MAC authenticates the issuer only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "auth",
+    "contract_version",
+    "evaluations",
+    "issuer",
+    "mode",
+    "purpose",
+    "record"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "authenticated-acceptance-record/1"
+    },
+    "purpose": {
+      "const": "writ.acceptance-record.v1"
+    },
+    "issuer": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+    },
+    "mode": {
+      "enum": [
+        "governed",
+        "advisory"
+      ],
+      "description": "INV-39: advisory is refused (ACCEPTANCE_ADVISORY) after the MAC and projection verify."
+    },
+    "record": {
+      "$ref": "#/$defs/acceptance_record"
+    },
+    "evaluations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/evaluation"
+      },
+      "description": "Exactly one per record criterion (same length, every criterion_id once, evaluator_id equal to the criterion's); checked in code, not expressible here."
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "alg",
+        "key_id",
+        "mac"
+      ],
+      "properties": {
+        "alg": {
+          "const": "hmac-sha256"
+        },
+        "key_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        },
+        "mac": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$",
+          "description": "HMAC-SHA256 tag as 64 hexadecimal digits (the verifier accepts either case; auth.mac is excluded from the MAC bytes)."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "time": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+      "description": "Structural only; the kernel's Timestamp::parse_strict also requires a real calendar time."
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attestation_id",
+        "criterion_id",
+        "environment_digest",
+        "evaluation_id",
+        "evaluator_id",
+        "evaluator_version",
+        "evidence_digests",
+        "implementation_digest",
+        "registry_revision"
+      ],
+      "properties": {
+        "criterion_id": {
+          "$ref": "#/$defs/name"
+        },
+        "evaluation_id": {
+          "$ref": "#/$defs/id"
+        },
+        "evaluator_id": {
+          "$ref": "#/$defs/name"
+        },
+        "evaluator_version": {
+          "type": "string",
+          "pattern": "^[!-~]{1,64}$"
+        },
+        "implementation_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "environment_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "registry_revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "attestation_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Non-null exactly when the record criterion's evaluator_trust is M (checked in code)."
+        },
+        "evidence_digests": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/digest"
+          },
+          "description": "Bound, not resolved (M7). May be empty; duplicates are not refused by the code."
+        }
+      }
+    },
+    "criterion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "criterion_id",
+        "evaluator_id",
+        "evaluator_trust",
+        "fresh_until",
+        "mandatory",
+        "required_class",
+        "status"
+      ],
+      "properties": {
+        "criterion_id": {
+          "$ref": "#/$defs/name"
+        },
+        "mandatory": {
+          "type": "boolean"
+        },
+        "required_class": {
+          "enum": [
+            "mechanical",
+            "evidence",
+            "human",
+            "model_assisted"
+          ]
+        },
+        "status": {
+          "enum": [
+            "pass",
+            "fail",
+            "unknown",
+            "stale",
+            "waived"
+          ]
+        },
+        "evaluator_id": {
+          "$ref": "#/$defs/name"
+        },
+        "evaluator_trust": {
+          "enum": [
+            "U",
+            "MA",
+            "M",
+            "E",
+            "H"
+          ]
+        },
+        "fresh_until": {
+          "$ref": "#/$defs/time"
+        }
+      },
+      "if": {
+        "properties": {
+          "mandatory": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "required_class": {
+            "not": {
+              "const": "model_assisted"
+            }
+          }
+        }
+      },
+      "description": "A mandatory model-assisted criterion is refused (D-017)."
+    },
+    "acceptance_record": {
+      "description": "The kernel AcceptanceRecord contract (writ_kernel::contracts::AcceptanceRecord::from_value), unchanged. record_digest is the unkeyed D-006 digest of the record without record_digest (consistency check in code); criterion ids are unique (checked in code).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "acceptance_policy_bundle_sha",
+        "acceptance_policy_id",
+        "acceptance_policy_version",
+        "acceptance_record_id",
+        "artifact_digest",
+        "artifact_snapshot_id",
+        "contract_version",
+        "criteria",
+        "expires_at",
+        "issued_at",
+        "project_id",
+        "record_digest",
+        "state_revision",
+        "status",
+        "task_id",
+        "tenant_id",
+        "transition",
+        "workflow_id"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "m1-draft-3"
+        },
+        "acceptance_record_id": {
+          "$ref": "#/$defs/id"
+        },
+        "tenant_id": {
+          "$ref": "#/$defs/id"
+        },
+        "project_id": {
+          "$ref": "#/$defs/id"
+        },
+        "task_id": {
+          "$ref": "#/$defs/id"
+        },
+        "workflow_id": {
+          "$ref": "#/$defs/name"
+        },
+        "transition": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "from_state",
+            "to_state"
+          ],
+          "properties": {
+            "from_state": {
+              "$ref": "#/$defs/name"
+            },
+            "to_state": {
+              "$ref": "#/$defs/name"
+            }
+          }
+        },
+        "artifact_snapshot_id": {
+          "$ref": "#/$defs/id"
+        },
+        "artifact_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "acceptance_policy_id": {
+          "$ref": "#/$defs/id"
+        },
+        "acceptance_policy_version": {
+          "type": "string",
+          "pattern": "^[0-9]{1,9}$"
+        },
+        "acceptance_policy_bundle_sha": {
+          "$ref": "#/$defs/digest"
+        },
+        "state_revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "status": {
+          "enum": [
+            "accepted",
+            "rejected",
+            "incomplete",
+            "needs_human_review"
+          ]
+        },
+        "issued_at": {
+          "$ref": "#/$defs/time"
+        },
+        "expires_at": {
+          "$ref": "#/$defs/time"
+        },
+        "criteria": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/criterion"
+          }
+        },
+        "record_digest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    }
+  }
+}

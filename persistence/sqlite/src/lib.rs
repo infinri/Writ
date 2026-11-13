@@ -1348,6 +1348,9 @@ mod d035_tests;
 mod transition_tests;
 
 #[cfg(test)]
+mod d037_tests;
+
+#[cfg(test)]
 mod runner_tests;
 
 #[cfg(test)]
