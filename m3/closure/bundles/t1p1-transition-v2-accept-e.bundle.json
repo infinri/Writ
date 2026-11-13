@@ -1,0 +1,125 @@
+{
+  "contract_version": "2.0",
+  "bundle_id": "m3c-t1p1-transition",
+  "version": "0.4.0-m3c.3",
+  "publisher": "writ-m3-closure-harness",
+  "description": "M3-08 closure harness bundle (D-037 item 2; test only, never a production policy, not signed). Derived from m1/fixtures/transition/m1-transition.bundle.json: scope fixture-tenant/fixture-project replaced by t1/p1, only the actions the frozen transition scenarios use; see m3/closure/bindings.md. Replacement bundle activated by activate_authorization_bundle whose protection names acceptance-policy bundle sha256:eeee... (sc-08b, sc-59 and their companions).",
+  "known_capabilities": [
+    "repository.publish",
+    "workflow.transition"
+  ],
+  "trusted_principal_issuers": [
+    "writ-host-adapter:fixture"
+  ],
+  "statements": [
+    {
+      "statement_id": "permit-accept",
+      "effect": "permit",
+      "action_kinds": [
+        "workflow.transition"
+      ],
+      "resource_prefixes": [
+        "workflow:t1/p1/"
+      ],
+      "from_states": [
+        "verifying"
+      ],
+      "to_states": [
+        "accepted"
+      ],
+      "reason_code": "ACCEPT_TRANSITION_PERMITTED"
+    },
+    {
+      "statement_id": "permit-start-verification",
+      "effect": "permit",
+      "action_kinds": [
+        "workflow.transition"
+      ],
+      "resource_prefixes": [
+        "workflow:t1/p1/"
+      ],
+      "from_states": [
+        "draft",
+        "planning"
+      ],
+      "to_states": [
+        "verifying"
+      ],
+      "reason_code": "START_VERIFICATION_PERMITTED"
+    },
+    {
+      "statement_id": "permit-review",
+      "effect": "permit",
+      "action_kinds": [
+        "workflow.transition"
+      ],
+      "resource_prefixes": [
+        "workflow:t1/p1/"
+      ],
+      "from_states": [
+        "verifying"
+      ],
+      "to_states": [
+        "reviewing"
+      ],
+      "reason_code": "REVIEW_TRANSITION_PERMITTED"
+    },
+    {
+      "statement_id": "permit-accept-after-review",
+      "effect": "permit",
+      "action_kinds": [
+        "workflow.transition"
+      ],
+      "resource_prefixes": [
+        "workflow:t1/p1/"
+      ],
+      "from_states": [
+        "reviewing"
+      ],
+      "to_states": [
+        "accepted"
+      ],
+      "reason_code": "ACCEPT_AFTER_REVIEW_PERMITTED"
+    },
+    {
+      "statement_id": "permit-deploy",
+      "effect": "permit",
+      "action_kinds": [
+        "workflow.transition"
+      ],
+      "resource_prefixes": [
+        "workflow:t1/p1/"
+      ],
+      "to_states": [
+        "deployed"
+      ],
+      "reason_code": "DEPLOY_TRANSITION_PERMITTED"
+    },
+    {
+      "statement_id": "permit-publish-releases",
+      "effect": "permit",
+      "action_kinds": [
+        "repository.publish"
+      ],
+      "resource_prefixes": [
+        "repository:t1/p1/releases"
+      ],
+      "reason_code": "PUBLISH_PERMITTED"
+    }
+  ],
+  "publisher_signature": null,
+  "workflow_protection": {
+    "acceptance_policy_bundle_sha": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "protected_to_states": [
+      "accepted",
+      "deployed",
+      "released"
+    ],
+    "protected_transitions": [
+      {
+        "from_state": "draft",
+        "to_state": "verifying"
+      }
+    ]
+  }
+}
