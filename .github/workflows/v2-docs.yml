@@ -56,6 +56,7 @@ jobs:
       - name: Dependency gate (allow-list, licences, OSV advisories) and SBOM
         run: |
           python3 -m unittest discover -s kernel/tools -v
+          python3 -m unittest discover -s m3/closure -v
           python3 kernel/tools/check_deps.py --osv --sbom kernel-sbom.json
       - uses: actions/upload-artifact@v4
         with:

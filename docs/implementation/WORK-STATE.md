@@ -1,6 +1,6 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-13 (checkpoint before M3-07; M3 in progress, NOT complete) · **Branch:** v2/architecture-rebuild · **Milestone:** M3. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md) section "Current recovery state".
+**Last updated:** 2026-11-13 (after M3-07; M3 in progress, NOT complete; M3-08 blocked on owner decisions) · **Branch:** v2/architecture-rebuild · **Milestone:** M3. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md) section "Current recovery state".
 
 ## Current
 
@@ -8,8 +8,9 @@
 - **Production crates:** `writ-kernel` (M2, accepted, unchanged since), `writ-broker` and `writ-ledger-sqlite` (M3-00..M3-05 and D-035: ingress, use-time authorization, policy gate, trusted time, approvals with provenance, grants, execute lifecycle with revalidation, owned and ledger-bound effect store, evidence-based reconciliation, transition service with authenticated records, administration and effect prerequisites; evidence E-058..E-068). Schemas: ledger `writ-ledger-5`, effects `writ-effects-2`. M1 prototypes frozen as comparison material.
 - **Language:** **Rust** selected (ADR-0002 ACCEPTED 2026-11-12, D-030). Go prototype kept as comparison material only.
 - **Decisions:** D-035 and D-036 approved and implemented; not to be requested again. ADR-0008 APPROVED IN PRINCIPLE.
-- **Open in M3:** M3-06 integration items, M3-07 (runner, sandbox, inherited descriptors and restart coordination), M3-08 (127-case closure with exact exceptions, differential, chaos). See SESSION-HANDOFF section 2.
-- **Next task:** M3-07, then the remaining M3-06 integration, then M3-08 (SESSION-HANDOFF section 6).
+- **M3-07 implemented (E-069):** runner, process lifecycle gate, unlock-before-close ownership locks; production configuration refuses every job until a contained sandbox exists (M5). Exact-SHA CI: see SESSION-HANDOFF section 1.
+- **Open in M3:** M3-06 integration items (b)..(f); M3-08 closure gate built and failing (E-070), blocked on owner questions OQ-1..OQ-12; differential, property, chaos suites. See SESSION-HANDOFF section 2.
+- **Next task:** owner decisions on OQ-1..OQ-12; meanwhile the unblocked items in SESSION-HANDOFF section 6.
 - **Enterprise direction:** [readiness plan](../security/ENTERPRISE-READINESS.md), ENT-OWNER-01 and ENT-00..ENT-08. PostgreSQL targets enterprise operational state, SQLite remains local/offline; durable multi-worker coordination requires separate future acceptance. Controls, SOC 2 scope and any examination remain planned, not implemented or attested.
 - **Historical benchmarks (M1, complete):** three official M1-06 run sets plus the process-concurrency correction (E-046, E-052, E-054) and real-edit M1-07 build timings (E-053); bundles in `m1/bench/evidence/`.
 
@@ -45,8 +46,8 @@ SANDBOX PREPARED / LIVE VERIFICATION NOT EXECUTED; sandbox **torn down** 2026-11
 
 ## Last verification
 
-Exact-SHA CI on code baseline `6be251c`: run 43465393620, all 6 jobs success (2026-11-13). Local: workspace tests 310 passed 3 times, kill tests 3/3, kernel parity 320/320, dependency gate 0 problems (E-068). Historical: `a91af1d`, run 42943984397, 5 jobs (M1 measurements; superseded).
+Local (2026-11-13, integrated M3-07 tree): workspace tests 360 passed 3 times (4 ignored), kill tests 4/4 alone, process-lifecycle stress 3/3, kernel parity 320/320, dependency gate 0 problems, closure self-tests 10 OK, docs check OK (E-069, E-070). Exact-SHA CI of the M3-07 commit: SESSION-HANDOFF section 1. Previous: `82971fd` run 43466394626 and `6be251c` run 43465393620, each 6/6.
 
 ## Next exact action
 
-Follow SESSION-HANDOFF section 6: recover and verify state, then design and implement M3-07 (mechanical runner as a sandboxed broker effect with attestations, inherited-descriptor handling and broker/ledger restart coordination in production code), then the remaining M3-06 integration, then M3-08. The earlier M1-08 instruction ("perform only the targeted M1-08 checks") is historical and complete (E-052..E-055).
+Owner decisions on M3-08 questions OQ-1..OQ-12 ([M3-08-CLOSURE-MAP](M3-08-CLOSURE-MAP.md)); meanwhile the unblocked items in SESSION-HANDOFF section 6 (M3-06 (b) and (f) where no new semantics are needed; M3-08 differential, property, chaos and storage-failure suites). Historical instructions (M1-08, M3-07 design) are complete.
