@@ -62,11 +62,10 @@ KIND_KEYS = {
     "adapted": COMMON_KEYS,
     "difference": COMMON_KEYS | {"steps", "final_members", "actual"},
     "deferred": COMMON_KEYS | {"steps", "final_members", "actual", "carry_to",
-                               "intended_assertion", "acceptance_criteria"},
+                               "intended_assertion", "acceptance_criteria",
+                               # D-038 item 6
+                               "blocking_dependency", "observed_m3_refusal", "companions"},
 }
-# D-038 item 6 deferred-entry fields; accepted while the entries are drafted (lead integration
-# makes them required).
-OPTIONAL_KEYS = {"deferred": {"blocking_dependency", "observed_m3_refusal", "companions"}}
 CASE_ID = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 ENV_LOG = "WRIT_M3_ADAPTATIONS"
 
@@ -145,7 +144,7 @@ def validate_entries(sets: dict, entries: list) -> tuple[dict, list]:
         if kind not in KIND_KEYS:
             problems.append(f"{where}: unknown kind {kind!r}")
             continue
-        if not KIND_KEYS[kind] <= set(e) <= KIND_KEYS[kind] | OPTIONAL_KEYS.get(kind, set()):
+        if set(e) != KIND_KEYS[kind]:
             problems.append(f"{where}: members {sorted(set(e) ^ KIND_KEYS[kind])} wrong for kind {kind}")
             continue
         if not isinstance(e["case"], str) or not CASE_ID.match(e["case"]):
@@ -179,7 +178,7 @@ def validate_entries(sets: dict, entries: list) -> tuple[dict, list]:
                 if e["final_members"] != members:
                     problems.append(f"{where}: final_members {e['final_members']} but the actual differs in {members}")
             if kind == "deferred":
-                for k in ("carry_to", "intended_assertion", "acceptance_criteria"):
+                for k in ("carry_to", "intended_assertion", "acceptance_criteria", "blocking_dependency"):
                     if not isinstance(e[k], str) or not e[k].strip():
                         problems.append(f"{where}: empty {k}")
                 # The only approved carry-over is required human signoff to M4 (D-037 item 4):
@@ -195,6 +194,12 @@ def validate_entries(sets: dict, entries: list) -> tuple[dict, list]:
                         and isinstance(step.get("refused"), dict) and set(step["refused"]) == {HUMAN_CODE}))
                 if not human:
                     problems.append(f"{where}: a deferral's first differing step must refuse {HUMAN_CODE}")
+                # D-038 item 6: the exact observed M3 refusal is the first differing step's answer.
+                if e["observed_m3_refusal"] != step:
+                    problems.append(f"{where}: observed_m3_refusal is not the first differing step's answer")
+                comps = e["companions"]
+                if not isinstance(comps, list) or not all(isinstance(c, str) for c in comps):
+                    problems.append(f"{where}: companions must be a list of case ids")
         listed[key] = e
     return listed, problems
 
@@ -377,7 +382,15 @@ def coverage_problems(spec: dict, sets: dict) -> list:
             problems.append(f"case id {cid} appears in {seen[cid]} and {name}")
         seen[cid] = name
     waivers = spec.get("companion_waivers", {})
+    by_case = {}
+    for comp in spec.get("companions", []):
+        if comp["kind"] == "mechanical-companion":
+            for c in parity.load_cases(HERE / comp["file"]):
+                by_case.setdefault(c.get("meta", {}).get("companion_of"), []).append(c["id"])
     for e in spec["exceptions"]:
+        # D-038 item 6: a deferred entry lists exactly the companions that name it.
+        if e.get("kind") == "deferred" and sorted(e.get("companions") or []) != sorted(by_case.get(e.get("case"), [])):
+            problems.append(f"deferred {e.get('case')} companions do not match the companion sets")
         if e.get("kind") == "deferred" and e.get("case") not in companions_of:
             reason = waivers.get(e.get("case"))
             if not isinstance(reason, str) or not reason.strip():

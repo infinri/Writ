@@ -35,7 +35,9 @@ DIFF_B = {"set": "s", "case": "b", "kind": "difference", "decision": "D-test", "
 DEFER_C = {"set": "s", "case": "c", "kind": "deferred", "decision": "D-037 item 4", "reason": "human",
            "adaptations": ["seeded-preconditions"], "steps": [0], "final_members": ["refusals"],
            "actual": HUMAN, "carry_to": "M4", "intended_assertion": "commits with signoff",
-           "acceptance_criteria": "authenticated human signoff accepted"}
+           "acceptance_criteria": "authenticated human signoff accepted",
+           "blocking_dependency": "M4 authenticated human signoff",
+           "observed_m3_refusal": HUMAN["steps"][0], "companions": []}
 ADAPT_A = {"set": "s", "case": "a", "kind": "adapted", "decision": "D-037 item 1", "reason": "seeded",
            "adaptations": ["seeded-preconditions"]}
 NONE = {"a": [], "b": [], "c": []}
@@ -166,11 +168,17 @@ class EntryValidation(unittest.TestCase):
         self.assertTrue(self.problems(dict(DIFF_B, actual=REFUSED, steps=[], final_members=[])))
 
     def test_deferral_needs_its_carry_over_fields(self):
-        for k in ("carry_to", "intended_assertion", "acceptance_criteria"):
+        for k in ("carry_to", "intended_assertion", "acceptance_criteria", "blocking_dependency"):
             self.assertTrue(self.problems(dict(DEFER_C, **{k: ""})), k)
-        bad = dict(DEFER_C)
-        del bad["acceptance_criteria"]
-        self.assertTrue(self.problems(bad))
+        for k in ("acceptance_criteria", "blocking_dependency", "observed_m3_refusal", "companions"):
+            bad = dict(DEFER_C)
+            del bad[k]
+            self.assertTrue(self.problems(bad), k)
+
+    def test_deferral_observed_refusal_is_the_exact_first_differing_answer(self):
+        self.assertFalse(self.problems(DEFER_C))
+        self.assertTrue(self.problems(dict(DEFER_C, observed_m3_refusal={"result": "refused", "code": "DEFAULT_DENY"})))
+        self.assertTrue(self.problems(dict(DEFER_C, companions="m3c-01")))
 
     def test_deferral_must_be_the_m4_human_signoff_refusal(self):
         self.assertTrue(self.problems(dict(DEFER_C, decision="D-036 item 2")))
@@ -209,20 +217,26 @@ for raw in sys.stdin:
 
 
 class Coverage(unittest.TestCase):
-    def spec(self, d, lines, pinned, waivers=None, deferred=True):
+    def spec(self, d, lines, pinned, waivers=None, deferred=True, listed=None):
         f = Path(d) / "comp.jsonl"
         f.write_text("".join(json.dumps(x) + "\n" for x in lines))
         return {"companions": [{"name": "comp", "file": str(f), "command": "x",
                                 "kind": "mechanical-companion", "cases": pinned}],
-                "companion_waivers": waivers or {}, "exceptions": [DEFER_C] if deferred else []}
+                "companion_waivers": waivers or {},
+                "exceptions": [dict(DEFER_C, companions=listed or [])] if deferred else []}
 
     def comp(self, cid, of):
         return dict(case(cid, OK_STEP), meta={"companion_of": of})
 
     def test_deferred_case_needs_a_companion_or_waiver(self):
         with tempfile.TemporaryDirectory() as d:
-            ok = self.spec(d, [self.comp("m3c-1", "c")], ["m3c-1"])
+            ok = self.spec(d, [self.comp("m3c-1", "c")], ["m3c-1"], listed=["m3c-1"])
             self.assertEqual(check.coverage_problems(ok, SETS), [])
+            # D-038 item 6: the entry lists exactly the companions that name it
+            unlisted = self.spec(d, [self.comp("m3c-1", "c")], ["m3c-1"])
+            self.assertTrue(check.coverage_problems(unlisted, SETS))
+            wrong = self.spec(d, [self.comp("m3c-1", "c")], ["m3c-1"], listed=["m3c-1", "m3c-9"])
+            self.assertTrue(check.coverage_problems(wrong, SETS))
             none = self.spec(d, [self.comp("m3c-1", "a")], ["m3c-1"])
             self.assertTrue(check.coverage_problems(none, SETS))
             waived = self.spec(d, [self.comp("m3c-1", "a")], ["m3c-1"], {"c": "documented reason"})
