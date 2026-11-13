@@ -350,7 +350,7 @@ impl FakeSandbox {
     fn new() -> FakeSandbox {
         FakeSandbox {
             guarantees: Mutex::new(Ok(
-                RunnerRequirements::uncontained_for_disposable_tests().sandbox
+                RunnerRequirements::uncontained_for_disposable_tests().sandbox()
             )),
             result: Mutex::new(Ok(JobOutput {
                 exit_status: 0,
@@ -903,4 +903,28 @@ fn produced_attestations_name_digests_never_supplied_by_the_request() {
             .and_then(|c| c.get("command_digest"))
             .and_then(Value::as_str)
     );
+}
+
+#[test]
+fn command_digest_refuses_ambiguous_environments() {
+    let with = |env: &[(&str, &str)]| RegisteredCommand {
+        env: env
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        ..command()
+    };
+    assert!(with(&[("A", "1"), ("B", "2")]).digest().is_some());
+    assert_eq!(
+        with(&[("A", "1"), ("B", "2")]).digest(),
+        with(&[("B", "2"), ("A", "1")]).digest()
+    );
+    for bad in [
+        &[("A", "1"), ("A", "2")][..],
+        &[("", "1")],
+        &[("A=B", "1")],
+        &[("A\0", "1")],
+    ] {
+        assert_eq!(with(bad).digest(), None, "{bad:?}");
+    }
 }

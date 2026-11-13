@@ -60,8 +60,21 @@ pub struct RegisteredCommand {
 
 impl RegisteredCommand {
     /// The `writ-command/1` digest (module documentation); `None` if a value
-    /// is outside the D-006 domain.
+    /// is outside the D-006 domain or an environment name is empty, contains
+    /// `=` or NUL, or occurs twice (a duplicate would make two different
+    /// environments share one digest). A `#!` script's interpreter is not
+    /// covered by this digest; with the uncontained local profile it is the
+    /// host's.
     pub fn digest(&self) -> Option<String> {
+        let mut names: Vec<&str> = self.env.iter().map(|(k, _)| k.as_str()).collect();
+        names.sort_unstable();
+        if names.windows(2).any(|w| w[0] == w[1])
+            || names
+                .iter()
+                .any(|n| n.is_empty() || n.contains('=') || n.contains('\0'))
+        {
+            return None;
+        }
         let mut env = self.env.clone();
         env.sort();
         let doc = json::obj([
@@ -220,8 +233,10 @@ impl SandboxGuarantees {
 /// The guarantees the runner requires before it runs anything.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RunnerRequirements {
-    /// Required sandbox guarantees.
-    pub sandbox: SandboxGuarantees,
+    /// Required sandbox guarantees (private: the only constructors are
+    /// [`RunnerRequirements::production`] and, in test builds, the uncontained
+    /// test profile).
+    sandbox: SandboxGuarantees,
 }
 
 impl RunnerRequirements {
@@ -239,7 +254,13 @@ impl RunnerRequirements {
     /// sandbox without filesystem, network, process-tree or resource
     /// containment. Attestations produced under it bind the sandbox's
     /// environment digest, so a registry entry published for a contained
-    /// environment never accepts them.
+    /// environment never accepts them. A job run under it has the broker's
+    /// full user privileges, including over the ledger, store and key
+    /// material, so it is compiled only for the broker's own tests and for
+    /// crates that enable the `uncontained-test-runner` feature, which only
+    /// `writ-ledger-sqlite` does, as a dev-dependency (never in a normal
+    /// build).
+    #[cfg(any(test, feature = "uncontained-test-runner"))]
     pub const fn uncontained_for_disposable_tests() -> RunnerRequirements {
         RunnerRequirements {
             sandbox: SandboxGuarantees {
@@ -251,6 +272,11 @@ impl RunnerRequirements {
                 bounded: true,
             },
         }
+    }
+
+    /// The required sandbox guarantees.
+    pub const fn sandbox(&self) -> SandboxGuarantees {
+        self.sandbox
     }
 }
 

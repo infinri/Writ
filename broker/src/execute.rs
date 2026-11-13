@@ -90,7 +90,14 @@
 //! T-adapter and `present_permit`) and every other kind to the controlled
 //! effect adapter; reconciliation reads the evidence of both (a permit id
 //! with a record in both is an integrity failure). Without a runner, a runner
-//! request is `REQUEST_SCOPE_MISMATCH` before anything is reserved.
+//! request is `REQUEST_SCOPE_MISMATCH` before anything is reserved. Cost: a
+//! runner job runs inside T-adapter, so the shared policy gate and the
+//! workflow lock are held for the job's whole wall time (bounded by its
+//! `Limits`); administration, policy activation and reconciliation (the
+//! exclusive gate) and promotions of that workflow wait for it, which is what
+//! keeps the attested state from changing during the run (D-036). A failure
+//! of either store makes reconciliation fail closed for every receipt, since
+//! the evidence of both is read.
 //!
 //! **Restart** (D-020): all of the above state is in the ledger and the effect
 //! store; a new broker over the reopened ledger resumes a `reserved` receipt
@@ -813,9 +820,11 @@ where
     /// gate, a read-only adapter transaction verifies the permit: a storage
     /// failure is `LEDGER_UNAVAILABLE` and takes precedence over every permit
     /// check (D-025 B, D-035 item 4); then the permit refusals in their
-    /// order; a consumed permit is `PERMIT_REPLAYED`; an unconsumed one
-    /// belongs to a `dispatched` or `unknown_reconcile` receipt and is
-    /// `RECONCILIATION_REQUIRED`. The answer is audited.
+    /// order; a consumed permit with a recorded outcome is `PERMIT_REPLAYED`;
+    /// an unconsumed one belongs to a `dispatched` or `unknown_reconcile`
+    /// receipt and is `RECONCILIATION_REQUIRED`, as is a runner permit
+    /// consumed by a run whose outcome was never recorded (no completion
+    /// evidence). The answer is audited.
     pub fn present_permit(&self, permit: &Permit, request: &Value) -> Refusal {
         let refusal = {
             let shared = self.grants.active.shared();

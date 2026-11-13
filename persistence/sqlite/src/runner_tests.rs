@@ -222,7 +222,7 @@ struct Fake {
 
 impl Sandbox for Fake {
     fn guarantees(&self) -> Result<SandboxGuarantees, SandboxUnavailable> {
-        Ok(RunnerRequirements::uncontained_for_disposable_tests().sandbox)
+        Ok(RunnerRequirements::uncontained_for_disposable_tests().sandbox())
     }
 
     fn environment_digest(&self) -> String {

@@ -52,8 +52,8 @@ fn guarantees_are_honest_and_the_profile_digest_binds_them() {
     assert!(g.bounded && g.descriptors_closed);
     assert!(!g.filesystem_isolated && !g.network_isolated);
     assert!(!g.process_tree_contained && !g.resource_limited);
-    assert!(g.satisfies(&RunnerRequirements::uncontained_for_disposable_tests().sandbox));
-    assert!(!g.satisfies(&RunnerRequirements::production().sandbox));
+    assert!(g.satisfies(&RunnerRequirements::uncontained_for_disposable_tests().sandbox()));
+    assert!(!g.satisfies(&RunnerRequirements::production().sandbox()));
     let expected = json::digest(&json::obj([
         ("contract", json::s("writ-sandbox-profile/1")),
         ("profile", json::s("local-process-uncontained/1")),

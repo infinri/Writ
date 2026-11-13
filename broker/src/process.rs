@@ -52,8 +52,13 @@
 //!   process-group kill needs a dependency change). A descendant that keeps a pipe open
 //!   delays end of output until the deadline (the job then times out) and the reader
 //!   threads end when it exits.
-//! - A child left running by a killed broker cannot produce an attestation: only the
-//!   broker holds the runner attestation key, and its output is read only by the broker.
+//! - A job run by this uncontained profile has the broker's full user privileges: it can
+//!   read anything the broker's user can (including key material held in files or the
+//!   environment of other processes of that user) and write the ledger, store and work
+//!   files directly (the `.owner` lock is advisory). A child left running by a killed
+//!   broker is not stopped. This is why [`crate::runner::RunnerRequirements::production`]
+//!   refuses this sandbox; the attestation key itself is held only in broker memory, but
+//!   that is not a containment guarantee.
 //! - Descriptors: every descriptor this workspace opens (standard library and SQLite) is
 //!   close-on-exec. A descriptor inherited without close-on-exec (for example from the
 //!   parent of this process) cannot be closed in the child without `unsafe` code, so the

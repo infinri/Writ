@@ -14,6 +14,12 @@ hmac = { version = "=0.12.1", default-features = false }
 sha2 = { version = "=0.10.8", default-features = false }
 rustix = { version = "=1.1.6", default-features = false, features = ["time"] }
 
+[features]
+# Test-only: compiles `RunnerRequirements::uncontained_for_disposable_tests` (an unsupported
+# configuration; never enabled in a normal build). Enabled only by writ-ledger-sqlite's
+# dev-dependency on this crate.
+uncontained-test-runner = []
+
 [dev-dependencies]
 
 [lints]
