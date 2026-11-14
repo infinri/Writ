@@ -1,25 +1,34 @@
 //! `broker-scenario` (m1/fixtures/broker/BROKER.md) on the production broker.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, Barrier};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Barrier, Mutex};
 
+use writ_broker::approval_store::{
+    approval_request_for, CeremonyBegin, CeremonyFinish, CeremonyOp, CeremonyResult, NewEnrollment,
+    NewRole, APPROVAL_GRANT_TTL_SECONDS,
+};
+use writ_broker::authorize::{authorize, UseTimeStatus};
+use writ_broker::clock::ObservedTime;
 use writ_broker::execute::Executed;
-use writ_broker::grants::{Approval, ApprovalPresentation, GrantLabel, Replay, Verdict};
+use writ_broker::grants::{GrantLabel, Replay};
+use writ_broker::human::{Permission, PrincipalKind, SubjectId};
 use writ_broker::ingress::{verify_ingress, Seal};
 use writ_broker::keys::{IngressKey, MemoryKeyRing, PermitKey};
 use writ_broker::permit::Permit;
 use writ_broker::policy::PolicyState;
 use writ_broker::refusal::Refusal;
+use writ_broker::store::ExecuteLedger;
 use writ_broker::store::Timestamp;
 use writ_broker::writ_kernel::contracts::StateRevision;
 use writ_broker::writ_kernel::json::{self, Map, Value};
 use writ_broker::writ_kernel::policy::load_bundle;
 
 use crate::common::{
-    adapter_error, int, malformed, pairs, production_difference, refused, result, text, unhex,
-    unsupported, with_storage_fault, ChannelAuthority, Labels, Point, ProdBroker, StorageFault,
-    World, ADAPTER_SEALED, C1, C2, C6, C7, C8, DIFFERENCE,
+    adapter_error, int, malformed, pairs, production_difference, refused, register, result,
+    test_credential, text, unhex, unsupported, with_storage_fault, ChannelVerifier, Labels, Point,
+    ProdBroker, StorageFault, World, ADAPTER_SEALED, ADMIN_RESPONSE, C1, C2, C6, C7, C8,
+    DIFFERENCE, LISTENER_CHANNEL, TEST_ADMIN, TEST_SUBJECT_ISSUER,
 };
 
 const BROKER_STATE: [&str; 7] = [
@@ -149,7 +158,11 @@ struct BrokerCase {
     bundle: Option<Value>,
     policy_up: bool,
     revision: StateRevision,
-    authority: ChannelAuthority,
+    verifier: ChannelVerifier,
+    /// Whether the case's test administrator and fixture humans are enrolled.
+    enrolled: AtomicBool,
+    /// Fixture grant reference to the ledger-assigned M4 grant label (`approval/<id>`).
+    grants: Mutex<BTreeMap<String, GrantLabel>>,
     ingress: BTreeMap<String, Vec<u8>>,
     permits: BTreeMap<usize, Permit>,
 }
@@ -194,7 +207,15 @@ impl BrokerCase {
         } else {
             PolicyState::Absent
         };
-        let world = World::create(policy, now, permit_key, ring, labels.clone())?;
+        let admin = SubjectId::new(TEST_SUBJECT_ISSUER, TEST_ADMIN);
+        let world = World::create(
+            policy,
+            now,
+            permit_key,
+            ring,
+            labels.clone(),
+            (&admin, &test_credential(TEST_ADMIN)),
+        )?;
         world
             .stores()?
             .ledger
@@ -205,10 +226,13 @@ impl BrokerCase {
             bundle,
             policy_up,
             revision,
-            authority: ChannelAuthority {
+            verifier: ChannelVerifier {
                 channels: initial.get("channels").cloned().unwrap_or(Value::Null),
                 labels,
+                nonce: AtomicU64::new(0),
             },
+            enrolled: AtomicBool::new(false),
+            grants: Mutex::new(BTreeMap::new()),
             ingress,
             permits: BTreeMap::new(),
         })
@@ -240,7 +264,7 @@ impl BrokerCase {
         };
         let label = match op.get("grant_ref") {
             None => None,
-            Some(g) => Some(g.as_str().and_then(GrantLabel::new).ok_or_else(|| {
+            Some(g) => Some(self.production_label(g).ok_or_else(|| {
                 Step::Unsupported(
                     "GRANT_LABEL_NOT_REPRESENTABLE",
                     "grant_ref is not a production grant label".into(),
@@ -251,7 +275,107 @@ impl BrokerCase {
         Ok((executed(&exec.result), exec.permit))
     }
 
-    fn approve(&self, broker: &ProdBroker<'_>, op: &Value) -> Step {
+    /// The grant a fixture `grant_ref` presents: the ledger-assigned label of the M4 grant
+    /// issued for that reference (`approval/<request id>`), otherwise the reference itself
+    /// (which names no grant).
+    fn production_label(&self, g: &Value) -> Option<GrantLabel> {
+        let text = g.as_str()?;
+        let mapped = self.grants.lock().ok()?.get(text).cloned();
+        mapped.or_else(|| GrantLabel::new(text))
+    }
+
+    /// The fixture reference of a production grant label (final state and detail).
+    fn fixture_label(&self, label: &str) -> String {
+        self.grants
+            .lock()
+            .ok()
+            .and_then(|g| {
+                g.iter()
+                    .find(|(_, l)| l.as_str() == label)
+                    .map(|(k, _)| k.clone())
+            })
+            .unwrap_or_else(|| label.to_string())
+    }
+
+    /// Once per case: through the production enrollment ceremony of the case's test
+    /// administrator (bootstrapped at world creation through the production bootstrap entry
+    /// point), every human of the fixture's channel table as a test subject holding
+    /// `approver` over every scope, with one registered test credential each (S5, X8). Test
+    /// identities only.
+    fn enroll_once(&self, now: ObservedTime) -> Result<(), String> {
+        if self.enrolled.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+        let stores = self.world.stores()?;
+        let admin = SubjectId::new(TEST_SUBJECT_ISSUER, TEST_ADMIN);
+        let mut humans: Vec<String> = self
+            .verifier
+            .channels
+            .as_obj()
+            .map(|channels| {
+                channels
+                    .values()
+                    .filter_map(Value::as_obj)
+                    .flat_map(|c| c.keys().cloned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        humans.sort();
+        humans.dedup();
+        for human in humans {
+            let op = CeremonyOp::Enroll {
+                enrollment: NewEnrollment {
+                    subject: SubjectId::new(TEST_SUBJECT_ISSUER, &human),
+                    kind: PrincipalKind::Human,
+                    credential: Some(register(
+                        stores.ledger.production(),
+                        &|| Ok(now),
+                        &SubjectId::new(TEST_SUBJECT_ISSUER, &human),
+                        &test_credential(&human),
+                    )?),
+                    linked_identities: Vec::new(),
+                    roles: vec![NewRole {
+                        permission: Permission::Approver,
+                        tenant_id: "*".into(),
+                        project_id: "*".into(),
+                    }],
+                },
+            };
+            let key = format!("m3c-enroll-{human}");
+            let c = stores
+                .ledger
+                .begin_ceremony(&CeremonyBegin {
+                    op: &op,
+                    subject: &admin,
+                    idempotency_key: &key,
+                    verifier: &self.verifier,
+                    now,
+                })
+                .map_err(|f| format!("enroll {human}: {:?}", f.error))?
+                .map_err(|r| format!("enroll {human}: {}", r.code()))?;
+            stores
+                .ledger
+                .finish_ceremony(&CeremonyFinish {
+                    op: &op,
+                    challenge_id: &c.challenge_id,
+                    response: ADMIN_RESPONSE.as_bytes(),
+                    idempotency_key: &key,
+                    channel: LISTENER_CHANNEL,
+                    verifier: &self.verifier,
+                    now,
+                })
+                .map_err(|f| format!("enroll {human}: {:?}", f.error))?
+                .map_err(|r| format!("enroll {human}: {}", r.code()))?;
+        }
+        Ok(())
+    }
+
+    /// A fixture `approve` on the M4 lifecycle (D-042): the approval request the broker
+    /// records when the agent asks (M4-03, from the sealed `for_request` and the use-time
+    /// decision), then the human's ceremony on the approval listener (`begin_ceremony`,
+    /// `finish_ceremony`) through the non-shipping test verifier. The M3 approval-authority
+    /// path is closed on `writ-ledger-6`.
+    fn approve(&self, broker: &ProdBroker<'_>, i: usize, op: &Value) -> Result<Step, String> {
         let req = op.get("for_request").cloned().unwrap_or(Value::Null);
         let issuer = req
             .get("principal")
@@ -263,81 +387,139 @@ impl BrokerCase {
             .get(issuer)
             .and_then(|k| IngressKey::from_bytes(k.clone()).ok())
         else {
-            return Step::Unsupported(
+            return Ok(Step::Unsupported(
                 "APPROVAL_REQUEST_NOT_SEALABLE",
                 "for_request names no registered ingress adapter".into(),
-            );
+            ));
         };
         let Some(seal) = Seal::create(&req, issuer, &key) else {
-            return Step::Unsupported(
+            return Ok(Step::Unsupported(
                 "APPROVAL_REQUEST_NOT_SEALABLE",
                 "for_request cannot be sealed".into(),
-            );
+            ));
         };
         let Ok(verified) = verify_ingress(&req, Some(&seal.to_value()), &self.world.ring) else {
-            return Step::Unsupported(
+            return Ok(Step::Unsupported(
                 "APPROVAL_REQUEST_NOT_SEALABLE",
                 "sealed for_request did not verify".into(),
-            );
+            ));
         };
         self.world.labels.add(C2);
         self.world.labels.add(ADAPTER_SEALED);
-        let verdict = match op.get("verdict").and_then(Value::as_str) {
-            Some("approved") => Verdict::Approved,
-            Some("denied") => Verdict::Denied,
+        let approved = match op.get("verdict").and_then(Value::as_str) {
+            Some("approved") => true,
+            Some("denied") => false,
             _ => {
-                return Step::Unsupported(
+                return Ok(Step::Unsupported(
                     "VERDICT_NOT_REPRESENTABLE",
                     "verdict is neither approved nor denied".into(),
-                )
+                ))
             }
         };
-        let Some(label) = op
+        let Some(fixture_label) = op
             .get("grant_ref")
             .and_then(Value::as_str)
-            .and_then(GrantLabel::new)
+            .filter(|g| GrantLabel::new(g).is_some())
         else {
-            return Step::Unsupported(
+            return Ok(Step::Unsupported(
                 "GRANT_LABEL_NOT_REPRESENTABLE",
                 "grant_ref is not a production grant label".into(),
-            );
+            ));
         };
-        let ttl = match op.get("ttl_seconds") {
-            None => None,
-            Some(v) => match v.as_int().and_then(|n| u32::try_from(n).ok()) {
-                Some(n) => Some(n),
-                None => {
-                    return Step::Unsupported(
-                        "TTL_NOT_REPRESENTABLE",
-                        "ttl_seconds outside u32".into(),
-                    )
+        if let Some(v) = op.get("ttl_seconds") {
+            if v.as_int() != Some(i64::from(APPROVAL_GRANT_TTL_SECONDS)) {
+                return Ok(Step::Unsupported(
+                    "TTL_NOT_REPRESENTABLE",
+                    "M4 grants live APPROVAL_GRANT_TTL_SECONDS".into(),
+                ));
+            }
+        }
+        let observed = match broker.grants().observe() {
+            Ok(t) => t,
+            Err(r) => return Ok(Step::Done(refused(r.code()))),
+        };
+        // M4-03: the stored approval request (only for a `require_approval` decision).
+        let request = {
+            let shared = self.world.active.shared();
+            let inputs = shared.trusted_inputs(self.revision);
+            match authorize(&verified, &inputs, &observed) {
+                Ok(a) if a.status() == UseTimeStatus::RequireApproval => {
+                    approval_request_for(&a, observed)
                 }
-            },
+                _ => None,
+            }
         };
-        let channel = text(op, "channel").unwrap_or_default();
+        let Some(request) = request else {
+            // No approval request exists for a request that does not require approval: no
+            // human ceremony can name one (D-040 I-3, M4-03).
+            self.world.labels.add(DIFFERENCE);
+            return Ok(Step::Done(production_difference(
+                "NO_APPROVAL_REQUEST",
+                Vec::new(),
+            )));
+        };
+        let stores = self.world.stores()?;
+        if let Err(f) = stores.ledger.record_approval_request(&request) {
+            return Ok(Step::Done(refused(
+                Refusal::LedgerUnavailable(f.error).code(),
+            )));
+        }
+        self.enroll_once(observed)?;
         let human = text(op, "human").unwrap_or_default();
+        let channel = text(op, "channel").unwrap_or_default();
         let credential = text(op, "credential").unwrap_or_default();
-        let approval = Approval {
-            request: &verified,
-            state_revision: self.revision,
-            label: &label,
-            verdict,
-            ttl_seconds: ttl,
+        let subject = SubjectId::new(TEST_SUBJECT_ISSUER, &human);
+        let request_id = request.request_id().to_string();
+        let ceremony = if approved {
+            CeremonyOp::Approve { request_id }
+        } else {
+            CeremonyOp::Deny { request_id }
         };
-        let presentation = ApprovalPresentation {
-            channel: &channel,
-            approver: &human,
-            credential: credential.as_bytes(),
+        let key = format!("m3c-approve-{i}");
+        let c = match stores.ledger.begin_ceremony(&CeremonyBegin {
+            op: &ceremony,
+            subject: &subject,
+            idempotency_key: &key,
+            verifier: &self.verifier,
+            now: observed,
+        }) {
+            Err(f) => {
+                return Ok(Step::Done(refused(
+                    Refusal::LedgerUnavailable(f.error).code(),
+                )))
+            }
+            Ok(Err(r)) => return Ok(Step::Done(refused(r.code()))),
+            Ok(Ok(c)) => c,
         };
-        Step::Done(
-            match broker
-                .grants()
-                .approve(&approval, &presentation, &self.authority)
-            {
-                Ok(_) => result("grant_issued"),
-                Err(r) => refused(r.code()),
-            },
-        )
+        let response = format!("{channel}\0{human}\0{credential}");
+        let out = match stores.ledger.finish_ceremony(&CeremonyFinish {
+            op: &ceremony,
+            challenge_id: &c.challenge_id,
+            response: response.as_bytes(),
+            idempotency_key: &key,
+            channel: LISTENER_CHANNEL,
+            verifier: &self.verifier,
+            now: observed,
+        }) {
+            Err(f) => {
+                return Ok(Step::Done(refused(
+                    Refusal::LedgerUnavailable(f.error).code(),
+                )))
+            }
+            Ok(Err(r)) => return Ok(Step::Done(refused(r.code()))),
+            Ok(Ok(o)) => o,
+        };
+        Ok(Step::Done(match out.result {
+            CeremonyResult::Approved { grant } => {
+                self.grants
+                    .lock()
+                    .map_err(|_| "grant map poisoned".to_string())?
+                    .insert(fixture_label.to_string(), grant);
+                result("grant_issued")
+            }
+            CeremonyResult::Denied => result("approval_denied"),
+            other => return Err(format!("unexpected ceremony result {other:?}")),
+        }))
     }
 
     fn present_permit(&self, broker: &ProdBroker<'_>, op: &Value) -> Step {
@@ -437,7 +619,7 @@ impl BrokerCase {
                     }
                 }
             }
-            "approve" => self.approve(&self.world.broker()?, op),
+            "approve" => self.approve(&self.world.broker()?, i, op)?,
             "present_permit" => self.present_permit(&self.world.broker()?, op),
             "apply_without_permit" => {
                 // D-037 item 5 (b-08): production has no effect path without a permit; no
@@ -573,6 +755,13 @@ impl BrokerCase {
         ])))
     }
 
+    /// `m` keyed by fixture grant references instead of production labels.
+    fn relabel(&self, m: Map) -> Map {
+        m.into_iter()
+            .map(|(k, v)| (self.fixture_label(&k), v))
+            .collect()
+    }
+
     /// Durable per-key state, read only while every store is closed (quiescent).
     fn ledger_detail(&self) -> Result<Value, String> {
         let l = self.world.reader("ledger.db")?;
@@ -622,7 +811,13 @@ impl BrokerCase {
                     json::obj([
                         ("dispatches", dispatches.clone()),
                         ("fingerprint", fingerprint.clone()),
-                        ("grant", grant.clone()),
+                        (
+                            "grant",
+                            match grant {
+                                Value::Str(g) => json::s(&self.fixture_label(g)),
+                                other => other.clone(),
+                            },
+                        ),
                         ("permit", permit.clone()),
                         ("status", status.clone()),
                     ]),
@@ -673,14 +868,14 @@ impl BrokerCase {
             ("failures", Value::Arr(failures)),
             (
                 "grant_use_rows",
-                Value::Obj(keyed(
+                Value::Obj(self.relabel(keyed(
                     &l,
                     "SELECT label, count(*) FROM grant_uses GROUP BY 1",
-                )?),
+                )?)),
             ),
             (
                 "grant_uses",
-                Value::Obj(keyed(&l, "SELECT label, uses FROM grants")?),
+                Value::Obj(self.relabel(keyed(&l, "SELECT label, uses FROM grants")?)),
             ),
             ("receipts", Value::Obj(receipts)),
             (
@@ -701,7 +896,7 @@ impl BrokerCase {
         let e = self.world.reader("effects.db")?;
         let grants: Map = pairs(&l, "SELECT label, uses FROM grants")?
             .into_iter()
-            .map(|(k, n)| (k, Value::Int(n)))
+            .map(|(k, n)| (self.fixture_label(&k), Value::Int(n)))
             .collect();
         let receipts: Map = pairs(&l, "SELECT status, count(*) FROM receipts GROUP BY status")?
             .into_iter()

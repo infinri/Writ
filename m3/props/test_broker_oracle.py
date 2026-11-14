@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import random
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -474,9 +475,9 @@ class EndToEnd(unittest.TestCase):
         res = self.c4_campaign(self.mutant("heal_on_restart"))
         self.assertGreater(failed(res, "broker.m3.restart_does_not_heal_policy_outage"), 0)
 
-    def fault_campaign(self, argv):
+    def fault_campaign(self, argv, seed="31:broker"):
         res = Results("broker")
-        stats = bo.run_fault_groups(Proto("p", argv), random.Random("31:broker"), 12, res, 1)
+        stats = bo.run_fault_groups(Proto("p", argv), random.Random(seed), 12, res, 1)
         return res, stats
 
     def test_real_adapter_passes_fault_groups(self):
@@ -502,10 +503,25 @@ class EndToEnd(unittest.TestCase):
             "f_status_swap": "broker.m3.fault_group_equals_a_serialization",
             "f_resume_conflict": "broker.m3.fault_recovery_retry_answer",
         }
+        # Some mutations apply only when the concurrent run produces the pattern they corrupt
+        # (scheduling dependent); the mutant logs each applied mutation, and every campaign in
+        # which it applied must be caught. Seeds are tried in order until one applies.
         for mode, inv in expect.items():
             with self.subTest(mode=mode):
-                res, _ = self.fault_campaign(self.mutant(mode))
-                self.assertGreater(failed(res, inv), 0, mode)
+                applied = False
+                for attempt in range(12):
+                    with tempfile.TemporaryDirectory() as d:
+                        log = Path(d) / "applied.log"
+                        os.environ["WRIT_MUTANT_LOG"] = str(log)
+                        try:
+                            res, _ = self.fault_campaign(self.mutant(mode), f"31:broker:{attempt}" if attempt else "31:broker")
+                        finally:
+                            del os.environ["WRIT_MUTANT_LOG"]
+                        if log.exists() and log.read_text().strip():
+                            applied = True
+                            self.assertGreater(failed(res, inv), 0, f"{mode} applied but not caught (attempt {attempt})")
+                            break
+                self.assertTrue(applied, f"{mode} never applied in 12 seeded campaigns")
 
 
 if __name__ == "__main__":

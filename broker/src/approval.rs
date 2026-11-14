@@ -28,9 +28,12 @@
 //! human subject (`SERVICE_NOT_PERMITTED`), active (`SUBJECT_REVOKED`),
 //! the operation's permission in the challenge's scope at the acceptance
 //! time (`PERMISSION_MISSING`), and for decisions and signoffs separation
-//! (`SEPARATION_VIOLATED`). Each also has a `from_stored` constructor that
-//! requires a [`LedgerCapability`] and revalidates the record's invariants
-//! when a stored row is read back.
+//! (`SEPARATION_VIOLATED`). Signoffs, revocations and challenges also have a
+//! `from_stored` constructor that requires a [`LedgerCapability`] and
+//! revalidates the record's invariants when a stored row is read back; an
+//! [`ApprovalDecision`] has none outside unit tests (S2: a decision exists
+//! only from [`decide`], so no public chain turns a stored or forged row into
+//! a grant).
 //!
 //! **Displayed context** (R6): the approval and signoff pages render only a
 //! [`DisplayedContext`], whose fingerprint is the D-006 digest of exactly
@@ -180,6 +183,10 @@ pub enum ChallengeRefusal {
     IdempotencyMismatch,
     /// An empty or inconsistent field.
     Malformed,
+    /// A retry on a consumed challenge differs from the committed ceremony in
+    /// subject, credential, operation, verdict, target or context fingerprint
+    /// (X3): never the earlier result.
+    BindingMismatch,
 }
 
 impl ChallengeRefusal {
@@ -203,6 +210,7 @@ impl ChallengeRefusal {
             CeremonyMismatch => "challenge: ceremony mismatch",
             IdempotencyMismatch => "challenge: idempotency key mismatch",
             Malformed => "challenge: malformed",
+            BindingMismatch => "challenge: binding mismatch",
         }
     }
 }
@@ -539,15 +547,29 @@ pub struct DecisionFields {
 ///     ApprovalDecision { fields: f }
 /// }
 /// ```
+///
+/// Nor from a stored or forged row (D-042 X1, finding S2: the former public
+/// `from_stored` exists only in unit tests):
+///
+/// ```compile_fail
+/// use writ_broker::approval::{ApprovalDecision, DecisionFields};
+/// use writ_broker::human::LedgerCapability;
+/// fn forge(f: DecisionFields) -> ApprovalDecision {
+///     ApprovalDecision::from_stored(&LedgerCapability::for_ledger_implementation(), f).unwrap()
+/// }
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApprovalDecision {
     fields: DecisionFields,
 }
 
 impl ApprovalDecision {
-    /// Reconstruct a stored row (the ledger only, [`LedgerCapability`]):
-    /// revalidates non-empty identifiers and the provenance version.
-    pub fn from_stored(
+    /// Reconstruct a stored row: revalidates non-empty identifiers and the
+    /// provenance version. Unit tests only (S2, X1): a decision outside
+    /// [`decide`] is never public API, so no stored or forged decision can be
+    /// turned into a [`crate::grants::NewGrant`].
+    #[cfg(test)]
+    pub(crate) fn from_stored(
         _capability: &LedgerCapability,
         fields: DecisionFields,
     ) -> Result<ApprovalDecision, InvalidRecord> {
@@ -694,6 +716,9 @@ pub enum ChallengeStatus {
     Consumed,
     /// Expired.
     Expired,
+    /// Burned by a terminal refusal of its identified ceremony (X4): never
+    /// usable again; a retry is `CHALLENGE_INVALID` (consumed).
+    Refused,
 }
 
 /// What a challenge is bound to, and what a decision presents (recomputed
@@ -984,7 +1009,7 @@ impl Challenge {
     ) -> Result<(), ChallengeRefusal> {
         use ChallengeRefusal::*;
         match self.status {
-            ChallengeStatus::Consumed => return Err(Consumed),
+            ChallengeStatus::Consumed | ChallengeStatus::Refused => return Err(Consumed),
             ChallengeStatus::Expired => return Err(Expired),
             ChallengeStatus::Issued => {}
         }
@@ -1027,7 +1052,7 @@ impl Challenge {
                 status: ChallengeStatus::Consumed,
                 ..self.clone()
             }),
-            ChallengeStatus::Consumed => Err(ChallengeRefusal::Consumed),
+            ChallengeStatus::Consumed | ChallengeStatus::Refused => Err(ChallengeRefusal::Consumed),
             ChallengeStatus::Expired => Err(ChallengeRefusal::Expired),
         }
     }
@@ -1267,23 +1292,159 @@ impl NewSignoff {
         ])
     }
 
-    /// What the signoff page renders (R6).
-    pub fn displayed(&self) -> Result<DisplayedContext, CanonicalError> {
-        DisplayedContext::of(self.context())
+    /// The complete signed context as displayed (R6, X7): [`NewSignoff::context`]
+    /// plus the member `excluded` ([`SignoffExclusions::context`]). The
+    /// signoff page renders only this; the challenge binds its fingerprint.
+    pub fn context_with(&self, excluded: &SignoffExclusions) -> Value {
+        let mut context = self.context();
+        if let Value::Obj(m) = &mut context {
+            m.insert("excluded".into(), excluded.context());
+        }
+        context
+    }
+
+    /// What the signoff page renders (R6, X7): [`NewSignoff::context_with`].
+    pub fn displayed(
+        &self,
+        excluded: &SignoffExclusions,
+    ) -> Result<DisplayedContext, CanonicalError> {
+        DisplayedContext::of(self.context_with(excluded))
     }
 }
 
-/// Who may never sign off a criterion (O-7): the request's parties and the
-/// subjects who changed the artifact or the acceptance policy for the
-/// revision being accepted. Supplied by the caller from the ledger.
-#[derive(Clone, Copy, Debug)]
-pub struct SignoffExclusions<'a> {
-    /// Requester, agent and delegation chain.
-    pub parties: Parties<'a>,
-    /// Subjects who changed the artifact for this revision.
-    pub artifact_changers: &'a [SubjectId],
-    /// Subjects who changed the acceptance policy for this revision.
-    pub policy_changers: &'a [SubjectId],
+/// Text recorded for the delegation chain in every signoff context (G4, X7):
+/// M3 sealed ingress stores no trusted delegation chain, so signoff
+/// separation covers requester, agent and linked identities only and never
+/// claims delegation-chain separation.
+pub const DELEGATION_CHAIN_UNAVAILABLE: &str = "unavailable";
+
+/// Who may never sign off a criterion (O-7, X7), read by the ledger from
+/// authoritative state inside the signing (and promotion) transaction, never
+/// from caller input (C2): the requesters and agents of the stored promotion
+/// contexts naming the signoff; the enrolled human subjects whose enrollment
+/// links name one of them; the subjects who changed the workflow's artifact
+/// and who activated the project's acceptance policy (durable administrative
+/// events; every such change, a superset of the exact revision, fail closed);
+/// and `added`, exclusions supplied by the caller, which can only add. The
+/// delegation chain is recorded as [`DELEGATION_CHAIN_UNAVAILABLE`] (G4).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SignoffExclusions {
+    /// Requester principals of the stored promotion contexts.
+    pub requesters: Vec<SubjectId>,
+    /// Agents of the stored promotion contexts.
+    pub agents: Vec<SubjectId>,
+    /// Enrolled human subjects linked to a requester or agent (R1).
+    pub linked_subjects: Vec<SubjectId>,
+    /// Subjects who changed the artifact.
+    pub artifact_changers: Vec<SubjectId>,
+    /// Subjects who changed the acceptance policy.
+    pub policy_changers: Vec<SubjectId>,
+    /// Caller-supplied additional exclusions (they only add).
+    pub added: Vec<SubjectId>,
+}
+
+fn subjects_value(list: &[SubjectId]) -> Value {
+    Value::Arr(list.iter().map(subject_value).collect())
+}
+
+impl SignoffExclusions {
+    /// Every list sorted and without duplicates (the stored and displayed form).
+    pub fn normalized(mut self) -> SignoffExclusions {
+        for list in [
+            &mut self.requesters,
+            &mut self.agents,
+            &mut self.linked_subjects,
+            &mut self.artifact_changers,
+            &mut self.policy_changers,
+            &mut self.added,
+        ] {
+            list.sort();
+            list.dedup();
+        }
+        self
+    }
+
+    /// Every excluded subject.
+    pub fn all(&self) -> Vec<SubjectId> {
+        let mut out: Vec<SubjectId> = self
+            .requesters
+            .iter()
+            .chain(&self.agents)
+            .chain(&self.linked_subjects)
+            .chain(&self.artifact_changers)
+            .chain(&self.policy_changers)
+            .chain(&self.added)
+            .cloned()
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// The union with `other` (normalized).
+    pub fn union(&self, other: &SignoffExclusions) -> SignoffExclusions {
+        let join = |a: &[SubjectId], b: &[SubjectId]| a.iter().chain(b).cloned().collect();
+        SignoffExclusions {
+            requesters: join(&self.requesters, &other.requesters),
+            agents: join(&self.agents, &other.agents),
+            linked_subjects: join(&self.linked_subjects, &other.linked_subjects),
+            artifact_changers: join(&self.artifact_changers, &other.artifact_changers),
+            policy_changers: join(&self.policy_changers, &other.policy_changers),
+            added: join(&self.added, &other.added),
+        }
+        .normalized()
+    }
+
+    /// Every identity well formed.
+    pub fn well_formed(&self) -> bool {
+        self.all().iter().all(SubjectId::is_well_formed)
+    }
+
+    /// The displayed and fingerprinted form (normalized lists), with
+    /// `delegation_chain: "unavailable"` (G4).
+    pub fn context(&self) -> Value {
+        let n = self.clone().normalized();
+        json::obj([
+            ("added", subjects_value(&n.added)),
+            ("agents", subjects_value(&n.agents)),
+            ("artifact_changers", subjects_value(&n.artifact_changers)),
+            ("delegation_chain", json::s(DELEGATION_CHAIN_UNAVAILABLE)),
+            ("linked_subjects", subjects_value(&n.linked_subjects)),
+            ("policy_changers", subjects_value(&n.policy_changers)),
+            ("requesters", subjects_value(&n.requesters)),
+        ])
+    }
+
+    /// Parse [`SignoffExclusions::context`] (a stored row); only the
+    /// normalized, well-formed form.
+    pub fn from_context(v: &Value) -> Option<SignoffExclusions> {
+        let list = |k: &str| -> Option<Vec<SubjectId>> {
+            v.get(k)?
+                .as_arr()?
+                .iter()
+                .map(|s| {
+                    Some(SubjectId::new(
+                        s.get("issuer")?.as_str()?,
+                        s.get("subject")?.as_str()?,
+                    ))
+                })
+                .collect()
+        };
+        if v.get("delegation_chain").and_then(Value::as_str) != Some(DELEGATION_CHAIN_UNAVAILABLE)
+            || v.as_obj().map(|m| m.len()) != Some(7)
+        {
+            return None;
+        }
+        let parsed = SignoffExclusions {
+            requesters: list("requesters")?,
+            agents: list("agents")?,
+            linked_subjects: list("linked_subjects")?,
+            artifact_changers: list("artifact_changers")?,
+            policy_changers: list("policy_changers")?,
+            added: list("added")?,
+        };
+        (parsed.clone().normalized() == parsed && parsed.well_formed()).then_some(parsed)
+    }
 }
 
 /// The fields of a stored signoff.
@@ -1291,6 +1452,9 @@ pub struct SignoffExclusions<'a> {
 pub struct SignoffFields {
     /// The signed binding.
     pub binding: NewSignoff,
+    /// The exclusions read from the ledger at signing, displayed and
+    /// fingerprinted with the binding (X7).
+    pub exclusions: SignoffExclusions,
     /// Issue time.
     pub issued_at: Timestamp,
     /// The signing subject.
@@ -1312,25 +1476,26 @@ pub struct Signoff {
 
 impl Signoff {
     /// Sign `binding` from an accepted `Signoff` challenge that targets its
-    /// signoff id in its scope with its displayed fingerprint
-    /// (`CHALLENGE_INVALID` otherwise). The signer must be the accepted
+    /// signoff id in its scope with the fingerprint of its complete displayed
+    /// context ([`NewSignoff::displayed`] with `excluded`;
+    /// `CHALLENGE_INVALID` otherwise). The signer must be the accepted
     /// subject, human, active and hold [`Permission::SignoffAuthority`] for
     /// the scope at the signing time ([`check_actor`]), and pass
     /// [`signoff_separation`] with its own enrollment record against every
-    /// party and changer in `excluded`. The I-5 use-time checks repeat
-    /// eligibility at promotion.
+    /// subject in `excluded` (X7: read by the ledger inside the transaction).
+    /// The I-5 use-time checks repeat eligibility at promotion.
     pub fn sign(
         binding: NewSignoff,
         accepted: &AcceptedAssertion,
         signer: &Actor<'_>,
-        excluded: &SignoffExclusions<'_>,
+        excluded: &SignoffExclusions,
     ) -> Result<Signoff, ApprovalCode> {
         let b = accepted.binding();
         let refuse = |c| Err(ApprovalCode::ChallengeInvalid(c));
         if accepted.operation() != ChallengeOperation::Signoff {
             return refuse(ChallengeRefusal::OperationMismatch);
         }
-        if !binding.well_formed() {
+        if !binding.well_formed() || !excluded.well_formed() {
             return refuse(ChallengeRefusal::Malformed);
         }
         if b.target_id != binding.signoff_id {
@@ -1342,7 +1507,8 @@ impl Signoff {
         if b.project_id != binding.project_id {
             return refuse(ChallengeRefusal::ProjectMismatch);
         }
-        match binding.displayed() {
+        let excluded = excluded.clone().normalized();
+        match binding.displayed(&excluded) {
             Ok(d) if d.fingerprint() == &b.context_fingerprint => {}
             _ => return refuse(ChallengeRefusal::ContextMismatch),
         }
@@ -1350,21 +1516,11 @@ impl Signoff {
             return refuse(ChallengeRefusal::Expired);
         }
         check_actor(signer, accepted, Permission::SignoffAuthority)?;
-        let changers: Vec<SubjectId> = excluded
-            .artifact_changers
-            .iter()
-            .chain(excluded.policy_changers)
-            .cloned()
-            .collect();
-        signoff_separation(
-            accepted.subject(),
-            signer.enrollment,
-            &excluded.parties,
-            &changers,
-        )?;
+        signoff_separation(accepted.subject(), signer.enrollment, &excluded.all())?;
         Ok(Signoff {
             fields: SignoffFields {
                 binding,
+                exclusions: excluded,
                 issued_at: accepted.accepted_at(),
                 subject: accepted.subject().clone(),
                 credential_id: accepted.credential_id().to_string(),
@@ -1382,6 +1538,8 @@ impl Signoff {
         fields: SignoffFields,
     ) -> Result<Signoff, InvalidRecord> {
         if !fields.binding.well_formed()
+            || !fields.exclusions.well_formed()
+            || fields.exclusions.clone().normalized() != fields.exclusions
             || !fields.subject.is_well_formed()
             || !nonempty(&[&fields.credential_id, &fields.challenge_id])
         {
@@ -1401,9 +1559,10 @@ impl Signoff {
         &self.fields
     }
 
-    /// The signed context as displayed ([`NewSignoff::context`]).
+    /// The signed context as displayed ([`NewSignoff::context_with`] its
+    /// stored exclusions).
     pub fn context(&self) -> Value {
-        self.fields.binding.context()
+        self.fields.binding.context_with(&self.fields.exclusions)
     }
 
     /// [`context_fingerprint`] of [`Signoff::context`].
@@ -2285,52 +2444,63 @@ mod tests {
         }
     }
 
-    fn signoff_binding() -> ChallengeBinding {
+    fn requester() -> SubjectId {
+        SubjectId::new("adapter", "alice")
+    }
+
+    /// The exclusions the ledger would read: the stored requester plus the
+    /// given changers.
+    fn exclusions(
+        artifact_changers: &[SubjectId],
+        policy_changers: &[SubjectId],
+    ) -> SignoffExclusions {
+        SignoffExclusions {
+            requesters: vec![requester()],
+            artifact_changers: artifact_changers.to_vec(),
+            policy_changers: policy_changers.to_vec(),
+            ..SignoffExclusions::default()
+        }
+        .normalized()
+    }
+
+    fn signoff_binding_for(excluded: &SignoffExclusions) -> ChallengeBinding {
         ChallengeBinding {
             operation: ChallengeOperation::Signoff,
             tenant_id: "t1".into(),
             project_id: "p1".into(),
             target_id: "so-1".into(),
-            context_fingerprint: new_signoff().displayed().unwrap().fingerprint().clone(),
+            context_fingerprint: new_signoff()
+                .displayed(excluded)
+                .unwrap()
+                .fingerprint()
+                .clone(),
             policy_bundle_sha: sha('c'),
             revision: 7,
         }
     }
 
-    fn requester() -> SubjectId {
-        SubjectId::new("adapter", "alice")
+    fn signoff_binding() -> ChallengeBinding {
+        signoff_binding_for(&exclusions(&[], &[]))
     }
-
-    fn exclusions<'a>(
-        artifact_changers: &'a [SubjectId],
-        policy_changers: &'a [SubjectId],
-    ) -> SignoffExclusions<'a> {
-        SignoffExclusions {
-            parties: Parties {
-                requester: &REQUESTER,
-                agent: None,
-                delegation_chain: &[],
-            },
-            artifact_changers,
-            policy_changers,
-        }
-    }
-
-    static REQUESTER: std::sync::LazyLock<SubjectId> = std::sync::LazyLock::new(requester);
 
     /// Sign `binding` as `signer` through an accepted signoff challenge for
-    /// the signer's subject.
+    /// the signer's subject, bound to the displayed context with these
+    /// exclusions.
     fn sign(
         binding: NewSignoff,
         signer: &Who,
         artifact_changers: &[SubjectId],
         policy_changers: &[SubjectId],
     ) -> Result<Signoff, ApprovalCode> {
+        let excluded = exclusions(artifact_changers, policy_changers);
         Signoff::sign(
             binding,
-            &accept_as(signer.record.subject.clone(), signoff_binding()),
+            &accept_as(
+                signer.record.subject.clone(),
+                signoff_binding_for(&excluded),
+            ),
             &signer.actor(),
-            &exclusions(artifact_changers, policy_changers),
+            &excluded,
         )
     }
 
@@ -2515,7 +2685,14 @@ mod tests {
         for (i, change) in changes.into_iter().enumerate() {
             let mut other = new_signoff();
             change(&mut other);
-            assert_ne!(other.displayed().unwrap().fingerprint(), &fp, "change {i}");
+            assert_ne!(
+                other
+                    .displayed(&exclusions(&[], &[]))
+                    .unwrap()
+                    .fingerprint(),
+                &fp,
+                "change {i}"
+            );
             // A changed binding cannot be signed with the original challenge.
             assert!(sign(other, &signer, &[], &[]).is_err(), "change {i}");
         }
@@ -2542,6 +2719,71 @@ mod tests {
         let mut bad = s.fields().clone();
         bad.issued_at = bad.binding.expires_at;
         assert!(Signoff::from_stored(&lcap(), bad).is_err());
+    }
+
+    /// X7 (S3): the exclusions are part of the displayed context and its
+    /// fingerprint; a challenge bound to fewer exclusions than the ledger
+    /// reads at finish never signs; the delegation chain is recorded as
+    /// unavailable, never as an empty chain.
+    #[test]
+    fn signoff_exclusions_are_displayed_fingerprinted_and_only_add() {
+        let signer = who(bob(), &[Permission::SignoffAuthority]);
+        let none = SignoffExclusions::default();
+        let some = exclusions(&[], &[]);
+        let context = new_signoff().context_with(&some);
+        let shown = context.get("excluded").unwrap();
+        assert_eq!(
+            shown.get("delegation_chain").and_then(Value::as_str),
+            Some(DELEGATION_CHAIN_UNAVAILABLE)
+        );
+        assert_eq!(SignoffExclusions::from_context(shown), Some(some.clone()));
+        assert_ne!(
+            new_signoff().displayed(&none).unwrap().fingerprint(),
+            new_signoff().displayed(&some).unwrap().fingerprint()
+        );
+        // A challenge bound to an empty exclusion set does not sign when the
+        // ledger reads a requester at finish (the old S3 path: caller parties).
+        let accepted = accept_as(bob(), signoff_binding_for(&none));
+        assert_eq!(
+            Signoff::sign(new_signoff(), &accepted, &signer.actor(), &some),
+            Err(ApprovalCode::ChallengeInvalid(
+                ChallengeRefusal::ContextMismatch
+            ))
+        );
+        // The requester read from the ledger is excluded whatever a caller adds.
+        let alice = who(
+            SubjectId::new("writ-local", "alice"),
+            &[Permission::SignoffAuthority],
+        );
+        assert_eq!(
+            sign(new_signoff(), &alice, &[], &[]),
+            Err(ApprovalCode::SeparationViolated)
+        );
+        // Added exclusions add: an added subject is refused.
+        let mut added = some.clone();
+        added.added = vec![bob()];
+        let accepted = accept_as(bob(), signoff_binding_for(&added));
+        assert_eq!(
+            Signoff::sign(new_signoff(), &accepted, &signer.actor(), &added),
+            Err(ApprovalCode::SeparationViolated)
+        );
+        // The union only grows.
+        let u = some.union(&added);
+        assert!(some.all().iter().all(|s| u.all().contains(s)));
+        assert!(u.all().contains(&bob()));
+        // Stored exclusions are revalidated: unnormalized or ill-formed lists refuse.
+        let s = sign(new_signoff(), &signer, &[], &[]).unwrap();
+        assert_eq!(s.fields().exclusions, some);
+        let mut bad = s.fields().clone();
+        bad.exclusions.requesters = vec![requester(), requester()];
+        assert!(Signoff::from_stored(&lcap(), bad).is_err());
+        let mut bad = s.fields().clone();
+        bad.exclusions.agents = vec![SubjectId::new("", "x")];
+        assert!(Signoff::from_stored(&lcap(), bad).is_err());
+        assert_eq!(
+            SignoffExclusions::from_context(&json::obj([("delegation_chain", json::s("[]"))])),
+            None
+        );
     }
 
     #[test]

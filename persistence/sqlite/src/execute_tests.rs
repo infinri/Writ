@@ -1213,6 +1213,8 @@ fn activation_waits_for_present_permit_and_a_later_presentation_is_stale() {
 
 #[test]
 fn restart_resumes_reserved_and_never_redispatches_dispatched_or_reconciled() {
+    // One M4 grant per approved request: a distinct action per key.
+    let publish = super::grant_tests::publish_distinct;
     let w = World::new("restart");
     let dir = w.dir.clone();
     let (k3_permit, k2_permit) = {

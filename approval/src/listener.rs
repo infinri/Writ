@@ -680,6 +680,7 @@ fn finish<'a>(
                 CeremonyResult::Revoked { .. } => "revoked",
                 CeremonyResult::SignedOff { .. } => "signed off",
                 CeremonyResult::Enrolled { .. } => "enrolled",
+                CeremonyResult::RoleChanged { .. } => "role changed",
             };
             respond(
                 StatusCode::OK,

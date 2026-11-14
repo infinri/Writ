@@ -6,7 +6,7 @@
 //! SQLite implementation is `writ_ledger_sqlite` (`approval_store.rs`).
 //!
 //! **Ceremonies.** Every human operation (approve, deny, revoke, signoff,
-//! enroll) is two fenced transactions of the ledger:
+//! enroll, role change) is two fenced transactions of the ledger:
 //! [`ApprovalLedger::begin_ceremony`] reads the target and the actor's stored
 //! records, selects the actor's [`crate::human::ActiveCredentials`], calls the
 //! verifier's `begin` and stores the [`Challenge`] (unique id and digest, C1);
@@ -25,10 +25,24 @@
 //!
 //! **Unknown commit.** An identical retry of a finish (same challenge, same
 //! idempotency key, an assertion of the same subject, credential and
-//! ceremony) after a commit whose outcome is unknown replays the committed
-//! outcome ([`CeremonyOutcome::replayed`]) and never mints another grant,
-//! signoff or revocation; anything else on a consumed challenge is
-//! `CHALLENGE_INVALID` (consumed).
+//! ceremony, the same operation and verdict, and the same target id and
+//! complete context fingerprint recomputed from stored state) after a commit
+//! whose outcome is unknown replays the committed outcome
+//! ([`CeremonyOutcome::replayed`]) and never mints another grant, signoff,
+//! revocation or role change; any difference on a consumed challenge is
+//! `CHALLENGE_INVALID` (binding mismatch, D-042 X3), never the earlier
+//! result.
+//!
+//! **Refusal burns the challenge (D-042 X4).** A terminal refusal of an
+//! identified ceremony (the challenge row exists and is `issued`) commits the
+//! challenge as `refused` with the refusal code in the same transaction; a
+//! later finish on it is `CHALLENGE_INVALID` (consumed). When that commit
+//! fails or its outcome is unknown, the answer is the storage failure (fail
+//! closed), and the next transaction reads the stored status again.
+//!
+//! **Role changes (D-042 X5).** [`CeremonyOp::RoleChange`] grants or revokes
+//! one assignment; the binding scope is the assignment's scope and the actor
+//! needs `operator` over a scope containing it.
 //!
 //! **Approval requests.** [`approval_request_for`] builds the immutable
 //! request from the guard-bound use-time decision when it is
@@ -42,7 +56,7 @@ use writ_kernel::time::Timestamp;
 
 use crate::approval::{
     context_fingerprint, ApprovalRequest, ApprovalStatus, ChallengeBinding, ChallengeOperation,
-    NewApprovalRequest, NewSignoff, RevocationTarget, Signoff,
+    NewApprovalRequest, NewSignoff, RevocationTarget, Signoff, SignoffExclusions,
 };
 use crate::authorize::{Authorized, UseTimeStatus};
 use crate::clock::ObservedTime;
@@ -67,6 +81,8 @@ pub const NO_POLICY: &str = "none";
 pub const REVOCATION_CONTEXT: &str = "writ.revocation-context.v1";
 /// Context member naming an enrollment context (domain separation).
 pub const ENROLLMENT_CONTEXT: &str = "writ.enrollment-context.v1";
+/// Context member naming a role-change context (domain separation, X5).
+pub const ROLE_CHANGE_CONTEXT: &str = "writ.role-change-context.v1";
 /// The enrolling administrator recorded for the bootstrap enrollment.
 pub const BOOTSTRAP_ISSUER: &str = "writ-local";
 /// See [`BOOTSTRAP_ISSUER`].
@@ -221,17 +237,114 @@ pub fn revocation_binding(
 }
 
 /// What a signoff challenge binds: the signoff's scope, its id, the
-/// fingerprint of its displayed context, its acceptance policy bundle digest
-/// and the state revision.
-pub fn signoff_binding(binding: &NewSignoff) -> Result<ChallengeBinding, CanonicalError> {
+/// fingerprint of its complete displayed context (the binding and the
+/// exclusions the ledger read, X7), its acceptance policy bundle digest and
+/// the state revision.
+pub fn signoff_binding(
+    binding: &NewSignoff,
+    excluded: &SignoffExclusions,
+) -> Result<ChallengeBinding, CanonicalError> {
     Ok(ChallengeBinding {
         operation: ChallengeOperation::Signoff,
         tenant_id: binding.tenant_id.clone(),
         project_id: binding.project_id.clone(),
         target_id: binding.signoff_id.clone(),
-        context_fingerprint: binding.displayed()?.fingerprint().clone(),
+        context_fingerprint: binding.displayed(excluded)?.fingerprint().clone(),
         policy_bundle_sha: binding.acceptance_policy_bundle_sha.clone(),
         revision: binding.state_revision,
+    })
+}
+
+/// One role-assignment change (D-042 X5): grant or revoke exactly one
+/// assignment. Needs a fresh user-verified ceremony by a human holding
+/// [`Permission::Operator`] over a scope containing the assignment's scope
+/// ([`crate::human::scope_contains`]); a subject never changes its own
+/// assignments; a service never receives anything but `operator` (O-8).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RoleChange {
+    /// Grant `permission` over (tenant, project) to an existing subject.
+    Grant {
+        /// The subject receiving the permission.
+        subject: SubjectId,
+        /// The permission.
+        permission: Permission,
+        /// Tenant scope (`*` only when explicitly intended).
+        tenant_id: String,
+        /// Project scope (`*` only when explicitly intended).
+        project_id: String,
+    },
+    /// Revoke one assignment by id.
+    Revoke {
+        /// The assignment id.
+        assignment_id: String,
+    },
+}
+
+impl RoleChange {
+    /// The challenge target: `role-grant:` plus the subject's revocation
+    /// target id, permission and length-prefixed scope; or `role-revoke:`
+    /// plus the assignment id.
+    pub fn target_id(&self) -> String {
+        match self {
+            RoleChange::Grant {
+                subject,
+                permission,
+                tenant_id,
+                project_id,
+            } => format!(
+                "role-grant:{}:{}:{}:{}:{}",
+                RevocationTarget::Subject(subject.clone()).target_id(),
+                permission_text(*permission),
+                tenant_id.len(),
+                tenant_id,
+                project_id
+            ),
+            RoleChange::Revoke { assignment_id } => format!("role-revoke:{assignment_id}"),
+        }
+    }
+}
+
+/// The displayed context of a role change: the change, the assignment's
+/// scope and the target's immutable stored record (`record`, built by the
+/// ledger: the subject row for a grant, the assignment row for a revoke).
+pub fn role_change_context(
+    change: &RoleChange,
+    tenant_id: &str,
+    project_id: &str,
+    record: Value,
+) -> Value {
+    let (kind, permission) = match change {
+        RoleChange::Grant { permission, .. } => ("grant", json::s(permission_text(*permission))),
+        RoleChange::Revoke { .. } => ("revoke", Value::Null),
+    };
+    json::obj([
+        ("change", json::s(kind)),
+        ("context", json::s(ROLE_CHANGE_CONTEXT)),
+        ("permission", permission),
+        ("project_id", json::s(project_id)),
+        ("record", record),
+        ("target", json::s(&change.target_id())),
+        ("tenant_id", json::s(tenant_id)),
+    ])
+}
+
+/// What a role-change challenge binds ([`role_change_context`]) in the
+/// assignment's scope; policy [`NO_POLICY`], revision 0.
+pub fn role_change_binding(
+    change: &RoleChange,
+    tenant_id: &str,
+    project_id: &str,
+    record: Value,
+) -> Result<ChallengeBinding, CanonicalError> {
+    let context = role_change_context(change, tenant_id, project_id, record);
+    Ok(ChallengeBinding {
+        operation: ChallengeOperation::RoleChange,
+        tenant_id: tenant_id.to_string(),
+        project_id: project_id.to_string(),
+        target_id: change.target_id(),
+        context_fingerprint: context_fingerprint(&context)?,
+        policy_bundle_sha: NO_POLICY.to_string(),
+        revision: 0,
     })
 }
 
@@ -360,20 +473,23 @@ pub struct BootstrapEnrollment {
     pub linked_identities: Vec<SubjectId>,
 }
 
-/// Parties a signoff excludes beyond the durable artifact and policy
-/// changers the ledger reads itself (C2): they can only add exclusions; the
-/// I-5 use-time check repeats separation against the promotion request.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Caller-supplied signoff exclusions (S3, X7). They can only add: the
+/// ledger reads the requesters and agents of the stored promotion contexts,
+/// the enrolled subjects linked to them and the artifact and policy changers
+/// itself inside the transaction ([`SignoffExclusions`]); these subjects are
+/// added to that set (displayed and fingerprinted as `added`), never
+/// replacing or removing anything. The I-5 use-time check repeats separation
+/// against the promotion request.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SignoffParties {
-    /// Requester of the promotion the signoff is for.
-    pub requester: SubjectId,
-    /// Its agent, if any.
-    pub agent: Option<SubjectId>,
-    /// Its trusted delegation chain.
-    pub delegation_chain: Vec<SubjectId>,
+    /// Additional excluded subjects.
+    pub added: Vec<SubjectId>,
 }
 
 /// The human operation of one ceremony.
+// One value per ceremony, passed by reference: the enrollment variant's size (it carries
+// its verified registration) costs nothing worth a box at every caller.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CeremonyOp {
     /// Approve a stored approval request.
@@ -397,13 +513,18 @@ pub enum CeremonyOp {
     Signoff {
         /// The binding to sign.
         binding: Box<NewSignoff>,
-        /// Additional excluded parties.
+        /// Additional excluded subjects (they only add, X7).
         parties: SignoffParties,
     },
     /// Enroll a subject (administrative ceremony).
     Enroll {
         /// The enrollment.
         enrollment: NewEnrollment,
+    },
+    /// Grant or revoke one role assignment (administrative ceremony, X5).
+    RoleChange {
+        /// The change.
+        change: RoleChange,
     },
 }
 
@@ -416,6 +537,7 @@ impl CeremonyOp {
             CeremonyOp::Revoke { .. } => ChallengeOperation::Revoke,
             CeremonyOp::Signoff { .. } => ChallengeOperation::Signoff,
             CeremonyOp::Enroll { .. } => ChallengeOperation::Enroll,
+            CeremonyOp::RoleChange { .. } => ChallengeOperation::RoleChange,
         }
     }
 }
@@ -525,6 +647,11 @@ pub enum CeremonyResult {
     Enrolled {
         /// The subject.
         subject: SubjectId,
+    },
+    /// The role assignment was granted (new id) or revoked.
+    RoleChanged {
+        /// The assignment id.
+        assignment_id: String,
     },
 }
 

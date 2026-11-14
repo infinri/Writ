@@ -9,14 +9,21 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, OpenFlags};
-use writ_broker::clock::{ClockError, ClockEvent, Drift, EffectiveClock, Reading};
+use writ_broker::approval::ApprovalRequest;
+use writ_broker::approval_store::{
+    ApprovalLedger, BootstrapEnrollment, CeremonyBegin, CeremonyFinish, CeremonyOutcome,
+    IssuedChallenge, RegistrationBegin, RegistrationFinish, RegistrationLedger, RequestRecorded,
+};
+use writ_broker::clock::{ClockError, ClockEvent, Drift, EffectiveClock, ObservedTime, Reading};
 use writ_broker::execute::{
     Broker, DispatchIntent, Dispatched, FailureRecord, Observation, PendingReceipt, Reconciled,
     Resolution,
 };
-use writ_broker::grants::{
-    ApprovalAuthority, ApprovalPresentation, ApproverRefusal, AuthenticatedApprover, GrantInsert,
-    NewGrant, PrincipalKind, ReserveOutcome, ReserveRequest,
+use writ_broker::grants::{GrantInsert, NewGrant, ReserveOutcome, ReserveRequest};
+use writ_broker::human::{
+    ActiveCredentials, CeremonyStart, CeremonyState, HumanVerifier, RegistrationBinding,
+    RegistrationStart, RegistrationVerifier, RelyingParty, SubjectId, VerifiedAssertion,
+    VerifiedRegistration, VerifierCapability, VerifierError, ES256, WEBAUTHN_PASSKEY,
 };
 use writ_broker::keys::{MemoryKeyRing, PermitKey};
 use writ_broker::policy::{ActivePolicy, ExclusiveHold, PolicyState};
@@ -26,11 +33,11 @@ use writ_broker::store::{
 };
 use writ_broker::workflow::{
     AdminChange, AdminOperation, AdminPresentation, AdminRefusal, AuthorizedOperator,
-    PromotionIntent, PromotionOutcome, StoredWorkflow, WorkflowAuthority, WorkflowKey,
-    WorkflowLedger,
+    PromotionIntent, PromotionOutcome, SignoffRequest, StoredWorkflow, WorkflowAuthority,
+    WorkflowKey, WorkflowLedger,
 };
-use writ_broker::writ_kernel::json::{self, Value};
-use writ_ledger_sqlite::{SqliteEffectStore, SqliteLedger};
+use writ_broker::writ_kernel::json::{self, Digest, Value};
+use writ_ledger_sqlite::{BootstrapSession, SqliteEffectStore, SqliteLedger};
 
 /// Test-only administrative channel and credential.
 pub const ADMIN_CHANNEL: &str = "m3-closure-admin";
@@ -298,6 +305,13 @@ impl Ledger {
         self.dead.load(Ordering::SeqCst)
     }
 
+    /// The production ledger itself, for the approval-channel ceremonies of the harness
+    /// (M4-11 signoffs through a test verifier, `transition.rs`); never for state writes
+    /// that bypass production code.
+    pub fn sqlite(&self) -> &SqliteLedger {
+        &self.inner
+    }
+
     /// Gate a lifecycle transaction `name` at `point`.
     fn gate(&self, name: &str, point: Option<Point>) -> Result<(), TxFailure> {
         let fail = || TxFailure::new(TxStage::Begin, store_down(name));
@@ -410,6 +424,40 @@ impl ExecuteLedger for Ledger {
         self.alive("audit")?;
         self.inner.record_failure(code, record)
     }
+
+    fn record_approval_request(
+        &self,
+        request: &ApprovalRequest,
+    ) -> Result<RequestRecorded, TxFailure> {
+        self.gate("approval_request", None)?;
+        self.inner.record_approval_request(request)
+    }
+}
+
+/// The approval channel's ceremonies on the production ledger (M4 lifecycle, D-042), gated
+/// like every other transaction of the case (crash and `ledger: down`).
+impl Ledger {
+    pub fn begin_ceremony(
+        &self,
+        begin: &CeremonyBegin<'_>,
+    ) -> Result<Result<IssuedChallenge, Refusal>, TxFailure> {
+        self.gate("challenge_issue", None)?;
+        self.inner.begin_ceremony(begin)
+    }
+
+    pub fn finish_ceremony(
+        &self,
+        finish: &CeremonyFinish<'_>,
+    ) -> Result<Result<CeremonyOutcome, Refusal>, TxFailure> {
+        self.gate("ceremony", None)?;
+        self.inner.finish_ceremony(finish)
+    }
+
+    /// The production ledger itself, for the one-time bootstrap enrollment of the case's
+    /// test administrator (an explicit operator call, never an agent or listener path).
+    pub fn production(&self) -> &SqliteLedger {
+        &self.inner
+    }
 }
 
 impl WorkflowLedger for Ledger {
@@ -438,6 +486,11 @@ impl WorkflowLedger for Ledger {
     ) -> Result<Result<PromotionOutcome, Refusal>, TxFailure> {
         self.gate("promote", Some(Point::Promote))?;
         self.inner.promote(intent)
+    }
+
+    fn record_signoff_requests(&self, requests: &[SignoffRequest]) -> Result<(), TxFailure> {
+        self.gate("signoff_request", None)?;
+        self.inner.record_signoff_requests(requests)
     }
 }
 
@@ -473,42 +526,203 @@ impl LedgerStore for &Ledger {
 // ---------------------------------------------------------------------------
 // Test authorities
 
-/// Authenticates exactly the fixture's channel credentials; every authenticated principal
-/// is reported as a human (C3: tests the self-approval defense only, never human
-/// authentication).
-pub struct ChannelAuthority {
-    pub channels: Value,
-    pub labels: Arc<Labels>,
+/// The issuer of the case's test human subjects (one per fixture channel human).
+pub const TEST_SUBJECT_ISSUER: &str = "m3-closure-test-realm";
+/// The case's test administrator (bootstrap enrollment; enrolls the fixture humans).
+pub const TEST_ADMIN: &str = "m3-closure-admin";
+/// The approval listener's channel identity (from configuration, never a submitted field).
+pub const LISTENER_CHANNEL: &str = "m3-closure-approval-listener";
+
+/// The credential id enrolled for a test subject.
+pub fn test_credential(subject: &str) -> String {
+    format!("m3c-cred:{subject}")
 }
 
-impl ApprovalAuthority for ChannelAuthority {
-    fn authenticate(
+/// The response the test verifier accepts for the case administrator.
+pub const ADMIN_RESPONSE: &str = "m3-closure-admin-assertion";
+
+/// A NON-SHIPPING test verifier (C3, D-042: only in this Cargo example, never in a library
+/// or release build): it stands in for the WebAuthn verifier of the approval listener. A
+/// fixture approval is presented as the response `<channel> NUL <human> NUL <credential>`,
+/// accepted only when the fixture's channel table lists exactly that credential for that
+/// human on that channel and the human is the ceremony's subject; the case administrator
+/// answers [`ADMIN_RESPONSE`]. Every accepted answer is still checked by the broker against
+/// the stored challenge (`VerifiedAssertion::check`), like the real verifier's.
+pub struct ChannelVerifier {
+    pub channels: Value,
+    pub labels: Arc<Labels>,
+    pub nonce: AtomicU64,
+}
+
+impl HumanVerifier for ChannelVerifier {
+    fn begin(
         &self,
-        p: &ApprovalPresentation<'_>,
-    ) -> Result<AuthenticatedApprover, ApproverRefusal> {
-        let channel = self
-            .channels
-            .get(p.channel)
-            .ok_or(ApproverRefusal::UntrustedChannel)?;
-        let expected = channel
-            .get(p.approver)
-            .and_then(Value::as_str)
-            .ok_or(ApproverRefusal::Unauthenticated)?;
-        if expected.as_bytes() != p.credential {
-            return Err(ApproverRefusal::Unauthenticated);
-        }
-        self.labels.add(C3);
-        Ok(AuthenticatedApprover {
-            id: p.approver.to_string(),
-            kind: PrincipalKind::Human,
-            channel: p.channel.to_string(),
-            issuer: TEST_ISSUER.to_string(),
-            evidence_ref: format!(
-                "test-authentication:{}",
-                CASE_COUNTER.load(Ordering::SeqCst)
-            ),
+        _subject: &SubjectId,
+        _credentials: &ActiveCredentials,
+    ) -> Result<CeremonyStart, VerifierError> {
+        let state = format!(
+            "m3c-ceremony-{}-{}",
+            CASE_COUNTER.load(Ordering::SeqCst),
+            self.nonce.fetch_add(1, Ordering::SeqCst)
+        )
+        .into_bytes();
+        Ok(CeremonyStart {
+            client_options: Vec::new(),
+            challenge_digest: Digest::of_bytes(&state),
+            state: CeremonyState::from_bytes(state),
         })
     }
+
+    fn finish(
+        &self,
+        state: &CeremonyState,
+        response: &[u8],
+        credentials: &ActiveCredentials,
+    ) -> Result<VerifiedAssertion, VerifierError> {
+        let subject = credentials.subject();
+        let authenticated = if subject.subject == TEST_ADMIN {
+            response == ADMIN_RESPONSE.as_bytes()
+        } else {
+            let text = std::str::from_utf8(response).map_err(|_| VerifierError::Malformed)?;
+            let mut parts = text.split('\0');
+            let (Some(channel), Some(human), Some(secret), None) =
+                (parts.next(), parts.next(), parts.next(), parts.next())
+            else {
+                return Err(VerifierError::Malformed);
+            };
+            let listed = self
+                .channels
+                .get(channel)
+                .and_then(|c| c.get(human))
+                .and_then(Value::as_str);
+            human == subject.subject && listed == Some(secret)
+        };
+        if !authenticated {
+            return Err(VerifierError::SignatureInvalid);
+        }
+        let credential = test_credential(&subject.subject);
+        if !credentials.ids().contains(&credential) {
+            return Err(VerifierError::CredentialUnknown);
+        }
+        if subject.subject != TEST_ADMIN {
+            self.labels.add(C3);
+        }
+        Ok(VerifiedAssertion::new(
+            &VerifierCapability::for_verifier_implementation(),
+            subject.clone(),
+            &credential,
+            true,
+            WEBAUTHN_PASSKEY,
+            Digest::of_bytes(state.as_bytes()),
+            None,
+        ))
+    }
+}
+
+/// A NON-SHIPPING test registration verifier (C3, D-042; only in this Cargo example): it
+/// stands in for the WebAuthn registration of the approval listener. The response is the
+/// credential id; the result is ES256 and user verified, and the ledger still accepts it
+/// only against its own registration row (S5, X8: raw public material is never enrolled).
+pub struct Registrar;
+
+static REGISTRATION_NONCE: AtomicU64 = AtomicU64::new(0);
+
+impl RegistrationVerifier for Registrar {
+    fn relying_party(&self) -> RelyingParty {
+        RelyingParty {
+            rp_id: "localhost".into(),
+            origin: "http://localhost:8443".into(),
+        }
+    }
+
+    fn begin_registration(&self, _subject: &SubjectId) -> Result<RegistrationStart, VerifierError> {
+        let state = format!(
+            "m3c-registration-{}-{}",
+            CASE_COUNTER.load(Ordering::SeqCst),
+            REGISTRATION_NONCE.fetch_add(1, Ordering::SeqCst)
+        )
+        .into_bytes();
+        Ok(RegistrationStart {
+            client_options: Vec::new(),
+            state: CeremonyState::from_bytes(state),
+        })
+    }
+
+    fn finish_registration(
+        &self,
+        binding: &RegistrationBinding,
+        _state: &CeremonyState,
+        response: &[u8],
+    ) -> Result<VerifiedRegistration, VerifierError> {
+        let credential = std::str::from_utf8(response).map_err(|_| VerifierError::Malformed)?;
+        Ok(VerifiedRegistration::new(
+            &VerifierCapability::for_verifier_implementation(),
+            binding,
+            credential,
+            b"m3c-test-public-material".to_vec(),
+            ES256,
+            true,
+        ))
+    }
+}
+
+/// A test credential `credential` for `who` from `ledger`'s registration ceremony.
+pub fn register(
+    ledger: &dyn RegistrationLedger,
+    now: &dyn Fn() -> Result<ObservedTime, String>,
+    who: &SubjectId,
+    credential: &str,
+) -> Result<VerifiedRegistration, String> {
+    let issued = ledger
+        .begin_registration(&RegistrationBegin {
+            subject: who,
+            verifier: &Registrar,
+            now: now()?,
+        })
+        .map_err(|f| format!("registration: {}", f.error))?
+        .map_err(|r| format!("registration refused: {}", r.code()))?;
+    ledger
+        .finish_registration(&RegistrationFinish {
+            registration_id: &issued.registration_id,
+            response: credential.as_bytes(),
+            verifier: &Registrar,
+            now: now()?,
+        })
+        .map_err(|f| format!("registration: {}", f.error))?
+        .map_err(|r| format!("registration refused: {}", r.code()))
+}
+
+/// The case's test administrator `admin` with test credential `credential`, bootstrapped
+/// through the production bootstrap entry point on the closed ledger at `path` (S5, X8:
+/// exclusive ownership, its own registration row).
+fn bootstrap(
+    path: &std::path::Path,
+    clock: &dyn EffectiveClock,
+    admin: &SubjectId,
+    credential: &str,
+) -> Result<(), String> {
+    let session = BootstrapSession::open(path)
+        .map_err(|e| format!("bootstrap: {e}"))?
+        .map_err(|r| format!("bootstrap refused: {}", r.code()))?;
+    let now = || {
+        session
+            .observe(clock)
+            .map_err(|e| format!("bootstrap time: {e:?}"))
+    };
+    let reg = register(&session, &now, admin, credential)?;
+    let at = now()?;
+    session
+        .bootstrap(
+            &BootstrapEnrollment {
+                subject: admin.clone(),
+                credential: reg,
+                linked_identities: Vec::new(),
+            },
+            at,
+        )
+        .map_err(|f| format!("bootstrap: {}", f.error))?
+        .map_err(|r| format!("bootstrap refused: {}", r.code()))?;
+    Ok(())
 }
 
 pub struct TestOperators;
@@ -571,13 +785,20 @@ impl World {
         permit_key: PermitKey,
         ring: MemoryKeyRing,
         labels: Arc<Labels>,
+        admin: (&SubjectId, &str),
     ) -> Result<World, String> {
         let n = CASE_COUNTER.fetch_add(1, Ordering::SeqCst);
         let dir = std::env::temp_dir().join(format!("writ-m3-closure-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).map_err(|_| "case directory".to_string())?;
-        let ledger = SqliteLedger::create(&dir.join("ledger.db"))
-            .map_err(|e| format!("ledger create: {e}"))?;
+        let clock = TestClock(Mutex::new(now));
+        drop(
+            SqliteLedger::create(&dir.join("ledger.db"))
+                .map_err(|e| format!("ledger create: {e}"))?,
+        );
+        bootstrap(&dir.join("ledger.db"), &clock, admin.0, admin.1)?;
+        let ledger =
+            SqliteLedger::open(&dir.join("ledger.db")).map_err(|e| format!("ledger open: {e}"))?;
         let effects = SqliteEffectStore::create(&dir.join("effects.db"), ledger.ledger_id())
             .map_err(|e| format!("effects create: {e}"))?;
         let ledger_down = Arc::new(AtomicBool::new(false));
@@ -588,7 +809,7 @@ impl World {
                 effects,
             }),
             active: ActivePolicy::new(policy),
-            clock: TestClock(Mutex::new(now)),
+            clock,
             permit_key,
             ring,
             labels,

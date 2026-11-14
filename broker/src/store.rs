@@ -199,7 +199,9 @@ pub trait LedgerStore {
 pub trait GrantLedger: Sync {
     /// The `approve` logical transaction: insert `grant` with `uses` 0, or
     /// [`GrantInsert::LabelInUse`] (rolled back; the existing grant is never
-    /// reset or replenished).
+    /// reset or replenished), or [`GrantInsert::Refused`] when the ledger
+    /// mints grants only in its own approval ceremony (the SQLite
+    /// `writ-ledger-6` ledger refuses every insert, D-042 X1).
     fn insert_grant(&self, grant: &NewGrant) -> Result<GrantInsert, StoreError>;
 
     /// The `reserve` logical transaction (LEDGER-SQLITE.md T-reserve): read the

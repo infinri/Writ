@@ -19,12 +19,26 @@
 //!   checked in T-reserve; the client permit is never read. A client-asserted `reconcile`
 //!   has no production counterpart: the step runs production evidence-based reconciliation
 //!   instead and answers it as a production difference.
+//! - **Signoffs (M4-11; D-040 O-4; D-042):** before a promotion presenting a trusted `/2`
+//!   record (one with a trust-`H` criterion, `evidence.rs`) whose binding equals the
+//!   current workflow, revision, artifact and active acceptance policy, the harness asks
+//!   for the signoff with the step's own sealed request (`Broker::request_signoff`, the
+//!   stored promotion context) and a reviewer enrolled through the production bootstrap and
+//!   enrollment ceremony signs it on the production approval-ledger ceremony with a
+//!   non-shipping test verifier (`signoff.rs`, label `M4-test-verifier-signoff`). The
+//!   production promotion then verifies and consumes it at use time. Nothing is signed for
+//!   a record the kernel would refuse anyway, under an injected outage or after a crash;
+//!   any refusal of the request or the ceremony is an adapter error, never hidden.
 //! - Final state is read only after every store is closed (item 7).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Barrier, Mutex};
 
 use rusqlite::OptionalExtension;
+use writ_broker::acceptance::{verify_record, RecordVersion};
+use writ_broker::approval::NewSignoff;
+use writ_broker::approval_store::ApprovalLedger;
+use writ_broker::clock::observe;
 use writ_broker::ingress::{verify_ingress, Seal, VerifiedRequest};
 use writ_broker::keys::{
     AcceptanceRecordKey, IngressKey, MemoryKeyRing, MemoryKeys, PermitKey, RunnerAttestationKey,
@@ -47,6 +61,7 @@ use crate::common::{
     C1, C5, C7, C8, DIFFERENCE, HARNESS_BUNDLE, PERMIT_DROPPED, SEALED_EFFECT, SEEDED,
 };
 use crate::evidence::{record_keys, registry_entries, runner_keys, Docs};
+use crate::signoff::{self, TestVerifier, SIGNOFF_LABEL};
 
 /// The harness bundles by name (m3/closure/bundles, D-037 item 2).
 const BUNDLES: [(&str, &str); 14] = [
@@ -396,6 +411,12 @@ struct TransitionCase {
     /// The bundle `activate_authorization_bundle` activates (declared per case).
     activate: Option<String>,
     seeded_receipts: u64,
+    /// The active acceptance requirement set (setup, then each successful activation).
+    requirements: Mutex<Value>,
+    /// The non-shipping test verifier of the harness signoffs.
+    verifier: TestVerifier,
+    /// Whether the signoff reviewer is enrolled in this case.
+    reviewer: Mutex<bool>,
 }
 
 enum Setup {
@@ -449,7 +470,15 @@ fn setup(
         Some(b) => PolicyState::loaded(b.clone()),
         None => PolicyState::Rejected,
     };
-    let world = World::create(policy, now, permit_key, ring, labels.clone())?;
+    let (admin, admin_credential) = signoff::administrator();
+    let world = World::create(
+        policy,
+        now,
+        permit_key,
+        ring,
+        labels.clone(),
+        (&admin, &admin_credential),
+    )?;
     let field = |k: &str| text(initial, k).unwrap_or_default();
     let key = WorkflowKey {
         tenant_id: field("tenant_id"),
@@ -492,6 +521,14 @@ fn setup(
         ),
         activate: text(&entry, "activate"),
         seeded_receipts: 0,
+        requirements: Mutex::new(
+            initial
+                .get("acceptance_requirements")
+                .cloned()
+                .unwrap_or(Value::Null),
+        ),
+        verifier: TestVerifier::default(),
+        reviewer: Mutex::new(false),
     };
     // Trusted records, issued once here: the declared override, then the first inline
     // presentation of each record id; later presentations are never issued.
@@ -903,6 +940,163 @@ impl TransitionCase {
         })
     }
 
+    /// Issue the signoffs a promotion step's trusted `/2` record names (module notes), when
+    /// its binding equals the current state; otherwise nothing.
+    fn ensure_signoffs(&self, op: &Value, key: &str) -> Result<(), String> {
+        let stores = self.world.stores()?;
+        if stores.ledger.crashed()
+            || self
+                .world
+                .ledger_down
+                .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Ok(());
+        }
+        let request = op.get("request").cloned().unwrap_or(Value::Null);
+        let attrs = request
+            .get("action")
+            .and_then(|a| a.get("attributes"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        let attr = |k: &str| text(&attrs, k);
+        let Some(doc) = attr("acceptance_record_id").and_then(|id| self.docs.issued(&id)) else {
+            return Ok(());
+        };
+        let Ok(verified) = verify_record(&doc, &self.record_keys) else {
+            return Ok(());
+        };
+        if verified.version() != RecordVersion::V2 {
+            return Ok(());
+        }
+        let r = verified.record();
+        let Some(w) = WorkflowLedger::workflow(&stores.ledger, &self.key)
+            .ok()
+            .flatten()
+        else {
+            return Ok(());
+        };
+        let requirements = self
+            .requirements
+            .lock()
+            .map_err(|_| "requirements")?
+            .clone();
+        let policy = |k: &str| text(&requirements, k);
+        let principal = request.get("principal");
+        let target = format!(
+            "workflow:{}/{}/{}",
+            self.key.tenant_id, self.key.project_id, self.key.workflow_id
+        );
+        let current = text(&request, "tenant_id").as_deref() == Some(self.key.tenant_id.as_str())
+            && text(&request, "project_id").as_deref() == Some(self.key.project_id.as_str())
+            && request
+                .get("action")
+                .and_then(|a| a.get("resource"))
+                .and_then(|r| text(r, "canonical_resource_id"))
+                == Some(target)
+            && request
+                .get("expected_state_revision")
+                .and_then(Value::as_int)
+                == Some(w.revision)
+            && r.tenant_id == self.key.tenant_id
+            && r.project_id == self.key.project_id
+            && r.workflow_id == self.key.workflow_id
+            && r.task_id == w.task_id
+            && r.transition.from_state == w.state
+            && r.state_revision.get() == w.revision
+            && r.artifact_snapshot_id == w.artifact_snapshot_id
+            && r.artifact_digest == w.artifact_digest
+            && attr("artifact_snapshot_id").as_deref() == Some(r.artifact_snapshot_id.as_str())
+            && attr("artifact_digest").as_deref() == Some(r.artifact_digest.as_str())
+            && attr("from_state").as_deref() == Some(r.transition.from_state.as_str())
+            && attr("to_state").as_deref() == Some(r.transition.to_state.as_str())
+            && policy("acceptance_policy_id").as_deref()
+                == Some(r.policy.acceptance_policy_id.as_str())
+            && policy("acceptance_policy_version").as_deref()
+                == Some(r.policy.acceptance_policy_version.as_str())
+            && policy("acceptance_policy_bundle_sha").as_deref()
+                == Some(r.policy.acceptance_policy_bundle_sha.as_str())
+            && principal
+                .and_then(|p| text(p, "id"))
+                .is_some_and(|s| !s.is_empty())
+            && principal
+                .and_then(|p| text(p, "verified_by"))
+                .is_some_and(|s| !s.is_empty());
+        if !current {
+            return Ok(());
+        }
+        let ledger = stores.ledger.sqlite();
+        let mut wanted = Vec::new();
+        for e in verified.evaluations() {
+            if let Some(id) = &e.signoff_id {
+                if ledger
+                    .signoff(id)
+                    .map_err(|e| format!("signoff read: {e}"))?
+                    .is_none()
+                {
+                    wanted.push((id.clone(), e.criterion_id.clone()));
+                }
+            }
+        }
+        if wanted.is_empty() {
+            return Ok(());
+        }
+        let now = {
+            let mut l: &crate::common::Ledger = &stores.ledger;
+            observe(&self.world.clock, &mut l).map_err(|e| format!("time: {e:?}"))?
+        };
+        if now.at() >= r.expires_at {
+            return Ok(());
+        }
+        let Ok(sealed) = self.seal(&Self::request(op, key)) else {
+            return Ok(());
+        };
+        let trust = Trust {
+            records: &self.docs,
+            attestations: &self.docs,
+            record_keys: &self.record_keys,
+            runner_keys: &self.runner_keys,
+            snapshots: &self.snapshots,
+        };
+        self.world
+            .broker()?
+            .request_signoff(&trust, &sealed)
+            .map_err(|r| format!("signoff request refused: {}", r.code()))?;
+        let mut enrolled = self.reviewer.lock().map_err(|_| "reviewer")?;
+        if !*enrolled {
+            signoff::enroll_reviewer(
+                ledger,
+                &self.verifier,
+                now,
+                &self.key.tenant_id,
+                &self.key.project_id,
+            )?;
+            *enrolled = true;
+        }
+        for (id, criterion) in wanted {
+            let binding = NewSignoff {
+                signoff_id: id,
+                tenant_id: r.tenant_id.clone(),
+                project_id: r.project_id.clone(),
+                task_id: r.task_id.clone(),
+                workflow_id: r.workflow_id.clone(),
+                from_state: r.transition.from_state.clone(),
+                to_state: r.transition.to_state.clone(),
+                acceptance_record_id: r.acceptance_record_id.clone(),
+                criterion_id: criterion,
+                artifact_snapshot_id: r.artifact_snapshot_id.clone(),
+                artifact_digest: r.artifact_digest.clone(),
+                acceptance_policy_id: r.policy.acceptance_policy_id.clone(),
+                acceptance_policy_version: r.policy.acceptance_policy_version.clone(),
+                acceptance_policy_bundle_sha: r.policy.acceptance_policy_bundle_sha.clone(),
+                state_revision: r.state_revision.get(),
+                expires_at: r.expires_at,
+            };
+            signoff::sign(ledger, &self.verifier, now, binding)?;
+        }
+        self.world.labels.add(SIGNOFF_LABEL);
+        Ok(())
+    }
+
     fn promote_once(&self, op: &Value, key: &str) -> Result<Value, String> {
         let verified = match self.sealed(op, key) {
             Ok(v) => v,
@@ -976,7 +1170,15 @@ impl TransitionCase {
             effect_prerequisites: self.prerequisites.clone(),
         };
         Ok(match self.admin(request)? {
-            Ok(()) => result("policy_activated"),
+            Ok(()) => {
+                if let Ok(mut active) = self.requirements.lock() {
+                    *active = op
+                        .get("acceptance_requirements")
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                }
+                result("policy_activated")
+            }
             Err(r) => refused(r.code()),
         })
     }
@@ -1041,6 +1243,9 @@ impl TransitionCase {
         let base = text(&promote, "idempotency_key").unwrap_or_default();
         let n = op.get("count").and_then(Value::as_int).unwrap_or(0);
         let keys: Vec<String> = (1..=n).map(|i| format!("{base}-{i}")).collect();
+        if let Some(first) = keys.first() {
+            self.ensure_signoffs(&promote, first)?;
+        }
         let barrier = Barrier::new(keys.len());
         let outcomes: Vec<Result<Value, String>> = std::thread::scope(|scope| {
             let handles: Vec<_> = keys
@@ -1102,6 +1307,11 @@ impl TransitionCase {
                 "faults inside concurrent".into(),
             ));
         }
+        for o in ops {
+            if o.get("op").and_then(Value::as_str) == Some("promote") {
+                self.ensure_signoffs(o, &text(o, "idempotency_key").unwrap_or_default())?;
+            }
+        }
         let barrier = Barrier::new(ops.len());
         let outcomes: Vec<Result<Value, String>> = std::thread::scope(|scope| {
             let handles: Vec<_> = ops
@@ -1150,6 +1360,7 @@ impl TransitionCase {
             "promote" => {
                 let point = (fault == Some("crash_before_commit")).then_some(Point::Promote);
                 let key = text(op, "idempotency_key").unwrap_or_default();
+                self.ensure_signoffs(op, &key)?;
                 self.faulted(point, |c| c.promote_once(op, &key))
             }
             "effect" => {

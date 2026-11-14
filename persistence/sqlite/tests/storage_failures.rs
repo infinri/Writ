@@ -35,14 +35,30 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags};
-use writ_broker::clock::{ClockError, ClockEvent, Drift, EffectiveClock, Reading};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use writ_broker::approval_store::{
+    approval_request_for, ApprovalLedger, BootstrapEnrollment, CeremonyBegin, CeremonyFinish,
+    CeremonyOp, NewEnrollment, NewRole, RegistrationBegin, RegistrationFinish, RegistrationLedger,
+};
+use writ_broker::authorize::authorize;
+use writ_broker::clock::{
+    observe, ClockError, ClockEvent, Drift, EffectiveClock, ObservedTime, Reading,
+};
 use writ_broker::execute::{
     Broker, DispatchIntent, Dispatched, Executed, FailureRecord, Observation, PendingReceipt,
     Reconciled, Resolution,
 };
 use writ_broker::grants::{
-    Approval, ApprovalAuthority, ApprovalPresentation, ApproverRefusal, AuthenticatedApprover,
-    GrantInsert, GrantLabel, NewGrant, PrincipalKind, ReserveOutcome, ReserveRequest, Verdict,
+    approval_grant_label, Approval, ApprovalAuthority, ApprovalPresentation, ApproverRefusal,
+    AuthenticatedApprover, GrantInsert, GrantLabel, NewGrant, ReserveOutcome, ReserveRequest,
+    Verdict,
+};
+use writ_broker::human::{
+    ActiveCredentials, CeremonyStart, CeremonyState, HumanVerifier, Permission,
+    RegistrationBinding, RegistrationStart, RegistrationVerifier, RelyingParty, SubjectId,
+    VerifiedAssertion, VerifiedRegistration, VerifierCapability, VerifierError, ES256,
+    WEBAUTHN_PASSKEY,
 };
 use writ_broker::ingress::{verify_ingress, Seal, VerifiedRequest};
 use writ_broker::keys::{IngressKey, MemoryKeyRing, PermitKey};
@@ -50,10 +66,11 @@ use writ_broker::policy::{ActivePolicy, ExclusiveHold, PolicyState};
 use writ_broker::refusal::Refusal;
 use writ_broker::store::{Timestamp, TxFailure, TxStage};
 use writ_broker::writ_kernel::contracts::StateRevision;
-use writ_broker::writ_kernel::json::{self, Value};
+use writ_broker::writ_kernel::json::{self, Digest, Value};
 use writ_broker::writ_kernel::policy::load_bundle;
 use writ_ledger_sqlite::{
-    ExecuteLedger, GrantLedger, LedgerStore, SqliteEffectStore, SqliteLedger, StoreError,
+    BootstrapSession, ExecuteLedger, GrantLedger, LedgerStore, SqliteEffectStore, SqliteLedger,
+    StoreError,
 };
 
 const CHILD: &str = "WRIT_STORAGE_FAILURE_CHILD";
@@ -302,7 +319,7 @@ impl ApprovalAuthority for Alice {
         }
         Ok(AuthenticatedApprover {
             id: "human:alice".into(),
-            kind: PrincipalKind::Human,
+            kind: writ_broker::grants::PrincipalKind::Human,
             channel: "approval-ui".into(),
             issuer: "storage-failure-test-authority".into(),
             evidence_ref: "test-authentication:1".into(),
@@ -310,6 +327,238 @@ impl ApprovalAuthority for Alice {
     }
 }
 
+/// Test human verifier (test code only): unique ceremonies; `ok:<credential>` verifies.
+struct TestVerifier;
+
+static NONCE: AtomicU64 = AtomicU64::new(0);
+
+impl HumanVerifier for TestVerifier {
+    fn begin(
+        &self,
+        _subject: &SubjectId,
+        _credentials: &ActiveCredentials,
+    ) -> Result<CeremonyStart, VerifierError> {
+        let state = format!(
+            "nonce-{}-{}",
+            std::process::id(),
+            NONCE.fetch_add(1, Ordering::SeqCst)
+        )
+        .into_bytes();
+        Ok(CeremonyStart {
+            client_options: Vec::new(),
+            challenge_digest: Digest::of_bytes(&state),
+            state: CeremonyState::from_bytes(state),
+        })
+    }
+
+    fn finish(
+        &self,
+        state: &CeremonyState,
+        response: &[u8],
+        credentials: &ActiveCredentials,
+    ) -> Result<VerifiedAssertion, VerifierError> {
+        let text = std::str::from_utf8(response).map_err(|_| VerifierError::Malformed)?;
+        let credential = text
+            .strip_prefix("ok:")
+            .ok_or(VerifierError::SignatureInvalid)?;
+        if !credentials.ids().iter().any(|c| c == credential) {
+            return Err(VerifierError::CredentialUnknown);
+        }
+        Ok(VerifiedAssertion::new(
+            &VerifierCapability::for_verifier_implementation(),
+            credentials.subject().clone(),
+            credential,
+            true,
+            WEBAUTHN_PASSKEY,
+            Digest::of_bytes(state.as_bytes()),
+            None,
+        ))
+    }
+}
+
+fn ceremony(ledger: &SqliteLedger, who: &SubjectId, op: &CeremonyOp, key: &str, now: ObservedTime) {
+    let begin = ledger.begin_ceremony(&CeremonyBegin {
+        op,
+        subject: who,
+        idempotency_key: key,
+        verifier: &TestVerifier,
+        now,
+    });
+    if let Ok(Ok(c)) = begin {
+        let response = format!("ok:cred-{}", who.subject);
+        let _ = ledger.finish_ceremony(&CeremonyFinish {
+            op,
+            challenge_id: &c.challenge_id,
+            response: response.as_bytes(),
+            idempotency_key: key,
+            channel: "approval-listener",
+            verifier: &TestVerifier,
+            now,
+        });
+    }
+}
+
+/// Test registration verifier (test code only): the response is the credential id; ES256,
+/// user verified.
+impl RegistrationVerifier for TestVerifier {
+    fn relying_party(&self) -> RelyingParty {
+        RelyingParty {
+            rp_id: "localhost".into(),
+            origin: "http://localhost:8443".into(),
+        }
+    }
+
+    fn begin_registration(&self, _subject: &SubjectId) -> Result<RegistrationStart, VerifierError> {
+        let state = format!("reg-{}", NONCE.fetch_add(1, Ordering::SeqCst)).into_bytes();
+        Ok(RegistrationStart {
+            client_options: Vec::new(),
+            state: CeremonyState::from_bytes(state),
+        })
+    }
+
+    fn finish_registration(
+        &self,
+        binding: &RegistrationBinding,
+        _state: &CeremonyState,
+        response: &[u8],
+    ) -> Result<VerifiedRegistration, VerifierError> {
+        let credential = std::str::from_utf8(response).map_err(|_| VerifierError::Malformed)?;
+        Ok(VerifiedRegistration::new(
+            &VerifierCapability::for_verifier_implementation(),
+            binding,
+            credential,
+            format!("pk-{credential}").into_bytes(),
+            ES256,
+            true,
+        ))
+    }
+}
+
+/// One registration ceremony (S5, X8) for `who` with credential `cred-<subject>`.
+fn register(
+    ledger: &dyn RegistrationLedger,
+    now: &dyn Fn() -> ObservedTime,
+    who: &SubjectId,
+) -> VerifiedRegistration {
+    let issued = ledger
+        .begin_registration(&RegistrationBegin {
+            subject: who,
+            verifier: &TestVerifier,
+            now: now(),
+        })
+        .unwrap()
+        .unwrap();
+    ledger
+        .finish_registration(&RegistrationFinish {
+            registration_id: &issued.registration_id,
+            response: format!("cred-{}", who.subject).as_bytes(),
+            verifier: &TestVerifier,
+            now: now(),
+        })
+        .unwrap()
+        .unwrap()
+}
+
+/// On the closed ledger `db`: the bootstrap administrator `storage-root` through the
+/// separate bootstrap entry point (S5, X8), then the test approver `storage-approver`
+/// (`approver` over every scope) through the enrollment ceremony.
+fn enroll_storage_approver(db: &Path) {
+    let clock = clock();
+    let Ok(Ok(session)) = BootstrapSession::open(db) else {
+        panic!("bootstrap session");
+    };
+    let root = SubjectId::new("writ-local", "storage-root");
+    let reg = register(&session, &|| session.observe(&clock).unwrap(), &root);
+    let at = session.observe(&clock).unwrap();
+    session
+        .bootstrap(
+            &BootstrapEnrollment {
+                subject: root.clone(),
+                credential: reg,
+                linked_identities: vec![],
+            },
+            at,
+        )
+        .unwrap()
+        .unwrap();
+    let ledger = SqliteLedger::open(db).unwrap();
+    let now = || {
+        let mut l: &SqliteLedger = &ledger;
+        observe(&clock, &mut l).unwrap()
+    };
+    let approver = SubjectId::new("writ-local", "storage-approver");
+    let enrollment = NewEnrollment {
+        subject: approver.clone(),
+        kind: writ_broker::human::PrincipalKind::Human,
+        credential: Some(register(&ledger, &now, &approver)),
+        linked_identities: vec![],
+        roles: vec![NewRole {
+            permission: Permission::Approver,
+            tenant_id: "*".into(),
+            project_id: "*".into(),
+        }],
+    };
+    ceremony(
+        &ledger,
+        &root,
+        &CeremonyOp::Enroll { enrollment },
+        "enroll-storage-approver",
+        now(),
+    );
+}
+
+/// The M4 grant for `req` (D-042 X1: `writ-ledger-6` mints grants only in its approval
+/// ceremony): records the approval request the broker records and has the test approver
+/// (enrolled by [`enroll_storage_approver`]) approve it; a request already decided is left
+/// as it is. Returns the request's grant label (which names a grant only once the request
+/// was approved).
+fn grant_for(
+    ledger: &SqliteLedger,
+    active: &ActivePolicy,
+    clock: &TestClock,
+    req: &Value,
+) -> Result<GrantLabel, Refusal> {
+    let mut l: &SqliteLedger = ledger;
+    let now = observe(clock, &mut l).map_err(|e| e.refusal())?;
+    let request = {
+        let shared = active.shared();
+        let inputs = shared.trusted_inputs(revision());
+        let verified = verify(req);
+        let authorized = authorize(&verified, &inputs, &now)?;
+        approval_request_for(&authorized, now).ok_or(Refusal::NotApprovable)?
+    };
+    ledger
+        .record_approval_request(&request)
+        .map_err(|f| Refusal::LedgerUnavailable(f.error))?;
+    let approver = SubjectId::new("writ-local", "storage-approver");
+    let rid = request.request_id().to_string();
+    ceremony(
+        ledger,
+        &approver,
+        &CeremonyOp::Approve {
+            request_id: rid.clone(),
+        },
+        &format!("approve-{rid}"),
+        now,
+    );
+    Ok(approval_grant_label(&rid).unwrap())
+}
+
+/// `publish(idem)` with an action digest derived from `idem` (one M4 request per key).
+fn publish_distinct(idem: &str) -> Value {
+    let mut v = publish(idem);
+    if let Value::Obj(m) = &mut v {
+        if let Some(Value::Obj(a)) = m.get_mut("action") {
+            a.insert(
+                "action_digest".into(),
+                json::s(Digest::of_bytes(idem.as_bytes()).as_str()),
+            );
+        }
+    }
+    v
+}
+
+/// The M3 approval path (closed on `writ-ledger-6`; still observes trusted time first).
 fn approve<L, A>(b: &Broker<'_, L, A>, req: &Value, label: &str) -> Result<(), Refusal>
 where
     L: ExecuteLedger + ?Sized,
@@ -478,13 +727,14 @@ fn storage_failure_child() {
             0 => format!("{:?}", b.reconcile()),
             1..=3 => {
                 let k = format!("p-{}", rng.below(400));
-                let _ = approve(&b, &publish(&k), &format!("g-{k}"));
-                let g = GrantLabel::new(&format!("g-{k}")).unwrap();
-                format!(
-                    "{:?}",
-                    b.execute(&verify(&publish(&k)), revision(), Some(&g))
-                        .result
-                )
+                match grant_for(&ledger, &active, &clock, &publish_distinct(&k)) {
+                    Ok(g) => format!(
+                        "{:?}",
+                        b.execute(&verify(&publish_distinct(&k)), revision(), Some(&g))
+                            .result
+                    ),
+                    Err(r) => format!("{r:?}"),
+                }
             }
             _ => {
                 effects.set_effects_fail(rng.below(6) == 0);
@@ -509,6 +759,7 @@ fn an_unwritable_ledger_after_sigkill_fails_closed_without_change() {
     let ledger = SqliteLedger::create(&db).unwrap();
     drop(SqliteEffectStore::create(&d.join("effects.db"), ledger.ledger_id()).unwrap());
     drop(ledger);
+    enroll_storage_approver(&db);
 
     let mut child = Command::new(std::env::current_exe().unwrap())
         .args([
@@ -683,7 +934,9 @@ fn fully_unavailable_storage_fails_closed_without_audit_effect_or_state_change()
     let _serial = serial();
     let d = tmp("outage");
     let (db, edb) = (d.join("ledger.db"), d.join("effects.db"));
-    let ledger = SqliteLedger::create(&db).unwrap();
+    drop(SqliteLedger::create(&db).unwrap());
+    enroll_storage_approver(&db);
+    let ledger = SqliteLedger::open(&db).unwrap();
     let effects = SqliteEffectStore::create(&edb, ledger.ledger_id()).unwrap();
     let (active, clock, key) = (policy(), clock(), permit_key());
 
@@ -693,7 +946,7 @@ fn fully_unavailable_storage_fails_closed_without_audit_effect_or_state_change()
     let done = b.execute(&verify(&file_write("k1")), revision(), None);
     assert_eq!(done.result, Ok(Executed::EffectCompleted));
     let permit = done.permit.unwrap();
-    approve(&b, &publish("k2"), "g2").unwrap();
+    let g2 = grant_for(&ledger, &active, &clock, &publish("k2")).unwrap();
     assert!(b
         .execute(&verify(&publish("k3")), revision(), None)
         .result
@@ -706,7 +959,6 @@ fn fully_unavailable_storage_fails_closed_without_audit_effect_or_state_change()
 
     let outage = Outage { real: &ledger };
     let b = Broker::new(&active, &clock, &outage, &effects, &key);
-    let g2 = GrantLabel::new("g2").unwrap();
     let answers = [
         (
             "execute new",

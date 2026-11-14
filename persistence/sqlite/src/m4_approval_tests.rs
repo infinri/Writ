@@ -8,35 +8,31 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Barrier;
 use std::thread;
 
-use writ_broker::approval::{
-    ApprovalCode, ApprovalStatus, ChallengeRefusal, NewSignoff, RevocationTarget,
-};
+use writ_broker::approval::{ApprovalCode, ApprovalStatus, ChallengeRefusal, RevocationTarget};
 use writ_broker::approval_store::{
     ApprovalLedger, BootstrapEnrollment, CeremonyBegin, CeremonyFinish, CeremonyOp,
     CeremonyOutcome, CeremonyResult, IssuedChallenge, NewEnrollment, NewRole, RegistrationBegin,
-    RegistrationFinish, RegistrationLedger, SignoffParties, UseState,
+    RegistrationFinish, RegistrationLedger, UseState,
 };
 use writ_broker::clock::{observe, ObservedTime};
 use writ_broker::execute::{Executed, Execution};
 use writ_broker::grants::{approval_grant_label, GrantLabel, Replay, ReserveOutcome};
 use writ_broker::human::{
-    ActiveCredentials, CeremonyStart, CeremonyState, CredentialUpdate, HumanVerifier, Permission,
-    PrincipalKind, RegistrationBinding, RegistrationStart, RegistrationVerifier, RelyingParty,
-    SubjectId, VerifiedAssertion, VerifiedRegistration, VerifierCapability, VerifierError, ES256,
-    WEBAUTHN_PASSKEY,
+    Permission, PrincipalKind, RegistrationBinding, RegistrationVerifier, SubjectId,
+    VerifiedRegistration, VerifierCapability, VerifierError, ES256,
 };
 use writ_broker::refusal::Refusal;
 use writ_broker::store::{ExecuteLedger, StoreError, TxStage};
-use writ_broker::writ_kernel::json::{self, Digest, Value};
+use writ_broker::writ_kernel::json::{self, Value};
 
-use super::approval_store::consume_signoff;
 use super::execute_tests::World;
-use super::grant_tests::{approve, now, publish, revision, set, uses, verify};
-use super::{fault, BootstrapSession, End, SqliteLedger, SCHEMA_V5, SCHEMA_VERSION_V5};
+use super::grant_tests::{approve, label, now, publish, revision, set, uses, verify};
+use super::m4_support::{bootstrap_root_at, registered, session_register, TestVerifier, ORIGIN};
+use super::{fault, BootstrapSession, SqliteLedger, SCHEMA_V5, SCHEMA_VERSION_V5};
 
 const T: &str = "fixture-tenant";
 const P: &str = "fixture-project";
@@ -44,151 +40,13 @@ const ADAPTER: &str = "writ-host-adapter:fixture";
 const REQUESTER: &str = "agent:claude-session-1";
 
 // ---------------------------------------------------------------------------
-// Test verifier (test code only).
-
-/// Responses are `<mode>:<credential id>`: `ok`, `nouv` (no user verification), `other`
-/// (an assertion from another ceremony), `update` (with a credential update); anything else
-/// is a forged signature. `fixed` makes every ceremony reuse one challenge (C1 test).
-#[derive(Default)]
-struct TestVerifier {
-    next: AtomicU64,
-    fixed: AtomicBool,
-    /// Report another origin than the one rows are issued for (registration RP test).
-    other_origin: AtomicBool,
-}
-
-const ORIGIN: &str = "http://localhost:8443";
-
-/// Registration responses are `<mode>|<credential id>|<public material>`: `ok`, `nouv` (no
-/// user verification), `rs256` (an RS256 credential), `other` (a result for another
-/// registration row); anything else is a forged attestation.
-impl RegistrationVerifier for TestVerifier {
-    fn relying_party(&self) -> RelyingParty {
-        let origin = if self.other_origin.load(Ordering::SeqCst) {
-            "http://localhost:9999"
-        } else {
-            ORIGIN
-        };
-        RelyingParty {
-            rp_id: "localhost".into(),
-            origin: origin.into(),
-        }
-    }
-
-    fn begin_registration(&self, _subject: &SubjectId) -> Result<RegistrationStart, VerifierError> {
-        let n = self.next.fetch_add(1, Ordering::SeqCst);
-        Ok(RegistrationStart {
-            client_options: b"creation-options".to_vec(),
-            state: CeremonyState::from_bytes(format!("registration-nonce-{n}").into_bytes()),
-        })
-    }
-
-    fn finish_registration(
-        &self,
-        binding: &RegistrationBinding,
-        _state: &CeremonyState,
-        response: &[u8],
-    ) -> Result<VerifiedRegistration, VerifierError> {
-        let text = std::str::from_utf8(response).map_err(|_| VerifierError::Malformed)?;
-        let mut parts = text.splitn(3, '|');
-        let (Some(mode), Some(credential), Some(material)) =
-            (parts.next(), parts.next(), parts.next())
-        else {
-            return Err(VerifierError::Malformed);
-        };
-        let cap = VerifierCapability::for_verifier_implementation();
-        let make = |b: &RegistrationBinding, algorithm: &str, uv: bool| {
-            VerifiedRegistration::new(
-                &cap,
-                b,
-                credential,
-                material.as_bytes().to_vec(),
-                algorithm,
-                uv,
-            )
-        };
-        match mode {
-            "ok" => Ok(make(binding, ES256, true)),
-            "nouv" => Ok(make(binding, ES256, false)),
-            "rs256" => Ok(make(binding, "RS256", true)),
-            "other" => {
-                let mut b = binding.clone();
-                b.registration_id = "reg-another".into();
-                Ok(make(&b, ES256, true))
-            }
-            _ => Err(VerifierError::SignatureInvalid),
-        }
-    }
-}
-
-impl HumanVerifier for TestVerifier {
-    fn begin(
-        &self,
-        _subject: &SubjectId,
-        _credentials: &ActiveCredentials,
-    ) -> Result<CeremonyStart, VerifierError> {
-        let n = self.next.fetch_add(1, Ordering::SeqCst);
-        let state = if self.fixed.load(Ordering::SeqCst) {
-            b"fixed-nonce".to_vec()
-        } else {
-            format!("nonce-{n}").into_bytes()
-        };
-        Ok(CeremonyStart {
-            client_options: b"options".to_vec(),
-            challenge_digest: Digest::of_bytes(&state),
-            state: CeremonyState::from_bytes(state),
-        })
-    }
-
-    fn finish(
-        &self,
-        state: &CeremonyState,
-        response: &[u8],
-        credentials: &ActiveCredentials,
-    ) -> Result<VerifiedAssertion, VerifierError> {
-        let text = std::str::from_utf8(response).map_err(|_| VerifierError::Malformed)?;
-        let (mode, credential) = text.split_once(':').ok_or(VerifierError::Malformed)?;
-        if !credentials.ids().iter().any(|c| c == credential) {
-            return Err(VerifierError::CredentialUnknown);
-        }
-        let cap = VerifierCapability::for_verifier_implementation();
-        let digest = Digest::of_bytes(state.as_bytes());
-        let make = |uv: bool, digest: Digest, update: Option<CredentialUpdate>| {
-            VerifiedAssertion::new(
-                &cap,
-                credentials.subject().clone(),
-                credential,
-                uv,
-                WEBAUTHN_PASSKEY,
-                digest,
-                update,
-            )
-        };
-        match mode {
-            "ok" => Ok(make(true, digest, None)),
-            "nouv" => Ok(make(false, digest, None)),
-            "other" => Ok(make(true, Digest::of_bytes(b"another ceremony"), None)),
-            "update" => Ok(make(
-                true,
-                digest,
-                Some(CredentialUpdate {
-                    credential_id: credential.to_string(),
-                    public_material: b"material-2".to_vec(),
-                }),
-            )),
-            _ => Err(VerifierError::SignatureInvalid),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // World.
 
-fn human(s: &str) -> SubjectId {
+pub(crate) fn human(s: &str) -> SubjectId {
     SubjectId::new("writ-local", s)
 }
 
-fn root() -> SubjectId {
+pub(crate) fn root() -> SubjectId {
     human("root")
 }
 
@@ -196,17 +54,21 @@ fn requester() -> SubjectId {
     SubjectId::new(ADAPTER, REQUESTER)
 }
 
-fn cred(s: &SubjectId) -> String {
+pub(crate) fn cred(s: &SubjectId) -> String {
     format!("cred-{}", s.subject)
 }
 
-fn ok(s: &SubjectId) -> String {
+pub(crate) fn ok(s: &SubjectId) -> String {
     format!("ok:{}", cred(s))
 }
 
 /// A human enrollment without its credential yet: [`M4::registered`] (and [`M4::enroll`])
 /// add one through the ledger's registration ceremony (S5, X8).
-fn person(name: &str, roles: &[(Permission, &str, &str)], linked: Vec<SubjectId>) -> NewEnrollment {
+pub(crate) fn person(
+    name: &str,
+    roles: &[(Permission, &str, &str)],
+    linked: Vec<SubjectId>,
+) -> NewEnrollment {
     NewEnrollment {
         subject: human(name),
         kind: PrincipalKind::Human,
@@ -224,7 +86,7 @@ fn person(name: &str, roles: &[(Permission, &str, &str)], linked: Vec<SubjectId>
 }
 
 /// `repository.publish` (require_approval) with a distinct action digest per `n`.
-fn action(idem: &str, n: u32) -> Value {
+pub(crate) fn action(idem: &str, n: u32) -> Value {
     set(
         &publish(idem),
         &["action", "action_digest"],
@@ -232,79 +94,27 @@ fn action(idem: &str, n: u32) -> Value {
     )
 }
 
-fn digest_text(n: u32) -> String {
+pub(crate) fn digest_text(n: u32) -> String {
     format!("sha256:{n:064x}")
 }
 
-fn ap(code: ApprovalCode) -> Refusal {
+pub(crate) fn ap(code: ApprovalCode) -> Refusal {
     Refusal::Approval(code)
 }
 
-fn challenge(r: ChallengeRefusal) -> Refusal {
+pub(crate) fn challenge(r: ChallengeRefusal) -> Refusal {
     ap(ApprovalCode::ChallengeInvalid(r))
 }
 
-/// Bootstrap `root` through the separate entry point (S5, X8): an exclusive session, its
-/// `bootstrap` registration of `root`, then the bootstrap enrollment.
-fn bootstrap_root(
-    path: &std::path::Path,
-    clock: &dyn writ_broker::clock::EffectiveClock,
-    v: &TestVerifier,
-) -> Result<i64, Refusal> {
-    let s = BootstrapSession::open(path).expect("store")?;
-    let reg = session_register(
-        &s,
-        &|| s.observe(clock).unwrap(),
-        v,
-        &root(),
-        "ok|cred-root|pk-root",
-    )?;
-    let now = s.observe(clock).unwrap();
-    s.bootstrap(
-        &BootstrapEnrollment {
-            subject: root(),
-            credential: reg,
-            linked_identities: vec![],
-        },
-        now,
-    )
-    .expect("store")
-}
-
-/// One registration ceremony on `ledger`.
-fn session_register(
-    ledger: &dyn RegistrationLedger,
-    now: &dyn Fn() -> ObservedTime,
-    v: &TestVerifier,
-    subject: &SubjectId,
-    response: &str,
-) -> Result<VerifiedRegistration, Refusal> {
-    let issued = ledger
-        .begin_registration(&RegistrationBegin {
-            subject,
-            verifier: v,
-            now: now(),
-        })
-        .expect("store")?;
-    ledger
-        .finish_registration(&RegistrationFinish {
-            registration_id: &issued.registration_id,
-            response: response.as_bytes(),
-            verifier: v,
-            now: now(),
-        })
-        .expect("store")
-}
-
-struct M4 {
-    w: World,
-    v: TestVerifier,
+pub(crate) struct M4 {
+    pub(crate) w: World,
+    pub(crate) v: TestVerifier,
 }
 
 impl M4 {
     /// A fresh ledger with the bootstrap administrator `root`, approver `alice` and
     /// revoker `carol` in (fixture-tenant, fixture-project).
-    fn new(name: &str) -> M4 {
+    pub(crate) fn new(name: &str) -> M4 {
         let mut w = World::new(&format!("m4-{name}"));
         let v = TestVerifier::default();
         // The bootstrap runs through its own entry point, which owns the ledger file
@@ -315,7 +125,7 @@ impl M4 {
             SqliteLedger::create(&w.dir.join("placeholder.db")).unwrap(),
         );
         drop(held);
-        assert_eq!(bootstrap_root(&path, &w.clock, &v), Ok(1));
+        assert_eq!(bootstrap_root_at(&path, &w.clock, &v, &root()), Ok(1));
         drop(std::mem::replace(
             &mut w.ledger,
             SqliteLedger::open(&path).unwrap(),
@@ -328,35 +138,16 @@ impl M4 {
         m
     }
 
-    /// A credential for `subject` from the serving ledger's `enroll` registration ceremony.
-    fn register(
-        &self,
-        subject: &SubjectId,
-        response: &str,
-    ) -> Result<VerifiedRegistration, Refusal> {
-        session_register(self.l(), &|| self.now(), &self.v, subject, response)
-    }
-
-    /// `e` with a registered credential `cred-<name>` when it is a human without one.
-    fn registered(&self, mut e: NewEnrollment) -> NewEnrollment {
-        if e.kind == PrincipalKind::Human && e.credential.is_none() {
-            let name = &e.subject.subject;
-            let response = format!("ok|cred-{name}|pk-{name}");
-            e.credential = Some(self.register(&e.subject, &response).unwrap());
-        }
-        e
-    }
-
-    fn l(&self) -> &SqliteLedger {
+    pub(crate) fn l(&self) -> &SqliteLedger {
         &self.w.ledger
     }
 
-    fn now(&self) -> ObservedTime {
+    pub(crate) fn now(&self) -> ObservedTime {
         let mut l: &SqliteLedger = &self.w.ledger;
         observe(&self.w.clock, &mut l).unwrap()
     }
 
-    fn begin(
+    pub(crate) fn begin(
         &self,
         who: &SubjectId,
         op: &CeremonyOp,
@@ -373,7 +164,7 @@ impl M4 {
             .expect("store")
     }
 
-    fn finish(
+    pub(crate) fn finish(
         &self,
         op: &CeremonyOp,
         challenge_id: &str,
@@ -393,7 +184,7 @@ impl M4 {
             .expect("store")
     }
 
-    fn ceremony(
+    pub(crate) fn ceremony(
         &self,
         who: &SubjectId,
         op: &CeremonyOp,
@@ -403,18 +194,32 @@ impl M4 {
         self.finish(op, &c.challenge_id, &ok(who), key)
     }
 
-    fn enroll(&self, e: NewEnrollment) -> Result<CeremonyOutcome, Refusal> {
+    /// A credential for `subject` from the serving ledger's `enroll` registration ceremony.
+    pub(crate) fn register(
+        &self,
+        subject: &SubjectId,
+        response: &str,
+    ) -> Result<VerifiedRegistration, Refusal> {
+        session_register(self.l(), &|| self.now(), &self.v, subject, response)
+    }
+
+    /// `e` with a registered credential `cred-<name>` when it is a human without one.
+    pub(crate) fn registered(&self, e: NewEnrollment) -> NewEnrollment {
+        registered(self.l(), &|| self.now(), &self.v, e)
+    }
+
+    pub(crate) fn enroll(&self, e: NewEnrollment) -> Result<CeremonyOutcome, Refusal> {
         let e = self.registered(e);
         let key = format!("enroll-{}", e.subject.subject);
         self.ceremony(&root(), &CeremonyOp::Enroll { enrollment: e }, &key)
     }
 
-    fn exec(&self, req: &Value, grant: Option<&GrantLabel>) -> Execution {
+    pub(crate) fn exec(&self, req: &Value, grant: Option<&GrantLabel>) -> Execution {
         self.w.broker().execute(&verify(req), revision(), grant)
     }
 
     /// Ask for action `n` (APPROVAL_REQUIRED) and return the stored request id.
-    fn ask(&self, idem: &str, n: u32) -> String {
+    pub(crate) fn ask(&self, idem: &str, n: u32) -> String {
         let e = self.exec(&action(idem, n), None);
         assert_eq!(e.result, Err(Refusal::ApprovalRequired));
         assert!(
@@ -429,7 +234,7 @@ impl M4 {
     }
 
     /// Ask for action `n` and have `alice` approve it; returns (request id, grant).
-    fn approved(&self, idem: &str, n: u32) -> (String, GrantLabel) {
+    pub(crate) fn approved(&self, idem: &str, n: u32) -> (String, GrantLabel) {
         let id = self.ask(idem, n);
         let op = CeremonyOp::Approve {
             request_id: id.clone(),
@@ -447,7 +252,7 @@ impl M4 {
         (id, grant)
     }
 
-    fn revoke(
+    pub(crate) fn revoke(
         &self,
         who: &SubjectId,
         target: RevocationTarget,
@@ -460,19 +265,29 @@ impl M4 {
         self.ceremony(who, &op, key)
     }
 
-    fn count(&self, sql: &str) -> i64 {
+    pub(crate) fn count(&self, sql: &str) -> i64 {
         self.l().db().conn.query_row(sql, [], |r| r.get(0)).unwrap()
     }
 
-    fn text(&self, sql: &str, arg: &str) -> Option<String> {
+    pub(crate) fn text(&self, sql: &str, arg: &str) -> Option<String> {
         self.l().db().conn.query_row(sql, [arg], |r| r.get(0)).ok()
     }
 
-    fn status(&self, request_id: &str) -> ApprovalStatus {
+    pub(crate) fn status(&self, request_id: &str) -> ApprovalStatus {
         self.l().approval_request(request_id).unwrap().unwrap().1
     }
 
-    fn receipt(&self, idem: &str) -> Option<String> {
+    /// `<status> <refusal code>` of a stored challenge (the code empty unless refused).
+    pub(crate) fn challenge_status(&self, challenge_id: &str) -> String {
+        self.text(
+            "SELECT status || ' ' || coalesce(refusal_code, '') FROM challenges \
+             WHERE challenge_id = ?1",
+            challenge_id,
+        )
+        .unwrap()
+    }
+
+    pub(crate) fn receipt(&self, idem: &str) -> Option<String> {
         self.text(
             "SELECT status FROM receipts WHERE idempotency_key = ?1",
             idem,
@@ -635,33 +450,48 @@ fn swapped_decisions_and_swapped_targets_are_refused() {
     let approve_a = CeremonyOp::Approve {
         request_id: a.clone(),
     };
-    let c = m.begin(&alice, &approve_a, "x1").unwrap();
     // The verdict comes from the challenge: a deny presented on an approve challenge.
     let deny_a = CeremonyOp::Deny {
         request_id: a.clone(),
     };
+    let c = m.begin(&alice, &approve_a, "x1").unwrap();
     assert_eq!(
         m.finish(&deny_a, &c.challenge_id, &ok(&alice), "x1"),
         Err(challenge(ChallengeRefusal::OperationMismatch))
+    );
+    // X4: that refusal burned the challenge; its own decision cannot use it any more.
+    assert_eq!(
+        m.challenge_status(&c.challenge_id),
+        "refused CHALLENGE_INVALID"
+    );
+    assert_eq!(
+        m.finish(&approve_a, &c.challenge_id, &ok(&alice), "x1"),
+        Err(challenge(ChallengeRefusal::Consumed))
     );
     // Another request presented on request a's challenge.
     let approve_b = CeremonyOp::Approve {
         request_id: b.clone(),
     };
+    let c = m.begin(&alice, &approve_a, "x2").unwrap();
     assert_eq!(
-        m.finish(&approve_b, &c.challenge_id, &ok(&alice), "x1"),
+        m.finish(&approve_b, &c.challenge_id, &ok(&alice), "x2"),
         Err(challenge(ChallengeRefusal::TargetMismatch))
     );
-    // Nothing changed and the challenge is still usable for exactly its own decision.
+    assert_eq!(
+        m.challenge_status(&c.challenge_id),
+        "refused CHALLENGE_INVALID"
+    );
+    // Nothing changed; a fresh challenge decides exactly its own request.
     assert_eq!(m.status(&a), ApprovalStatus::Pending);
     assert_eq!(m.status(&b), ApprovalStatus::Pending);
+    let c = m.begin(&alice, &approve_a, "x3").unwrap();
     assert!(m
-        .finish(&approve_a, &c.challenge_id, &ok(&alice), "x1")
+        .finish(&approve_a, &c.challenge_id, &ok(&alice), "x3")
         .is_ok());
     assert_eq!(m.status(&b), ApprovalStatus::Pending);
     assert_eq!(
         m.count("SELECT count(*) FROM audit_refusals WHERE code = 'CHALLENGE_INVALID'"),
-        2
+        3
     );
 }
 
@@ -673,47 +503,74 @@ fn replayed_consumed_forged_and_mismatched_assertions_never_decide_twice() {
     let op = CeremonyOp::Approve {
         request_id: id.clone(),
     };
-    let c = m.begin(&alice, &op, "key-1").unwrap();
-    // Before the decision: verifier refusals and binding mismatches.
-    assert_eq!(
-        m.finish(&op, &c.challenge_id, "forged", "key-1"),
-        Err(ap(ApprovalCode::AssertionInvalid(VerifierError::Malformed)))
-    );
-    assert_eq!(
-        m.finish(&op, &c.challenge_id, "bad:cred-alice", "key-1"),
-        Err(ap(ApprovalCode::AssertionInvalid(
-            VerifierError::SignatureInvalid
-        )))
-    );
-    assert_eq!(
-        m.finish(&op, &c.challenge_id, "nouv:cred-alice", "key-1"),
-        Err(ap(ApprovalCode::AssertionInvalid(
-            VerifierError::UserNotVerified
-        )))
-    );
-    assert_eq!(
-        m.finish(&op, &c.challenge_id, "other:cred-alice", "key-1"),
-        Err(challenge(ChallengeRefusal::CeremonyMismatch))
-    );
-    assert_eq!(
-        m.finish(&op, &c.challenge_id, &ok(&alice), "key-2"),
-        Err(challenge(ChallengeRefusal::IdempotencyMismatch))
-    );
+    // Before the decision: verifier refusals and binding mismatches, each on its own
+    // challenge (X4: every one of these terminal refusals burns the challenge it named).
+    m.enroll(person("dave", &[(Permission::Approver, T, P)], vec![]))
+        .unwrap();
+    let cases: [(&str, &str, Refusal); 6] = [
+        (
+            "forged",
+            "key-1",
+            ap(ApprovalCode::AssertionInvalid(VerifierError::Malformed)),
+        ),
+        (
+            "bad:cred-alice",
+            "key-1",
+            ap(ApprovalCode::AssertionInvalid(
+                VerifierError::SignatureInvalid,
+            )),
+        ),
+        (
+            "nouv:cred-alice",
+            "key-1",
+            ap(ApprovalCode::AssertionInvalid(
+                VerifierError::UserNotVerified,
+            )),
+        ),
+        (
+            "other:cred-alice",
+            "key-1",
+            challenge(ChallengeRefusal::CeremonyMismatch),
+        ),
+        (
+            "ok:cred-alice",
+            "key-2",
+            challenge(ChallengeRefusal::IdempotencyMismatch),
+        ),
+        // Another approver cannot answer alice's challenge.
+        (
+            "ok:cred-dave",
+            "key-1",
+            ap(ApprovalCode::AssertionInvalid(
+                VerifierError::CredentialUnknown,
+            )),
+        ),
+    ];
+    for (response, key, want) in cases {
+        let c = m.begin(&alice, &op, "key-1").unwrap();
+        assert_eq!(
+            m.finish(&op, &c.challenge_id, response, key),
+            Err(want.clone())
+        );
+        assert_eq!(
+            m.challenge_status(&c.challenge_id),
+            format!("refused {}", want.code()),
+            "{response}"
+        );
+        // A retry on the burned challenge, even a valid one, is consumed.
+        assert_eq!(
+            m.finish(&op, &c.challenge_id, &ok(&alice), "key-1"),
+            Err(challenge(ChallengeRefusal::Consumed)),
+            "{response}"
+        );
+    }
     assert_eq!(
         m.finish(&op, "chl-unknown", &ok(&alice), "key-1"),
         Err(challenge(ChallengeRefusal::Unknown))
     );
-    // Another approver cannot answer alice's challenge.
-    m.enroll(person("dave", &[(Permission::Approver, T, P)], vec![]))
-        .unwrap();
-    assert_eq!(
-        m.finish(&op, &c.challenge_id, &ok(&human("dave")), "key-1"),
-        Err(ap(ApprovalCode::AssertionInvalid(
-            VerifierError::CredentialUnknown
-        )))
-    );
     assert_eq!(m.status(&id), ApprovalStatus::Pending);
     // The decision, with a credential update persisted atomically.
+    let c = m.begin(&alice, &op, "key-1").unwrap();
     let first = m
         .finish(&op, &c.challenge_id, "update:cred-alice", "key-1")
         .unwrap();
@@ -739,18 +596,20 @@ fn replayed_consumed_forged_and_mismatched_assertions_never_decide_twice() {
         (again.result.clone(), again.ledger_seq),
         (first.result.clone(), first.ledger_seq)
     );
-    // Anything else on the consumed challenge is refused.
+    // X3 (S4): anything else on the consumed challenge is a binding mismatch, never the
+    // earlier result, and never burns or changes the committed decision.
     assert_eq!(
         m.finish(&op, &c.challenge_id, &ok(&alice), "key-3"),
-        Err(challenge(ChallengeRefusal::Consumed))
+        Err(challenge(ChallengeRefusal::BindingMismatch))
     );
     let deny = CeremonyOp::Deny {
         request_id: id.clone(),
     };
     assert_eq!(
         m.finish(&deny, &c.challenge_id, &ok(&alice), "key-1"),
-        Err(challenge(ChallengeRefusal::Consumed))
+        Err(challenge(ChallengeRefusal::BindingMismatch))
     );
+    assert_eq!(m.challenge_status(&c.challenge_id), "consumed ");
     assert_eq!(m.count("SELECT count(*) FROM grants"), 1);
     assert_eq!(m.count("SELECT count(*) FROM approval_decisions"), 1);
     assert_eq!(
@@ -1007,7 +866,6 @@ fn enrollment_happens_only_through_the_documented_ceremony() {
     // Enrollment escalation: a changed enrollment cannot reuse the displayed one's challenge.
     let ivy = m.registered(person("ivy", &[(Permission::Approver, T, P)], vec![]));
     let shown = enroll(ivy.clone());
-    let c = m.begin(&root(), &shown, "e7").unwrap();
     let mut more = ivy.clone();
     more.roles = vec![NewRole {
         permission: Permission::Operator,
@@ -1016,12 +874,20 @@ fn enrollment_happens_only_through_the_documented_ceremony() {
     }];
     let mut linked = ivy.clone();
     linked.linked_identities = vec![SubjectId::new("adapter", "someone")];
-    for escalated in [more, linked] {
+    for (i, escalated) in [more, linked].into_iter().enumerate() {
+        let key = format!("e7-{i}");
+        let c = m.begin(&root(), &shown, &key).unwrap();
         assert_eq!(
-            m.finish(&enroll(escalated), &c.challenge_id, &ok(&root()), "e7"),
+            m.finish(&enroll(escalated), &c.challenge_id, &ok(&root()), &key),
             Err(challenge(ChallengeRefusal::ContextMismatch))
         );
+        // X4: the refusal burned that challenge.
+        assert_eq!(
+            m.finish(&shown, &c.challenge_id, &ok(&root()), &key),
+            Err(challenge(ChallengeRefusal::Consumed))
+        );
     }
+    let c = m.begin(&root(), &shown, "e7").unwrap();
     let out = m
         .finish(&shown, &c.challenge_id, &ok(&root()), "e7")
         .unwrap();
@@ -1339,7 +1205,7 @@ fn bootstrap_is_exclusive_against_service_and_happens_once() {
         Err(ap(ApprovalCode::EnrollmentUnsupported))
     );
     // (The refused bootstrap consumed the session; ownership is released.)
-    assert_eq!(bootstrap_root(&path, &clock, &v), Ok(1));
+    assert_eq!(bootstrap_root_at(&path, &clock, &v, &root()), Ok(1));
     // Bootstrap twice: refused at open, whatever happens to the first administrator.
     assert!(matches!(
         BootstrapSession::open(&path),
@@ -1543,15 +1409,32 @@ fn only_a_scoped_revoker_or_the_approver_of_an_unused_grant_revokes_it() {
     let m = M4::new("revoke-who");
     let (_, g1) = m.approved("k1", 1);
     let target = || RevocationTarget::Grant(g1.as_str().into());
-    // The global administrator is not a revoker for the request's scope.
-    assert_eq!(
-        m.begin(
+    // X5 (S7): the bootstrap administrator's explicitly granted revoker scope (*, *) contains
+    // the request's scope, so a challenge is issued; a revoker of another tenant is not.
+    assert!(m
+        .begin(
             &root(),
             &CeremonyOp::Revoke {
                 target: target(),
                 reason: "x".into()
             },
             "r0"
+        )
+        .is_ok());
+    m.enroll(person(
+        "olga",
+        &[(Permission::Revoker, "other-tenant", "*")],
+        vec![],
+    ))
+    .unwrap();
+    assert_eq!(
+        m.begin(
+            &human("olga"),
+            &CeremonyOp::Revoke {
+                target: target(),
+                reason: "x".into()
+            },
+            "r0b"
         )
         .err(),
         Some(ap(ApprovalCode::PermissionMissing))
@@ -1994,180 +1877,6 @@ fn unavailable_storage_fails_closed_without_partial_state() {
 }
 
 // ---------------------------------------------------------------------------
-// Signoff storage (consumption at promotion is M4-06; the store primitive is tested here).
-
-fn signoff_world(m: &M4) -> NewSignoff {
-    m.l()
-        .db()
-        .conn
-        .execute_batch(&format!(
-            "INSERT INTO workflows (tenant_id, project_id, workflow_id, task_id, state, revision, artifact_snapshot_id, artifact_digest)
-               VALUES ('{T}', '{P}', 'wf-1', 'task-1', 'verifying', 1, 'snap-1', 'sha256:bb');
-             INSERT INTO acceptance_policies (tenant_id, project_id, requirements, bundle_sha)
-               VALUES ('{T}', '{P}', '{{\"acceptance_policy_bundle_sha\":\"sha256:cc\",\"acceptance_policy_id\":\"accept\",\"acceptance_policy_version\":\"3\"}}', 'sha256:cc');
-             INSERT INTO admin_events (operation, tenant_id, project_id, target, operator_id, operator_issuer, channel, evidence_ref, at)
-               VALUES ('update_artifact', '{T}', '{P}', 'wf-1', 'sam', 'writ-local', 'ops', 'ev-1', '2026-11-05T11:00:00Z');"
-        ))
-        .unwrap();
-    NewSignoff {
-        signoff_id: "so-1".into(),
-        tenant_id: T.into(),
-        project_id: P.into(),
-        task_id: "task-1".into(),
-        workflow_id: "wf-1".into(),
-        from_state: "verifying".into(),
-        to_state: "accepted".into(),
-        acceptance_record_id: "acc-1".into(),
-        criterion_id: "signoff".into(),
-        artifact_snapshot_id: "snap-1".into(),
-        artifact_digest: "sha256:bb".into(),
-        acceptance_policy_id: "accept".into(),
-        acceptance_policy_version: "3".into(),
-        acceptance_policy_bundle_sha: "sha256:cc".into(),
-        state_revision: 1,
-        expires_at: now().plus_seconds(3600),
-    }
-}
-
-fn signoff_op(binding: NewSignoff) -> CeremonyOp {
-    CeremonyOp::Signoff {
-        binding: Box::new(binding),
-        parties: SignoffParties {
-            requester: requester(),
-            agent: None,
-            delegation_chain: vec![],
-        },
-    }
-}
-
-fn consume(m: &M4, id: &str, key: &str) -> Result<(), ApprovalCode> {
-    m.l()
-        .transact("promote", |tx| {
-            Ok(match consume_signoff(tx, id, T, key)? {
-                Ok(()) => End::Commit(Ok(())),
-                Err(code) => End::Rollback(Err(code)),
-            })
-        })
-        .unwrap()
-}
-
-#[test]
-fn a_signoff_is_bound_to_current_state_separated_and_consumed_once() {
-    let m = M4::new("signoff");
-    let binding = signoff_world(&m);
-    m.enroll(person(
-        "sara",
-        &[(Permission::SignoffAuthority, T, P)],
-        vec![],
-    ))
-    .unwrap();
-    m.enroll(person(
-        "sam",
-        &[(Permission::SignoffAuthority, T, P)],
-        vec![],
-    ))
-    .unwrap();
-    // The subject who changed the artifact never signs off (O-7; durable admin events, C2).
-    assert_eq!(
-        m.ceremony(&human("sam"), &signoff_op(binding.clone()), "s0"),
-        Err(ap(ApprovalCode::SeparationViolated))
-    );
-    // A binding that is not the current state is refused.
-    let mut stale = binding.clone();
-    stale.state_revision = 0;
-    assert_eq!(
-        m.begin(&human("sara"), &signoff_op(stale), "s1").err(),
-        Some(ap(ApprovalCode::SignoffMismatch))
-    );
-    // Only the signoff authority.
-    assert_eq!(
-        m.begin(&human("alice"), &signoff_op(binding.clone()), "s2")
-            .err(),
-        Some(ap(ApprovalCode::PermissionMissing))
-    );
-    let out = m
-        .ceremony(&human("sara"), &signoff_op(binding.clone()), "s3")
-        .unwrap();
-    assert_eq!(
-        out.result,
-        CeremonyResult::SignedOff {
-            signoff_id: "so-1".into()
-        }
-    );
-    let state = m.l().signoff("so-1").unwrap().unwrap();
-    assert_eq!(state.signoff.fields().binding, binding);
-    assert_eq!(
-        state.signoff.fields().provenance_version,
-        "writ-provenance-2"
-    );
-    assert!(!state.revoked && !state.consumed);
-    // The signoff id is single: no second signoff under it.
-    assert_eq!(
-        m.begin(&human("sara"), &signoff_op(binding.clone()), "s4")
-            .err(),
-        Some(ap(ApprovalCode::SignoffMismatch))
-    );
-    assert_eq!(
-        consume(&m, "so-unknown", "p1"),
-        Err(ApprovalCode::SignoffUnknown)
-    );
-    assert_eq!(consume(&m, "so-1", "p1"), Ok(()));
-    assert_eq!(
-        consume(&m, "so-1", "p2"),
-        Err(ApprovalCode::SignoffConsumed)
-    );
-    assert!(m.l().signoff("so-1").unwrap().unwrap().consumed);
-    // Revoking a consumed signoff undoes nothing and is recorded as after use.
-    let out = m
-        .revoke(
-            &human("carol"),
-            RevocationTarget::Signoff("so-1".into()),
-            "r1",
-        )
-        .unwrap();
-    assert_eq!(
-        out.result,
-        CeremonyResult::Revoked {
-            use_state: UseState::Consumed
-        }
-    );
-    assert!(m.l().signoff("so-1").unwrap().unwrap().revoked);
-}
-
-#[test]
-fn a_revoked_signoff_or_signer_is_never_consumed() {
-    let m = M4::new("signoff-revoked");
-    let binding = signoff_world(&m);
-    m.enroll(person(
-        "sara",
-        &[(Permission::SignoffAuthority, T, P)],
-        vec![],
-    ))
-    .unwrap();
-    m.ceremony(&human("sara"), &signoff_op(binding.clone()), "s1")
-        .unwrap();
-    m.revoke(
-        &human("carol"),
-        RevocationTarget::Signoff("so-1".into()),
-        "r1",
-    )
-    .unwrap();
-    assert_eq!(consume(&m, "so-1", "p1"), Err(ApprovalCode::SignoffRevoked));
-    let mut second = binding;
-    second.signoff_id = "so-2".into();
-    m.ceremony(&human("sara"), &signoff_op(second), "s2")
-        .unwrap();
-    m.revoke(
-        &root(),
-        RevocationTarget::Credential("cred-sara".into()),
-        "r2",
-    )
-    .unwrap();
-    assert_eq!(consume(&m, "so-2", "p2"), Err(ApprovalCode::SignoffRevoked));
-    assert_eq!(m.count("SELECT count(*) FROM consumed_signoffs"), 0);
-}
-
-// ---------------------------------------------------------------------------
 // M4-10 / O-14: migration from writ-ledger-5.
 
 #[test]
@@ -2175,28 +1884,32 @@ fn the_upgrade_from_writ_ledger_5_marks_every_pre_m4_grant_and_keeps_all_history
     let w = World::new("m4-upgrade-v5");
     let path = w.dir.join("ledger.db");
     let b = w.broker();
-    // Pre-M4 grants (writ-provenance-1) in every receipt state.
-    for (g, idem) in [
-        ("g-unused", "k1"),
-        ("g-reserved", "k2"),
-        ("g-done", "k3"),
-        ("g-dispatched", "k4"),
-    ] {
-        approve(b.grants(), &publish(idem), g).unwrap();
+    // Grants in every receipt state. writ-ledger-6 mints grants only in its ceremony (D-042
+    // X1), so they are issued there (distinct actions, one approval request each) and then
+    // rewritten below, behind the ledger's back, into a writ-ledger-5 ledger whose grants
+    // carry M3 `writ-provenance-1` rows.
+    let grants = [
+        ("g-unused", "k1", 1),
+        ("g-reserved", "k2", 2),
+        ("g-done", "k3", 3),
+        ("g-dispatched", "k4", 4),
+    ];
+    for (g, idem, n) in grants {
+        approve(b.grants(), &action(idem, n), g).unwrap();
     }
     assert_eq!(
         b.grants().reserve(
-            &verify(&publish("k2")),
+            &verify(&action("k2", 2)),
             revision(),
-            Some(&GrantLabel::new("g-reserved").unwrap())
+            Some(&label("g-reserved"))
         ),
         Ok(ReserveOutcome::Reserved)
     );
     assert_eq!(
         b.execute(
-            &verify(&publish("k3")),
+            &verify(&action("k3", 3)),
             revision(),
-            Some(&GrantLabel::new("g-done").unwrap())
+            Some(&label("g-done"))
         )
         .result,
         Ok(Executed::EffectCompleted)
@@ -2205,13 +1918,22 @@ fn the_upgrade_from_writ_ledger_5_marks_every_pre_m4_grant_and_keeps_all_history
         .inject("observe", fault::Stage::Begin, rusqlite::ffi::SQLITE_IOERR);
     assert!(b
         .execute(
-            &verify(&publish("k4")),
+            &verify(&action("k4", 4)),
             revision(),
-            Some(&GrantLabel::new("g-dispatched").unwrap())
+            Some(&label("g-dispatched"))
         )
         .result
         .is_err());
     drop(b);
+    w.ledger
+        .db()
+        .conn
+        .execute(
+            "UPDATE grant_provenance SET version = 'writ-provenance-1', \
+             auth_evidence_ref = 'authn-event:pre-m4'",
+            [],
+        )
+        .unwrap();
     let tables = [
         "grants",
         "grant_provenance",
@@ -2251,6 +1973,7 @@ fn the_upgrade_from_writ_ledger_5_marks_every_pre_m4_grant_and_keeps_all_history
     for t in [
         "approval_events",
         "consumed_signoffs",
+        "signoff_requests",
         "signoffs",
         "revocations",
         "legacy_grants",
@@ -2302,6 +2025,11 @@ fn the_upgrade_from_writ_ledger_5_marks_every_pre_m4_grant_and_keeps_all_history
     let ledger = SqliteLedger::upgrade(&path).unwrap();
     assert_eq!(ledger.ledger_id(), &id);
     assert_eq!(counts(&ledger), before, "no row rewritten or deleted");
+    let mut marked: Vec<String> = grants
+        .iter()
+        .map(|(g, _, _)| format!("{}/writ-ledger-5", label(g).as_str()))
+        .collect();
+    marked.sort();
     assert_eq!(
         ledger
             .db()
@@ -2312,7 +2040,7 @@ fn the_upgrade_from_writ_ledger_5_marks_every_pre_m4_grant_and_keeps_all_history
                 |r| r.get::<_, String>(0)
             )
             .unwrap(),
-        "g-dispatched/writ-ledger-5,g-done/writ-ledger-5,g-reserved/writ-ledger-5,g-unused/writ-ledger-5"
+        marked.join(",")
     );
     let provenance_v1: i64 = ledger
         .db()
@@ -2334,12 +2062,9 @@ fn the_upgrade_from_writ_ledger_5_marks_every_pre_m4_grant_and_keeps_all_history
         })
     };
     let run = |idem: &str, g: &str| {
-        b.execute(
-            &verify(&publish(idem)),
-            revision(),
-            Some(&GrantLabel::new(g).unwrap()),
-        )
-        .result
+        let n = grants.iter().find(|x| x.1 == idem).unwrap().2;
+        b.execute(&verify(&action(idem, n)), revision(), Some(&label(g)))
+            .result
     };
     // Unused: never consumed.
     assert_eq!(

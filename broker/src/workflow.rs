@@ -64,10 +64,16 @@
 //!    bundle's protection names (`POLICY_DEPENDENCY_MISMATCH`), then
 //!    [`crate::acceptance::check_use`] runs on the stored state (kernel check,
 //!    replay of the record ledger-wide, registry, revocation, attestation
-//!    binding, freshness and single use); a grant is checked and consumed
+//!    binding, freshness and single use, and for a `/2` record every human
+//!    criterion's signoff with the I-5 checks on the signoff rows, their
+//!    revocation, the signer's subject, credential, enrollment and roles and
+//!    the stored promotion contexts read in this transaction, against this
+//!    promotion's requester and agent; M4-06); a grant is checked and consumed
 //!    like T-reserve. Then, atomically: state, revision + 1, last promotion,
-//!    consumed record, consumed attestations, promotion receipt
-//!    `promotion:<workflow_id>:<revision>` and a `promote` workflow event.
+//!    consumed record, consumed attestations, consumed signoffs, promotion
+//!    receipt `promotion:<workflow_id>:<revision>`, a `promote` workflow event
+//!    and the promotion's I-8 `ledger_sequence` row. An identical retry
+//!    replays its receipt (stage 2) before any signoff is re-read.
 //!    If the transaction cannot run the answer is `LEDGER_UNAVAILABLE` with
 //!    its [`TxFailure`]: a begin or body failure committed nothing; a failed
 //!    commit has an unknown outcome (below).
@@ -107,6 +113,16 @@
 //! effect prerequisites; records bound to another policy then fail the
 //! kernel's policy binding.
 //!
+//! **Signoff requests** ([`Broker::request_signoff`], X7): the stored
+//! promotion context of a signoff. A sealed `workflow.transition` request
+//! naming a `/2` record (read by id from the trusted source and verified) is
+//! stored, for each signoff id of a human criterion, as a [`SignoffRequest`]:
+//! signoff id, record, criterion, workflow, transition, revision, the
+//! request's principal (requester) and agent under its verifying adapter, and
+//! its fingerprint. It authorizes nothing; the ledger reads every stored
+//! context of a signoff id as excluded signers when the signoff is begun,
+//! finished and used. Refusals are audited.
+//!
 //! **Refusal audit:** every refusal is audited in its own transaction after
 //! the locks are released; if storage is unavailable that write fails too
 //! and the refusal is returned without a durable audit record.
@@ -129,18 +145,20 @@ use writ_kernel::time::Timestamp;
 use writ_kernel::transition::{check_transition, workflow_id};
 
 use crate::acceptance::{
-    check_use, verify_attestation, verify_record, AcceptanceCode, UseContext, VerifiedAttestation,
-    VerifiedRecord,
+    check_use, verify_attestation, verify_record, AcceptanceCode, RecordVersion, SignoffUse,
+    UseContext, VerifiedAttestation, VerifiedRecord,
 };
 use crate::authorize::{authorize, Authorized};
+use crate::clock::ObservedTime;
 use crate::contracts::RegistryEntry;
 use crate::effects::EffectAdapter;
 use crate::execute::Broker;
 use crate::grants::{GrantLabel, ReserveRequest};
+use crate::human::SubjectId;
 use crate::ingress::VerifiedRequest;
 use crate::keys::{AcceptanceKeyRing, RunnerKeyRing};
 use crate::refusal::{ConflictStage, Refusal};
-use crate::store::{ExecuteLedger, LedgerStore, StoreError, TxFailure};
+use crate::store::{ExecuteLedger, LedgerStore, StoreError, TxFailure, TxStage};
 
 /// The action kind of a promotion.
 pub const TRANSITION_KIND: &str = "workflow.transition";
@@ -289,6 +307,9 @@ pub struct PromotionView {
     pub record_consumed: bool,
     /// Which of the record's attestations were already consumed.
     pub consumed_attestations: BTreeSet<String>,
+    /// The stored state of each signoff the record names that exists
+    /// (read in the transaction; R8: references until checked).
+    pub signoffs: Vec<SignoffUse>,
 }
 
 /// A promotion to commit: built only by the broker from a guard-bound
@@ -303,6 +324,7 @@ pub struct PromotionIntent<'a> {
     authorization_bundle_sha: &'a str,
     protection_policy_sha: Option<String>,
     now: Timestamp,
+    parties: Vec<SubjectId>,
 }
 
 struct ProtectedInputs<'a> {
@@ -323,6 +345,8 @@ pub struct PromotionWrite {
     pub record_id: Option<String>,
     /// Attestations to consume.
     pub attestation_ids: Vec<String>,
+    /// Signoffs to consume (I-5), single use ledger-wide.
+    pub signoff_ids: Vec<String>,
 }
 
 impl<'a> PromotionIntent<'a> {
@@ -371,6 +395,18 @@ impl<'a> PromotionIntent<'a> {
             .map_or_else(Vec::new, |p| p.record.attestation_ids())
     }
 
+    /// The signoff ids the record names (references only, R8).
+    pub fn signoff_ids(&self) -> Vec<&str> {
+        self.protected
+            .as_ref()
+            .map_or_else(Vec::new, |p| p.record.signoff_ids())
+    }
+
+    /// The promotion's requester and agent (excluded signers, O-7).
+    pub fn parties(&self) -> &[SubjectId] {
+        &self.parties
+    }
+
     /// The checks on the stored state (module documentation), in order:
     /// workflow, compare-and-set, then for a protected transition the policy
     /// and its dependency, then [`check_use`]. Returns what to write.
@@ -391,6 +427,7 @@ impl<'a> PromotionIntent<'a> {
                 last_promotion: None,
                 record_id: None,
                 attestation_ids: Vec::new(),
+                signoff_ids: Vec::new(),
             });
         };
         let policy = view
@@ -448,7 +485,7 @@ impl<'a> PromotionIntent<'a> {
                 .find(|(e, _)| e == id)
                 .map(|(_, entry)| entry.clone())
         };
-        let attestation_ids = check_use(
+        let consumption = check_use(
             protected.record,
             &UseContext {
                 current: &current,
@@ -456,9 +493,14 @@ impl<'a> PromotionIntent<'a> {
                 registry: &registry,
                 attestations: protected.attestations,
                 consumed_attestations: &view.consumed_attestations,
+                signoffs: &view.signoffs,
+                promotion_parties: &self.parties,
             },
         )
-        .map_err(Refusal::Acceptance)?;
+        .map_err(|code| match code {
+            AcceptanceCode::Signoff(c) => Refusal::Approval(c),
+            other => Refusal::Acceptance(other),
+        })?;
         Ok(PromotionWrite {
             revision,
             last_promotion: Some(LastPromotion {
@@ -471,8 +513,83 @@ impl<'a> PromotionIntent<'a> {
             }),
             receipt_id,
             record_id: Some(record.acceptance_record_id.clone()),
-            attestation_ids,
+            attestation_ids: consumption.attestation_ids,
+            signoff_ids: consumption.signoff_ids,
         })
+    }
+}
+
+/// A stored promotion context of one signoff (X7; module documentation).
+/// Built only by [`Broker::request_signoff`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignoffRequest {
+    signoff_id: String,
+    tenant_id: String,
+    project_id: String,
+    workflow_id: String,
+    acceptance_record_id: String,
+    criterion_id: String,
+    from_state: String,
+    to_state: String,
+    state_revision: i64,
+    requester: SubjectId,
+    agent: Option<SubjectId>,
+    request_fingerprint: String,
+    created_at: Timestamp,
+}
+
+impl SignoffRequest {
+    /// The signoff id (from the verified record).
+    pub fn signoff_id(&self) -> &str {
+        &self.signoff_id
+    }
+    /// Tenant.
+    pub fn tenant_id(&self) -> &str {
+        &self.tenant_id
+    }
+    /// Project.
+    pub fn project_id(&self) -> &str {
+        &self.project_id
+    }
+    /// Workflow.
+    pub fn workflow_id(&self) -> &str {
+        &self.workflow_id
+    }
+    /// The record naming the signoff.
+    pub fn acceptance_record_id(&self) -> &str {
+        &self.acceptance_record_id
+    }
+    /// The human criterion.
+    pub fn criterion_id(&self) -> &str {
+        &self.criterion_id
+    }
+    /// Transition source state.
+    pub fn from_state(&self) -> &str {
+        &self.from_state
+    }
+    /// Transition destination state.
+    pub fn to_state(&self) -> &str {
+        &self.to_state
+    }
+    /// The record's state revision.
+    pub fn state_revision(&self) -> i64 {
+        self.state_revision
+    }
+    /// The sealed request's principal under its verifying adapter.
+    pub fn requester(&self) -> &SubjectId {
+        &self.requester
+    }
+    /// The sealed request's agent under the same adapter, if any.
+    pub fn agent(&self) -> Option<&SubjectId> {
+        self.agent.as_ref()
+    }
+    /// The sealed request's D-012 fingerprint.
+    pub fn request_fingerprint(&self) -> &str {
+        &self.request_fingerprint
+    }
+    /// Trusted time it was requested.
+    pub fn created_at(&self) -> Timestamp {
+        self.created_at
     }
 }
 
@@ -691,6 +808,34 @@ pub trait WorkflowLedger: Sync {
         &self,
         intent: &PromotionIntent<'_>,
     ) -> Result<Result<PromotionOutcome, Refusal>, TxFailure>;
+
+    /// The `signoff_request` transaction: store each context (one row per
+    /// signoff id and request fingerprint; an existing row is kept). The
+    /// provided implementation (a ledger without signoff storage) stores
+    /// nothing and fails with the code `unsupported`.
+    fn record_signoff_requests(&self, requests: &[SignoffRequest]) -> Result<(), TxFailure> {
+        let _ = requests;
+        Err(TxFailure::new(
+            TxStage::Begin,
+            StoreError::Unavailable {
+                category: "transaction signoff_request".into(),
+                code: "unsupported".into(),
+            },
+        ))
+    }
+}
+
+/// The promotion's requester (the sealed principal under its verifying
+/// adapter) and agent (under the same adapter), as approval requests name
+/// them ([`crate::approval_store::approval_request_for`]).
+fn promotion_parties(authorized: &Authorized<'_>) -> Vec<SubjectId> {
+    let request = authorized.request();
+    let realm = &request.principal.verified_by;
+    let mut parties = vec![SubjectId::new(realm, &request.principal.id)];
+    if let Some(agent) = request.agent_id.as_deref() {
+        parties.push(SubjectId::new(realm, agent));
+    }
+    parties
 }
 
 /// D-038 item 2: the use-time kernel decision's stale expected revision is
@@ -839,6 +984,7 @@ where
             authorization_bundle_sha: authorized.policy_bundle_sha(),
             protection_policy_sha: protection.map(|p| p.acceptance_policy_bundle_sha),
             now: observed.at(),
+            parties: promotion_parties(&authorized),
         };
         let _workflow = self
             .workflow_locks
@@ -855,6 +1001,130 @@ where
                 Err(refusal)
             }
         }
+    }
+
+    /// Store the promotion contexts of the signoffs a `/2` record names
+    /// (X7; module documentation). Returns the signoff ids. Refusals:
+    /// `TIME_UNAVAILABLE`; `REQUEST_SCOPE_MISMATCH` (not a transition, or a
+    /// resource outside the request's scope); `WORKFLOW_UNKNOWN`; the record
+    /// (`ACCEPTANCE_RECORD_UNKNOWN`, `ACCEPTANCE_SOURCE_UNAVAILABLE`, its
+    /// verification codes, `PERMIT_BINDING_MISMATCH` when the request's
+    /// acceptance attributes or workflow differ from the record);
+    /// `ACCEPTANCE_HUMAN_UNAVAILABLE` when the record names no signoff (a
+    /// `/1` record or no human criterion); `LEDGER_UNAVAILABLE`. Audited.
+    pub fn request_signoff(
+        &self,
+        trust: &Trust<'_>,
+        verified: &VerifiedRequest,
+    ) -> Result<Vec<String>, Refusal> {
+        let result = self.request_signoff_held(trust, verified);
+        self.grants().audited(result)
+    }
+
+    fn request_signoff_held(
+        &self,
+        trust: &Trust<'_>,
+        verified: &VerifiedRequest,
+    ) -> Result<Vec<String>, Refusal> {
+        use AcceptanceCode::*;
+        let _shared = self.grants().active.shared();
+        let observed: ObservedTime = self.grants().observe()?;
+        let request = verified.request();
+        let field = |k: &str| request.get(k).and_then(Value::as_str).unwrap_or("");
+        let (tenant, project) = (field("tenant_id"), field("project_id"));
+        let action = request.get("action");
+        if action.and_then(|a| a.get("kind")).and_then(Value::as_str) != Some(TRANSITION_KIND) {
+            return Err(Refusal::RequestScopeMismatch);
+        }
+        let resource = action
+            .and_then(|a| a.get("resource"))
+            .and_then(|r| r.get("canonical_resource_id"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let key = WorkflowKey {
+            tenant_id: tenant.to_string(),
+            project_id: project.to_string(),
+            workflow_id: workflow_id(resource, tenant, project)
+                .ok_or(Refusal::RequestScopeMismatch)?,
+        };
+        let ledger = self.grants().ledger;
+        ledger
+            .workflow(&key)
+            .map_err(Refusal::LedgerUnavailable)?
+            .ok_or(Refusal::WorkflowUnknown)?;
+        let attrs = action.and_then(|a| a.get("attributes"));
+        let attr = |k: &str| attrs.and_then(|a| a.get(k)).and_then(Value::as_str);
+        let record_id = attr("acceptance_record_id").ok_or(acceptance(RecordUnknown))?;
+        let doc = trust
+            .records
+            .record(tenant, project, record_id)
+            .map_err(|_| acceptance(SourceUnavailable))?
+            .ok_or(acceptance(RecordUnknown))?;
+        let record = verify_record(&doc, trust.record_keys).map_err(acceptance)?;
+        let r = record.record();
+        let same = r.acceptance_record_id == record_id
+            && r.tenant_id == key.tenant_id
+            && r.project_id == key.project_id
+            && r.workflow_id == key.workflow_id
+            && attr("artifact_snapshot_id") == Some(r.artifact_snapshot_id.as_str())
+            && attr("artifact_digest") == Some(r.artifact_digest.as_str())
+            && attr("from_state") == Some(r.transition.from_state.as_str())
+            && attr("to_state") == Some(r.transition.to_state.as_str());
+        if !same {
+            return Err(acceptance(BindingMismatch));
+        }
+        // The sealed principal and agent under the verifying adapter (as
+        // `promotion_parties` and approval requests name them).
+        let principal = request.get("principal");
+        let realm = principal
+            .and_then(|p| p.get("verified_by"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let requester = SubjectId::new(
+            realm,
+            principal
+                .and_then(|p| p.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+        );
+        let agent = request
+            .get("agent_id")
+            .and_then(Value::as_str)
+            .map(|a| SubjectId::new(realm, a));
+        if !requester.is_well_formed() || agent.as_ref().is_some_and(|a| !a.is_well_formed()) {
+            return Err(Refusal::RequestScopeMismatch);
+        }
+        let sealed = (requester, agent);
+        let named: Vec<(&str, &str)> = record
+            .evaluations()
+            .iter()
+            .filter_map(|e| Some((e.criterion_id.as_str(), e.signoff_id.as_deref()?)))
+            .collect();
+        if record.version() != RecordVersion::V2 || named.is_empty() {
+            return Err(acceptance(HumanUnavailable));
+        }
+        let requests: Vec<SignoffRequest> = named
+            .iter()
+            .map(|(criterion, id)| SignoffRequest {
+                signoff_id: id.to_string(),
+                tenant_id: key.tenant_id.clone(),
+                project_id: key.project_id.clone(),
+                workflow_id: key.workflow_id.clone(),
+                acceptance_record_id: r.acceptance_record_id.clone(),
+                criterion_id: criterion.to_string(),
+                from_state: r.transition.from_state.clone(),
+                to_state: r.transition.to_state.clone(),
+                state_revision: r.state_revision.get(),
+                requester: sealed.0.clone(),
+                agent: sealed.1.clone(),
+                request_fingerprint: verified.fingerprint().as_str().to_string(),
+                created_at: observed.at(),
+            })
+            .collect();
+        ledger
+            .record_signoff_requests(&requests)
+            .map_err(|f| Refusal::LedgerUnavailable(f.error))?;
+        Ok(named.into_iter().map(|(_, id)| id.to_string()).collect())
     }
 
     /// Read and verify the record a protected transition names, its

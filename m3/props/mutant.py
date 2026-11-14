@@ -36,6 +36,7 @@ Modes:
 from __future__ import annotations
 
 import argparse
+import os
 import copy
 import json
 import subprocess
@@ -232,7 +233,11 @@ def main() -> int:
         if drop and isinstance(out, dict) and isinstance(out.get("steps"), list):
             out["steps"] = [s for i, s in enumerate(out["steps"]) if i not in set(drop)]
         elif args.mode != "heal_on_restart":
+            before = json.dumps(out, sort_keys=True)
             out = mutate(args.mode, out, inp)
+            if os.environ.get("WRIT_MUTANT_LOG") and json.dumps(out, sort_keys=True) != before:
+                with open(os.environ["WRIT_MUTANT_LOG"], "a", encoding="utf-8") as log:
+                    log.write(f"{args.mode} {msg.get('id')}\n")
         msg["output"] = out
         sys.stdout.write(json.dumps(msg, ensure_ascii=False, separators=(",", ":")) + "\n")
     sys.stderr.buffer.write(proc.stderr)

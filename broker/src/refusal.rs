@@ -76,6 +76,10 @@ pub enum Refusal {
     GrantUnknown,
     /// The grant's binding differs from the request and its use-time decision.
     GrantMismatch,
+    /// The grant was approved for another agent of the same principal
+    /// (D-042 X2): externally and internally `GRANT_MISMATCH`; the variant
+    /// is the operator diagnostic.
+    GrantAgentMismatch,
     /// The trusted time is at or after the grant's expiry.
     GrantExpired,
     /// The grant has no use left.
@@ -152,7 +156,7 @@ impl Refusal {
             Refusal::SelfApprovalForbidden => "SELF_APPROVAL_FORBIDDEN",
             Refusal::GrantRefInUse => "GRANT_REF_IN_USE",
             Refusal::GrantUnknown => "GRANT_UNKNOWN",
-            Refusal::GrantMismatch => "GRANT_MISMATCH",
+            Refusal::GrantMismatch | Refusal::GrantAgentMismatch => "GRANT_MISMATCH",
             Refusal::GrantExpired => "GRANT_EXPIRED",
             Refusal::GrantExhausted => "GRANT_EXHAUSTED",
             Refusal::IdempotencyConflict => "IDEMPOTENCY_CONFLICT",
@@ -193,6 +197,9 @@ impl Refusal {
                 Some("revision conflict: stored revision not representable")
             }
             Refusal::Approval(code) => code.diagnostic(),
+            Refusal::GrantAgentMismatch => {
+                Some("grant mismatch: approved for another agent of the same principal")
+            }
             _ => None,
         }
     }
