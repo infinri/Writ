@@ -63,7 +63,8 @@ use crate::approval::{
 /// The only authentication method of the local profile (D-040 O-1).
 pub const WEBAUTHN_PASSKEY: &str = "webauthn-passkey";
 
-/// Capability to build a [`VerifiedAssertion`]. Allowed only in the
+/// Capability to build a [`VerifiedAssertion`] or a
+/// [`VerifiedRegistration`]. Allowed only in the
 /// `writ-approval` crate's verifier implementation and in test code;
 /// enforced by `broker/tests/trusted_constructors.rs`. Not `Clone`.
 ///
@@ -558,6 +559,170 @@ pub trait HumanVerifier {
         response: &[u8],
         credentials: &ActiveCredentials,
     ) -> Result<VerifiedAssertion, VerifierError>;
+}
+
+/// The only credential algorithm enrollment accepts (D-041 DR-3 compensating
+/// restriction: COSE ES256, ECDSA P-256 with SHA-256).
+pub const ES256: &str = "ES256";
+
+/// The relying party a verifier is configured for: the WebAuthn RP id and
+/// the exact origin (scheme, host and port) of the approval listener.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RelyingParty {
+    /// RP id (for the local profile, `localhost`).
+    pub rp_id: String,
+    /// Exact origin (for the local profile, `http://localhost:<port>`).
+    pub origin: String,
+}
+
+/// What a registration ceremony is for (S5, X8): the bootstrap of the first
+/// administrator, or an enrollment through the administrative ceremony.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RegistrationOperation {
+    /// [`crate::approval_store::BootstrapEnrollment`], only on an exclusively
+    /// owned ledger without subjects.
+    Bootstrap,
+    /// [`crate::approval_store::NewEnrollment`] through an `Enroll` ceremony.
+    Enroll,
+}
+
+impl RegistrationOperation {
+    /// The stored text.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RegistrationOperation::Bootstrap => "bootstrap",
+            RegistrationOperation::Enroll => "enroll",
+        }
+    }
+
+    /// Parse the stored text.
+    pub fn parse(text: &str) -> Option<RegistrationOperation> {
+        [
+            RegistrationOperation::Bootstrap,
+            RegistrationOperation::Enroll,
+        ]
+        .into_iter()
+        .find(|o| o.as_str() == text)
+    }
+}
+
+/// The server-held registration ceremony a verifier finishes: built by the
+/// ledger from its registration row (never from client input) and copied
+/// into the [`VerifiedRegistration`] the verifier returns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegistrationBinding {
+    /// The registration row's id.
+    pub registration_id: String,
+    /// What it is for.
+    pub operation: RegistrationOperation,
+    /// The subject being registered.
+    pub subject: SubjectId,
+    /// The relying party the row was issued for.
+    pub relying_party: RelyingParty,
+}
+
+/// The start of a registration ceremony.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegistrationStart {
+    /// Creation options sent to the page.
+    pub client_options: Vec<u8>,
+    /// Opaque state, persisted only in the ledger's registration row.
+    pub state: CeremonyState,
+}
+
+/// A verifier's registration result (S5, X8): **untrusted** until the
+/// ledger accepts it against its registration row (bound to subject, RP id,
+/// origin, operation and expiry, single use). Constructible only with a
+/// [`VerifierCapability`] (the `writ-approval` registration finish and
+/// non-shipping test verifiers); an enrollment accepts only this type and
+/// only when the ledger's row recorded it, so raw public material is never
+/// enrolled.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedRegistration {
+    binding: RegistrationBinding,
+    credential_id: String,
+    public_material: Vec<u8>,
+    algorithm: String,
+    user_verified: bool,
+}
+
+impl VerifiedRegistration {
+    /// A verifier's registration result for the ceremony `binding`: the new
+    /// credential's id, its library-serialized public material, its COSE
+    /// algorithm name (as verified by the library) and the user-verification
+    /// flag.
+    pub fn new(
+        _capability: &VerifierCapability,
+        binding: &RegistrationBinding,
+        credential_id: &str,
+        public_material: Vec<u8>,
+        algorithm: &str,
+        user_verified: bool,
+    ) -> VerifiedRegistration {
+        VerifiedRegistration {
+            binding: binding.clone(),
+            credential_id: credential_id.to_string(),
+            public_material,
+            algorithm: algorithm.to_string(),
+            user_verified,
+        }
+    }
+
+    /// The registration ceremony it claims to finish.
+    pub fn binding(&self) -> &RegistrationBinding {
+        &self.binding
+    }
+
+    /// The registration row's id.
+    pub fn registration_id(&self) -> &str {
+        &self.binding.registration_id
+    }
+
+    /// The registered subject.
+    pub fn subject(&self) -> &SubjectId {
+        &self.binding.subject
+    }
+
+    /// The new credential's id.
+    pub fn credential_id(&self) -> &str {
+        &self.credential_id
+    }
+
+    /// The library-serialized public material (never a secret).
+    pub fn public_material(&self) -> &[u8] {
+        &self.public_material
+    }
+
+    /// The credential's COSE algorithm name.
+    pub fn algorithm(&self) -> &str {
+        &self.algorithm
+    }
+
+    /// The authenticator verified the user during registration.
+    pub fn user_verified(&self) -> bool {
+        self.user_verified
+    }
+}
+
+/// The registration side of the verifier boundary (S5, X8; implemented in
+/// `writ-approval`). Its output is never trusted without the ledger's
+/// registration row.
+pub trait RegistrationVerifier {
+    /// The relying party this verifier checks (RP id and exact origin).
+    fn relying_party(&self) -> RelyingParty;
+
+    /// Start a registration ceremony for the new `subject` (user
+    /// verification required).
+    fn begin_registration(&self, subject: &SubjectId) -> Result<RegistrationStart, VerifierError>;
+
+    /// Finish the ceremony `binding` from the ledger-held `state` and the
+    /// client `response` (user verification required).
+    fn finish_registration(
+        &self,
+        binding: &RegistrationBinding,
+        state: &CeremonyState,
+        response: &[u8],
+    ) -> Result<VerifiedRegistration, VerifierError>;
 }
 
 /// A human subject's enrollment (R1), written only by the M4-08

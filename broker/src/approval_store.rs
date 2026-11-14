@@ -47,7 +47,9 @@ use crate::approval::{
 use crate::authorize::{Authorized, UseTimeStatus};
 use crate::clock::ObservedTime;
 use crate::grants::GrantLabel;
-use crate::human::{HumanVerifier, Permission, PrincipalKind, SubjectId};
+use crate::human::{
+    HumanVerifier, Permission, PrincipalKind, RegistrationVerifier, SubjectId, VerifiedRegistration,
+};
 use crate::refusal::Refusal;
 use crate::store::{ExecuteLedger, StoreError, TxFailure};
 
@@ -233,15 +235,6 @@ pub fn signoff_binding(binding: &NewSignoff) -> Result<ChallengeBinding, Canonic
     })
 }
 
-/// A credential to enroll: id and library-serialized public material.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NewCredential {
-    /// Credential id.
-    pub credential_id: String,
-    /// Public passkey material (never a secret).
-    pub public_material: Vec<u8>,
-}
-
 /// One permission to assign at enrollment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewRole {
@@ -260,8 +253,11 @@ pub struct NewEnrollment {
     pub subject: SubjectId,
     /// Its principal kind.
     pub kind: PrincipalKind,
-    /// Its credential (required for a human, absent for a service).
-    pub credential: Option<NewCredential>,
+    /// Its credential (required for a human, absent for a service): only a
+    /// [`VerifiedRegistration`] that the ledger's own `enroll` registration
+    /// row recorded for this subject (S5, X8); raw public material is never
+    /// enrolled.
+    pub credential: Option<VerifiedRegistration>,
     /// The requester identities it controls (R1; explicit, possibly empty).
     pub linked_identities: Vec<SubjectId>,
     /// Its role assignments.
@@ -298,11 +294,13 @@ impl NewEnrollment {
         roles.dedup();
         let credential = self.credential.as_ref().map_or(Value::Null, |c| {
             json::obj([
-                ("credential_id", json::s(&c.credential_id)),
+                ("algorithm", json::s(c.algorithm())),
+                ("credential_id", json::s(c.credential_id())),
                 (
                     "public_material_digest",
-                    json::s(Digest::of_bytes(&c.public_material).as_str()),
+                    json::s(Digest::of_bytes(c.public_material()).as_str()),
                 ),
+                ("registration_id", json::s(c.registration_id())),
             ])
         });
         json::obj([
@@ -349,13 +347,15 @@ impl NewEnrollment {
 }
 
 /// The bootstrap enrollment of the first administrator
-/// (M4-ENROLLMENT-CEREMONY section 2).
+/// (M4-ENROLLMENT-CEREMONY section 2), accepted only on an exclusively owned
+/// ledger without subjects (`writ_ledger_sqlite::BootstrapSession`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BootstrapEnrollment {
     /// The human subject.
     pub subject: SubjectId,
-    /// Its credential from a user-verified registration.
-    pub credential: NewCredential,
+    /// Its credential: a [`VerifiedRegistration`] recorded by the ledger's
+    /// own `bootstrap` registration row for this subject (S5, X8).
+    pub credential: VerifiedRegistration,
     /// The requester identities it controls (R1).
     pub linked_identities: Vec<SubjectId>,
 }
@@ -609,4 +609,69 @@ pub trait ApprovalLedger: ExecuteLedger {
 
     /// A stored signoff with its revocation and consumption status (a read).
     fn signoff(&self, signoff_id: &str) -> Result<Option<SignoffState>, StoreError>;
+}
+
+/// Lifetime of a registration row (S5, X8): the registration must finish,
+/// and the enrollment that uses it must commit, within it.
+pub const REGISTRATION_TTL_SECONDS: i64 = 600;
+
+/// The start of a registration ceremony (S5, X8). The operation is the
+/// ledger's, never the caller's: the serving ledger registers only for
+/// `Enroll`; the exclusive bootstrap session only for `Bootstrap`.
+pub struct RegistrationBegin<'a> {
+    /// The subject to register (must not exist yet).
+    pub subject: &'a SubjectId,
+    /// The verifier (its relying party is bound into the row).
+    pub verifier: &'a dyn RegistrationVerifier,
+    /// Trusted time (persisted floor).
+    pub now: ObservedTime,
+}
+
+/// A stored registration row as returned to the page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IssuedRegistration {
+    /// The registration id.
+    pub registration_id: String,
+    /// The verifier's creation options for the page.
+    pub client_options: Vec<u8>,
+    /// Expiry.
+    pub expires_at: Timestamp,
+}
+
+/// The end of a registration ceremony.
+pub struct RegistrationFinish<'a> {
+    /// The registration id.
+    pub registration_id: &'a str,
+    /// The client's registration response.
+    pub response: &'a [u8],
+    /// The verifier (its relying party must equal the row's).
+    pub verifier: &'a dyn RegistrationVerifier,
+    /// Trusted time (persisted floor).
+    pub now: ObservedTime,
+}
+
+/// Server-held WebAuthn registration ceremonies (S5, X8): a row bound to
+/// subject, RP id, origin, operation and expiry, single use. A finished row
+/// records the verified credential; an enrollment accepts only a
+/// [`VerifiedRegistration`] equal to a finished row of its operation and
+/// subject, and consumes that row in its own transaction. A refused finish
+/// burns the row.
+pub trait RegistrationLedger {
+    /// Issue a registration row. Refusals (`ENROLLMENT_UNSUPPORTED`): an
+    /// ill-formed subject, a subject that exists, or a ledger in the wrong
+    /// phase for the operation; the verifier (`ASSERTION_INVALID`).
+    fn begin_registration(
+        &self,
+        begin: &RegistrationBegin<'_>,
+    ) -> Result<Result<IssuedRegistration, Refusal>, TxFailure>;
+
+    /// Finish a registration row. Refusals: an unknown, finished, burnt or
+    /// expired row, or another relying party (`CHALLENGE_INVALID`); the
+    /// verifier, missing user verification or a result for another ceremony
+    /// (`ASSERTION_INVALID`); a credential that is not ES256 or whose id is
+    /// already stored (`ENROLLMENT_UNSUPPORTED`).
+    fn finish_registration(
+        &self,
+        finish: &RegistrationFinish<'_>,
+    ) -> Result<Result<VerifiedRegistration, Refusal>, TxFailure>;
 }

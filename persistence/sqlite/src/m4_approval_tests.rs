@@ -17,15 +17,16 @@ use writ_broker::approval::{
 };
 use writ_broker::approval_store::{
     ApprovalLedger, BootstrapEnrollment, CeremonyBegin, CeremonyFinish, CeremonyOp,
-    CeremonyOutcome, CeremonyResult, IssuedChallenge, NewCredential, NewEnrollment, NewRole,
-    SignoffParties, UseState,
+    CeremonyOutcome, CeremonyResult, IssuedChallenge, NewEnrollment, NewRole, RegistrationBegin,
+    RegistrationFinish, RegistrationLedger, SignoffParties, UseState,
 };
 use writ_broker::clock::{observe, ObservedTime};
 use writ_broker::execute::{Executed, Execution};
 use writ_broker::grants::{approval_grant_label, GrantLabel, Replay, ReserveOutcome};
 use writ_broker::human::{
     ActiveCredentials, CeremonyStart, CeremonyState, CredentialUpdate, HumanVerifier, Permission,
-    PrincipalKind, SubjectId, VerifiedAssertion, VerifierCapability, VerifierError,
+    PrincipalKind, RegistrationBinding, RegistrationStart, RegistrationVerifier, RelyingParty,
+    SubjectId, VerifiedAssertion, VerifiedRegistration, VerifierCapability, VerifierError, ES256,
     WEBAUTHN_PASSKEY,
 };
 use writ_broker::refusal::Refusal;
@@ -35,7 +36,7 @@ use writ_broker::writ_kernel::json::{self, Digest, Value};
 use super::approval_store::consume_signoff;
 use super::execute_tests::World;
 use super::grant_tests::{approve, now, publish, revision, set, uses, verify};
-use super::{fault, End, SqliteLedger, SCHEMA_V5, SCHEMA_VERSION_V5};
+use super::{fault, BootstrapSession, End, SqliteLedger, SCHEMA_V5, SCHEMA_VERSION_V5};
 
 const T: &str = "fixture-tenant";
 const P: &str = "fixture-project";
@@ -52,6 +53,72 @@ const REQUESTER: &str = "agent:claude-session-1";
 struct TestVerifier {
     next: AtomicU64,
     fixed: AtomicBool,
+    /// Report another origin than the one rows are issued for (registration RP test).
+    other_origin: AtomicBool,
+}
+
+const ORIGIN: &str = "http://localhost:8443";
+
+/// Registration responses are `<mode>|<credential id>|<public material>`: `ok`, `nouv` (no
+/// user verification), `rs256` (an RS256 credential), `other` (a result for another
+/// registration row); anything else is a forged attestation.
+impl RegistrationVerifier for TestVerifier {
+    fn relying_party(&self) -> RelyingParty {
+        let origin = if self.other_origin.load(Ordering::SeqCst) {
+            "http://localhost:9999"
+        } else {
+            ORIGIN
+        };
+        RelyingParty {
+            rp_id: "localhost".into(),
+            origin: origin.into(),
+        }
+    }
+
+    fn begin_registration(&self, _subject: &SubjectId) -> Result<RegistrationStart, VerifierError> {
+        let n = self.next.fetch_add(1, Ordering::SeqCst);
+        Ok(RegistrationStart {
+            client_options: b"creation-options".to_vec(),
+            state: CeremonyState::from_bytes(format!("registration-nonce-{n}").into_bytes()),
+        })
+    }
+
+    fn finish_registration(
+        &self,
+        binding: &RegistrationBinding,
+        _state: &CeremonyState,
+        response: &[u8],
+    ) -> Result<VerifiedRegistration, VerifierError> {
+        let text = std::str::from_utf8(response).map_err(|_| VerifierError::Malformed)?;
+        let mut parts = text.splitn(3, '|');
+        let (Some(mode), Some(credential), Some(material)) =
+            (parts.next(), parts.next(), parts.next())
+        else {
+            return Err(VerifierError::Malformed);
+        };
+        let cap = VerifierCapability::for_verifier_implementation();
+        let make = |b: &RegistrationBinding, algorithm: &str, uv: bool| {
+            VerifiedRegistration::new(
+                &cap,
+                b,
+                credential,
+                material.as_bytes().to_vec(),
+                algorithm,
+                uv,
+            )
+        };
+        match mode {
+            "ok" => Ok(make(binding, ES256, true)),
+            "nouv" => Ok(make(binding, ES256, false)),
+            "rs256" => Ok(make(binding, "RS256", true)),
+            "other" => {
+                let mut b = binding.clone();
+                b.registration_id = "reg-another".into();
+                Ok(make(&b, ES256, true))
+            }
+            _ => Err(VerifierError::SignatureInvalid),
+        }
+    }
 }
 
 impl HumanVerifier for TestVerifier {
@@ -137,14 +204,13 @@ fn ok(s: &SubjectId) -> String {
     format!("ok:{}", cred(s))
 }
 
+/// A human enrollment without its credential yet: [`M4::registered`] (and [`M4::enroll`])
+/// add one through the ledger's registration ceremony (S5, X8).
 fn person(name: &str, roles: &[(Permission, &str, &str)], linked: Vec<SubjectId>) -> NewEnrollment {
     NewEnrollment {
         subject: human(name),
         kind: PrincipalKind::Human,
-        credential: Some(NewCredential {
-            credential_id: format!("cred-{name}"),
-            public_material: format!("pk-{name}").into_bytes(),
-        }),
+        credential: None,
         linked_identities: linked,
         roles: roles
             .iter()
@@ -178,6 +244,58 @@ fn challenge(r: ChallengeRefusal) -> Refusal {
     ap(ApprovalCode::ChallengeInvalid(r))
 }
 
+/// Bootstrap `root` through the separate entry point (S5, X8): an exclusive session, its
+/// `bootstrap` registration of `root`, then the bootstrap enrollment.
+fn bootstrap_root(
+    path: &std::path::Path,
+    clock: &dyn writ_broker::clock::EffectiveClock,
+    v: &TestVerifier,
+) -> Result<i64, Refusal> {
+    let s = BootstrapSession::open(path).expect("store")?;
+    let reg = session_register(
+        &s,
+        &|| s.observe(clock).unwrap(),
+        v,
+        &root(),
+        "ok|cred-root|pk-root",
+    )?;
+    let now = s.observe(clock).unwrap();
+    s.bootstrap(
+        &BootstrapEnrollment {
+            subject: root(),
+            credential: reg,
+            linked_identities: vec![],
+        },
+        now,
+    )
+    .expect("store")
+}
+
+/// One registration ceremony on `ledger`.
+fn session_register(
+    ledger: &dyn RegistrationLedger,
+    now: &dyn Fn() -> ObservedTime,
+    v: &TestVerifier,
+    subject: &SubjectId,
+    response: &str,
+) -> Result<VerifiedRegistration, Refusal> {
+    let issued = ledger
+        .begin_registration(&RegistrationBegin {
+            subject,
+            verifier: v,
+            now: now(),
+        })
+        .expect("store")?;
+    ledger
+        .finish_registration(&RegistrationFinish {
+            registration_id: &issued.registration_id,
+            response: response.as_bytes(),
+            verifier: v,
+            now: now(),
+        })
+        .expect("store")
+}
+
 struct M4 {
     w: World,
     v: TestVerifier,
@@ -187,30 +305,46 @@ impl M4 {
     /// A fresh ledger with the bootstrap administrator `root`, approver `alice` and
     /// revoker `carol` in (fixture-tenant, fixture-project).
     fn new(name: &str) -> M4 {
-        let m = M4 {
-            w: World::new(&format!("m4-{name}")),
-            v: TestVerifier::default(),
-        };
-        let seq =
-            m.w.ledger
-                .bootstrap_administrator(
-                    &BootstrapEnrollment {
-                        subject: root(),
-                        credential: NewCredential {
-                            credential_id: "cred-root".into(),
-                            public_material: b"pk-root".to_vec(),
-                        },
-                        linked_identities: vec![],
-                    },
-                    m.now(),
-                )
-                .unwrap();
-        assert_eq!(seq, Ok(1));
+        let mut w = World::new(&format!("m4-{name}"));
+        let v = TestVerifier::default();
+        // The bootstrap runs through its own entry point, which owns the ledger file
+        // exclusively: release the world's ownership for it, then take it back.
+        let path = w.dir.join("ledger.db");
+        let held = std::mem::replace(
+            &mut w.ledger,
+            SqliteLedger::create(&w.dir.join("placeholder.db")).unwrap(),
+        );
+        drop(held);
+        assert_eq!(bootstrap_root(&path, &w.clock, &v), Ok(1));
+        drop(std::mem::replace(
+            &mut w.ledger,
+            SqliteLedger::open(&path).unwrap(),
+        ));
+        let m = M4 { w, v };
         m.enroll(person("alice", &[(Permission::Approver, T, P)], vec![]))
             .unwrap();
         m.enroll(person("carol", &[(Permission::Revoker, T, P)], vec![]))
             .unwrap();
         m
+    }
+
+    /// A credential for `subject` from the serving ledger's `enroll` registration ceremony.
+    fn register(
+        &self,
+        subject: &SubjectId,
+        response: &str,
+    ) -> Result<VerifiedRegistration, Refusal> {
+        session_register(self.l(), &|| self.now(), &self.v, subject, response)
+    }
+
+    /// `e` with a registered credential `cred-<name>` when it is a human without one.
+    fn registered(&self, mut e: NewEnrollment) -> NewEnrollment {
+        if e.kind == PrincipalKind::Human && e.credential.is_none() {
+            let name = &e.subject.subject;
+            let response = format!("ok|cred-{name}|pk-{name}");
+            e.credential = Some(self.register(&e.subject, &response).unwrap());
+        }
+        e
     }
 
     fn l(&self) -> &SqliteLedger {
@@ -270,6 +404,7 @@ impl M4 {
     }
 
     fn enroll(&self, e: NewEnrollment) -> Result<CeremonyOutcome, Refusal> {
+        let e = self.registered(e);
         let key = format!("enroll-{}", e.subject.subject);
         self.ceremony(&root(), &CeremonyOp::Enroll { enrollment: e }, &key)
     }
@@ -827,59 +962,66 @@ fn approval_by_the_requester_agent_unenrolled_service_or_unscoped_subject_is_ref
 #[test]
 fn enrollment_happens_only_through_the_documented_ceremony() {
     let m = M4::new("enroll");
-    let now = m.now();
-    // One bootstrap per ledger.
-    let again = BootstrapEnrollment {
-        subject: human("mallory"),
-        credential: NewCredential {
-            credential_id: "cred-mallory".into(),
-            public_material: b"pk".to_vec(),
-        },
-        linked_identities: vec![],
-    };
-    assert_eq!(
-        m.l().bootstrap_administrator(&again, now).unwrap(),
-        Err(ap(ApprovalCode::EnrollmentUnsupported))
-    );
     let unsupported = Some(ap(ApprovalCode::EnrollmentUnsupported));
     let enroll = |e: NewEnrollment| CeremonyOp::Enroll { enrollment: e };
-    // Existing subject (no recovery, no additional credentials).
-    let mut again = person("alice", &[], vec![]);
-    again.credential.as_mut().unwrap().credential_id = "cred-alice-2".into();
-    assert_eq!(m.begin(&root(), &enroll(again), "e1").err(), unsupported);
-    // A human without a credential; a service with a credential or a human-only role.
-    let mut bare = person("frank", &[], vec![]);
-    bare.credential = None;
-    assert_eq!(m.begin(&root(), &enroll(bare), "e2").err(), unsupported);
+    // Existing subject (no recovery, no additional credentials): no registration at all.
+    assert_eq!(
+        m.register(&human("alice"), "ok|cred-alice-2|pk").err(),
+        unsupported
+    );
+    // A human without a credential; a service with a human-only role.
+    assert_eq!(
+        m.begin(&root(), &enroll(person("frank", &[], vec![])), "e2")
+            .err(),
+        unsupported
+    );
     let mut svc = person("svc-x", &[(Permission::Approver, T, P)], vec![]);
     svc.kind = PrincipalKind::Service;
-    svc.credential = None;
     assert_eq!(m.begin(&root(), &enroll(svc), "e3").err(), unsupported);
-    // A credential id already stored.
-    let mut dup = person("gina", &[], vec![]);
-    dup.credential.as_mut().unwrap().credential_id = "cred-alice".into();
-    assert_eq!(m.begin(&root(), &enroll(dup), "e4").err(), unsupported);
+    // A service with a credential.
+    let mut svc = m.registered(person("svc-y", &[(Permission::Operator, T, P)], vec![]));
+    svc.kind = PrincipalKind::Service;
+    assert_eq!(m.begin(&root(), &enroll(svc), "e3b").err(), unsupported);
+    // A credential id already stored never registers (and the row is burnt).
+    assert_eq!(
+        m.register(&human("gina"), "ok|cred-alice|pk-gina").err(),
+        unsupported
+    );
     // Only an operator in the global scope enrolls; nobody enrolls itself.
     assert_eq!(
-        m.begin(&human("alice"), &enroll(person("hank", &[], vec![])), "e5")
-            .err(),
+        m.begin(
+            &human("alice"),
+            &enroll(m.registered(person("hank", &[], vec![]))),
+            "e5"
+        )
+        .err(),
         Some(ap(ApprovalCode::PermissionMissing))
     );
     let mut me = person("root", &[(Permission::Approver, T, P)], vec![]);
     me.subject = SubjectId::new("other-realm", "ROOT");
-    me.credential.as_mut().unwrap().credential_id = "cred-root-2".into();
+    let me = m.registered(me);
     assert_eq!(
         m.ceremony(&root(), &enroll(me), "e6"),
         Err(ap(ApprovalCode::SeparationViolated))
     );
-    // A changed enrollment cannot reuse the displayed one's challenge.
-    let shown = enroll(person("ivy", &[(Permission::Approver, T, P)], vec![]));
+    // Enrollment escalation: a changed enrollment cannot reuse the displayed one's challenge.
+    let ivy = m.registered(person("ivy", &[(Permission::Approver, T, P)], vec![]));
+    let shown = enroll(ivy.clone());
     let c = m.begin(&root(), &shown, "e7").unwrap();
-    let escalated = enroll(person("ivy", &[(Permission::Operator, "*", "*")], vec![]));
-    assert_eq!(
-        m.finish(&escalated, &c.challenge_id, &ok(&root()), "e7"),
-        Err(challenge(ChallengeRefusal::ContextMismatch))
-    );
+    let mut more = ivy.clone();
+    more.roles = vec![NewRole {
+        permission: Permission::Operator,
+        tenant_id: "*".into(),
+        project_id: "*".into(),
+    }];
+    let mut linked = ivy.clone();
+    linked.linked_identities = vec![SubjectId::new("adapter", "someone")];
+    for escalated in [more, linked] {
+        assert_eq!(
+            m.finish(&enroll(escalated), &c.challenge_id, &ok(&root()), "e7"),
+            Err(challenge(ChallengeRefusal::ContextMismatch))
+        );
+    }
     let out = m
         .finish(&shown, &c.challenge_id, &ok(&root()), "e7")
         .unwrap();
@@ -901,6 +1043,321 @@ fn enrollment_happens_only_through_the_documented_ceremony() {
         m.count("SELECT count(*) FROM enrollments WHERE enrolled_by_issuer = 'writ-local' AND enrolled_by = 'bootstrap'"),
         1
     );
+    // The credential is the registration row's, which is consumed (single use).
+    assert_eq!(
+        m.count("SELECT count(*) FROM credentials c JOIN registrations r ON r.credential_id = c.credential_id WHERE c.subject = 'ivy' AND c.public_material = r.public_material AND r.status = 'enrolled' AND r.consumed_by IS NOT NULL"),
+        1
+    );
+    assert_eq!(
+        m.count("SELECT count(*) FROM registrations WHERE status = 'enrolled' AND operation = 'bootstrap' AND consumed_by = 'bootstrap'"),
+        1
+    );
+}
+
+#[test]
+fn enrollment_refuses_raw_or_foreign_public_material() {
+    let m = M4::new("enroll-raw");
+    let unsupported = Some(ap(ApprovalCode::EnrollmentUnsupported));
+    let enroll = |e: NewEnrollment| CeremonyOp::Enroll { enrollment: e };
+    let cap = VerifierCapability::for_verifier_implementation();
+    let binding = |id: &str, subject: &SubjectId, operation| RegistrationBinding {
+        registration_id: id.into(),
+        operation,
+        subject: subject.clone(),
+        relying_party: m.v.relying_party(),
+    };
+    let with = |name: &str, reg: VerifiedRegistration| {
+        let mut e = person(name, &[(Permission::Approver, T, P)], vec![]);
+        e.credential = Some(reg);
+        enroll(e)
+    };
+    let enroll_op = writ_broker::human::RegistrationOperation::Enroll;
+    // Raw public material: a registration result that no ledger row recorded.
+    let raw = VerifiedRegistration::new(
+        &cap,
+        &binding("reg-made-up", &human("kim"), enroll_op),
+        "cred-kim",
+        b"pk-kim".to_vec(),
+        ES256,
+        true,
+    );
+    assert_eq!(m.begin(&root(), &with("kim", raw), "r1").err(), unsupported);
+    // A real row, but other material, another credential id, algorithm or UV flag.
+    let real = m.register(&human("kim"), "ok|cred-kim|pk-kim").unwrap();
+    let b = real.binding().clone();
+    for (cred, material, alg, uv) in [
+        ("cred-kim", b"pk-other".to_vec(), ES256, true),
+        ("cred-kim-2", b"pk-kim".to_vec(), ES256, true),
+        ("cred-kim", b"pk-kim".to_vec(), "RS256", true),
+        ("cred-kim", b"pk-kim".to_vec(), ES256, false),
+    ] {
+        let forged = VerifiedRegistration::new(&cap, &b, cred, material, alg, uv);
+        assert_eq!(
+            m.begin(&root(), &with("kim", forged), "r2").err(),
+            unsupported
+        );
+    }
+    // The real row for another subject, or claimed as a bootstrap registration.
+    assert_eq!(
+        m.begin(&root(), &with("lea", real.clone()), "r3").err(),
+        unsupported
+    );
+    let as_bootstrap = VerifiedRegistration::new(
+        &cap,
+        &RegistrationBinding {
+            operation: writ_broker::human::RegistrationOperation::Bootstrap,
+            ..b.clone()
+        },
+        "cred-kim",
+        b"pk-kim".to_vec(),
+        ES256,
+        true,
+    );
+    assert_eq!(
+        m.begin(&root(), &with("kim", as_bootstrap), "r4").err(),
+        unsupported
+    );
+    // The real one enrolls once; its row is then used up.
+    assert!(m
+        .ceremony(&root(), &with("kim", real.clone()), "r5")
+        .is_ok());
+    let mut again = person("kim", &[], vec![]);
+    again.subject = human("kim2");
+    again.credential = Some(real);
+    assert_eq!(m.begin(&root(), &enroll(again), "r6").err(), unsupported);
+    // An expired registration never enrolls.
+    let late = m.register(&human("max"), "ok|cred-max|pk-max").unwrap();
+    let op = with("max", late);
+    m.w.clock.set(now().plus_seconds(590));
+    let c = m.begin(&root(), &op, "r7").unwrap();
+    m.w.clock.set(now().plus_seconds(600));
+    assert_eq!(
+        m.finish(&op, &c.challenge_id, &ok(&root()), "r7"),
+        Err(ap(ApprovalCode::EnrollmentUnsupported))
+    );
+    assert_eq!(
+        m.count("SELECT count(*) FROM subjects WHERE subject IN ('lea', 'kim2', 'max')"),
+        0
+    );
+}
+
+#[test]
+fn registration_is_verified_bound_and_single_use() {
+    let m = M4::new("registration");
+    let assertion = |e| Err(ap(ApprovalCode::AssertionInvalid(e)));
+    let unsupported = Err(ap(ApprovalCode::EnrollmentUnsupported));
+    // Verifier refusals and unaccepted answers burn the row.
+    for (name, response, expected) in [
+        (
+            "n1",
+            "forged|cred-n1|pk",
+            assertion(VerifierError::SignatureInvalid),
+        ),
+        (
+            "n2",
+            "nouv|cred-n2|pk",
+            assertion(VerifierError::UserNotVerified),
+        ),
+        ("n3", "other|cred-n3|pk", assertion(VerifierError::Rejected)),
+        ("n4", "rs256|cred-n4|pk", unsupported.clone()),
+        ("n5", "garbage", assertion(VerifierError::Malformed)),
+    ] {
+        let issued = m
+            .l()
+            .begin_registration(&RegistrationBegin {
+                subject: &human(name),
+                verifier: &m.v,
+                now: m.now(),
+            })
+            .unwrap()
+            .unwrap();
+        let finish = |response: &str| {
+            m.l()
+                .finish_registration(&RegistrationFinish {
+                    registration_id: &issued.registration_id,
+                    response: response.as_bytes(),
+                    verifier: &m.v,
+                    now: m.now(),
+                })
+                .unwrap()
+        };
+        assert_eq!(finish(response), expected, "{name}");
+        // Burnt: even a valid answer is refused afterwards.
+        let valid = format!("ok|cred-{name}|pk");
+        assert_eq!(
+            finish(&valid),
+            Err(challenge(ChallengeRefusal::Consumed)),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        m.count("SELECT count(*) FROM registrations WHERE status = 'refused' AND length(ceremony_state) = 0 AND credential_id IS NULL"),
+        5
+    );
+    // Another relying party (origin) cannot finish a row.
+    let issued = m
+        .l()
+        .begin_registration(&RegistrationBegin {
+            subject: &human("o1"),
+            verifier: &m.v,
+            now: m.now(),
+        })
+        .unwrap()
+        .unwrap();
+    m.v.other_origin.store(true, Ordering::SeqCst);
+    let finish = |response: &str| {
+        m.l()
+            .finish_registration(&RegistrationFinish {
+                registration_id: &issued.registration_id,
+                response: response.as_bytes(),
+                verifier: &m.v,
+                now: m.now(),
+            })
+            .unwrap()
+    };
+    assert_eq!(
+        finish("ok|cred-o1|pk"),
+        assertion(VerifierError::BindingMismatch)
+    );
+    m.v.other_origin.store(false, Ordering::SeqCst);
+    // A finished row is single use; an unknown row is refused.
+    let reg = m.register(&human("p1"), "ok|cred-p1|pk").unwrap();
+    assert_eq!(reg.subject(), &human("p1"));
+    assert_eq!(reg.binding().relying_party.origin, ORIGIN);
+    let again = m
+        .l()
+        .finish_registration(&RegistrationFinish {
+            registration_id: reg.registration_id(),
+            response: b"ok|cred-p1b|pk",
+            verifier: &m.v,
+            now: m.now(),
+        })
+        .unwrap();
+    assert_eq!(again, Err(challenge(ChallengeRefusal::Consumed)));
+    let unknown = m
+        .l()
+        .finish_registration(&RegistrationFinish {
+            registration_id: "reg-unknown",
+            response: b"ok|cred-x|pk",
+            verifier: &m.v,
+            now: m.now(),
+        })
+        .unwrap();
+    assert_eq!(unknown, Err(challenge(ChallengeRefusal::Unknown)));
+    // The registered credential id is taken for every later registration.
+    assert_eq!(
+        m.register(&human("p2"), "ok|cred-p1|pk").err(),
+        unsupported.err()
+    );
+    // An expired row cannot finish.
+    let issued = m
+        .l()
+        .begin_registration(&RegistrationBegin {
+            subject: &human("q1"),
+            verifier: &m.v,
+            now: m.now(),
+        })
+        .unwrap()
+        .unwrap();
+    m.w.clock.set(now().plus_seconds(600));
+    let expired = m
+        .l()
+        .finish_registration(&RegistrationFinish {
+            registration_id: &issued.registration_id,
+            response: b"ok|cred-q1|pk",
+            verifier: &m.v,
+            now: m.now(),
+        })
+        .unwrap();
+    assert_eq!(expired, Err(challenge(ChallengeRefusal::Expired)));
+    // The serving ledger never issues bootstrap registrations: its rows are all `enroll`
+    // except the bootstrap's own.
+    assert_eq!(
+        m.count("SELECT count(*) FROM registrations WHERE operation = 'bootstrap'"),
+        1
+    );
+}
+
+#[test]
+fn bootstrap_is_exclusive_against_service_and_happens_once() {
+    let dir = std::env::temp_dir().join(format!(
+        "writ-m4-bootstrap-{}-{}",
+        std::process::id(),
+        now().to_string().replace(':', "")
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("ledger.db");
+    let clock = super::grant_tests::TestClock::at(now());
+    let v = TestVerifier::default();
+    // While the service owns the ledger, no bootstrap session opens (no separate lock, no
+    // fencing bypass): the same sidecar ownership lock refuses it.
+    let service = SqliteLedger::create(&path).unwrap();
+    assert!(matches!(
+        BootstrapSession::open(&path),
+        Err(StoreError::OwnedElsewhere)
+    ));
+    // The serving ledger never registers for a bootstrap or before one.
+    let early = session_register(
+        &service,
+        &|| {
+            let mut l: &SqliteLedger = &service;
+            observe(&clock, &mut l).unwrap()
+        },
+        &v,
+        &root(),
+        "ok|cred-root|pk-root",
+    );
+    assert_eq!(early, Err(ap(ApprovalCode::EnrollmentUnsupported)));
+    drop(service);
+    // While a bootstrap session owns it, the service cannot open it.
+    let session = match BootstrapSession::open(&path) {
+        Ok(Ok(s)) => s,
+        _ => panic!("bootstrap session"),
+    };
+    assert!(matches!(
+        SqliteLedger::open(&path),
+        Err(StoreError::OwnedElsewhere)
+    ));
+    // A bootstrap enrollment needs this session's registration of the same subject.
+    let reg = session_register(
+        &session,
+        &|| session.observe(&clock).unwrap(),
+        &v,
+        &human("someone-else"),
+        "ok|cred-else|pk",
+    )
+    .unwrap();
+    let now1 = session.observe(&clock).unwrap();
+    let wrong = BootstrapEnrollment {
+        subject: root(),
+        credential: reg,
+        linked_identities: vec![],
+    };
+    assert_eq!(
+        session.bootstrap(&wrong, now1).unwrap(),
+        Err(ap(ApprovalCode::EnrollmentUnsupported))
+    );
+    // (The refused bootstrap consumed the session; ownership is released.)
+    assert_eq!(bootstrap_root(&path, &clock, &v), Ok(1));
+    // Bootstrap twice: refused at open, whatever happens to the first administrator.
+    assert!(matches!(
+        BootstrapSession::open(&path),
+        Ok(Err(Refusal::Approval(ApprovalCode::EnrollmentUnsupported)))
+    ));
+    let l = SqliteLedger::open(&path).unwrap();
+    let count = |sql: &str| -> i64 { l.db().conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+    assert_eq!(count("SELECT count(*) FROM subjects"), 1);
+    assert_eq!(
+        count("SELECT count(*) FROM role_assignments WHERE permission IN ('operator', 'revoker') AND tenant_id = '*' AND project_id = '*'"),
+        2
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM approval_events WHERE kind = 'bootstrap'"),
+        1
+    );
+    drop(l);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---------------------------------------------------------------------------
@@ -1398,7 +1855,7 @@ fn an_unknown_commit_is_recovered_by_an_identical_retry_without_a_second_grant()
     assert!(!r1.replayed && r2.replayed);
     assert_eq!(m.count("SELECT count(*) FROM revocations"), 1);
     let enroll = CeremonyOp::Enroll {
-        enrollment: person("zed", &[(Permission::Approver, T, P)], vec![]),
+        enrollment: m.registered(person("zed", &[(Permission::Approver, T, P)], vec![])),
     };
     let ec = m.begin(&root(), &enroll, "ekey").unwrap();
     let e1 = m

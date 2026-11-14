@@ -148,6 +148,7 @@ mod approval_store;
 mod effects;
 mod runner_store;
 mod workflow;
+pub use approval_store::BootstrapSession;
 pub use effects::{SqliteEffectStore, EFFECTS_SCHEMA, EFFECTS_SCHEMA_VERSION};
 pub use runner_store::{SqliteRunnerStore, RUNNER_SCHEMA, RUNNER_SCHEMA_VERSION};
 use writ_broker::store::{TxFailure, TxStage};

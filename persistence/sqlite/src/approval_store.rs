@@ -1,7 +1,8 @@
 //! The approval ledger on SQLite (M4-03, M4-04, M4-05, M4-08 storage, M4-09, M4-10; schema
-//! `writ-ledger-6`): [`ApprovalLedger`] for [`SqliteLedger`], the explicit bootstrap
-//! enrollment ([`SqliteLedger::bootstrap_administrator`], docs/implementation/
-//! M4-ENROLLMENT-CEREMONY.md), the grant revocation read used by T-reserve, T-dispatch and
+//! `writ-ledger-6`): [`ApprovalLedger`] for [`SqliteLedger`], the server-held registration
+//! ceremonies ([`RegistrationLedger`]; S5, X8), the separate bootstrap entry point
+//! ([`BootstrapSession`], docs/implementation/M4-ENROLLMENT-CEREMONY.md), the grant
+//! revocation read used by T-reserve, T-dispatch and
 //! promotion, signoff consumption inside a promotion transaction, and the I-8 sequence.
 //!
 //! Every state change is one fenced `BEGIN IMMEDIATE` transaction on the single owner
@@ -29,16 +30,19 @@ use writ_broker::approval::{
 use writ_broker::approval_store::{
     approval_binding, kind_text, parse_kind, parse_permission, permission_text, revocation_binding,
     signoff_binding, ApprovalLedger, BootstrapEnrollment, CeremonyBegin, CeremonyFinish,
-    CeremonyOp, CeremonyOutcome, CeremonyResult, Expired, IssuedChallenge, NewEnrollment,
-    RequestRecorded, SignoffState, UseState, APPROVAL_GRANT_TTL_SECONDS, BOOTSTRAP_ISSUER,
-    BOOTSTRAP_SUBJECT, GLOBAL_SCOPE,
+    CeremonyOp, CeremonyOutcome, CeremonyResult, Expired, IssuedChallenge, IssuedRegistration,
+    NewEnrollment, RegistrationBegin, RegistrationFinish, RegistrationLedger, RequestRecorded,
+    SignoffState, UseState, APPROVAL_GRANT_TTL_SECONDS, BOOTSTRAP_ISSUER, BOOTSTRAP_SUBJECT,
+    GLOBAL_SCOPE, REGISTRATION_TTL_SECONDS,
 };
 use writ_broker::clock::ObservedTime;
 use writ_broker::grants::{GrantLabel, NewGrant, Verdict};
 use writ_broker::human::{
     check_actor, check_service_permission, same_subject, ActiveCredentials, Actor, CeremonyState,
     CredentialStatus, EnrollmentRecord, LedgerCapability, Parties, Permission, PrincipalKind,
-    RoleAssignment, StoredCredential, SubjectId, SubjectRecord, SubjectStatus, VerifiedAssertion,
+    RegistrationBinding, RegistrationOperation, RelyingParty, RoleAssignment, StoredCredential,
+    SubjectId, SubjectRecord, SubjectStatus, VerifiedAssertion, VerifiedRegistration,
+    VerifierError, ES256,
 };
 use writ_broker::refusal::Refusal;
 use writ_broker::store::{StoreError, TxFailure, TxStage};
@@ -728,17 +732,97 @@ fn signoff_current(conn: &Connection, b: &NewSignoff) -> Result<bool, BodyError>
             == Some(b.acceptance_policy_version.as_str()))
 }
 
+/// The verified registration equals a finished (`registered`) registration row of
+/// `operation` for `subject`: same relying party, credential id, public material and
+/// algorithm (ES256 only, D-041 DR-3), user verified (S5, X8). Anything else, including a
+/// registration result that no row recorded (raw public material), is refused.
+fn registration_recorded(
+    conn: &Connection,
+    reg: &VerifiedRegistration,
+    subject: &SubjectId,
+    operation: RegistrationOperation,
+) -> Result<bool, BodyError> {
+    let b = reg.binding();
+    if b.operation != operation
+        || &b.subject != subject
+        || !reg.user_verified()
+        || reg.algorithm() != ES256
+    {
+        return Ok(false);
+    }
+    let row = conn
+        .query_row(
+            "SELECT operation, issuer, subject, rp_id, origin, status, credential_id, \
+             public_material, algorithm FROM registrations WHERE registration_id = ?1",
+            [&b.registration_id],
+            |r| {
+                Ok((
+                    [
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                        r.get::<_, String>(5)?,
+                    ],
+                    r.get::<_, Option<String>>(6)?,
+                    r.get::<_, Option<Vec<u8>>>(7)?,
+                    r.get::<_, Option<String>>(8)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some(([op, issuer, sub, rp_id, origin, status], credential, material, algorithm)) = row
+    else {
+        return Ok(false);
+    };
+    Ok(op == operation.as_str()
+        && issuer == subject.issuer
+        && sub == subject.subject
+        && rp_id == b.relying_party.rp_id
+        && origin == b.relying_party.origin
+        && status == "registered"
+        && credential.as_deref() == Some(reg.credential_id())
+        && material.as_deref() == Some(reg.public_material())
+        && algorithm.as_deref() == Some(ES256))
+}
+
+/// The registration row of `e`'s credential is expired at `now` (its enrollment must commit
+/// within [`REGISTRATION_TTL_SECONDS`] of issue).
+fn registration_expired(
+    conn: &Connection,
+    e: &NewEnrollment,
+    now: Timestamp,
+) -> Result<bool, BodyError> {
+    let Some(reg) = &e.credential else {
+        return Ok(false);
+    };
+    let expires: Option<String> = conn
+        .query_row(
+            "SELECT expires_at FROM registrations WHERE registration_id = ?1",
+            [reg.registration_id()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match expires {
+        Some(at) => Ok(now >= ts(&at)?),
+        None => Ok(true),
+    }
+}
+
 /// Why `e` cannot be enrolled (ENROLLMENT_UNSUPPORTED), if anything.
-fn enrollment_blocked(conn: &Connection, e: &NewEnrollment) -> Result<bool, BodyError> {
+fn enrollment_blocked(
+    conn: &Connection,
+    e: &NewEnrollment,
+    operation: RegistrationOperation,
+) -> Result<bool, BodyError> {
     let identities_ok = e.subject.is_well_formed()
         && e.linked_identities.iter().all(SubjectId::is_well_formed)
         && e.roles
             .iter()
             .all(|r| !r.tenant_id.is_empty() && !r.project_id.is_empty());
     let credential_ok = match (e.kind, &e.credential) {
-        (PrincipalKind::Human, Some(c)) => {
-            !c.credential_id.is_empty() && !c.public_material.is_empty()
-        }
+        (PrincipalKind::Human, Some(c)) => registration_recorded(conn, c, &e.subject, operation)?,
         (PrincipalKind::Service, None) => true,
         _ => false,
     };
@@ -757,7 +841,7 @@ fn enrollment_blocked(conn: &Connection, e: &NewEnrollment) -> Result<bool, Body
     let credential_taken = match &e.credential {
         Some(c) => conn.query_row(
             "SELECT EXISTS (SELECT 1 FROM credentials WHERE credential_id = ?1)",
-            [&c.credential_id],
+            [c.credential_id()],
             |r| r.get(0),
         )?,
         None => false,
@@ -806,7 +890,7 @@ fn target(conn: &Connection, op: &CeremonyOp) -> Outcome<Target> {
             let Ok(binding) = enrollment.binding() else {
                 return Ok(Err(ap(ApprovalCode::EnrollmentUnsupported)));
             };
-            let blocked = enrollment_blocked(conn, enrollment)?
+            let blocked = enrollment_blocked(conn, enrollment, RegistrationOperation::Enroll)?
                 .then(|| ap(ApprovalCode::EnrollmentUnsupported));
             Ok(Ok(Target {
                 binding,
@@ -1240,15 +1324,28 @@ fn write_enrollment(
     .map_err(|_| BodyError::Integrity)?;
     insert_subject(tx, &e.subject, e.kind, at)?;
     if let Some(c) = &e.credential {
+        // S5, X8: the registration row is consumed (single use) and the credential is copied
+        // from it, never from the caller's value (checked equal by `enrollment_blocked`).
+        let consumed = tx.execute(
+            "UPDATE registrations SET status = 'enrolled', consumed_by = ?2 \
+             WHERE registration_id = ?1 AND status = 'registered'",
+            (
+                c.registration_id(),
+                challenge_id.unwrap_or(BOOTSTRAP_SUBJECT),
+            ),
+        )?;
+        if consumed != 1 {
+            return Err(BodyError::StateConflict);
+        }
         tx.execute(
             "INSERT INTO credentials (credential_id, issuer, subject, public_material, status, \
              enrolled_at, enrolled_by_issuer, enrolled_by) \
-             VALUES (?1, ?2, ?3, ?4, 'active', ?5, ?6, ?7)",
+             SELECT credential_id, ?2, ?3, public_material, 'active', ?4, ?5, ?6 \
+             FROM registrations WHERE registration_id = ?1",
             rusqlite::params![
-                c.credential_id,
+                c.registration_id(),
                 e.subject.issuer,
                 e.subject.subject,
-                c.public_material,
                 at.to_string(),
                 by.issuer,
                 by.subject,
@@ -1574,6 +1671,9 @@ fn finish_in(tx: &Transaction<'_>, f: &CeremonyFinish<'_>) -> Outcome<CeremonyOu
             {
                 return Ok(Err(ap(ApprovalCode::SeparationViolated)));
             }
+            if registration_expired(tx, enrollment, now)? {
+                return Ok(Err(ap(ApprovalCode::EnrollmentUnsupported)));
+            }
             seq = next_seq(tx, "enrollment", f.challenge_id)?;
             write_enrollment(
                 tx,
@@ -1715,13 +1815,191 @@ impl SqliteLedger {
         })
     }
 
+    /// The `registration_issue` transaction (S5, X8; [`RegistrationLedger`]) for
+    /// `operation`, which is the caller's phase, never a request field: `Bootstrap` only on
+    /// a ledger that has never had a subject or a bootstrap, `Enroll` only on one that has.
+    fn begin_registration_as(
+        &self,
+        b: &RegistrationBegin<'_>,
+        operation: RegistrationOperation,
+    ) -> Result<Result<IssuedRegistration, Refusal>, TxFailure> {
+        let registration_id = random_id("reg")?;
+        let now = b.now.at();
+        let result = self.transact("registration_issue", |tx| {
+            let unsupported = || Ok(End::Rollback(Err(ap(ApprovalCode::EnrollmentUnsupported))));
+            if !b.subject.is_well_formed()
+                || bootstrapped(tx)? != (operation == RegistrationOperation::Enroll)
+            {
+                return unsupported();
+            }
+            let exists: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM subjects WHERE issuer = ?1 AND subject = ?2)",
+                (&b.subject.issuer, &b.subject.subject),
+                |r| r.get(0),
+            )?;
+            if exists {
+                return unsupported();
+            }
+            let rp = b.verifier.relying_party();
+            if rp.rp_id.is_empty() || rp.origin.is_empty() {
+                return Ok(End::Rollback(Err(ap(ApprovalCode::AssertionInvalid(
+                    VerifierError::Unavailable,
+                )))));
+            }
+            let start = match b.verifier.begin_registration(b.subject) {
+                Ok(s) => s,
+                Err(e) => return Ok(End::Rollback(Err(ap(ApprovalCode::AssertionInvalid(e))))),
+            };
+            if start.state.is_empty() {
+                return Ok(End::Rollback(Err(ap(ApprovalCode::AssertionInvalid(
+                    VerifierError::Malformed,
+                )))));
+            }
+            let expires_at = now.plus_seconds(REGISTRATION_TTL_SECONDS);
+            tx.execute(
+                "INSERT INTO registrations (registration_id, operation, issuer, subject, rp_id, \
+                 origin, ceremony_state, issued_at, expires_at, status) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'issued')",
+                rusqlite::params![
+                    registration_id,
+                    operation.as_str(),
+                    b.subject.issuer,
+                    b.subject.subject,
+                    rp.rp_id,
+                    rp.origin,
+                    start.state.as_bytes(),
+                    now.to_string(),
+                    expires_at.to_string(),
+                ],
+            )?;
+            Ok(End::Commit(Ok(IssuedRegistration {
+                registration_id: registration_id.clone(),
+                client_options: start.client_options,
+                expires_at,
+            })))
+        });
+        self.audited(result)
+    }
+
+    /// The `registration` transaction (S5, X8; [`RegistrationLedger`]): the row must be
+    /// `issued`, of `operation`, unexpired and for the verifier's relying party; the
+    /// verifier's answer must be for exactly this row, user verified, ES256 (D-041 DR-3)
+    /// and of an unused credential id. The row then records the credential (`registered`);
+    /// a refused answer burns it (`refused`, committed with the refusal).
+    fn finish_registration_as(
+        &self,
+        f: &RegistrationFinish<'_>,
+        operation: RegistrationOperation,
+    ) -> Result<Result<VerifiedRegistration, Refusal>, TxFailure> {
+        let now = f.now.at();
+        let result = self.transact("registration", |tx| {
+            let row = tx
+                .query_row(
+                    "SELECT operation, issuer, subject, rp_id, origin, status, expires_at, \
+                     ceremony_state FROM registrations WHERE registration_id = ?1",
+                    [f.registration_id],
+                    |r| {
+                        Ok((
+                            [
+                                r.get::<_, String>(0)?,
+                                r.get::<_, String>(1)?,
+                                r.get::<_, String>(2)?,
+                                r.get::<_, String>(3)?,
+                                r.get::<_, String>(4)?,
+                                r.get::<_, String>(5)?,
+                                r.get::<_, String>(6)?,
+                            ],
+                            r.get::<_, Vec<u8>>(7)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            let refuse = |r: ChallengeRefusal| Ok(End::Rollback(Err(challenge_refused(r))));
+            let Some(([op, issuer, subject, rp_id, origin, status, expires], state)) = row else {
+                return refuse(ChallengeRefusal::Unknown);
+            };
+            if op != operation.as_str() {
+                return refuse(ChallengeRefusal::Unknown);
+            }
+            if status != "issued" {
+                return refuse(ChallengeRefusal::Consumed);
+            }
+            if now >= ts(&expires)? {
+                return refuse(ChallengeRefusal::Expired);
+            }
+            let burn = |refusal: Refusal| -> Result<End<Result<VerifiedRegistration, Refusal>>, BodyError> {
+                tx.execute(
+                    "UPDATE registrations SET status = 'refused', ceremony_state = x'' \
+                     WHERE registration_id = ?1 AND status = 'issued'",
+                    [f.registration_id],
+                )?;
+                Ok(End::Commit(Err(refusal)))
+            };
+            let assertion = |e: VerifierError| ap(ApprovalCode::AssertionInvalid(e));
+            let binding = RegistrationBinding {
+                registration_id: f.registration_id.to_string(),
+                operation,
+                subject: SubjectId::new(&issuer, &subject),
+                relying_party: RelyingParty { rp_id, origin },
+            };
+            if f.verifier.relying_party() != binding.relying_party {
+                return burn(assertion(VerifierError::BindingMismatch));
+            }
+            let reg = match f.verifier.finish_registration(
+                &binding,
+                &CeremonyState::from_bytes(state),
+                f.response,
+            ) {
+                Ok(reg) => reg,
+                Err(e) => return burn(assertion(e)),
+            };
+            if reg.binding() != &binding {
+                return burn(assertion(VerifierError::Rejected));
+            }
+            if !reg.user_verified() {
+                return burn(assertion(VerifierError::UserNotVerified));
+            }
+            let taken: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM credentials WHERE credential_id = ?1) \
+                 OR EXISTS (SELECT 1 FROM registrations WHERE credential_id = ?1)",
+                [reg.credential_id()],
+                |r| r.get(0),
+            )?;
+            if reg.algorithm() != ES256
+                || reg.credential_id().is_empty()
+                || reg.public_material().is_empty()
+                || taken
+            {
+                return burn(ap(ApprovalCode::EnrollmentUnsupported));
+            }
+            let updated = tx.execute(
+                "UPDATE registrations SET status = 'registered', credential_id = ?2, \
+                 public_material = ?3, algorithm = ?4, ceremony_state = x'' \
+                 WHERE registration_id = ?1 AND status = 'issued'",
+                rusqlite::params![
+                    f.registration_id,
+                    reg.credential_id(),
+                    reg.public_material(),
+                    reg.algorithm(),
+                ],
+            )?;
+            if updated != 1 {
+                return Err(BodyError::StateConflict);
+            }
+            Ok(End::Commit(Ok(reg)))
+        });
+        self.audited(result)
+    }
+
     /// The bootstrap enrollment of the first administrator
-    /// (docs/implementation/M4-ENROLLMENT-CEREMONY.md section 2): an explicit operator
-    /// call, never reachable from agent ingress or the approval listener. Only in a ledger
-    /// that has never had a subject or a bootstrap; otherwise `ENROLLMENT_UNSUPPORTED`, as
-    /// for an ill-formed identity or credential. The subject is human and receives exactly
-    /// `operator` and `revoker` in the global scope. Returns its I-8 sequence number.
-    pub fn bootstrap_administrator(
+    /// (docs/implementation/M4-ENROLLMENT-CEREMONY.md section 2), reachable only through
+    /// [`BootstrapSession::bootstrap`]: never from agent ingress, the serving ledger or the
+    /// approval listener's normal service. Only in a ledger that has never had a subject or
+    /// a bootstrap, with a verified `bootstrap` registration of the subject; otherwise
+    /// `ENROLLMENT_UNSUPPORTED`, as for an ill-formed identity. The subject is human and
+    /// receives exactly `operator` and `revoker` in the global scope. Returns its I-8
+    /// sequence number.
+    fn bootstrap_administrator(
         &self,
         bootstrap: &BootstrapEnrollment,
         now: ObservedTime,
@@ -1742,13 +2020,10 @@ impl SqliteLedger {
                 .collect(),
         };
         let result = self.transact("bootstrap", |tx| {
-            let used: bool = tx.query_row(
-                "SELECT EXISTS (SELECT 1 FROM subjects) \
-                 OR EXISTS (SELECT 1 FROM approval_events WHERE kind = 'bootstrap')",
-                [],
-                |r| r.get(0),
-            )?;
-            if used || enrollment_blocked(tx, &enrollment)? {
+            if bootstrapped(tx)?
+                || enrollment_blocked(tx, &enrollment, RegistrationOperation::Bootstrap)?
+                || registration_expired(tx, &enrollment, at)?
+            {
                 return Ok(End::Rollback(Err(ap(ApprovalCode::EnrollmentUnsupported))));
             }
             let by = SubjectId::new(BOOTSTRAP_ISSUER, BOOTSTRAP_SUBJECT);
@@ -1772,6 +2047,106 @@ impl SqliteLedger {
             Ok(End::Commit(Ok(seq)))
         });
         self.audited(result)
+    }
+}
+
+/// The ledger has had a subject or a bootstrap (bootstrap is over for good).
+fn bootstrapped(conn: &Connection) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM subjects) \
+         OR EXISTS (SELECT 1 FROM approval_events WHERE kind = 'bootstrap')",
+        [],
+        |r| r.get(0),
+    )
+}
+
+/// The serving ledger registers credentials only for the administrative `Enroll`
+/// ceremony (S5, X8), never for a bootstrap.
+impl RegistrationLedger for SqliteLedger {
+    fn begin_registration(
+        &self,
+        begin: &RegistrationBegin<'_>,
+    ) -> Result<Result<IssuedRegistration, Refusal>, TxFailure> {
+        self.begin_registration_as(begin, RegistrationOperation::Enroll)
+    }
+
+    fn finish_registration(
+        &self,
+        finish: &RegistrationFinish<'_>,
+    ) -> Result<Result<VerifiedRegistration, Refusal>, TxFailure> {
+        self.finish_registration_as(finish, RegistrationOperation::Enroll)
+    }
+}
+
+/// The separate bootstrap entry point (S5, X8; docs/implementation/
+/// M4-ENROLLMENT-CEREMONY.md section 2): an exclusively owned ledger in its bootstrap phase.
+///
+/// [`BootstrapSession::open`] takes the ledger through exactly the protocol of normal
+/// service ([`SqliteLedger::open`]: canonical identity, the sidecar ownership lock
+/// `<canonical>.owner` under the process lifecycle gate, read-only verification, owner
+/// epoch and fencing on every transaction), so it fails closed (`OWNED_ELSEWHERE`) while a
+/// broker or any other owner holds the ledger, and no normal service can open the ledger
+/// while the session lives. There is no separate lock and no bypass. It refuses
+/// (`ENROLLMENT_UNSUPPORTED`) a ledger that has ever had a subject or a bootstrap. The
+/// session exposes only the `bootstrap` registration ceremony and the single
+/// [`BootstrapSession::bootstrap`], which consumes the session and releases ownership.
+pub struct BootstrapSession {
+    ledger: SqliteLedger,
+}
+
+impl BootstrapSession {
+    /// Open the ledger at `path` for its bootstrap (struct documentation).
+    pub fn open(path: &std::path::Path) -> Result<Result<BootstrapSession, Refusal>, StoreError> {
+        let ledger = SqliteLedger::open(path)?;
+        let used = {
+            let inner = ledger.lock("read")?;
+            bootstrapped(&inner.conn).map_err(|e| unavailable("read", code_name(&e)))?
+        };
+        if used {
+            let _ = ledger.audit(ApprovalCode::EnrollmentUnsupported.code());
+            return Ok(Err(ap(ApprovalCode::EnrollmentUnsupported)));
+        }
+        Ok(Ok(BootstrapSession { ledger }))
+    }
+
+    /// Trusted time for this session's operations (raises the ledger's persisted floor).
+    pub fn observe(
+        &self,
+        clock: &dyn writ_broker::clock::EffectiveClock,
+    ) -> Result<ObservedTime, writ_broker::clock::ClockError> {
+        let mut store: &SqliteLedger = &self.ledger;
+        writ_broker::clock::observe(clock, &mut store)
+    }
+
+    /// Enroll the first administrator with a credential from this session's `bootstrap`
+    /// registration of the same subject, then release ownership. Returns its I-8 sequence
+    /// number; `ENROLLMENT_UNSUPPORTED` when the ledger already has a subject or a
+    /// bootstrap, or the registration is not a finished, unexpired `bootstrap` row of the
+    /// subject.
+    pub fn bootstrap(
+        self,
+        bootstrap: &BootstrapEnrollment,
+        now: ObservedTime,
+    ) -> Result<Result<i64, Refusal>, TxFailure> {
+        self.ledger.bootstrap_administrator(bootstrap, now)
+    }
+}
+
+impl RegistrationLedger for BootstrapSession {
+    fn begin_registration(
+        &self,
+        begin: &RegistrationBegin<'_>,
+    ) -> Result<Result<IssuedRegistration, Refusal>, TxFailure> {
+        self.ledger
+            .begin_registration_as(begin, RegistrationOperation::Bootstrap)
+    }
+
+    fn finish_registration(
+        &self,
+        finish: &RegistrationFinish<'_>,
+    ) -> Result<Result<VerifiedRegistration, Refusal>, TxFailure> {
+        self.ledger
+            .finish_registration_as(finish, RegistrationOperation::Bootstrap)
     }
 }
 
