@@ -13,9 +13,9 @@
 //!   when present, must equal the origin exactly and is required on every `POST`;
 //!   `POST` bodies must be `application/x-www-form-urlencoded`.
 //! - **Fetch Metadata (LOW-1):** cookies are not port-scoped and another localhost port is
-//!   same-site, so every page that creates or uses a session and every `POST` requires
-//!   `Sec-Fetch-Site: same-origin` or `none`; `same-site`, `cross-site` and a missing header
-//!   are refused (fail closed).
+//!   same-site, so every page that creates or uses a session requires `Sec-Fetch-Site:
+//!   same-origin` or `none`, while every `POST` and `GET /view` require exactly
+//!   `same-origin`; `same-site`, `cross-site` and a missing header are refused (fail closed).
 //! - **Sessions** (at most 15 minutes, [`MAX_SESSION_SECONDS`]): viewing a stored request
 //!   creates a server-side page session (random token in an `HttpOnly`, `SameSite=Strict`
 //!   cookie) holding a CSRF token, the viewed request and the fingerprint displayed. A
@@ -511,6 +511,10 @@ async fn handle(state: &State, req: Request<Incoming>) -> Response<Full> {
             "/revoke" => form(state, page::FormKind::Revoke),
             "/role" => form(state, page::FormKind::Role),
             "/enroll" => form(state, page::FormKind::Enroll),
+            // `/view` shows a staged operation from an existing session; it is reached only by
+            // the page script's same-origin navigation, never directly (re-review residual of
+            // LOW-1: a reload after a cookie overwrite from another port would send `none`).
+            "/view" if !same_origin(&parts.headers) => refused(StatusCode::FORBIDDEN, "fetch site"),
             "/view" => shown_view(state, cookie_token(&parts.headers).as_deref()),
             _ => {
                 if let Some(id) = path.strip_prefix("/request/") {
@@ -552,10 +556,8 @@ async fn handle(state: &State, req: Request<Incoming>) -> Response<Full> {
     // LOW-1: a state-changing or session-using POST comes only from this origin's own page
     // (a request from another localhost port is `same-site`, and cookies are not scoped by
     // port, so a cookie planted there is refused here); missing is refused (fail closed).
-    if !matches!(
-        header(&parts.headers, "sec-fetch-site"),
-        Some("same-origin" | "none")
-    ) {
+    // The pages send every POST with `fetch` from this origin, which is always `same-origin`.
+    if !same_origin(&parts.headers) {
         return refused(StatusCode::FORBIDDEN, "fetch site");
     }
     let Some(token) = cookie_token(&parts.headers) else {
@@ -580,6 +582,11 @@ fn page_fetch_site(headers: &HeaderMap) -> bool {
         header(headers, "sec-fetch-site"),
         Some("same-origin" | "none")
     )
+}
+
+/// `Sec-Fetch-Site: same-origin` exactly (every POST, and `GET /view`).
+fn same_origin(headers: &HeaderMap) -> bool {
+    header(headers, "sec-fetch-site") == Some("same-origin")
 }
 
 fn not_found() -> Response<Full> {

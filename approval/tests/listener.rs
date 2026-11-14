@@ -1045,7 +1045,11 @@ fn body(csrf: &str, fields: &[(&str, &str)]) -> String {
 
 /// GET `/view` in the session.
 fn view_of(s: &Server, cookie: &str) -> String {
-    s.get("/view", &format!("Cookie: writ_session={cookie}\r\n"))
+    // `/view` is reached only by the page script's same-origin navigation.
+    s.get(
+        "/view",
+        &format!("Sec-Fetch-Site: same-origin\r\nCookie: writ_session={cookie}\r\n"),
+    )
 }
 
 /// Prepare `fields` in a session of form page `path`, then display it: (cookie, csrf,
@@ -1565,7 +1569,10 @@ fn prepared_pages_are_read_only_protected_and_never_stale() {
         403
     );
     assert_eq!(status(&view_of(&s, &cookie)), 404);
-    assert_eq!(status(&s.get("/view", "")), 404);
+    assert_eq!(
+        status(&s.get("/view", "Sec-Fetch-Site: same-origin\r\n")),
+        404
+    );
     let r = s.raw(
         format!(
             "POST /prepare HTTP/1.1\r\nHost: localhost:{}\r\nOrigin: http://evil.example\r\n\
@@ -1694,6 +1701,14 @@ fn a_cookie_planted_from_another_port_is_refused() {
         .as_bytes(),
     );
     assert_eq!(status(&r), 403, "{r}");
+    // `none` (a user-initiated reload or bookmark) is refused on `/view` and on every POST:
+    // both are reached only by this origin's own script (re-review residual of LOW-1).
+    let none = "Sec-Fetch-Site: none\r\n";
+    let r = s.get("/view", &format!("{none}{planted}"));
+    assert_eq!(status(&r), 403, "none /view");
+    let r = s.post("/ceremony/begin", &cookie, &body, none);
+    assert_eq!(status(&r), 403, "none POST");
+    assert!(r.ends_with("{\"error\":\"fetch site\"}"), "{r}");
     // Nothing reached the ledger.
     assert!(s.fake.calls().is_empty());
     // The static assets need no session and stay available to this origin's pages.
