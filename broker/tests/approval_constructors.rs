@@ -36,6 +36,10 @@ const ALLOWED: &[(&str, &str)] = &[
     // broker's `VerifiedAssertion::check` or the ledger's registration row accepts it).
     ("approval/src/verifier.rs", "finish"),
     ("approval/src/verifier.rs", "finish_registration"),
+    // The page backend's pass-through of the ledger's `finish_registration` (D-043 Y2):
+    // it builds nothing; the result is accepted only when it equals the ledger's own
+    // operator-bound registration row at enrollment (X8).
+    ("approval/src/backend.rs", "finish_registration"),
     ("persistence/sqlite/src/approval_store.rs", "cap"),
     (
         "persistence/sqlite/src/approval_store.rs",
