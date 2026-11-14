@@ -1,9 +1,9 @@
 //! Configuration of the production entry point `writ-approval-server` (Y3, D-043; D-040
-//! O-1, O-2, O-11, O-12; approval/README.md).
+//! O-1, O-2, O-11, O-12; approval-server/README.md).
 //!
 //! Every setting is required and given exactly once on the command line; there is no
 //! default, no configuration file, no environment variable and no verifier choice (the
-//! entry point always builds [`crate::verifier::PasskeyVerifier`]). Anything missing,
+//! entry point always builds [`writ_approval::verifier::PasskeyVerifier`]). Anything missing,
 //! repeated, unknown or invalid is a [`ConfigError`], and the entry point exits non-zero
 //! before it opens the ledger or binds a socket.
 //!
@@ -11,7 +11,7 @@
 //!   ownership path; never created here).
 //! - `--port <1..65535>`: the loopback port (port 0 is refused: the origin must be known
 //!   before binding).
-//! - `--rp-id localhost`: the WebAuthn RP id of the local profile ([`crate::listener::RP_ID`]).
+//! - `--rp-id localhost`: the WebAuthn RP id of the local profile ([`writ_approval::listener::RP_ID`]).
 //! - `--origin http://localhost:<port>`: exactly the listener's fixed origin for `--port`.
 //! - `--channel <identity>`: the channel identity recorded on decisions (O-2).
 //! - `--subject-issuer <issuer>`: the human realm of the subjects who sign in on the page.
@@ -20,7 +20,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::listener::RP_ID;
+use writ_approval::listener::RP_ID;
 
 /// The command-line synopsis.
 pub const USAGE: &str = "usage: writ-approval-server --ledger <path> --port <1..65535> \

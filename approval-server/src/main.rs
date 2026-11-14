@@ -1,8 +1,8 @@
 //! `writ-approval-server`: the production entry point of the local approval channel (Y3,
-//! D-043; D-040 O-1, O-2, O-11, O-12; approval/README.md).
+//! D-043; D-040 O-1, O-2, O-11, O-12; approval-server/README.md).
 //!
 //! Order, each step failing closed with a non-zero exit before the next:
-//! 1. parse and validate the required configuration ([`writ_approval::server`]; exit 2);
+//! 1. parse and validate the required configuration ([`writ_approval_server`]; exit 2);
 //! 2. build the reviewed `webauthn-rs` [`PasskeyVerifier`] for RP id `localhost` and origin
 //!    `http://localhost:<port>` and the [`ApprovalChannel`] over it (the only verifier this
 //!    binary can build: there is no test verifier, switch or fallback);
@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use writ_approval::backend::LedgerBackend;
 use writ_approval::listener::{ApprovalListener, Limits, ListenerConfig};
-use writ_approval::server::{ServerConfig, USAGE};
+use writ_approval_server::{ServerConfig, USAGE};
 use writ_approval::verifier::PasskeyVerifier;
 use writ_broker::clock::{Boottime, HostClock, SystemWall};
 use writ_broker::human::ApprovalChannel;

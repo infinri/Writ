@@ -1,4 +1,4 @@
-// End-to-end browser suite of the approval channel (D-043 item 4; approval/README.md).
+// End-to-end browser suite of the approval channel (D-043 item 4; approval-server/README.md).
 //
 // Real path: headless Chrome (disposable --user-data-dir in a temporary directory this
 // script creates and removes) -> the real `writ-approval-server` binary (production

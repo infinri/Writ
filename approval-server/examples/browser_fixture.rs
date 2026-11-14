@@ -28,7 +28,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::{json, Value};
+use writ_approval::page::json_string;
 use writ_approval::verifier::PasskeyVerifier;
 use writ_broker::approval::{ApprovalRequest, NewApprovalRequest};
 use writ_broker::approval_store::{
@@ -62,7 +62,8 @@ fn need<'a>(a: &'a BTreeMap<String, String>, k: &str) -> Fallible<&'a str> {
     a.get(k).map(String::as_str).ok_or(format!("missing --{k}"))
 }
 
-fn emit(v: &Value) -> Fallible<()> {
+/// One JSON line (`v` is already JSON text).
+fn emit(v: &str) -> Fallible<()> {
     let mut out = std::io::stdout().lock();
     writeln!(out, "{v}")
         .and_then(|()| out.flush())
@@ -71,17 +72,26 @@ fn emit(v: &Value) -> Fallible<()> {
 
 /// Send `options` to the browser and read back the credential JSON it produced.
 fn browser(step: &str, subject: &SubjectId, options: &[u8]) -> Fallible<Vec<u8>> {
-    let options: Value = serde_json::from_slice(options).map_err(|e| e.to_string())?;
-    emit(&json!({"step": step, "subject": subject.subject, "options": options}))?;
+    // The verifier's options are compact JSON (checked by parsing, embedded verbatim).
+    kjson::parse(options).map_err(|e| format!("options: {e:?}"))?;
+    let options = std::str::from_utf8(options).map_err(|e| e.to_string())?;
+    if options.contains('\n') {
+        return Err("options span lines".into());
+    }
+    emit(&format!(
+        "{{\"step\":\"{}\",\"subject\":\"{}\",\"options\":{options}}}",
+        json_string(step),
+        json_string(&subject.subject)
+    ))?;
     let mut line = String::new();
     std::io::stdin()
         .lock()
         .read_line(&mut line)
         .map_err(|e| e.to_string())?;
-    let reply: Value = serde_json::from_str(&line).map_err(|e| format!("reply: {e}"))?;
-    match reply.get("credential").and_then(Value::as_str) {
+    let reply = kjson::parse(line.trim_end().as_bytes()).map_err(|e| format!("reply: {e:?}"))?;
+    match reply.get("credential").and_then(|v| v.as_str()) {
         Some(c) => Ok(c.as_bytes().to_vec()),
-        None => Err(format!("browser did not return a credential: {reply}")),
+        None => Err("browser did not return a credential".into()),
     }
 }
 
@@ -206,7 +216,7 @@ fn setup(a: &BTreeMap<String, String>) -> Fallible<()> {
     }
 
     let created = now()?.at();
-    let mut fingerprints = serde_json::Map::new();
+    let mut fingerprints = Vec::new();
     for (n, id) in need(a, "requests")?.split(',').enumerate() {
         let request = ApprovalRequest::new(NewApprovalRequest {
             request_id: id.into(),
@@ -235,23 +245,30 @@ fn setup(a: &BTreeMap<String, String>) -> Fallible<()> {
         ledger
             .record_approval_request(&request)
             .map_err(|f| format!("{:?}", f.error))?;
-        fingerprints.insert(id.into(), json!(request.fingerprint().as_str()));
+        fingerprints.push(format!(
+            "\"{}\":\"{}\"",
+            json_string(id),
+            json_string(request.fingerprint().as_str())
+        ));
     }
-    emit(&json!({"step": "done", "requests": fingerprints}))
+    emit(&format!(
+        "{{\"step\":\"done\",\"requests\":{{{}}}}}",
+        fingerprints.join(",")
+    ))
 }
 
 fn status(a: &BTreeMap<String, String>) -> Fallible<()> {
     let ledger = SqliteLedger::open(&PathBuf::from(need(a, "ledger")?))
         .map_err(|e| format!("open: {e:?}"))?;
-    let mut out = serde_json::Map::new();
+    let mut out = Vec::new();
     for id in need(a, "requests")?.split(',') {
         let s = match ledger.approval_request(id).map_err(|e| format!("{e:?}"))? {
             Some((_, s)) => s.as_str().to_string(),
             None => "unknown".to_string(),
         };
-        out.insert(id.into(), json!(s));
+        out.push(format!("\"{}\":\"{}\"", json_string(id), json_string(&s)));
     }
-    emit(&json!({ "status": out }))
+    emit(&format!("{{\"status\":{{{}}}}}", out.join(",")))
 }
 
 fn main() -> std::process::ExitCode {

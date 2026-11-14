@@ -1,10 +1,10 @@
-# writ-approval: production entry point and browser coverage (Y3, D-043)
+# writ-approval-server: production entry point and browser coverage (Y3, D-043)
 
 Status: implemented on a worker branch, not yet integrated or independently reviewed. Release and production stay NO-GO (ADR-0008 approved in principle).
 
 ## Entry point `writ-approval-server`
 
-Release binary of this crate (`[[bin]]`, `src/bin/writ-approval-server.rs`; configuration in `src/server.rs`).
+Release binary of the workspace crate `writ-approval-server` (`approval-server/`: `[[bin]]` in `src/main.rs`, configuration in `src/lib.rs`). It is a separate crate so that the `writ-approval` library (verifier, listener, page) never links the SQLite ledger.
 
 ```
 writ-approval-server --ledger <path> --port <1..65535> --rp-id localhost \
@@ -30,19 +30,19 @@ Fails closed, non-zero exit, nothing bound:
 | Verifier or channel cannot be built; clock floor unreadable or rollback unacknowledged | 1 |
 | Port in use, or bound origin differs from the configuration | 1 |
 
-Release-build contents: `cargo tree -p writ-approval -e normal,build` has no `webauthn-authenticator-rs` (the software passkey is a dev-dependency); the verifier tests, `m4_support` and the ledger's `*_for_tests` functions are `#[cfg(test)]` and are never compiled into the binary. `tests/server_entry.rs` checks the configuration and ledger failures against the real binary and scans it for test-verifier symbols with a positive control (`PasskeyVerifier`); `browser-tests/check-release-binary.sh` repeats the scan on the release binary.
+Release-build contents: `cargo tree -p writ-approval-server -e normal,build` has no `webauthn-authenticator-rs` (the software passkey is a dev-dependency); the verifier tests, `m4_support` and the ledger's `*_for_tests` functions are `#[cfg(test)]` and are never compiled into the binary. `tests/server_entry.rs` checks the configuration and ledger failures against the real binary and scans it for test-verifier symbols with a positive control (`PasskeyVerifier`); `approval/browser-tests/check-release-binary.sh` repeats the scan on the release binary.
 
-Dependency note: the crate now depends on the workspace path crate `writ-ledger-sqlite`. No registry package was added (Cargo.lock gains one dependency line for `writ-approval`), and `check_deps.py` reports 0 problems because it prunes other workspace members from each closure. However, `rusqlite` and `libsqlite3-sys` are on this crate's `forbidden` list in `deps-allowlist.json`, and they are now linked into the `writ-approval` library and binary through that path dependency. The lead should decide whether to accept this, or move the entry point into its own crate.
+Dependencies: workspace path crates only (`writ-approval`, `writ-broker`, `writ-ledger-sqlite`); no registry package of its own. It is gated by `approval-server/deps-allowlist.json` (empty `packages`; `forbidden` and `forbidden_anywhere` keep TLS stacks, OpenSSL, `reqwest`, HTTP/2 and the software test authenticator out of its complete closure). `writ-approval` has no SQLite dependency, and its `forbidden_anywhere` list proves it.
 
 Trust boundary (M4-INTERFACES, configured approval channel): any code that links these crates and opens the ledger is inside the trust boundary. Deploying only this reviewed binary is the operational requirement of the local profile.
 
-## End-to-end browser suite (`browser-tests/`)
+## End-to-end browser suite (`approval/browser-tests/`)
 
 Real path: headless Google Chrome, then the real `writ-approval-server` binary, then the production `webauthn-rs` verifier and the SQLite ledger. User verification is simulated: the authenticator is a CDP virtual authenticator (`WebAuthn.enable`, `WebAuthn.addVirtualAuthenticator` with `hasUserVerification: true, isUserVerified: true`; `WebAuthn.setUserVerified` turns it off for the negative cases). No real user or credential is enrolled. Nothing binds beyond `127.0.0.1`. The suite uses no npm package: Node 22's built-in `WebSocket` drives CDP, and `node:http` serves a placeholder page. The temporary directory (ledger, Chrome `--user-data-dir`, Chrome's own temporary files) is created with `mkdtemp`, and the suite removes it after closing the browser.
 
-Setup: the non-shipping example `examples/browser_fixture.rs` creates the ledger. It then bootstraps the administrator through `BootstrapSession`; the creation options go to the browser, whose virtual authenticator creates the credential on a placeholder page served at the server's future origin. Next it reopens the ledger normally, registers the approver's credential in the browser the same way, and enrolls the approver (`approver` in every scope) through the administrator's `Enroll` ceremony, also signed in the browser. Last, it records the pending approval requests the flows need and exits. After the run, the fixture's `status` command reads the final ledger state.
+Setup: the non-shipping example `approval-server/examples/browser_fixture.rs` creates the ledger. It then bootstraps the administrator through `BootstrapSession`; the creation options go to the browser, whose virtual authenticator creates the credential on a placeholder page served at the server's future origin. Next it reopens the ledger normally, registers the approver's credential in the browser the same way, and enrolls the approver (`approver` in every scope) through the administrator's `Enroll` ceremony, also signed in the browser. Last, it records the pending approval requests the flows need and exits. After the run, the fixture's `status` command reads the final ledger state.
 
-Flows (`flows/approve-deny.mjs`):
+Flows (`approval/browser-tests/flows/approve-deny.mjs`):
 
 - **approve via page:** the page shows the stored fingerprint and escapes the untrusted requester text. Approving answers `approved`, and the ledger status is `approved`.
 - **deny via page:** answers `denied`, and the ledger status is `denied`.
@@ -61,7 +61,7 @@ approval/browser-tests/run.sh
 
 It builds the release binary and the fixture (`--locked`), runs the release-binary check, and then runs `node approval/browser-tests/run.mjs` under `m3/tools/run-with-clean-fds.sh`. Every result line is `PASS` or `FAIL` and carries the label `[CDP virtual authenticator, simulated UV]`. `--only <substring>` selects flows.
 
-Adding flows (signoff, revoke, enrollment and role-change pages): add a module under `flows/` exporting `flows`, each `{ name, requests, expect, run(t) }`, and list it in `FLOW_MODULES` in `run.mjs`. Any new fixture state goes into `examples/browser_fixture.rs` as further JSON-line steps.
+Adding flows (signoff, revoke, enrollment and role-change pages): add a module under `flows/` exporting `flows`, each `{ name, requests, expect, run(t) }`, and list it in `FLOW_MODULES` in `run.mjs`. Any new fixture state goes into `approval-server/examples/browser_fixture.rs` as further JSON-line steps.
 
 Proposed CI step (not applied; the lead owns CI). It assumes the job already sourced the toolchain and SQLite environment like the Rust job, and the runner has Google Chrome and Node 22:
 
@@ -77,4 +77,4 @@ Notes: Chrome's singleton socket path must be short, so `TMPDIR` must not be a d
 ## Results (worker W-G, 2026-11-14, Chrome 150.0.7871.46, Node 22.22.3)
 
 - `approval/browser-tests/run.sh`: `check-release-binary: PASS`, and the browser suite reported 16 passed, 0 failed (8 flows plus 8 final ledger-status checks), all labelled CDP virtual authenticator, simulated UV. The temporary directory was removed.
-- `cargo test --locked --workspace`, run under `run-with-clean-fds.sh`, passed, including `approval/tests/server_entry.rs` (5 tests). `cargo clippy --workspace --all-targets -D warnings` and `cargo fmt --check` were clean. `check_deps.py` reported 0 problems, and `check-v2-docs.py` passed.
+- `cargo test --locked --workspace`, run under `run-with-clean-fds.sh`, passed, including `approval-server/tests/server_entry.rs` (5 tests). `cargo clippy --workspace --all-targets -D warnings` and `cargo fmt --check` were clean. `check_deps.py` reported 0 problems, and `check-v2-docs.py` passed.
