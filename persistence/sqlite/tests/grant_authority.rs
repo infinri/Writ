@@ -134,6 +134,10 @@ struct TestVerifier;
 static NONCE: AtomicU64 = AtomicU64::new(0);
 
 impl HumanVerifier for TestVerifier {
+    fn relying_party(&self) -> writ_broker::human::RelyingParty {
+        writ_broker::human::RegistrationVerifier::relying_party(self)
+    }
+
     fn begin(
         &self,
         _subject: &SubjectId,
@@ -186,6 +190,10 @@ struct Stub {
 }
 
 impl HumanVerifier for Stub {
+    fn relying_party(&self) -> writ_broker::human::RelyingParty {
+        writ_broker::human::RegistrationVerifier::relying_party(self)
+    }
+
     fn begin(
         &self,
         _subject: &SubjectId,

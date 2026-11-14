@@ -193,6 +193,10 @@ pub(crate) fn bootstrap_root_at(
 }
 
 impl HumanVerifier for TestVerifier {
+    fn relying_party(&self) -> writ_broker::human::RelyingParty {
+        writ_broker::human::RegistrationVerifier::relying_party(self)
+    }
+
     fn begin(
         &self,
         _subject: &SubjectId,
@@ -497,6 +501,10 @@ impl RegistrationVerifier for Forger {
 }
 
 impl HumanVerifier for Forger {
+    fn relying_party(&self) -> writ_broker::human::RelyingParty {
+        writ_broker::human::RegistrationVerifier::relying_party(self)
+    }
+
     fn begin(
         &self,
         _subject: &SubjectId,

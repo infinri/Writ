@@ -111,6 +111,10 @@ fn passkeys(credentials: &ActiveCredentials) -> Result<Vec<(String, Passkey)>, V
 }
 
 impl HumanVerifier for PasskeyVerifier {
+    fn relying_party(&self) -> RelyingParty {
+        self.rp.clone()
+    }
+
     fn begin(
         &self,
         _subject: &SubjectId,

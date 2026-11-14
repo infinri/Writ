@@ -1309,8 +1309,9 @@ impl NewSignoff {
     }
 }
 
-/// Text recorded for the delegation chain in every signoff context (G4, X7):
-/// M3 sealed ingress stores no trusted delegation chain, so signoff
+/// Text recorded for the delegation chain in every signoff context and every
+/// approval-request context (G4, X7, L4):
+/// M3 sealed ingress stores no trusted delegation chain, so approval and signoff
 /// separation covers requester, agent and linked identities only and never
 /// claims delegation-chain separation.
 pub const DELEGATION_CHAIN_UNAVAILABLE: &str = "unavailable";
@@ -1782,6 +1783,10 @@ mod tests {
     struct TestVerifier;
 
     impl HumanVerifier for TestVerifier {
+        fn relying_party(&self) -> crate::human::RelyingParty {
+            crate::human::RegistrationVerifier::relying_party(self)
+        }
+
         fn begin(
             &self,
             subject: &SubjectId,

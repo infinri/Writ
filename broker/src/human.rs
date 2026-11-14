@@ -564,6 +564,11 @@ impl VerifierError {
 /// [`ActiveCredentials`] are passed in (R4); its output is never trusted
 /// without [`VerifiedAssertion::check`].
 pub trait HumanVerifier {
+    /// The relying party this verifier checks assertions against (RP id and
+    /// exact origin); an [`ApprovalChannel`] requires it to equal its
+    /// registration verifier's.
+    fn relying_party(&self) -> RelyingParty;
+
     /// Start a ceremony for `subject` over its active `credentials`.
     fn begin(
         &self,
@@ -774,6 +779,8 @@ impl ApprovalChannel {
     /// The channel of `human` and `registration` (in production one
     /// `writ-approval` passkey verifier for both, configured for the same
     /// relying party) under the channel identity `channel`. `None` when the
+    /// two verifiers report different relying parties (assertions would be
+    /// verified for one origin while challenges record another), or when the
     /// RP id, the origin or the channel identity is empty.
     pub fn new(
         human: Arc<dyn HumanVerifier + Send + Sync>,
@@ -781,7 +788,11 @@ impl ApprovalChannel {
         channel: &str,
     ) -> Option<ApprovalChannel> {
         let relying_party = registration.relying_party();
-        if relying_party.rp_id.is_empty() || relying_party.origin.is_empty() || channel.is_empty() {
+        if human.relying_party() != relying_party
+            || relying_party.rp_id.is_empty()
+            || relying_party.origin.is_empty()
+            || channel.is_empty()
+        {
             return None;
         }
         Some(ApprovalChannel {
@@ -1163,6 +1174,75 @@ mod tests {
             enrolled_at: t("2026-11-01T00:00:00Z"),
             enrolled_by: sid("writ-local", "admin"),
         }
+    }
+
+    /// A verifier for one origin (assertions and registrations both refuse).
+    struct For(&'static str);
+
+    impl HumanVerifier for For {
+        fn relying_party(&self) -> RelyingParty {
+            RelyingParty {
+                rp_id: "localhost".into(),
+                origin: self.0.into(),
+            }
+        }
+
+        fn begin(
+            &self,
+            _subject: &SubjectId,
+            _credentials: &ActiveCredentials,
+        ) -> Result<CeremonyStart, VerifierError> {
+            Err(VerifierError::Unavailable)
+        }
+
+        fn finish(
+            &self,
+            _capability: &VerifierCapability,
+            _state: &CeremonyState,
+            _response: &[u8],
+            _credentials: &ActiveCredentials,
+        ) -> Result<VerifiedAssertion, VerifierError> {
+            Err(VerifierError::Unavailable)
+        }
+    }
+
+    impl RegistrationVerifier for For {
+        fn relying_party(&self) -> RelyingParty {
+            HumanVerifier::relying_party(self)
+        }
+
+        fn begin_registration(
+            &self,
+            _subject: &SubjectId,
+        ) -> Result<RegistrationStart, VerifierError> {
+            Err(VerifierError::Unavailable)
+        }
+
+        fn finish_registration(
+            &self,
+            _capability: &VerifierCapability,
+            _binding: &RegistrationBinding,
+            _state: &CeremonyState,
+            _response: &[u8],
+        ) -> Result<VerifiedRegistration, VerifierError> {
+            Err(VerifierError::Unavailable)
+        }
+    }
+
+    /// N1: a channel whose assertion verifier and registration verifier
+    /// check different relying parties is never built (it would record one
+    /// origin on challenges while assertions verify against the other).
+    #[test]
+    fn a_channel_refuses_verifiers_for_different_relying_parties() {
+        let a = Arc::new(For("http://localhost:8443"));
+        let b = Arc::new(For("http://localhost:9999"));
+        assert!(ApprovalChannel::new(a.clone(), b.clone(), "listener").is_none());
+        assert!(ApprovalChannel::new(b.clone(), a.clone(), "listener").is_none());
+        let same =
+            ApprovalChannel::new(a.clone(), Arc::new(For("http://localhost:8443")), "l").unwrap();
+        assert_eq!(same.relying_party().origin, "http://localhost:8443");
+        assert!(ApprovalChannel::new(a.clone(), a.clone(), "").is_none());
+        assert!(ApprovalChannel::new(Arc::new(For("")), Arc::new(For("")), "l").is_none());
     }
 
     #[test]

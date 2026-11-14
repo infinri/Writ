@@ -245,7 +245,7 @@ fn register(
         registration_id: "reg-fixture".into(),
         operation: RegistrationOperation::Enroll,
         subject: bob(),
-        relying_party: v.relying_party(),
+        relying_party: channel(v).relying_party().clone(),
     };
     let response = f.registration(&start.client_options, flags, counter);
     channel(v).finish_registration(&binding, &start.state, &response)

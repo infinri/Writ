@@ -63,6 +63,13 @@ struct TestVerifier {
 }
 
 impl HumanVerifier for TestVerifier {
+    fn relying_party(&self) -> writ_broker::human::RelyingParty {
+        writ_broker::human::RelyingParty {
+            rp_id: "localhost".into(),
+            origin: "http://localhost:8443".into(),
+        }
+    }
+
     fn begin(
         &self,
         _subject: &SubjectId,
