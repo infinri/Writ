@@ -91,3 +91,11 @@ Final state is read through read-only connections only after the case closes eve
 ## 7. Adaptation labels added by this revision
 
 `client-permit-dropped` (a fixture step's client permit member was ignored) and `adapter-sealed` (the adapter sealed a request the fixture left unsealed: every transition promote and effect, and every broker `approve.for_request`, which also logs C2).
+
+## 8. Human signoffs (M4-11; D-040 O-4; D-042)
+
+- **Record contract:** a trusted record with a trust-`H` criterion whose evaluator is registered is issued as `authenticated-acceptance-record/2` (same purpose, key and MAC rule) with `signoff_id` `so-<record>-<criterion>` on that criterion's evaluation and `null` on every other; records without one stay `/1`. The id is a reference, never authority (R8).
+- **When the harness signs:** immediately before a `promote` step (and once before a `promote_concurrent` group or a `concurrent` group's promotions), only when the store is open and not under an injected outage, the record the step names was issued and verifies as `/2`, the step's request names this workflow's tenant, project and resource, expects the current revision, and the record's task, transition source, revision, snapshot, digest and acceptance policy (id, version, digest) equal the current workflow and the active requirement set, and trusted time is before the record's expiry. Otherwise nothing is signed (the promotion is refused by its own earlier check).
+- **How:** `Broker::request_signoff` with the step's own sealed request stores the promotion context (requester and agent, X7); the bootstrap administrator `m3c-test-approval-realm/m3c-administrator` (production `bootstrap_administrator`) enrolls the reviewer `m3c-test-approval-realm/m3c-signoff-reviewer` (SignoffAuthority for the case's tenant and project, no linked identity) through the production enrollment ceremony, and the reviewer signs each unsigned signoff on the production `Signoff` ceremony with expiry the record's expiry. User verification is answered by the non-shipping `TestVerifier` (`m3_line_adapter/signoff.rs`); it establishes no human authentication. The ledger reads the exclusions itself; nothing is added. A refusal of the request or of either ceremony is an adapter error, never hidden.
+- **Label:** `M4-test-verifier-signoff` (also in `check.py` LABELS).
+

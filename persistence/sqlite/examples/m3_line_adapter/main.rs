@@ -31,6 +31,7 @@
 mod broker;
 mod common;
 mod evidence;
+mod signoff;
 mod transition;
 
 use std::fs::{File, OpenOptions};

@@ -55,6 +55,9 @@ LABELS = frozenset({
     "C6-controlled-effect-failure", "C7-protocol-unknown-op", "C8-protocol-input-validation",
     "seeded-preconditions", "harness-authorization-bundle", "test-authenticated-evidence",
     "sealed-execute-effect", "production-difference", "client-permit-dropped", "adapter-sealed",
+    # M4-11: signoff issued on the production approval-ledger ceremony through the
+    # non-shipping test verifier (persistence/sqlite/examples/m3_line_adapter/signoff.rs)
+    "M4-test-verifier-signoff",
 })
 HUMAN_CODE = "ACCEPTANCE_HUMAN_UNAVAILABLE"
 COMMON_KEYS = {"set", "case", "kind", "decision", "reason", "adaptations"}

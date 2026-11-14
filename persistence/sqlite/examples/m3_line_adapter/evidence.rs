@@ -3,7 +3,10 @@
 //! translated field by field into `authenticated-acceptance-record/1` (the fixture record
 //! is the `record` member unchanged, never repaired) and MACed by the test acceptance
 //! source, and synthetic runner attestations for the record's mechanical criteria, MACed by
-//! the test runner key. The test keys and sources do not complete production key
+//! the test runner key. A record with a trust-`H` criterion is issued as
+//! `authenticated-acceptance-record/2` naming, for that criterion only, the signoff id
+//! [`signoff_id`] (M4-06, M4-11): a reference, never authority; the signoff itself exists
+//! only if a human signs it through the approval ceremony (`signoff.rs`). The test keys and sources do not complete production key
 //! provisioning, the acceptance service or the runner (M4..M6). HMAC is a MAC, not a
 //! signature.
 
@@ -11,7 +14,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use writ_broker::acceptance::{
-    mac_bytes, ATTESTATION_PURPOSE, MAC_ALG, RECORD_CONTRACT, RECORD_PURPOSE,
+    mac_bytes, ATTESTATION_PURPOSE, MAC_ALG, RECORD_CONTRACT, RECORD_CONTRACT_V2, RECORD_PURPOSE,
 };
 use writ_broker::keys::{AcceptanceRecordKey, MemoryKeys, RunnerAttestationKey};
 use writ_broker::workflow::{AcceptanceRecordSource, AttestationSource, SourceUnavailable};
@@ -183,6 +186,11 @@ fn attestation_id(record_id: &str, criterion_id: &str) -> String {
     format!("att-{record_id}-{criterion_id}")
 }
 
+/// The signoff id a `/2` record names for its trust-`H` criterion.
+pub fn signoff_id(record_id: &str, criterion_id: &str) -> String {
+    format!("so-{record_id}-{criterion_id}")
+}
+
 /// The authenticated envelope of a fixture inline record (an object): the record member is
 /// the fixture record unchanged; one evaluation per record criterion naming its evaluator,
 /// the registered evaluator binding and, for trust `M` only, its attestation id. A
@@ -190,6 +198,14 @@ fn attestation_id(record_id: &str, criterion_id: &str) -> String {
 /// verification as malformed, as the acceptance service could not bind it).
 pub fn authenticated_record(record: &Value) -> Option<Value> {
     let record_id = text(record, "acceptance_record_id").unwrap_or_default();
+    let human = |c: &Value| c.get("evaluator_trust").and_then(Value::as_str) == Some("H");
+    let criteria = record
+        .get("criteria")
+        .and_then(Value::as_arr)
+        .unwrap_or(&[]);
+    let v2 = criteria
+        .iter()
+        .any(|c| human(c) && text(c, "evaluator_id").is_some_and(|e| evaluator(&e).is_some()));
     let mut evaluations = Vec::new();
     for c in record
         .get("criteria")
@@ -209,7 +225,7 @@ pub fn authenticated_record(record: &Value) -> Option<Value> {
         } else {
             Value::Null
         };
-        evaluations.push(json::obj([
+        let mut evaluation = json::obj([
             ("attestation_id", attestation),
             ("criterion_id", json::s(&criterion)),
             ("environment_digest", json::s(&sha('2'))),
@@ -222,7 +238,16 @@ pub fn authenticated_record(record: &Value) -> Option<Value> {
             ("evidence_digests", Value::Arr(Vec::new())),
             ("implementation_digest", json::s(&sha('1'))),
             ("registry_revision", Value::Int(REGISTRY_REVISION)),
-        ]));
+        ]);
+        if v2 {
+            let so = if human(c) {
+                json::s(&signoff_id(&record_id, &criterion))
+            } else {
+                Value::Null
+            };
+            evaluation = with(&evaluation, &["signoff_id"], so);
+        }
+        evaluations.push(evaluation);
     }
     let doc = json::obj([
         (
@@ -233,7 +258,14 @@ pub fn authenticated_record(record: &Value) -> Option<Value> {
                 ("mac", json::s(&"0".repeat(64))),
             ]),
         ),
-        ("contract_version", json::s(RECORD_CONTRACT)),
+        (
+            "contract_version",
+            json::s(if v2 {
+                RECORD_CONTRACT_V2
+            } else {
+                RECORD_CONTRACT
+            }),
+        ),
         ("evaluations", Value::Arr(evaluations)),
         ("issuer", json::s(RECORD_ISSUER)),
         ("mode", json::s("governed")),
@@ -387,6 +419,14 @@ impl Docs {
                 a.insert(id, doc);
             }
         }
+    }
+}
+
+impl Docs {
+    /// The issued authenticated record `id` (the harness's own read; the broker reads
+    /// through [`AcceptanceRecordSource`]).
+    pub fn issued(&self, id: &str) -> Option<Value> {
+        self.records.lock().ok()?.get(id).cloned()
     }
 }
 
