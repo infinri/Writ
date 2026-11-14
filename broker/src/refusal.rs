@@ -447,6 +447,27 @@ mod tests {
             seen.push(internal);
         }
         assert_eq!(seen.len(), 18);
+        // D-043 Y1: two diagnostic variants of existing codes, generic externally.
+        for (code, internal, diagnostic) in [
+            (
+                ApprovalCode::SignoffLifetimeExceeded,
+                "SIGNOFF_EXPIRED",
+                "signoff: exceeds maximum lifetime",
+            ),
+            (
+                ApprovalCode::SignoffIntervalInvalid,
+                "SIGNOFF_MISMATCH",
+                "signoff: invalid interval",
+            ),
+        ] {
+            let refusal = Refusal::Approval(code);
+            assert_eq!(refusal.code(), internal);
+            assert_eq!(refusal.diagnostic(), Some(diagnostic));
+            assert_eq!(
+                refusal.external_code(),
+                writ_kernel::refusal::PROMOTION_REFUSED
+            );
+        }
         // Diagnostics stay internal: challenge and assertion only.
         let challenge = Refusal::Approval(ApprovalCode::ChallengeInvalid(
             ChallengeRefusal::ContextMismatch,

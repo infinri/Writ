@@ -37,17 +37,32 @@ fn signoff_binding() -> NewSignoff {
         acceptance_policy_version: "3".into(),
         acceptance_policy_bundle_sha: sha('c'),
         state_revision: 7,
-        expires_at: at("2026-11-07T11:20:00Z"),
     }
 }
 
+/// A stored signoff issued at 10:55 expiring at 11:05 (600 s, Y1); trusted time is 11:00.
 fn stored(binding: NewSignoff, exclusions: SignoffExclusions) -> Signoff {
+    stored_at(
+        binding,
+        exclusions,
+        at("2026-11-07T10:55:00Z"),
+        at("2026-11-07T11:05:00Z"),
+    )
+}
+
+fn stored_at(
+    binding: NewSignoff,
+    exclusions: SignoffExclusions,
+    issued_at: Timestamp,
+    expires_at: Timestamp,
+) -> Signoff {
     Signoff::from_stored(
         &LedgerCapability::for_ledger_implementation(),
         SignoffFields {
             binding,
+            expires_at,
             exclusions: exclusions.normalized(),
-            issued_at: at("2026-11-07T10:50:00Z"),
+            issued_at,
             subject: bob(),
             credential_id: "cred-bob".into(),
             challenge_id: "ch-1".into(),
@@ -245,12 +260,30 @@ fn revoked_expired_unauthorized_unseparated_or_consumed_signoffs_are_refused() {
         revoked
     );
     assert!(with_use(|u| u.assignments[0].project_id = "*".into()).is_ok());
-    let mut expiring = signoff_binding();
-    expiring.expires_at = at("2026-11-07T11:00:00Z");
+    // Y1 exact boundary on trusted time 11:00: expiring at 11:00 is refused, one
+    // second later is accepted.
+    let expiring = |issued: &str, expires: &str| {
+        let (issued, expires) = (at(issued), at(expires));
+        with_use(move |u| {
+            u.signoff = stored_at(
+                signoff_binding(),
+                u.signoff.fields().exclusions.clone(),
+                issued,
+                expires,
+            )
+        })
+    };
     assert_eq!(
-        with_use(|u| u.signoff = stored(expiring, u.signoff.fields().exclusions.clone())),
+        expiring("2026-11-07T10:55:00Z", "2026-11-07T11:00:00Z"),
         signoff_code(ApprovalCode::SignoffExpired)
     );
+    assert!(expiring("2026-11-07T10:55:00Z", "2026-11-07T11:00:01Z").is_ok());
+    // A stored (pre-cap) lifetime above 600 s fails closed at use, even when unexpired;
+    // exactly 600 s is within the maximum.
+    let refused = expiring("2026-11-07T10:50:00Z", "2026-11-07T11:20:00Z");
+    assert_eq!(refused, signoff_code(ApprovalCode::SignoffLifetimeExceeded));
+    assert!(expiring("2026-11-07T10:50:01Z", "2026-11-07T11:00:02Z").is_err());
+    assert!(expiring("2026-11-07T10:51:00Z", "2026-11-07T11:01:00Z").is_ok());
     assert_eq!(
         with_use(|u| u.assignments[0].project_id = "p2".into()),
         signoff_code(ApprovalCode::PermissionMissing)
