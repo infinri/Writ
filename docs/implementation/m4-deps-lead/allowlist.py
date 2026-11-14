@@ -100,6 +100,8 @@ allow = {
     "approved_licenses": STD,
     "forbidden": ["openssl", "openssl-sys", "native-tls", "ring", "rustls", "aws-lc-rs", "aws-lc-sys", "reqwest",
                   "rusqlite", "libsqlite3-sys", "h2"],
+    "forbidden_anywhere": ["rusqlite", "libsqlite3-sys", "openssl", "openssl-sys", "native-tls", "ring", "rustls",
+                           "aws-lc-rs", "aws-lc-sys", "reqwest", "h2"],
     "forbidden_features": {"hyper": ["http2", "client", "full"], "tokio": ["full", "process", "fs", "signal", "io-std"],
                            "webauthn-rs": ["attestation", "resident-key-support", "conditional-ui"]},
     "packages": entries(normal, False),

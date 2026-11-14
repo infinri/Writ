@@ -101,6 +101,34 @@ def closures(meta: dict) -> dict:
     return out
 
 
+def full_closures(meta: dict) -> dict:
+    """{member name: set of registry package names}: each member's complete normal and build
+    closure INCLUDING what it reaches through other workspace members (not pruned), so a crate
+    forbidden for a member is caught even when it arrives through a path dependency."""
+    out = {}
+    for mid in meta["workspace_members"]:
+        name = next(p["name"] for p in meta["packages"] if p["id"] == mid)
+        argv = ["cargo", "tree", "--locked", "--target", "all", "-p", name, "-e", "normal,build", "--prefix", "none",
+                "--format", "{p}"]
+        found = set()
+        for line in subprocess.run(argv, cwd=ROOT, capture_output=True, text=True, check=True).stdout.splitlines():
+            parts = line.replace(" (proc-macro)", "").replace(" (*)", "").split()
+            if len(parts) >= 2 and parts[1].startswith("v"):
+                found.add(parts[0])
+        out[name] = found
+    return out
+
+
+def forbidden_through_members(full: dict, allows: dict) -> list[str]:
+    """Crates in a member's `forbidden_anywhere` list found anywhere in its complete closure,
+    including through workspace members (`forbidden` itself applies to the member's own closure,
+    where a crate legitimately reached through another member, such as hmac through the broker
+    for the ledger, is not counted)."""
+    return [f"{member}: forbidden crate {crate} reached (directly or through a workspace member)"
+            for member, allow in allows.items()
+            for crate in sorted(full.get(member, set()) & set(allow.get("forbidden_anywhere", [])))]
+
+
 def combined(edges: str) -> dict:
     """Effective graph of a supported combined build (all production members built together,
     so Cargo unifies features across them): {root member: set of (name, version)} for the
@@ -208,6 +236,8 @@ def main() -> int:
         if pkg is None or entry.get("checksum") != pkg.get("checksum"):
             problems.append(f"{allow_path}: locked_unbuilt {key} is not in Cargo.lock with the reviewed checksum")
     covered |= set(unbuilt)
+    allows = {m: json.loads((ROOT / ap).read_text()) for m, ap in MEMBERS.items()}
+    problems += forbidden_through_members(full_closures(meta), allows)
     for p in pkgs:
         if (p["name"], p["version"]) not in covered:
             problems.append(f"locked package {p['name']} {p['version']} is in no member's closure")
