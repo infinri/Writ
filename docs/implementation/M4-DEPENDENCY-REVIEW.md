@@ -1,6 +1,6 @@
 # M4 dependency review: WebAuthn verifier, test authenticator, approval listener (2026-11-13)
 
-Status: **review complete, adoption BLOCKED on owner decisions DR-1..DR-4** (D-040 O-1 requires a maintained verification library through dependency review). Research by a subagent in scratch projects (Rust 1.99.1, `cargo tree -e normal,build`, OSV batch queries); not yet re-run by the lead; nothing added to the workspace.
+Status: **DR-1..DR-4 decided (D-041); lead reproduction done 2026-11-14 (below); adoption BLOCKED on one licence approval (DR-5)** (D-040 O-1 requires a maintained verification library through dependency review). Research by a subagent in scratch projects (Rust 1.99.1, `cargo tree -e normal,build`, OSV batch queries); not yet re-run by the lead; nothing added to the workspace.
 
 ## Gate rules that apply (`kernel/tools/check_deps.py`)
 
@@ -34,3 +34,24 @@ New workspace crate (working name `writ-approval`) linked by the broker process,
 - **DR-4 Upstream concentration:** `crypto-glue` has a single small maintainer.
 
 Alternative if DR-1..DR-4 are declined: a narrower verifier built from maintained primitives (RustCrypto `p256` ECDSA, `ciborium`, `sha2`) implementing only the WebAuthn assertion checks for ES256 passkeys; smaller closure but more protocol code of our own to review (no cryptographic primitives implemented). Not recommended without a separate owner decision, since D-040 asks for a maintained verification library.
+
+## Lead reproduction (2026-11-14, D-041 DR-1)
+
+Candidate: worker commit `3b7cb76` (branch `worktree-agent-a11e9f080900be29e`, not merged): `writ-approval` skeleton with `webauthn-rs` 0.6.2 (`default-features = false`, `danger-allow-state-serialisation`), hyper 1 (`server`, `http1`), hyper-util (`tokio`), tokio (`rt`, `net`, `time`); dev: `webauthn-authenticator-rs` 0.6.2 (`softpasskey`). Worker evidence: `docs/implementation/m4-deps/` on that branch. Lead scripts and outputs: [`m4-deps-lead/`](m4-deps-lead/) (`repro.sh`, `registry.py`, `packages.json`, `combined-release.txt`, `combined-test.txt`), run against a detached copy with a separate target directory.
+
+| Check | Result |
+|---|---|
+| Release build, workspace test build (`--locked`) | both succeed |
+| Registry packages in the lock | 265 (25 existing unchanged, 240 new); 269 lock entries including 4 workspace members |
+| Checksums and versions against crates.io | 265 of 265 equal, none yanked |
+| Closures (`cargo tree --prefix none`, unique name and version, including workspace members) | kernel 10; broker 16; ledger 24; writ-approval 191 normal/build, 212 with dev; combined release 199, combined test 220. Kernel, broker and ledger standalone closures unchanged and free of tokio and hyper |
+| Locked but never built | `cc` 1.11.2, `bumpalo` 3.20.4, `jiff` family 0.2.43, `wasm-bindgen-shared` (the only other `links` crate) |
+| OpenSSL, native-tls, aws-lc, ring, rustls | none in any graph; the only built native-library crate is `libsqlite3-sys` |
+| OSV (265 package versions, 2026-11-14) | one hit: `rsa` 0.10.0-rc.19, RUSTSEC-2023-0071 (affected below 0.10.0) |
+| Published after 2026-10-31 | webauthn crates 0.6.2 (2026-10-31 03:06-03:07Z, 14 days at adoption), `pkcs1` 0.8.0 (2026-11-02; no older stable 0.8), plus the never-built `jiff`, `cc`, `bumpalo` |
+
+**DR-3 rsa:** patch attempt reproduced: `cargo update -p rsa --precise 0.10.0` fails (`crypto-glue` 0.2.2, still the newest release, requires an `rsa` feature `sha2` removed in 0.10.0; upstream fix only in an unmerged pull request). Reachability verified by source inspection of the locked crates: `webauthn-rs`, `-core`, `-proto`, `-attestation-ca` and the dev-only `webauthn-authenticator-rs` use only RS256 public-key verification types (`RS256PublicKey`, `RS256Signature`, verifying key); no RSA signing, decryption or key generation call exists in them; `crypto-glue`'s RSA private functions (`rsa::new_key`, OAEP decrypt, PKCS#1 private-key re-exports) are not called by `crypto-glue` itself or by any Writ code. Outcome category: **affected package present, private-key operations unreachable in all enabled Writ paths (including test features); not removed.** Compensating restriction: enrollment refuses any passkey whose algorithm is not ES256 (after the library's own registration verification), so authentication never meets an RSA credential (algorithm rejection at enrollment; webauthn-rs exposes no supported allow-list for algorithms). Under D-041 this qualifies for a **DEVELOPMENT-ONLY exception**: version `rsa` 0.10.0-rc.19, path `rsa <- crypto-glue 0.2.2 <- webauthn-attestation-ca / webauthn-rs-core 0.6.2 <- webauthn-rs <- writ-approval`; advisory stays visible in the gate output; update plan: adopt the first `crypto-glue` release accepting `rsa` >= 0.10.0 and re-run this review; re-reviewed at the M4 gate and on every dependency change; release requires an explicit disposition.
+
+**Licences:** as DR-2 (MPL-2.0: `crypto-glue` 0.2.2, `webauthn-rs`, `-core`, `-proto`, `-attestation-ca` 0.6.2 and dev-only `webauthn-authenticator-rs` 0.6.2; Unicode-3.0: 18 ICU/zerovec 2.4.0-family crates; Apache-2.0: `flagset` 0.4.7) plus exact entries for disjunctive licences where MIT or Apache-2.0 is an option (`fiat-crypto`, `r-efi`, `wasi`, `rustix`, `linux-raw-sys`, `zerocopy`, `zerocopy-derive`, `memchr`, `tinyvec`, `jiff` family).
+
+- **DR-5 (owner decision needed):** `unicode-ident` 1.0.27 (built, via `proc-macro2`) and `unicode-normalization` 0.1.26 (test only) are `(MIT OR Apache-2.0) AND Unicode-3.0`: Unicode-3.0 outside the ICU/zerovec closure that DR-2 approved. `unicode-ident` is required by any proc-macro use and cannot be removed by feature selection.
