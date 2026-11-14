@@ -1,0 +1,27 @@
+cargo update -p aes@0.9.4 --precise 0.9.3
+ Downgrading aes v0.9.4 -> v0.9.3
+note: pass `--verbose` to see 7 unchanged dependencies behind latest
+cargo update -p const-oid@0.10.3 --precise 0.10.2
+ Downgrading const-oid v0.10.3 -> v0.10.2
+note: pass `--verbose` to see 8 unchanged dependencies behind latest
+cargo update -p crypto-bigint@0.7.11 --precise 0.7.10
+ Downgrading crypto-bigint v0.7.11 -> v0.7.10
+note: pass `--verbose` to see 9 unchanged dependencies behind latest
+cargo update -p inout@0.2.6 --precise 0.2.5
+ Downgrading inout v0.2.6 -> v0.2.5
+note: pass `--verbose` to see 10 unchanged dependencies behind latest
+cargo update -p itoa@1.0.19 --precise 1.0.18
+ Downgrading itoa v1.0.19 -> v1.0.18
+note: pass `--verbose` to see 11 unchanged dependencies behind latest
+cargo update -p mio@1.2.5 --precise 1.2.4
+ Downgrading mio v1.2.5 -> v1.2.4
+note: pass `--verbose` to see 12 unchanged dependencies behind latest
+cargo update -p syn@3.0.10 --precise 3.0.9
+ Downgrading syn v3.0.10 -> v3.0.9
+note: pass `--verbose` to see 13 unchanged dependencies behind latest
+cargo update -p uuid@1.29.2 --precise 1.29.0
+ Downgrading uuid v1.29.2 -> v1.29.0
+note: pass `--verbose` to see 14 unchanged dependencies behind latest
+cargo update -p ctutils --precise 0.4.7
+ Downgrading ctutils v0.4.8 -> v0.4.7
+(resolves only after the crypto-bigint 0.7.10 pin: crypto-bigint 0.7.11 required ctutils ^0.4.8)

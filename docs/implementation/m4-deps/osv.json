@@ -1,0 +1,1334 @@
+{
+ "queried_at": "2026-11-14T16:46:24.958617+00:00",
+ "endpoint": "https://api.osv.dev/v1/querybatch",
+ "queries": 265,
+ "results": [
+  {
+   "name": "aead",
+   "version": "0.6.1",
+   "vulns": []
+  },
+  {
+   "name": "aes",
+   "version": "0.9.3",
+   "vulns": []
+  },
+  {
+   "name": "aes-gcm",
+   "version": "0.11.1",
+   "vulns": []
+  },
+  {
+   "name": "aes-kw",
+   "version": "0.3.1",
+   "vulns": []
+  },
+  {
+   "name": "android_system_properties",
+   "version": "0.1.6",
+   "vulns": []
+  },
+  {
+   "name": "argon2",
+   "version": "0.5.3",
+   "vulns": []
+  },
+  {
+   "name": "asn1-rs",
+   "version": "0.7.2",
+   "vulns": []
+  },
+  {
+   "name": "asn1-rs-derive",
+   "version": "0.6.0",
+   "vulns": []
+  },
+  {
+   "name": "asn1-rs-impl",
+   "version": "0.2.0",
+   "vulns": []
+  },
+  {
+   "name": "async-stream",
+   "version": "0.3.6",
+   "vulns": []
+  },
+  {
+   "name": "async-stream-impl",
+   "version": "0.3.6",
+   "vulns": []
+  },
+  {
+   "name": "async-trait",
+   "version": "0.1.92",
+   "vulns": []
+  },
+  {
+   "name": "atomic-waker",
+   "version": "1.1.2",
+   "vulns": []
+  },
+  {
+   "name": "autocfg",
+   "version": "1.5.1",
+   "vulns": []
+  },
+  {
+   "name": "base16ct",
+   "version": "1.0.0",
+   "vulns": []
+  },
+  {
+   "name": "base64",
+   "version": "0.21.7",
+   "vulns": []
+  },
+  {
+   "name": "base64",
+   "version": "0.23.1",
+   "vulns": []
+  },
+  {
+   "name": "base64ct",
+   "version": "1.8.3",
+   "vulns": []
+  },
+  {
+   "name": "bitflags",
+   "version": "1.3.2",
+   "vulns": []
+  },
+  {
+   "name": "bitflags",
+   "version": "2.13.2",
+   "vulns": []
+  },
+  {
+   "name": "blake2",
+   "version": "0.10.6",
+   "vulns": []
+  },
+  {
+   "name": "block-buffer",
+   "version": "0.10.4",
+   "vulns": []
+  },
+  {
+   "name": "block-buffer",
+   "version": "0.12.1",
+   "vulns": []
+  },
+  {
+   "name": "block-padding",
+   "version": "0.4.2",
+   "vulns": []
+  },
+  {
+   "name": "bs58",
+   "version": "0.5.1",
+   "vulns": []
+  },
+  {
+   "name": "bumpalo",
+   "version": "3.20.4",
+   "vulns": []
+  },
+  {
+   "name": "bytes",
+   "version": "1.12.1",
+   "vulns": []
+  },
+  {
+   "name": "cbc",
+   "version": "0.2.1",
+   "vulns": []
+  },
+  {
+   "name": "cc",
+   "version": "1.11.2",
+   "vulns": []
+  },
+  {
+   "name": "cfg-if",
+   "version": "1.0.5",
+   "vulns": []
+  },
+  {
+   "name": "chacha20",
+   "version": "0.10.2",
+   "vulns": []
+  },
+  {
+   "name": "chrono",
+   "version": "0.4.45",
+   "vulns": []
+  },
+  {
+   "name": "cipher",
+   "version": "0.5.2",
+   "vulns": []
+  },
+  {
+   "name": "cmov",
+   "version": "0.5.4",
+   "vulns": []
+  },
+  {
+   "name": "const-oid",
+   "version": "0.10.2",
+   "vulns": []
+  },
+  {
+   "name": "core-foundation-sys",
+   "version": "0.8.7",
+   "vulns": []
+  },
+  {
+   "name": "cpubits",
+   "version": "0.1.1",
+   "vulns": []
+  },
+  {
+   "name": "cpufeatures",
+   "version": "0.2.17",
+   "vulns": []
+  },
+  {
+   "name": "cpufeatures",
+   "version": "0.3.1",
+   "vulns": []
+  },
+  {
+   "name": "crunchy",
+   "version": "0.2.4",
+   "vulns": []
+  },
+  {
+   "name": "crypto-bigint",
+   "version": "0.7.10",
+   "vulns": []
+  },
+  {
+   "name": "crypto-common",
+   "version": "0.1.7",
+   "vulns": []
+  },
+  {
+   "name": "crypto-common",
+   "version": "0.2.2",
+   "vulns": []
+  },
+  {
+   "name": "crypto-glue",
+   "version": "0.2.2",
+   "vulns": []
+  },
+  {
+   "name": "crypto-primes",
+   "version": "0.7.2",
+   "vulns": []
+  },
+  {
+   "name": "ctr",
+   "version": "0.10.1",
+   "vulns": []
+  },
+  {
+   "name": "cts",
+   "version": "0.7.0",
+   "vulns": []
+  },
+  {
+   "name": "ctutils",
+   "version": "0.4.7",
+   "vulns": []
+  },
+  {
+   "name": "darling",
+   "version": "0.24.1",
+   "vulns": []
+  },
+  {
+   "name": "darling_core",
+   "version": "0.24.1",
+   "vulns": []
+  },
+  {
+   "name": "darling_macro",
+   "version": "0.24.1",
+   "vulns": []
+  },
+  {
+   "name": "data-encoding",
+   "version": "2.11.1",
+   "vulns": []
+  },
+  {
+   "name": "der",
+   "version": "0.8.3",
+   "vulns": []
+  },
+  {
+   "name": "der-parser",
+   "version": "10.0.0",
+   "vulns": []
+  },
+  {
+   "name": "der_derive",
+   "version": "0.8.0",
+   "vulns": []
+  },
+  {
+   "name": "deranged",
+   "version": "0.5.9",
+   "vulns": []
+  },
+  {
+   "name": "digest",
+   "version": "0.10.7",
+   "vulns": []
+  },
+  {
+   "name": "digest",
+   "version": "0.11.3",
+   "vulns": []
+  },
+  {
+   "name": "displaydoc",
+   "version": "0.2.7",
+   "vulns": []
+  },
+  {
+   "name": "dyn-clone",
+   "version": "1.0.20",
+   "vulns": []
+  },
+  {
+   "name": "ecdsa",
+   "version": "0.17.0",
+   "vulns": []
+  },
+  {
+   "name": "elliptic-curve",
+   "version": "0.14.3",
+   "vulns": []
+  },
+  {
+   "name": "equivalent",
+   "version": "1.0.3",
+   "vulns": []
+  },
+  {
+   "name": "errno",
+   "version": "0.3.14",
+   "vulns": []
+  },
+  {
+   "name": "fallible-iterator",
+   "version": "0.3.0",
+   "vulns": []
+  },
+  {
+   "name": "fallible-streaming-iterator",
+   "version": "0.1.9",
+   "vulns": []
+  },
+  {
+   "name": "ff",
+   "version": "0.14.0",
+   "vulns": []
+  },
+  {
+   "name": "fiat-crypto",
+   "version": "0.3.0",
+   "vulns": []
+  },
+  {
+   "name": "find-msvc-tools",
+   "version": "0.1.15",
+   "vulns": []
+  },
+  {
+   "name": "flagset",
+   "version": "0.4.7",
+   "vulns": []
+  },
+  {
+   "name": "form_urlencoded",
+   "version": "1.2.2",
+   "vulns": []
+  },
+  {
+   "name": "futures",
+   "version": "0.3.34",
+   "vulns": []
+  },
+  {
+   "name": "futures-channel",
+   "version": "0.3.34",
+   "vulns": []
+  },
+  {
+   "name": "futures-core",
+   "version": "0.3.34",
+   "vulns": []
+  },
+  {
+   "name": "futures-executor",
+   "version": "0.3.34",
+   "vulns": []
+  },
+  {
+   "name": "futures-io",
+   "version": "0.3.34",
+   "vulns": []
+  },
+  {
+   "name": "futures-macro",
+   "version": "0.3.34",
+   "vulns": []
+  },
+  {
+   "name": "futures-sink",
+   "version": "0.3.34",
+   "vulns": []
+  },
+  {
+   "name": "futures-task",
+   "version": "0.3.34",
+   "vulns": []
+  },
+  {
+   "name": "futures-util",
+   "version": "0.3.34",
+   "vulns": []
+  },
+  {
+   "name": "generic-array",
+   "version": "0.14.7",
+   "vulns": []
+  },
+  {
+   "name": "getrandom",
+   "version": "0.4.3",
+   "vulns": []
+  },
+  {
+   "name": "ghash",
+   "version": "0.6.0",
+   "vulns": []
+  },
+  {
+   "name": "group",
+   "version": "0.14.0",
+   "vulns": []
+  },
+  {
+   "name": "half",
+   "version": "2.7.1",
+   "vulns": []
+  },
+  {
+   "name": "hashbrown",
+   "version": "0.12.3",
+   "vulns": []
+  },
+  {
+   "name": "hashbrown",
+   "version": "0.17.1",
+   "vulns": []
+  },
+  {
+   "name": "hex",
+   "version": "0.4.3",
+   "vulns": []
+  },
+  {
+   "name": "hkdf",
+   "version": "0.13.0",
+   "vulns": []
+  },
+  {
+   "name": "hmac",
+   "version": "0.12.1",
+   "vulns": []
+  },
+  {
+   "name": "hmac",
+   "version": "0.13.0",
+   "vulns": []
+  },
+  {
+   "name": "http",
+   "version": "1.5.0",
+   "vulns": []
+  },
+  {
+   "name": "http-body",
+   "version": "1.1.0",
+   "vulns": []
+  },
+  {
+   "name": "httparse",
+   "version": "1.10.1",
+   "vulns": []
+  },
+  {
+   "name": "httpdate",
+   "version": "1.0.3",
+   "vulns": []
+  },
+  {
+   "name": "hybrid-array",
+   "version": "0.4.15",
+   "vulns": []
+  },
+  {
+   "name": "hyper",
+   "version": "1.12.0",
+   "vulns": []
+  },
+  {
+   "name": "hyper-util",
+   "version": "0.1.21",
+   "vulns": []
+  },
+  {
+   "name": "iana-time-zone",
+   "version": "0.1.65",
+   "vulns": []
+  },
+  {
+   "name": "iana-time-zone-haiku",
+   "version": "0.1.2",
+   "vulns": []
+  },
+  {
+   "name": "icu_collections",
+   "version": "2.4.0",
+   "vulns": []
+  },
+  {
+   "name": "icu_locale_core",
+   "version": "2.4.0",
+   "vulns": []
+  },
+  {
+   "name": "icu_normalizer",
+   "version": "2.4.0",
+   "vulns": []
+  },
+  {
+   "name": "icu_normalizer_data",
+   "version": "2.4.0",
+   "vulns": []
+  },
+  {
+   "name": "icu_properties",
+   "version": "2.4.0",
+   "vulns": []
+  },
+  {
+   "name": "icu_properties_data",
+   "version": "2.4.0",
+   "vulns": []
+  },
+  {
+   "name": "icu_provider",
+   "version": "2.4.0",
+   "vulns": []
+  },
+  {
+   "name": "ident_case",
+   "version": "1.0.1",
+   "vulns": []
+  },
+  {
+   "name": "idna",
+   "version": "1.1.0",
+   "vulns": []
+  },
+  {
+   "name": "idna_adapter",
+   "version": "1.2.2",
+   "vulns": []
+  },
+  {
+   "name": "indexmap",
+   "version": "1.9.3",
+   "vulns": []
+  },
+  {
+   "name": "indexmap",
+   "version": "2.14.2",
+   "vulns": []
+  },
+  {
+   "name": "inout",
+   "version": "0.2.5",
+   "vulns": []
+  },
+  {
+   "name": "itoa",
+   "version": "1.0.18",
+   "vulns": []
+  },
+  {
+   "name": "jiff",
+   "version": "0.2.43",
+   "vulns": []
+  },
+  {
+   "name": "jiff-core",
+   "version": "0.1.5",
+   "vulns": []
+  },
+  {
+   "name": "jiff-static",
+   "version": "0.2.43",
+   "vulns": []
+  },
+  {
+   "name": "jiff-tzdb",
+   "version": "0.1.9",
+   "vulns": []
+  },
+  {
+   "name": "jiff-tzdb-platform",
+   "version": "0.1.3",
+   "vulns": []
+  },
+  {
+   "name": "js-sys",
+   "version": "0.3.107",
+   "vulns": []
+  },
+  {
+   "name": "kbkdf",
+   "version": "0.1.0-rc.1",
+   "vulns": []
+  },
+  {
+   "name": "lazy_static",
+   "version": "1.5.1",
+   "vulns": []
+  },
+  {
+   "name": "libc",
+   "version": "0.2.191",
+   "vulns": []
+  },
+  {
+   "name": "libsqlite3-sys",
+   "version": "0.39.1",
+   "vulns": []
+  },
+  {
+   "name": "linux-raw-sys",
+   "version": "0.12.1",
+   "vulns": []
+  },
+  {
+   "name": "litemap",
+   "version": "0.8.3",
+   "vulns": []
+  },
+  {
+   "name": "log",
+   "version": "0.4.35",
+   "vulns": []
+  },
+  {
+   "name": "md5",
+   "version": "0.8.1",
+   "vulns": []
+  },
+  {
+   "name": "memchr",
+   "version": "2.8.3",
+   "vulns": []
+  },
+  {
+   "name": "minimal-lexical",
+   "version": "0.2.1",
+   "vulns": []
+  },
+  {
+   "name": "mio",
+   "version": "1.2.4",
+   "vulns": []
+  },
+  {
+   "name": "nom",
+   "version": "7.1.3",
+   "vulns": []
+  },
+  {
+   "name": "num-bigint",
+   "version": "0.4.8",
+   "vulns": []
+  },
+  {
+   "name": "num-conv",
+   "version": "0.2.2",
+   "vulns": []
+  },
+  {
+   "name": "num-derive",
+   "version": "0.4.2",
+   "vulns": []
+  },
+  {
+   "name": "num-integer",
+   "version": "0.1.47",
+   "vulns": []
+  },
+  {
+   "name": "num-traits",
+   "version": "0.2.19",
+   "vulns": []
+  },
+  {
+   "name": "oid-registry",
+   "version": "0.8.1",
+   "vulns": []
+  },
+  {
+   "name": "once_cell",
+   "version": "1.21.4",
+   "vulns": []
+  },
+  {
+   "name": "p256",
+   "version": "0.14.0",
+   "vulns": []
+  },
+  {
+   "name": "p384",
+   "version": "0.14.0",
+   "vulns": []
+  },
+  {
+   "name": "p521",
+   "version": "0.14.0",
+   "vulns": []
+  },
+  {
+   "name": "password-hash",
+   "version": "0.5.0",
+   "vulns": []
+  },
+  {
+   "name": "pbkdf2",
+   "version": "0.13.0",
+   "vulns": []
+  },
+  {
+   "name": "pem-rfc7468",
+   "version": "1.0.0",
+   "vulns": []
+  },
+  {
+   "name": "percent-encoding",
+   "version": "2.3.2",
+   "vulns": []
+  },
+  {
+   "name": "pin-project-lite",
+   "version": "0.2.17",
+   "vulns": []
+  },
+  {
+   "name": "pkcs1",
+   "version": "0.8.0",
+   "vulns": []
+  },
+  {
+   "name": "pkcs5",
+   "version": "0.8.1",
+   "vulns": []
+  },
+  {
+   "name": "pkcs8",
+   "version": "0.11.0",
+   "vulns": []
+  },
+  {
+   "name": "pkg-config",
+   "version": "0.3.34",
+   "vulns": []
+  },
+  {
+   "name": "polyval",
+   "version": "0.7.3",
+   "vulns": []
+  },
+  {
+   "name": "portable-atomic",
+   "version": "1.15.0",
+   "vulns": []
+  },
+  {
+   "name": "portable-atomic-util",
+   "version": "0.2.8",
+   "vulns": []
+  },
+  {
+   "name": "potential_utf",
+   "version": "0.1.6",
+   "vulns": []
+  },
+  {
+   "name": "powerfmt",
+   "version": "0.2.1",
+   "vulns": []
+  },
+  {
+   "name": "ppv-lite86",
+   "version": "0.2.21",
+   "vulns": []
+  },
+  {
+   "name": "primefield",
+   "version": "0.14.0",
+   "vulns": []
+  },
+  {
+   "name": "primeorder",
+   "version": "0.14.0",
+   "vulns": []
+  },
+  {
+   "name": "proc-macro2",
+   "version": "1.0.107",
+   "vulns": []
+  },
+  {
+   "name": "quote",
+   "version": "1.0.47",
+   "vulns": []
+  },
+  {
+   "name": "r-efi",
+   "version": "6.0.0",
+   "vulns": []
+  },
+  {
+   "name": "rand",
+   "version": "0.10.3",
+   "vulns": []
+  },
+  {
+   "name": "rand_chacha",
+   "version": "0.10.0",
+   "vulns": []
+  },
+  {
+   "name": "rand_core",
+   "version": "0.6.4",
+   "vulns": []
+  },
+  {
+   "name": "rand_core",
+   "version": "0.10.1",
+   "vulns": []
+  },
+  {
+   "name": "ref-cast",
+   "version": "1.0.27",
+   "vulns": []
+  },
+  {
+   "name": "ref-cast-impl",
+   "version": "1.0.27",
+   "vulns": []
+  },
+  {
+   "name": "rfc6979",
+   "version": "0.6.0",
+   "vulns": []
+  },
+  {
+   "name": "rsa",
+   "version": "0.10.0-rc.19",
+   "vulns": [
+    "RUSTSEC-2023-0071"
+   ]
+  },
+  {
+   "name": "rusqlite",
+   "version": "0.41.1",
+   "vulns": []
+  },
+  {
+   "name": "rusticata-macros",
+   "version": "4.1.0",
+   "vulns": []
+  },
+  {
+   "name": "rustix",
+   "version": "1.1.6",
+   "vulns": []
+  },
+  {
+   "name": "rustversion",
+   "version": "1.0.23",
+   "vulns": []
+  },
+  {
+   "name": "salsa20",
+   "version": "0.11.0",
+   "vulns": []
+  },
+  {
+   "name": "schemars",
+   "version": "0.9.0",
+   "vulns": []
+  },
+  {
+   "name": "schemars",
+   "version": "1.2.3",
+   "vulns": []
+  },
+  {
+   "name": "scrypt",
+   "version": "0.12.0",
+   "vulns": []
+  },
+  {
+   "name": "sec1",
+   "version": "0.8.1",
+   "vulns": []
+  },
+  {
+   "name": "serde",
+   "version": "1.0.229",
+   "vulns": []
+  },
+  {
+   "name": "serde_bytes",
+   "version": "0.11.19",
+   "vulns": []
+  },
+  {
+   "name": "serde_cbor_2",
+   "version": "0.13.0",
+   "vulns": []
+  },
+  {
+   "name": "serde_core",
+   "version": "1.0.229",
+   "vulns": []
+  },
+  {
+   "name": "serde_derive",
+   "version": "1.0.229",
+   "vulns": []
+  },
+  {
+   "name": "serde_json",
+   "version": "1.0.154",
+   "vulns": []
+  },
+  {
+   "name": "serde_with",
+   "version": "3.24.0",
+   "vulns": []
+  },
+  {
+   "name": "serde_with_macros",
+   "version": "3.24.0",
+   "vulns": []
+  },
+  {
+   "name": "serdect",
+   "version": "0.4.3",
+   "vulns": []
+  },
+  {
+   "name": "sha1",
+   "version": "0.11.0",
+   "vulns": []
+  },
+  {
+   "name": "sha2",
+   "version": "0.10.8",
+   "vulns": []
+  },
+  {
+   "name": "sha2",
+   "version": "0.11.1",
+   "vulns": []
+  },
+  {
+   "name": "shlex",
+   "version": "2.0.1",
+   "vulns": []
+  },
+  {
+   "name": "signature",
+   "version": "3.0.0",
+   "vulns": []
+  },
+  {
+   "name": "slab",
+   "version": "0.4.12",
+   "vulns": []
+  },
+  {
+   "name": "smallvec",
+   "version": "1.16.3",
+   "vulns": []
+  },
+  {
+   "name": "socket2",
+   "version": "0.6.5",
+   "vulns": []
+  },
+  {
+   "name": "spki",
+   "version": "0.8.1",
+   "vulns": []
+  },
+  {
+   "name": "stable_deref_trait",
+   "version": "1.2.1",
+   "vulns": []
+  },
+  {
+   "name": "strsim",
+   "version": "0.11.1",
+   "vulns": []
+  },
+  {
+   "name": "subtle",
+   "version": "2.6.1",
+   "vulns": []
+  },
+  {
+   "name": "syn",
+   "version": "2.0.119",
+   "vulns": []
+  },
+  {
+   "name": "syn",
+   "version": "3.0.9",
+   "vulns": []
+  },
+  {
+   "name": "synstructure",
+   "version": "0.13.2",
+   "vulns": []
+  },
+  {
+   "name": "synstructure",
+   "version": "0.14.0",
+   "vulns": []
+  },
+  {
+   "name": "thiserror",
+   "version": "1.0.69",
+   "vulns": []
+  },
+  {
+   "name": "thiserror",
+   "version": "2.0.21",
+   "vulns": []
+  },
+  {
+   "name": "thiserror-impl",
+   "version": "1.0.69",
+   "vulns": []
+  },
+  {
+   "name": "thiserror-impl",
+   "version": "2.0.21",
+   "vulns": []
+  },
+  {
+   "name": "time",
+   "version": "0.3.55",
+   "vulns": []
+  },
+  {
+   "name": "time-core",
+   "version": "0.1.9",
+   "vulns": []
+  },
+  {
+   "name": "time-macros",
+   "version": "0.2.32",
+   "vulns": []
+  },
+  {
+   "name": "tinystr",
+   "version": "0.8.5",
+   "vulns": []
+  },
+  {
+   "name": "tinyvec",
+   "version": "1.13.3",
+   "vulns": []
+  },
+  {
+   "name": "tls_codec",
+   "version": "0.4.2",
+   "vulns": []
+  },
+  {
+   "name": "tls_codec_derive",
+   "version": "0.4.2",
+   "vulns": []
+  },
+  {
+   "name": "tokio",
+   "version": "1.54.1",
+   "vulns": []
+  },
+  {
+   "name": "tokio-macros",
+   "version": "2.7.2",
+   "vulns": []
+  },
+  {
+   "name": "tokio-stream",
+   "version": "0.1.19",
+   "vulns": []
+  },
+  {
+   "name": "tokio-util",
+   "version": "0.7.20",
+   "vulns": []
+  },
+  {
+   "name": "tracing",
+   "version": "0.1.44",
+   "vulns": []
+  },
+  {
+   "name": "tracing-attributes",
+   "version": "0.1.31",
+   "vulns": []
+  },
+  {
+   "name": "tracing-core",
+   "version": "0.1.36",
+   "vulns": []
+  },
+  {
+   "name": "typenum",
+   "version": "1.20.1",
+   "vulns": []
+  },
+  {
+   "name": "unicode-ident",
+   "version": "1.0.27",
+   "vulns": []
+  },
+  {
+   "name": "unicode-normalization",
+   "version": "0.1.26",
+   "vulns": []
+  },
+  {
+   "name": "universal-hash",
+   "version": "0.6.1",
+   "vulns": []
+  },
+  {
+   "name": "url",
+   "version": "2.5.8",
+   "vulns": []
+  },
+  {
+   "name": "utf8_iter",
+   "version": "1.1.0",
+   "vulns": []
+  },
+  {
+   "name": "utf_types",
+   "version": "1.0.0",
+   "vulns": []
+  },
+  {
+   "name": "uuid",
+   "version": "1.29.0",
+   "vulns": []
+  },
+  {
+   "name": "vcpkg",
+   "version": "0.2.15",
+   "vulns": []
+  },
+  {
+   "name": "version_check",
+   "version": "0.9.5",
+   "vulns": []
+  },
+  {
+   "name": "wasi",
+   "version": "0.11.1+wasi-snapshot-preview1",
+   "vulns": []
+  },
+  {
+   "name": "wasm-bindgen",
+   "version": "0.2.130",
+   "vulns": []
+  },
+  {
+   "name": "wasm-bindgen-macro",
+   "version": "0.2.130",
+   "vulns": []
+  },
+  {
+   "name": "wasm-bindgen-macro-support",
+   "version": "0.2.130",
+   "vulns": []
+  },
+  {
+   "name": "wasm-bindgen-shared",
+   "version": "0.2.130",
+   "vulns": []
+  },
+  {
+   "name": "webauthn-attestation-ca",
+   "version": "0.6.2",
+   "vulns": []
+  },
+  {
+   "name": "webauthn-authenticator-rs",
+   "version": "0.6.2",
+   "vulns": []
+  },
+  {
+   "name": "webauthn-rs",
+   "version": "0.6.2",
+   "vulns": []
+  },
+  {
+   "name": "webauthn-rs-core",
+   "version": "0.6.2",
+   "vulns": []
+  },
+  {
+   "name": "webauthn-rs-proto",
+   "version": "0.6.2",
+   "vulns": []
+  },
+  {
+   "name": "windows-core",
+   "version": "0.62.2",
+   "vulns": []
+  },
+  {
+   "name": "windows-implement",
+   "version": "0.60.2",
+   "vulns": []
+  },
+  {
+   "name": "windows-interface",
+   "version": "0.59.3",
+   "vulns": []
+  },
+  {
+   "name": "windows-link",
+   "version": "0.2.1",
+   "vulns": []
+  },
+  {
+   "name": "windows-result",
+   "version": "0.4.1",
+   "vulns": []
+  },
+  {
+   "name": "windows-strings",
+   "version": "0.5.1",
+   "vulns": []
+  },
+  {
+   "name": "windows-sys",
+   "version": "0.61.2",
+   "vulns": []
+  },
+  {
+   "name": "wnaf",
+   "version": "0.14.1",
+   "vulns": []
+  },
+  {
+   "name": "writeable",
+   "version": "0.6.4",
+   "vulns": []
+  },
+  {
+   "name": "x509-cert",
+   "version": "0.3.0",
+   "vulns": []
+  },
+  {
+   "name": "x509-parser",
+   "version": "0.18.1",
+   "vulns": []
+  },
+  {
+   "name": "yoke",
+   "version": "0.8.4",
+   "vulns": []
+  },
+  {
+   "name": "yoke-derive",
+   "version": "0.8.4",
+   "vulns": []
+  },
+  {
+   "name": "zerocopy",
+   "version": "0.8.63",
+   "vulns": []
+  },
+  {
+   "name": "zerocopy-derive",
+   "version": "0.8.63",
+   "vulns": []
+  },
+  {
+   "name": "zerofrom",
+   "version": "0.1.8",
+   "vulns": []
+  },
+  {
+   "name": "zerofrom-derive",
+   "version": "0.1.8",
+   "vulns": []
+  },
+  {
+   "name": "zeroize",
+   "version": "1.9.1",
+   "vulns": []
+  },
+  {
+   "name": "zeroize_derive",
+   "version": "1.5.0",
+   "vulns": []
+  },
+  {
+   "name": "zerotrie",
+   "version": "0.2.5",
+   "vulns": []
+  },
+  {
+   "name": "zerovec",
+   "version": "0.11.9",
+   "vulns": []
+  },
+  {
+   "name": "zerovec-derive",
+   "version": "0.11.7",
+   "vulns": []
+  },
+  {
+   "name": "zmij",
+   "version": "1.0.23",
+   "vulns": []
+  }
+ ]
+}

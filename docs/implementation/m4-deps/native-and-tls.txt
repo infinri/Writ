@@ -1,0 +1,54 @@
+== cargo tree -e normal,build,dev -i openssl (workspace)
+error: package ID specification `openssl` did not match any packages
+== cargo tree -e normal,build,dev -i openssl-sys (workspace)
+error: package ID specification `openssl-sys` did not match any packages
+== cargo tree -e normal,build,dev -i native-tls (workspace)
+error: package ID specification `native-tls` did not match any packages
+== cargo tree -e normal,build,dev -i openssl-src (workspace)
+error: package ID specification `openssl-src` did not match any packages
+== cargo tree -e normal,build,dev -i aws-lc-rs (workspace)
+error: package ID specification `aws-lc-rs` did not match any packages
+== cargo tree -e normal,build,dev -i aws-lc-sys (workspace)
+error: package ID specification `aws-lc-sys` did not match any packages
+== cargo tree -e normal,build,dev -i ring (workspace)
+error: package ID specification `ring` did not match any packages
+
+help: a package with a similar name exists: `rand`
+== cargo tree -e normal,build,dev -i rustls (workspace)
+error: package ID specification `rustls` did not match any packages
+
+help: a package with a similar name exists: `rustix`
+== cargo tree -e normal,build,dev -i tokio (workspace)
+tokio v1.54.1
+├── hyper v1.12.0
+│   ├── hyper-util v0.1.21
+│   │   └── writ-approval v0.1.0 (/home/lucio.saldivar/workspaces/Writ/.claude/worktrees/agent-a11e9f080900be29e/approval)
+│   └── writ-approval v0.1.0 (/home/lucio.saldivar/workspaces/Writ/.claude/worktrees/agent-a11e9f080900be29e/approval)
+├── hyper-util v0.1.21 (*)
+├── tokio-stream v0.1.19
+│   └── webauthn-authenticator-rs v0.6.2
+│       [dev-dependencies]
+│       └── writ-approval v0.1.0 (/home/lucio.saldivar/workspaces/Writ/.claude/worktrees/agent-a11e9f080900be29e/approval)
+├── tokio-util v0.7.20
+│   └── tokio-stream v0.1.19 (*)
+├── webauthn-authenticator-rs v0.6.2 (*)
+└── writ-approval v0.1.0 (/home/lucio.saldivar/workspaces/Writ/.claude/worktrees/agent-a11e9f080900be29e/approval)
+== cargo tree -e normal,build,dev -i rsa (workspace)
+rsa v0.10.0-rc.19
+└── crypto-glue v0.2.2
+    ├── webauthn-attestation-ca v0.6.2
+    │   └── webauthn-rs-core v0.6.2
+    │       ├── webauthn-authenticator-rs v0.6.2
+    │       │   [dev-dependencies]
+    │       │   └── writ-approval v0.1.0 (/home/lucio.saldivar/workspaces/Writ/.claude/worktrees/agent-a11e9f080900be29e/approval)
+    │       └── webauthn-rs v0.6.2
+    │           └── writ-approval v0.1.0 (/home/lucio.saldivar/workspaces/Writ/.claude/worktrees/agent-a11e9f080900be29e/approval)
+    ├── webauthn-authenticator-rs v0.6.2 (*)
+    └── webauthn-rs-core v0.6.2 (*)
+== every *-sys package in the combined test graph
+libsqlite3-sys v0.39.1
+linux-raw-sys v0.12.1
+windows-sys v0.61.2
+== packages with a links key (native libraries) in Cargo metadata
+libsqlite3-sys 0.39.1 links=sqlite3
+wasm-bindgen-shared 0.2.130 links=wasm_bindgen

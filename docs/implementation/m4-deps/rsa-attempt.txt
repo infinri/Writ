@@ -1,0 +1,119 @@
+== advisory RUSTSEC-2023-0071 (api.osv.dev)
+RUSTSEC-2023-0071 2026-11-08T23:15:02.609337046Z Marvin Attack: potential key recovery through timing sidechannels
+ranges: [{"type": "SEMVER", "events": [{"introduced": "0.0.0-0"}, {"fixed": "0.10.0"}]}]
+### Impact
+Due to a non-constant-time implementation, information about the private key is leaked through timing information which is observable over the network. An attacker may be able to use that information to recover the key.
+
+### Patches
+The `rsa` v0.10 series includes a migration to `crypto-bigint` and constant-time mitigations recommended in `draft-irtf-cfrg-rsa-guidance`. Upgrading to this release should resolve all known constant-time issues.
+
+
+== rsa releases (crates.io)
+0.10.0 2026-11-08T22:51:08.099889Z 
+0.10.0-rc.22 2026-11-07T05:36:05.176691Z 
+0.10.0-rc.21 2026-11-05T21:03:41.283221Z 
+0.10.0-rc.20 2026-11-03T00:24:38.324330Z 
+0.10.0-rc.19 2026-10-06T03:06:29.505761Z 
+0.10.0-rc.18 2026-04-27T22:15:10.370792Z 
+0.10.0-rc.17 2026-03-10T18:33:11.437534Z 
+0.10.0-rc.16 2026-02-27T17:23:32.972722Z 
+== crypto-glue latest release and its rsa requirement
+0.2.2 2026-10-08T04:32:19.882711Z
+rsa ^0.10.0-rc.18 features ['sha2'] optional False
+== locked rsa and its dependents
+rsa v0.10.0-rc.19
+└── crypto-glue v0.2.2
+    ├── webauthn-attestation-ca v0.6.2
+    │   └── webauthn-rs-core v0.6.2
+    │       ├── webauthn-authenticator-rs v0.6.2
+    │       │   [dev-dependencies]
+    │       │   └── writ-approval v0.1.0 (/home/lucio.saldivar/workspaces/Writ/.claude/worktrees/agent-a11e9f080900be29e/approval)
+    │       └── webauthn-rs v0.6.2
+    │           └── writ-approval v0.1.0 (/home/lucio.saldivar/workspaces/Writ/.claude/worktrees/agent-a11e9f080900be29e/approval)
+    ├── webauthn-authenticator-rs v0.6.2 (*)
+    └── webauthn-rs-core v0.6.2 (*)
+== cargo update -p rsa --precise 0.10.0
+    Updating crates.io index
+error: failed to select a version for `rsa`.
+    ... required by package `crypto-glue v0.2.2`
+    ... which satisfies dependency `crypto-glue = "^0.2.1"` (locked to 0.2.2) of package `webauthn-authenticator-rs v0.6.2`
+    ... which satisfies dependency `webauthn-authenticator-rs = "=0.6.2"` (locked to 0.6.2) of package `writ-approval v0.1.0 (/home/lucio.saldivar/workspaces/Writ/.claude/worktrees/agent-a11e9f080900be29e/approval)`
+versions that meet the requirements `^0.10.0-rc.18` are: 0.10.0
+
+package `crypto-glue` depends on `rsa` with feature `sha2` but `rsa` does not have that feature.
+note: a required dependency with that name exists, but only optional dependencies can be used as features.
+
+
+failed to select a version for `rsa` which could resolve this conflict
+exit 101
+== upstream crypto-glue pull requests (GitHub API)
+50 open 2026-11-13T04:29:48Z None Update argon2 to 0.6
+49 open 2026-11-10T13:21:01Z None chore: update rsa to 0.10
+48 open 2026-11-06T15:45:11Z None Move WASM `SystemTime::now()` helper to public API
+47 open 2026-11-02T02:46:29Z None Bump rustls from 0.23.45 to 0.23.46 in the cargo group across 1 directory
+46 closed 2026-10-12T05:10:21Z 2026-10-27T04:34:21Z Remove unneeded dependency on `rustls-pki-types` on WASM32
+45 closed 2026-10-12T05:01:34Z 2026-11-10T02:01:40Z Split modules into separate files
+44 open 2026-10-12T04:24:07Z None Explicitly declare MSRV as 1.85
+43 closed 2026-10-08T04:25:31Z 2026-10-08T04:31:53Z Release 0.2.2
+42 closed 2026-10-03T08:35:57Z 2026-10-27T04:36:09Z Split tests into separate files using the public API
+41 closed 2026-10-03T07:31:43Z 2026-10-08T04:23:22Z Fix builds on WASM again, and clippy regressions
+== RSA private-key operations referenced by the webauthn crates (static search)
+webauthn-rs-core-0.6.2/src/internals.rs:696:    // Oaep = 0x0017,
+== rsa items imported by webauthn-rs-core
+webauthn-rs-core-0.6.2/src/crypto.rs:25:    rsa::{BigUint, RS256PublicKey, RS256Signature, RS256VerifyingKey},
+== crypto-glue rsa module (private-key helpers exported, unused by the webauthn crates)
+48:        DecodeRsaPrivateKey as Pkcs1DecodeRsaPrivateKey,
+49:        EncodeRsaPrivateKey as Pkcs1EncodeRsaPrivateKey,
+133:    pub fn new_key() -> HmacSha1Key {
+192:    pub fn new_key() -> HmacSha256Key {
+306:    pub fn new_key() -> Aes128Key {
+369:    pub fn new_key() -> Aes256Key {
+505:    use rsa::{RsaPrivateKey, RsaPublicKey};
+514:    pub type RS256PrivateKey = RsaPrivateKey;
+525:    pub fn new_key(bits: usize) -> rsa::errors::Result<RsaPrivateKey> {
+528:        RsaPrivateKey::new(&mut rng, bits)
+531:    pub fn oaep_sha256_encrypt(
+540:    pub fn oaep_sha256_decrypt(
+541:        private_key: &RsaPrivateKey,
+612:    pub fn new_key() -> EcdsaP256PrivateKey {
+667:    pub fn new_key() -> EcdsaP384PrivateKey {
+720:    pub fn new_key() -> EcdsaP521PrivateKey {
+== webauthn-rs algorithm configuration
+249:    algorithms: Vec<COSEAlgorithm>,
+305:                algorithms: COSEAlgorithm::secure_algs(),
+414:            algorithms: self.algorithms,
+460:    algorithms: Vec<COSEAlgorithm>,
+568:            .credential_algorithms(self.algorithms.clone())
+625:            .credential_algorithms(self.algorithms.clone())
+893:            .credential_algorithms(self.algorithms.clone())
+1181:            .credential_algorithms(self.algorithms.clone())
+1489:            .credential_algorithms(self.algorithms.clone())
+45:    pub fn secure_algs() -> Vec<Self> {
+46-        vec![
+47-            COSEAlgorithm::ES256,
+48-            COSEAlgorithm::ES384,
+49-            // COSEAlgorithm::ES512,
+50-            COSEAlgorithm::RS256,
+51-            // COSEAlgorithm::RS384,
+52-            // COSEAlgorithm::RS512
+53-            // -- Testing required
+54-            // COSEAlgorithm::EDDSA,
+55-        ]
+712-
+713-        // Verify that the credential public key alg is one of the allowed algorithms.
+714:        let alg_valid = credential_algorithms
+715-            .iter()
+716-            .any(|alg| alg == &credential.cred.type_);
+717-
+718-        if !alg_valid {
+719-            error!(
+720-                "Authenticator ignored requested algorithm set - {:?} - {:?}",
+721-                credential.cred.type_, credential_algorithms
+722-            );
+723-            return Err(WebauthnError::CredentialAlteredAlgFromRequest);
+724-        }
+67:    pub fn cred_algorithm(&self) -> &COSEAlgorithm {
+68-        &self.cred.cred.type_
+69-    }
+70-
+--

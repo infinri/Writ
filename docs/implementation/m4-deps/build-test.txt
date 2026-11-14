@@ -1,0 +1,21 @@
+cargo 1.99.1 (5f94df478 2026-08-27)
+rustc 1.99.1 (58cf8f9c3 2026-10-13)
+== cargo build --locked
+   Compiling webauthn-rs v0.6.2
+   Compiling writ-approval v0.1.0 (/home/lucio.saldivar/workspaces/Writ/.claude/worktrees/agent-a11e9f080900be29e/approval)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.51s
+exit 0
+== cargo build --release --locked
+   Compiling webauthn-rs v0.6.2
+   Compiling writ-approval v0.1.0 (/home/lucio.saldivar/workspaces/Writ/.claude/worktrees/agent-a11e9f080900be29e/approval)
+    Finished `release` profile [optimized] target(s) in 8.15s
+exit 0
+== cargo test -p writ-approval --locked
+     Running unittests src/lib.rs (target/debug/deps/writ_approval-c0940f3f8401e7e4)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+exit 0
+== cargo test --workspace --locked --no-run
+  Executable tests/process_lifecycle.rs (target/debug/deps/process_lifecycle-e34bd92804eff8f8)
+  Executable tests/storage_failures.rs (target/debug/deps/storage_failures-3a9187575e698dbe)
+exit 0

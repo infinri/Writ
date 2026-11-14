@@ -1,0 +1,14 @@
+writ-kernel v0.1.0 (/home/lucio.saldivar/workspaces/Writ/.claude/worktrees/agent-a11e9f080900be29e/kernel)
+└── sha2 v0.10.8
+    ├── cfg-if v1.0.5
+    ├── cpufeatures v0.2.17
+    │   └── libc v0.2.191
+    └── digest v0.10.7
+        ├── block-buffer v0.10.4
+        │   └── generic-array v0.14.7
+        │       └── typenum v1.20.1
+        │       [build-dependencies]
+        │       └── version_check v0.9.5
+        └── crypto-common v0.1.7
+            ├── generic-array v0.14.7 (*)
+            └── typenum v1.20.1

@@ -68,6 +68,47 @@ class Features(unittest.TestCase):
         self.assertEqual(check_deps.forbidden_features(meta, allow), [])
 
 
+class Versions(unittest.TestCase):
+    def test_versioned_keys_approve_each_version_exactly(self):
+        allow = {"approved_licenses": ["MIT"], "forbidden": [], "packages": {
+            "syn@2.0.1": {"version": "2.0.1"}, "syn@3.0.0": {"version": "3.0.0"}}}
+        lic = {("syn", "2.0.1"): "MIT", ("syn", "3.0.0"): "MIT", ("syn", "3.0.1"): "MIT"}
+        both = [{"name": "syn", "version": "2.0.1"}, {"name": "syn", "version": "3.0.0"}]
+        self.assertEqual(check_deps.check(both, allow, lic), [])
+        other = [{"name": "syn", "version": "2.0.1"}, {"name": "syn", "version": "3.0.1"}]
+        problems = check_deps.check(other, allow, lic)
+        self.assertTrue(any("not on the allow-list: syn 3.0.1" in x for x in problems))
+        self.assertTrue(any("syn@3.0.0 is not in Cargo.lock" in x for x in problems))
+
+    def test_dr5_licence_is_exact_to_package_and_version(self):
+        allow = json.loads((check_deps.ROOT / "approval/deps-allowlist.json").read_text())
+        expr = "(MIT OR Apache-2.0) AND Unicode-3.0"
+        entry = allow["packages"]["unicode-ident"]
+        self.assertEqual((entry["version"], entry["licence_approved"]), ("1.0.27", expr))
+        self.assertEqual(allow["dev_packages"]["unicode-normalization"]["version"], "0.1.26")
+        self.assertNotIn("unicode-normalization", allow["packages"])
+        self.assertNotIn(expr, allow["approved_licenses"])
+        bumped = [{"name": "unicode-ident", "version": "1.0.28"}]
+        problems = check_deps.check(bumped, {**allow, "packages": {"unicode-ident": entry}}, {("unicode-ident", "1.0.28"): expr})
+        self.assertTrue(any("approved 1.0.27" in x for x in problems))
+
+
+class Advisories(unittest.TestCase):
+    EXC = {"rsa@0.10.0-rc.19": {"ids": ["RUSTSEC-2023-0071"], "scope": "DEVELOPMENT-ONLY", "decision": "D-041"}}
+
+    def test_recorded_exception_is_visible_not_failing_in_development(self):
+        problems, notes = check_deps.advisories({("rsa", "0.10.0-rc.19"): ["RUSTSEC-2023-0071"]}, self.EXC, False)
+        self.assertEqual(problems, [])
+        self.assertEqual(len(notes), 1)
+
+    def test_release_mode_new_advisory_and_other_version_fail(self):
+        hit = {("rsa", "0.10.0-rc.19"): ["RUSTSEC-2023-0071"]}
+        self.assertEqual(len(check_deps.advisories(hit, self.EXC, True)[0]), 1)
+        self.assertEqual(len(check_deps.advisories({("rsa", "0.10.0-rc.19"): ["RUSTSEC-2023-0071", "RUSTSEC-2099-0001"]},
+                                                   self.EXC, False)[0]), 1)
+        self.assertEqual(len(check_deps.advisories({("rsa", "0.10.0-rc.20"): ["RUSTSEC-2023-0071"]}, self.EXC, False)[0]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
 
