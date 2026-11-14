@@ -64,6 +64,37 @@ jobs:
           python -m pip install --disable-pip-version-check -r m0/requirements.txt -r requirements-v2-docs.txt
           python kernel/tools/decision_schema_check.py --kernel "$GITHUB_WORKSPACE/target/release/examples/m1_line_adapter"
           python kernel/tools/m0_compare.py --kernel "$GITHUB_WORKSPACE/target/release/examples/m1_line_adapter"
+      # D-044 item 2: the complete approval browser suite is a step of this required job (a new
+      # job would not be a required check without a branch-protection change). It reuses the
+      # pinned Rust and SQLite installed above. No continue-on-error and no reduced selection:
+      # in CI mode run.mjs refuses --only, checks Node and Chrome against
+      # approval/browser-tests/ci-manifest.json and fails unless every flow ran and passed.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.3'
+      - name: Browser suite tooling (Node 22.22.3 from actions/setup-node; Google Chrome of the runner image), versions recorded
+        run: |
+          set -euo pipefail
+          node --version
+          node --version | grep -q '^v22\.'
+          command -v google-chrome
+          google-chrome --version
+          { echo "NODE=$(command -v node)"; echo "CHROME=$(command -v google-chrome)"; } >> "$GITHUB_ENV"
+      - name: Browser suite sanitizer self-test (known secret shapes are redacted)
+        run: node approval/browser-tests/sanitize-selftest.mjs
+      - name: Approval browser suite, complete (real server binary, HTTP routes and WebAuthn verifier; CDP virtual authenticator, user verification SIMULATED)
+        env:
+          WRIT_BROWSER_CI: '1'
+          TMPDIR: /tmp
+        run: approval/browser-tests/run.sh --results "$GITHUB_WORKSPACE/browser-suite-results.json" --diagnostics "$GITHUB_WORKSPACE/browser-suite-diagnostics.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: approval-browser-suite-results
+          path: |
+            browser-suite-results.json
+            browser-suite-diagnostics.log
+          if-no-files-found: warn
       - name: Dependency gate (allow-list, licences, OSV advisories) and SBOM
         run: |
           python3 -m unittest discover -s kernel/tools -v

@@ -8,11 +8,17 @@
 // No real user is enrolled and nothing listens beyond 127.0.0.1.
 //
 //   node run.mjs --server <writ-approval-server> --fixture <browser_fixture> [--chrome <path>]
-//                [--only <substring>]
+//                [--only <substring>] [--results <file.json>] [--diagnostics <file.log>]
+//
+// CI mode (WRIT_BROWSER_CI=1, required CI, D-044 item 2): refuses `--only`, requires
+// --results and --diagnostics, checks Node and Chrome against ci-manifest.json before any
+// setup, and fails unless every flow of FLOW_MODULES (exactly expected_flow_count) ran and
+// passed. Results, diagnostics and console output pass through lib/sanitize.mjs.
 //
 // Flows live in flows/*.mjs (see flows/approve-deny.mjs for the shape); add a module to
 // FLOW_MODULES to cover further pages.
 
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -22,6 +28,7 @@ import {
   closeServer, driveFixture, form, freePort, launchChrome, request, sleep, spawnLines,
   staticServer, stop, waitExit,
 } from "./lib/harness.mjs";
+import { sanitize, sanitizeDeep } from "./lib/sanitize.mjs";
 
 const FLOW_MODULES = ["./flows/approve-deny.mjs", "./flows/operator-pages.mjs"];
 const FLOW_TIMEOUT_MS = 60000;
@@ -32,6 +39,8 @@ const SUBJECTS = {
   reviewer: "browser-reviewer", excluded: "browser-excluded",
 };
 const SIGNOFF_ID = "so-browser";
+const CI = process.env.WRIT_BROWSER_CI === "1";
+const MANIFEST = new URL("./ci-manifest.json", import.meta.url);
 
 function args() {
   const out = { chrome: "/usr/bin/google-chrome" };
@@ -44,12 +53,70 @@ function args() {
   return out;
 }
 
-const log = (line) => console.log(`browser suite: ${line}`);
+// Diagnostics (harness log, server and fixture stderr, Chrome console), sanitized as captured.
+const diagnostics = [];
+const diag = (source, text) => {
+  for (const line of sanitize(text).split("\n")) if (line.trim()) diagnostics.push(`[${source}] ${line}`);
+};
+const log = (line) => { diag("harness", line); console.log(`browser suite: ${sanitize(line)}`); };
+const stderrTo = (source) => (e) => { diag(source, e); process.stderr.write(`${source}: ${sanitize(e)}`); };
 
-async function main() {
-  const opt = args();
+/** Resolved tool versions; in CI mode a missing or wrong tool is an error before any setup. */
+function tooling(opt, manifest) {
+  const tools = { node: process.versions.node, node_path: process.execPath, chrome_path: opt.chrome };
+  try {
+    tools.chrome = execFileSync(opt.chrome, ["--version"], { encoding: "utf8", timeout: 20000 }).trim();
+  } catch (e) {
+    tools.chrome = null;
+    tools.chrome_error = e.message.split("\n")[0];
+  }
+  log(`tooling: Node ${tools.node} (${tools.node_path}); Chrome ${tools.chrome || `unavailable: ${tools.chrome_error}`} (${opt.chrome})`);
+  if (CI) {
+    const nodeMajor = Number(tools.node.split(".")[0]);
+    if (nodeMajor !== manifest.node_major) throw new Error(`CI: Node ${tools.node} is not major ${manifest.node_major}`);
+    if (!tools.chrome) throw new Error(`CI: Chrome unavailable at ${opt.chrome}: ${tools.chrome_error}`);
+    const m = tools.chrome.match(/(\d+)\.\d+\.\d+\.\d+/);
+    if (!m || Number(m[1]) < manifest.chrome_min_major) {
+      throw new Error(`CI: Chrome "${tools.chrome}" is not a supported version (major >= ${manifest.chrome_min_major})`);
+    }
+  }
+  return tools;
+}
+
+const report = {
+  suite: "approval browser suite", label: LABEL, ci_mode: CI, started_at: new Date().toISOString(),
+  tools: {}, manifest: null, flow_modules: FLOW_MODULES, loaded_flows: [], executed_flows: [],
+  results: [], passed: 0, failed: 0, ok: false, error: null,
+};
+
+/** Write the sanitized results and diagnostics files (when asked for). */
+function writeOutputs(opt) {
+  if (opt.results) fs.writeFileSync(opt.results, JSON.stringify(sanitizeDeep(report), null, 1) + "\n");
+  if (opt.diagnostics) fs.writeFileSync(opt.diagnostics, diagnostics.map(sanitize).join("\n") + "\n");
+}
+
+async function main(opt) {
+  const manifest = JSON.parse(fs.readFileSync(MANIFEST, "utf8"));
+  report.manifest = { expected_flow_count: manifest.expected_flow_count, node_major: manifest.node_major,
+    chrome_min_major: manifest.chrome_min_major };
+  if (CI) {
+    if (opt.only !== undefined) throw new Error("CI: --only is refused; required CI runs the complete suite");
+    const unknown = Object.keys(opt).filter((k) => !["server", "fixture", "chrome", "results", "diagnostics"].includes(k));
+    if (unknown.length) throw new Error(`CI: argument(s) refused: ${unknown.map((k) => `--${k}`).join(" ")}`);
+    if (!opt.results || !opt.diagnostics) throw new Error("CI: --results and --diagnostics are required");
+  }
+  report.tools = tooling(opt, manifest);
   const flows = [];
-  for (const m of FLOW_MODULES) flows.push(...(await import(m)).flows);
+  for (const m of FLOW_MODULES) {
+    const mod = (await import(m)).flows;
+    if (!Array.isArray(mod) || mod.length === 0) throw new Error(`flow module ${m} exports no flows`);
+    flows.push(...mod);
+  }
+  report.loaded_flows = flows.map((f) => f.name);
+  if (new Set(report.loaded_flows).size !== flows.length) throw new Error("duplicate flow names");
+  if (CI && flows.length !== manifest.expected_flow_count) {
+    throw new Error(`CI: ${flows.length} flows loaded from FLOW_MODULES, ci-manifest.json expects ${manifest.expected_flow_count}`);
+  }
   const selected = flows.filter((f) => !opt.only || f.name.includes(opt.only));
   const requestIds = selected.flatMap((f) => f.requests);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "writ-browser-suite-"));
@@ -87,7 +154,21 @@ async function main() {
     const chrome = await launchChrome(opt.chrome, path.join(dir, "chrome-profile"), dir);
     children.chrome = chrome.child;
     cdp = await Cdp.connect(chrome.wsUrl);
+    report.tools.chrome_cdp = (await cdp.send("Browser.getVersion")).product;
+    log(`Chrome over CDP: ${report.tools.chrome_cdp}`);
+    // Chrome console messages and page exceptions of every attached page (sanitized).
+    cdp.on((msg) => {
+      if (msg.method === "Runtime.consoleAPICalled") {
+        diag(`chrome console ${msg.params.type}`, msg.params.args.map((a) => (a.value !== undefined ? String(a.value) : a.description || a.type)).join(" "));
+      } else if (msg.method === "Runtime.exceptionThrown") {
+        const d = msg.params.exceptionDetails;
+        diag("chrome exception", (d.exception && d.exception.description) || d.text);
+      } else if (msg.method === "Log.entryAdded") {
+        diag(`chrome log ${msg.params.entry.level}`, `${msg.params.entry.text} ${msg.params.entry.url || ""}`);
+      }
+    });
     const page = await Page.open(cdp);
+    await page.send("Log.enable");
     await page.addVirtualAuthenticator();
     log(`virtual authenticator ${page.authenticatorId} (${LABEL})`);
 
@@ -100,7 +181,7 @@ async function main() {
       "--admin", SUBJECTS.admin, "--approver", SUBJECTS.approver, "--target", SUBJECTS.target,
       "--signoff", SIGNOFF_ID, "--reviewer", SUBJECTS.reviewer, "--excluded", SUBJECTS.excluded,
       "--requests", requestIds.join(","),
-    ], (e) => process.stderr.write(`fixture: ${e}`));
+    ], stderrTo("fixture"));
     children.fixture = fixture;
     const done = await driveFixture(fixture, page, log);
     if ((await waitExit(fixture)) !== 0) throw new Error("fixture setup failed");
@@ -112,7 +193,7 @@ async function main() {
     const server = spawnLines(opt.server, [
       "--ledger", ledger, "--port", String(port), "--rp-id", "localhost", "--origin", origin,
       "--channel", "approval-listener", "--subject-issuer", ISSUER,
-    ], (e) => process.stderr.write(`server: ${e}`));
+    ], stderrTo("server"));
     children.server = server;
     const ready = await server.nextLine(20000);
     if (!ready.includes(`serving ${origin}`)) throw new Error(`server: ${ready}`);
@@ -184,15 +265,16 @@ async function main() {
 
     for (const flow of selected) {
       const started = Date.now();
+      report.executed_flows.push(flow.name);
       let timer;
       try {
         const detail = await Promise.race([
           flow.run(t),
           new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`flow timeout ${FLOW_TIMEOUT_MS} ms`)), FLOW_TIMEOUT_MS); }),
         ]);
-        results.push({ name: flow.name, ok: true, detail });
+        results.push({ name: flow.name, kind: "flow", ok: true, detail });
       } catch (e) {
-        results.push({ name: flow.name, ok: false, detail: e.message });
+        results.push({ name: flow.name, kind: "flow", ok: false, detail: e.message });
       } finally {
         clearTimeout(timer);
       }
@@ -204,21 +286,25 @@ async function main() {
     await stop(server);
     const status = spawnLines(opt.fixture, ["status", "--ledger", ledger, "--requests", requestIds.join(","),
       "--signoffs", SIGNOFF_ID],
-      (e) => process.stderr.write(`fixture: ${e}`));
+      stderrTo("fixture"));
     const finalAll = JSON.parse(await status.nextLine());
     const final = finalAll.status;
     await waitExit(status);
     for (const flow of selected) {
       for (const [id, want] of Object.entries(flow.expect)) {
         const got = final[id];
-        results.push({ name: `${flow.name}: ledger status of ${id}`, ok: got === want, detail: `${got} (expected ${want})` });
+        results.push({ name: `${flow.name}: ledger status of ${id}`, kind: "ledger-status", ok: got === want,
+          expected: want, actual: got === undefined ? null : got, detail: `${got} (expected ${want})` });
       }
     }
     for (const [id, want] of Object.entries(t.signoffExpect)) {
       const got = finalAll.signoffs[id];
       const ok = !!got && got.subject === want.subject && got.expires_at === want.expires_at;
-      results.push({ name: `stored signoff ${id}`, ok,
-        detail: `${JSON.stringify(got)} (expected signer ${want.subject}, expiry exactly the displayed ${want.expires_at})` });
+      results.push({ name: `stored signoff ${id}`, kind: "stored-signoff", ok,
+        expected: "signer and displayed expiry", actual: ok ? "match" : "mismatch",
+        // Outcome only: the stored record is ledger content and stays out of logs and results.
+        detail: !got ? "no stored signoff" : `stored signer ${got.subject === want.subject ? "matches" : "differs from"} the expected signer; `
+          + `stored expiry ${got.expires_at === want.expires_at ? "equals" : "differs from"} the displayed expiry` });
     }
   } finally {
     await cleanup();
@@ -226,13 +312,58 @@ async function main() {
   let failed = 0;
   for (const r of results) {
     if (!r.ok) failed++;
-    console.log(`${r.ok ? "PASS" : "FAIL"} ${r.name} [${LABEL}]: ${r.detail}`);
+    const line = `${r.ok ? "PASS" : "FAIL"} ${r.name} [${LABEL}]: ${r.detail}`;
+    diag("result", line);
+    console.log(sanitize(line));
+    // The results file keeps names, outcomes and expected/actual statuses only: no flow
+    // detail text (it may quote page or ledger content); a failed flow keeps its sanitized reason.
+    const entry = { name: r.name, kind: r.kind, ok: r.ok };
+    if (r.expected !== undefined) Object.assign(entry, { expected: r.expected, actual: r.actual });
+    if (!r.ok && r.kind === "flow") entry.failure = r.detail;
+    report.results.push(entry);
   }
-  log(`${results.length - failed} passed, ${failed} failed (${LABEL})`);
-  return failed === 0 && results.length > 0 ? 0 : 1;
+  report.passed = results.length - failed;
+  report.failed = failed;
+  // Completeness: every selected flow ran in order and produced its result and its ledger
+  // checks; in CI mode the selection is the complete FLOW_MODULES list of the manifest's size.
+  const want = selected.map((f) => f.name);
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const ledgerChecks = selected.reduce((n, f) => n + Object.keys(f.expect).length, 0);
+  const complete = same(report.executed_flows, want)
+    && same(results.filter((r) => r.kind === "flow").map((r) => r.name), want)
+    && results.filter((r) => r.kind === "ledger-status").length === ledgerChecks
+    && (!CI || (same(want, report.loaded_flows) && want.length === manifest.expected_flow_count));
+  if (!complete) {
+    report.error = `incomplete run: ${report.executed_flows.length} of ${want.length} selected flows executed `
+      + `(${report.loaded_flows.length} loaded; manifest expects ${manifest.expected_flow_count})`;
+    log(report.error);
+  }
+  log(`${results.length - failed} passed, ${failed} failed; ${report.executed_flows.length} of ${report.loaded_flows.length} flows executed (${LABEL})`);
+  report.ok = complete && failed === 0 && results.length > 0;
+  return report.ok ? 0 : 1;
 }
 
-main().then((code) => process.exit(code), (e) => {
-  console.error(`browser suite: ERROR ${e.stack || e.message}`);
+let opt = {};
+try {
+  opt = args();
+} catch (e) {
+  console.error(`browser suite: ERROR ${e.message}`);
   process.exit(1);
+}
+main(opt).catch((e) => {
+  report.error = e.message;
+  report.ok = false;
+  diag("harness", `ERROR ${e.stack || e.message}`);
+  console.error(`browser suite: ERROR ${sanitize(e.stack || e.message)}`);
+  return 1;
+}).then((code) => {
+  report.finished_at = new Date().toISOString();
+  try {
+    writeOutputs(opt);
+    if (opt.results) console.log(`browser suite: sanitized results ${opt.results}, diagnostics ${opt.diagnostics || "(not written)"}`);
+  } catch (e) {
+    console.error(`browser suite: ERROR writing results: ${e.message}`);
+    code = 1;
+  }
+  process.exit(code);
 });

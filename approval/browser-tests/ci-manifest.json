@@ -1,0 +1,6 @@
+{
+  "_comment": "Required-CI expectations of the browser suite (D-044 item 2). In CI mode (WRIT_BROWSER_CI=1) run.mjs refuses to run unless Node has node_major and Chrome's major is at least chrome_min_major, and fails unless the flows loaded from FLOW_MODULES number exactly expected_flow_count and every one of them ran. Update expected_flow_count in the same commit that adds or removes a flow.",
+  "expected_flow_count": 17,
+  "node_major": 22,
+  "chrome_min_major": 120
+}
