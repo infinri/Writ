@@ -61,6 +61,29 @@ CREATE TABLE enrollment_links (
   FOREIGN KEY (issuer, subject) REFERENCES enrollments (issuer, subject)
 ) STRICT;
 
+-- Server-held WebAuthn registration ceremonies (S5, X8): bound to the subject, RP id, origin,
+-- operation and expiry; single use (issued -> registered -> enrolled, or issued -> refused).
+-- The verified credential is recorded at `registered`; an enrollment copies it from here.
+CREATE TABLE registrations (
+  registration_id TEXT PRIMARY KEY CHECK (registration_id <> ''),
+  operation       TEXT NOT NULL CHECK (operation IN ('bootstrap', 'enroll')),
+  issuer          TEXT NOT NULL CHECK (issuer <> ''),
+  subject         TEXT NOT NULL CHECK (subject <> ''),
+  rp_id           TEXT NOT NULL CHECK (rp_id <> ''),
+  origin          TEXT NOT NULL CHECK (origin <> ''),
+  ceremony_state  BLOB NOT NULL,
+  issued_at       TEXT NOT NULL,
+  expires_at      TEXT NOT NULL,
+  status          TEXT NOT NULL CHECK (status IN ('issued', 'registered', 'enrolled', 'refused')),
+  credential_id   TEXT UNIQUE,
+  public_material BLOB,
+  algorithm       TEXT,
+  consumed_by     TEXT,                       -- enrolling challenge id, or 'bootstrap'
+  CHECK ((status IN ('issued', 'refused')) = (credential_id IS NULL)),
+  CHECK ((credential_id IS NULL) = (public_material IS NULL)),
+  CHECK (algorithm IS NULL OR algorithm = 'ES256')
+) STRICT;
+
 -- Permissions per (tenant, project) scope (O-7); services hold only operator (O-8).
 CREATE TABLE role_assignments (
   assignment_id TEXT PRIMARY KEY CHECK (assignment_id <> ''),

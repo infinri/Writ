@@ -1802,6 +1802,7 @@ fn the_upgrade_from_writ_ledger_5_marks_every_pre_m4_grant_and_keeps_all_history
         "challenges",
         "approval_requests",
         "role_assignments",
+        "registrations",
         "enrollment_links",
         "enrollments",
         "credentials",
