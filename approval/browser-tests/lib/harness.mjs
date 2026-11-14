@@ -81,7 +81,16 @@ export function staticServer(port, title) {
   });
 }
 
-export const closeServer = (server) => new Promise((r) => (server ? server.close(() => r()) : r()));
+/**
+ * Close a static server deterministically: its open (keep-alive) connections are destroyed
+ * first, so `close` never waits on a browser that keeps one open; bounded by a timeout.
+ */
+export const closeServer = (server) => new Promise((r) => {
+  if (!server) return r();
+  const timer = setTimeout(r, 5000);
+  server.close(() => { clearTimeout(timer); r(); });
+  server.closeAllConnections();
+});
 
 /** Line-oriented child process (JSON lines on stdout). */
 export function spawnLines(cmd, args, onStderr) {

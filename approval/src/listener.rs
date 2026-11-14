@@ -726,7 +726,7 @@ fn signoff_view(state: &State, raw_id: &str) -> Response<Full> {
         .context
         .get("expires_at")
         .and_then(Value::as_str)
-        .and_then(Timestamp::parse_strict)
+        .and_then(Timestamp::parse_rfc3339)
     else {
         return none();
     };

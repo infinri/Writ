@@ -27,7 +27,11 @@ const FLOW_MODULES = ["./flows/approve-deny.mjs", "./flows/operator-pages.mjs"];
 const FLOW_TIMEOUT_MS = 60000;
 const LABEL = "CDP virtual authenticator, simulated UV";
 const ISSUER = "writ-local";
-const SUBJECTS = { admin: "browser-admin", approver: "browser-approver", target: "browser-target" };
+const SUBJECTS = {
+  admin: "browser-admin", approver: "browser-approver", target: "browser-target",
+  reviewer: "browser-reviewer", excluded: "browser-excluded",
+};
+const SIGNOFF_ID = "so-browser";
 
 function args() {
   const out = { chrome: "/usr/bin/google-chrome" };
@@ -94,6 +98,7 @@ async function main() {
     const fixture = spawnLines(opt.fixture, [
       "setup", "--ledger", ledger, "--origin", origin, "--issuer", ISSUER,
       "--admin", SUBJECTS.admin, "--approver", SUBJECTS.approver, "--target", SUBJECTS.target,
+      "--signoff", SIGNOFF_ID, "--reviewer", SUBJECTS.reviewer, "--excluded", SUBJECTS.excluded,
       "--requests", requestIds.join(","),
     ], (e) => process.stderr.write(`fixture: ${e}`));
     children.fixture = fixture;
@@ -116,7 +121,10 @@ async function main() {
 
     const t = {
       page, port, origin, wrongPort, wrongOrigin, fingerprints: done.requests,
-      subjects: { approver: SUBJECTS.approver, admin: SUBJECTS.admin, target: SUBJECTS.target },
+      subjects: { ...SUBJECTS },
+      signoffId: SIGNOFF_ID,
+      // Flows record what the ledger must hold for a signoff ({ subject, expires_at }).
+      signoffExpect: {},
       async openRequest(id) {
         await page.navigate(`${origin}/request/${encodeURIComponent(id)}`);
         return page.evaluate(`(() => {
@@ -192,15 +200,23 @@ async function main() {
 
     // Final ledger state, read after the server released the ledger.
     await stop(server);
-    const status = spawnLines(opt.fixture, ["status", "--ledger", ledger, "--requests", requestIds.join(",")],
+    const status = spawnLines(opt.fixture, ["status", "--ledger", ledger, "--requests", requestIds.join(","),
+      "--signoffs", SIGNOFF_ID],
       (e) => process.stderr.write(`fixture: ${e}`));
-    const final = JSON.parse(await status.nextLine()).status;
+    const finalAll = JSON.parse(await status.nextLine());
+    const final = finalAll.status;
     await waitExit(status);
     for (const flow of selected) {
       for (const [id, want] of Object.entries(flow.expect)) {
         const got = final[id];
         results.push({ name: `${flow.name}: ledger status of ${id}`, ok: got === want, detail: `${got} (expected ${want})` });
       }
+    }
+    for (const [id, want] of Object.entries(t.signoffExpect)) {
+      const got = finalAll.signoffs[id];
+      const ok = !!got && got.subject === want.subject && got.expires_at === want.expires_at;
+      results.push({ name: `stored signoff ${id}`, ok,
+        detail: `${JSON.stringify(got)} (expected signer ${want.subject}, expiry exactly the displayed ${want.expires_at})` });
     }
   } finally {
     await cleanup();

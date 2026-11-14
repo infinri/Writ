@@ -40,6 +40,32 @@ async function session(t, path) {
   return { status: r.status, cookie, csrf: m && m[1], body: r.body, headers: r.headers };
 }
 
+/** Open the pending signoff page; the displayed exclusions, delegation chain and expiry. */
+async function openSignoff(t) {
+  await t.page.navigate(`${t.origin}/signoff/${encodeURIComponent(t.signoffId)}`);
+  return t.page.evaluate(`(() => {
+    const top = document.querySelector(".context > dl");
+    if (!top) return { missing: document.body.innerText.slice(0, 300) };
+    const member = (dl, name) => {
+      for (const dt of dl.children) {
+        if (dt.tagName === "DT" && dt.textContent === name) return dt.nextElementSibling;
+      }
+      return null;
+    };
+    const excluded = member(top, "excluded").querySelector("dl");
+    return {
+      expires: member(top, "expires_at").textContent,
+      delegation: member(excluded, "delegation_chain").textContent,
+      requesters: member(excluded, "requesters").textContent,
+      linked: member(excluded, "linked_subjects").textContent,
+      fingerprint: document.getElementById("page").dataset.fingerprint,
+    };
+  })()`).then((shown) => {
+    if (shown.missing !== undefined) throw new Error(`no signoff context displayed: ${shown.missing}`);
+    return shown;
+  });
+}
+
 export const flows = [
   {
     name: "revoke via page (subject target)",
@@ -161,6 +187,34 @@ export const flows = [
       const result = await t.decide("confirm", t.subjects.approver);
       assert(result === "refused", `result ${JSON.stringify(result)}`);
       return `registration start by ${t.subjects.approver} (approver, not operator) answered refused; no row created`;
+    },
+  },
+  {
+    name: "signoff page refuses a signer the ledger excludes (linked to the requester)",
+    requests: [],
+    expect: {},
+    async run(t) {
+      const shown = await openSignoff(t);
+      assert(shown.linked.includes(t.subjects.excluded), `exclusions ${shown.linked}`);
+      const result = await t.decide("confirm", t.subjects.excluded);
+      assert(result === "SEPARATION_VIOLATED" || result === "refused", `result ${JSON.stringify(result)}`);
+      return `${t.subjects.excluded} is listed in the displayed exclusions (linked subjects); its confirmation answered ${result}`;
+    },
+  },
+  {
+    name: "signoff via page (exclusions, delegation unavailable, effective expiry displayed; real verifier)",
+    requests: [],
+    expect: {},
+    async run(t) {
+      const shown = await openSignoff(t);
+      assert(shown.requesters.includes("agent:session-1"), `requesters ${shown.requesters}`);
+      assert(shown.delegation === "unavailable", `delegation_chain ${shown.delegation}`);
+      assert(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$/.test(shown.expires), `expires_at ${shown.expires}`);
+      const result = await t.decide("confirm", t.subjects.reviewer);
+      assert(result === "signed off", `result ${JSON.stringify(result)}`);
+      // The ledger must store exactly the displayed effective expiry (checked after the run).
+      t.signoffExpect[t.signoffId] = { subject: t.subjects.reviewer, expires_at: shown.expires };
+      return `page showed exclusions, delegation_chain unavailable and expires_at ${shown.expires}; ${t.subjects.reviewer} confirmed: signed off`;
     },
   },
   {

@@ -13,7 +13,7 @@ fi
 syms=$(nm -C "$bin" 2>/dev/null || true)
 [ -n "$syms" ] || { echo "check-release-binary: FAIL no symbols to inspect" >&2; exit 1; }
 grep -q 'PasskeyVerifier' <<<"$syms" || { echo "check-release-binary: FAIL positive control PasskeyVerifier absent" >&2; exit 1; }
-if grep -E 'SoftPasskey|softpasskey|webauthn_authenticator_rs|TestVerifier|m4_support|_for_tests' <<<"$syms"; then
+if grep -E 'SoftPasskey|softpasskey|webauthn_authenticator_rs|TestVerifier|m4_support|_for_tests|uncontained' <<<"$syms"; then
   echo "check-release-binary: FAIL test symbols in $bin" >&2; exit 1
 fi
 echo "check-release-binary: PASS (no test authenticator crate or test symbol; PasskeyVerifier present)"
