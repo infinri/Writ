@@ -301,6 +301,14 @@ impl VerifiedRecord {
     }
 
     /// Signoff ids the record names (its trust `H` criteria; empty for `/1`).
+    ///
+    /// A reference only, never authority (R8): a named signoff proves
+    /// nothing until the I-5 use-time checks inside the promotion
+    /// transaction find it in scope, intact, bound to this record, its
+    /// requirements and current state, unrevoked, fresh, signed by a
+    /// separated subject holding `SignoffAuthority`, and unconsumed. Until
+    /// those checks exist, [`check_use`] refuses every required human
+    /// criterion regardless of this list.
     pub fn signoff_ids(&self) -> Vec<&str> {
         self.evaluations
             .iter()
