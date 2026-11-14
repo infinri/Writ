@@ -1,0 +1,519 @@
+writ-approval v0.1.0 (/home/lucio.saldivar/workspaces/Writ/.claude/worktrees/agent-a11e9f080900be29e/approval)
+├── hyper v1.12.0
+│   ├── atomic-waker v1.1.2
+│   ├── bytes v1.12.1
+│   ├── futures-core v0.3.34
+│   ├── http v1.5.0
+│   │   ├── bytes v1.12.1
+│   │   └── itoa v1.0.18
+│   ├── http-body v1.1.0
+│   │   ├── bytes v1.12.1
+│   │   └── http v1.5.0 (*)
+│   ├── httparse v1.10.1
+│   ├── httpdate v1.0.3
+│   ├── itoa v1.0.18
+│   ├── pin-project-lite v0.2.17
+│   ├── smallvec v1.16.3
+│   └── tokio v1.54.1
+│       ├── libc v0.2.191
+│       ├── mio v1.2.4
+│       │   ├── libc v0.2.191
+│       │   ├── wasi v0.11.1+wasi-snapshot-preview1
+│       │   └── windows-sys v0.61.2
+│       │       └── windows-link v0.2.1
+│       ├── pin-project-lite v0.2.17
+│       ├── socket2 v0.6.5
+│       │   ├── libc v0.2.191
+│       │   └── windows-sys v0.61.2 (*)
+│       └── windows-sys v0.61.2 (*)
+├── hyper-util v0.1.21
+│   ├── bytes v1.12.1
+│   ├── http v1.5.0 (*)
+│   ├── http-body v1.1.0 (*)
+│   ├── hyper v1.12.0 (*)
+│   ├── pin-project-lite v0.2.17
+│   └── tokio v1.54.1 (*)
+├── tokio v1.54.1 (*)
+├── webauthn-rs v0.6.2
+│   ├── serde v1.0.229
+│   │   ├── serde_core v1.0.229
+│   │   │   └── serde_derive v1.0.229 (proc-macro)
+│   │   │       ├── proc-macro2 v1.0.107
+│   │   │       │   └── unicode-ident v1.0.27
+│   │   │       ├── quote v1.0.47
+│   │   │       │   └── proc-macro2 v1.0.107 (*)
+│   │   │       └── syn v3.0.9
+│   │   │           ├── proc-macro2 v1.0.107 (*)
+│   │   │           ├── quote v1.0.47 (*)
+│   │   │           └── unicode-ident v1.0.27
+│   │   └── serde_derive v1.0.229 (proc-macro) (*)
+│   ├── tracing v0.1.44
+│   │   ├── pin-project-lite v0.2.17
+│   │   ├── tracing-attributes v0.1.31 (proc-macro)
+│   │   │   ├── proc-macro2 v1.0.107 (*)
+│   │   │   ├── quote v1.0.47 (*)
+│   │   │   └── syn v2.0.119
+│   │   │       ├── proc-macro2 v1.0.107 (*)
+│   │   │       ├── quote v1.0.47 (*)
+│   │   │       └── unicode-ident v1.0.27
+│   │   └── tracing-core v0.1.36
+│   │       └── once_cell v1.21.4
+│   ├── url v2.5.8
+│   │   ├── form_urlencoded v1.2.2
+│   │   │   └── percent-encoding v2.3.2
+│   │   ├── idna v1.1.0
+│   │   │   ├── idna_adapter v1.2.2
+│   │   │   │   ├── icu_normalizer v2.4.0
+│   │   │   │   │   ├── icu_collections v2.4.0
+│   │   │   │   │   │   ├── displaydoc v0.2.7 (proc-macro)
+│   │   │   │   │   │   │   ├── proc-macro2 v1.0.107 (*)
+│   │   │   │   │   │   │   ├── quote v1.0.47 (*)
+│   │   │   │   │   │   │   └── syn v3.0.9 (*)
+│   │   │   │   │   │   ├── potential_utf v0.1.6
+│   │   │   │   │   │   │   └── zerovec v0.11.9
+│   │   │   │   │   │   │       ├── yoke v0.8.4
+│   │   │   │   │   │   │       │   ├── stable_deref_trait v1.2.1
+│   │   │   │   │   │   │       │   ├── yoke-derive v0.8.4 (proc-macro)
+│   │   │   │   │   │   │       │   │   ├── proc-macro2 v1.0.107 (*)
+│   │   │   │   │   │   │       │   │   ├── quote v1.0.47 (*)
+│   │   │   │   │   │   │       │   │   ├── syn v3.0.9 (*)
+│   │   │   │   │   │   │       │   │   └── synstructure v0.14.0
+│   │   │   │   │   │   │       │   │       ├── proc-macro2 v1.0.107 (*)
+│   │   │   │   │   │   │       │   │       ├── quote v1.0.47 (*)
+│   │   │   │   │   │   │       │   │       └── syn v3.0.9 (*)
+│   │   │   │   │   │   │       │   └── zerofrom v0.1.8
+│   │   │   │   │   │   │       │       └── zerofrom-derive v0.1.8 (proc-macro)
+│   │   │   │   │   │   │       │           ├── proc-macro2 v1.0.107 (*)
+│   │   │   │   │   │   │       │           ├── quote v1.0.47 (*)
+│   │   │   │   │   │   │       │           ├── syn v3.0.9 (*)
+│   │   │   │   │   │   │       │           └── synstructure v0.14.0 (*)
+│   │   │   │   │   │   │       ├── zerofrom v0.1.8 (*)
+│   │   │   │   │   │   │       └── zerovec-derive v0.11.7 (proc-macro)
+│   │   │   │   │   │   │           ├── proc-macro2 v1.0.107 (*)
+│   │   │   │   │   │   │           ├── quote v1.0.47 (*)
+│   │   │   │   │   │   │           └── syn v3.0.9 (*)
+│   │   │   │   │   │   ├── utf8_iter v1.1.0
+│   │   │   │   │   │   │   └── utf_types v1.0.0
+│   │   │   │   │   │   ├── yoke v0.8.4 (*)
+│   │   │   │   │   │   ├── zerofrom v0.1.8 (*)
+│   │   │   │   │   │   └── zerovec v0.11.9 (*)
+│   │   │   │   │   ├── icu_normalizer_data v2.4.0
+│   │   │   │   │   ├── icu_provider v2.4.0
+│   │   │   │   │   │   ├── displaydoc v0.2.7 (proc-macro) (*)
+│   │   │   │   │   │   ├── icu_locale_core v2.4.0
+│   │   │   │   │   │   │   ├── displaydoc v0.2.7 (proc-macro) (*)
+│   │   │   │   │   │   │   ├── litemap v0.8.3
+│   │   │   │   │   │   │   ├── tinystr v0.8.5
+│   │   │   │   │   │   │   │   ├── displaydoc v0.2.7 (proc-macro) (*)
+│   │   │   │   │   │   │   │   └── zerovec v0.11.9 (*)
+│   │   │   │   │   │   │   ├── writeable v0.6.4
+│   │   │   │   │   │   │   └── zerovec v0.11.9 (*)
+│   │   │   │   │   │   ├── writeable v0.6.4
+│   │   │   │   │   │   ├── yoke v0.8.4 (*)
+│   │   │   │   │   │   ├── zerofrom v0.1.8 (*)
+│   │   │   │   │   │   ├── zerotrie v0.2.5
+│   │   │   │   │   │   │   ├── displaydoc v0.2.7 (proc-macro) (*)
+│   │   │   │   │   │   │   ├── yoke v0.8.4 (*)
+│   │   │   │   │   │   │   └── zerofrom v0.1.8 (*)
+│   │   │   │   │   │   └── zerovec v0.11.9 (*)
+│   │   │   │   │   ├── smallvec v1.16.3
+│   │   │   │   │   └── zerovec v0.11.9 (*)
+│   │   │   │   └── icu_properties v2.4.0
+│   │   │   │       ├── displaydoc v0.2.7 (proc-macro) (*)
+│   │   │   │       ├── icu_collections v2.4.0 (*)
+│   │   │   │       ├── icu_locale_core v2.4.0 (*)
+│   │   │   │       ├── icu_properties_data v2.4.0
+│   │   │   │       ├── icu_provider v2.4.0 (*)
+│   │   │   │       ├── zerotrie v0.2.5 (*)
+│   │   │   │       └── zerovec v0.11.9 (*)
+│   │   │   ├── smallvec v1.16.3
+│   │   │   └── utf8_iter v1.1.0 (*)
+│   │   ├── percent-encoding v2.3.2
+│   │   ├── serde v1.0.229 (*)
+│   │   └── serde_derive v1.0.229 (proc-macro) (*)
+│   ├── uuid v1.29.0
+│   │   ├── getrandom v0.4.3
+│   │   │   ├── cfg-if v1.0.5
+│   │   │   ├── libc v0.2.191
+│   │   │   ├── r-efi v6.0.0
+│   │   │   └── rand_core v0.10.1
+│   │   └── serde_core v1.0.229 (*)
+│   └── webauthn-rs-core v0.6.2
+│       ├── base64 v0.21.7
+│       ├── crypto-glue v0.2.2
+│       │   ├── aes v0.9.3
+│       │   │   ├── cipher v0.5.2
+│       │   │   │   ├── block-buffer v0.12.1
+│       │   │   │   │   └── hybrid-array v0.4.15
+│       │   │   │   │       ├── serde v1.0.229 (*)
+│       │   │   │   │       ├── subtle v2.6.1
+│       │   │   │   │       ├── typenum v1.20.1
+│       │   │   │   │       └── zeroize v1.9.1
+│       │   │   │   │           └── serde v1.0.229 (*)
+│       │   │   │   ├── crypto-common v0.2.2
+│       │   │   │   │   ├── getrandom v0.4.3 (*)
+│       │   │   │   │   ├── hybrid-array v0.4.15 (*)
+│       │   │   │   │   └── rand_core v0.10.1
+│       │   │   │   └── inout v0.2.5
+│       │   │   │       ├── block-padding v0.4.2
+│       │   │   │       │   └── hybrid-array v0.4.15 (*)
+│       │   │   │       └── hybrid-array v0.4.15 (*)
+│       │   │   ├── cpubits v0.1.1
+│       │   │   └── cpufeatures v0.3.1
+│       │   │       └── libc v0.2.191
+│       │   ├── aes-gcm v0.11.1
+│       │   │   ├── aead v0.6.1
+│       │   │   │   ├── crypto-common v0.2.2 (*)
+│       │   │   │   └── inout v0.2.5 (*)
+│       │   │   ├── aes v0.9.3 (*)
+│       │   │   ├── cipher v0.5.2 (*)
+│       │   │   ├── ctr v0.10.1
+│       │   │   │   └── cipher v0.5.2 (*)
+│       │   │   ├── ctutils v0.4.7
+│       │   │   │   ├── cmov v0.5.4
+│       │   │   │   └── subtle v2.6.1
+│       │   │   └── ghash v0.6.0
+│       │   │       └── polyval v0.7.3
+│       │   │           ├── cpubits v0.1.1
+│       │   │           ├── cpufeatures v0.3.1 (*)
+│       │   │           └── universal-hash v0.6.1
+│       │   │               ├── crypto-common v0.2.2 (*)
+│       │   │               └── ctutils v0.4.7 (*)
+│       │   ├── aes-kw v0.3.1
+│       │   │   ├── aes v0.9.3 (*)
+│       │   │   └── const-oid v0.10.2
+│       │   ├── argon2 v0.5.3
+│       │   │   ├── base64ct v1.8.3
+│       │   │   ├── blake2 v0.10.6
+│       │   │   │   └── digest v0.10.7
+│       │   │   │       ├── block-buffer v0.10.4
+│       │   │   │       │   └── generic-array v0.14.7
+│       │   │   │       │       └── typenum v1.20.1
+│       │   │   │       │       [build-dependencies]
+│       │   │   │       │       └── version_check v0.9.5
+│       │   │   │       ├── crypto-common v0.1.7
+│       │   │   │       │   ├── generic-array v0.14.7 (*)
+│       │   │   │       │   └── typenum v1.20.1
+│       │   │   │       └── subtle v2.6.1
+│       │   │   ├── cpufeatures v0.2.17
+│       │   │   │   └── libc v0.2.191
+│       │   │   └── password-hash v0.5.0
+│       │   │       ├── base64ct v1.8.3
+│       │   │       ├── rand_core v0.6.4
+│       │   │       └── subtle v2.6.1
+│       │   ├── base64 v0.23.1
+│       │   ├── cbc v0.2.1
+│       │   │   └── cipher v0.5.2 (*)
+│       │   ├── cipher v0.5.2 (*)
+│       │   ├── const-oid v0.10.2
+│       │   ├── crypto-common v0.2.2 (*)
+│       │   ├── cts v0.7.0
+│       │   │   └── cipher v0.5.2 (*)
+│       │   ├── der v0.8.3
+│       │   │   ├── const-oid v0.10.2
+│       │   │   ├── der_derive v0.8.0 (proc-macro)
+│       │   │   │   ├── proc-macro2 v1.0.107 (*)
+│       │   │   │   ├── quote v1.0.47 (*)
+│       │   │   │   └── syn v2.0.119 (*)
+│       │   │   ├── flagset v0.4.7
+│       │   │   ├── pem-rfc7468 v1.0.0
+│       │   │   │   └── base64ct v1.8.3
+│       │   │   └── zeroize v1.9.1 (*)
+│       │   ├── digest v0.11.3
+│       │   │   ├── block-buffer v0.12.1 (*)
+│       │   │   ├── const-oid v0.10.2
+│       │   │   ├── crypto-common v0.2.2 (*)
+│       │   │   └── ctutils v0.4.7 (*)
+│       │   ├── ecdsa v0.17.0
+│       │   │   ├── der v0.8.3 (*)
+│       │   │   ├── digest v0.11.3 (*)
+│       │   │   ├── elliptic-curve v0.14.3
+│       │   │   │   ├── base16ct v1.0.0
+│       │   │   │   ├── crypto-bigint v0.7.10
+│       │   │   │   │   ├── cpubits v0.1.1
+│       │   │   │   │   ├── ctutils v0.4.7 (*)
+│       │   │   │   │   ├── getrandom v0.4.3 (*)
+│       │   │   │   │   ├── hybrid-array v0.4.15 (*)
+│       │   │   │   │   ├── num-traits v0.2.19
+│       │   │   │   │   │   [build-dependencies]
+│       │   │   │   │   │   └── autocfg v1.5.1
+│       │   │   │   │   ├── rand_core v0.10.1
+│       │   │   │   │   ├── subtle v2.6.1
+│       │   │   │   │   └── zeroize v1.9.1 (*)
+│       │   │   │   ├── crypto-common v0.2.2 (*)
+│       │   │   │   ├── digest v0.11.3 (*)
+│       │   │   │   ├── ff v0.14.0
+│       │   │   │   │   ├── rand_core v0.10.1
+│       │   │   │   │   └── subtle v2.6.1
+│       │   │   │   ├── group v0.14.0
+│       │   │   │   │   ├── ff v0.14.0 (*)
+│       │   │   │   │   ├── rand_core v0.10.1
+│       │   │   │   │   └── subtle v2.6.1
+│       │   │   │   ├── hkdf v0.13.0
+│       │   │   │   │   └── hmac v0.13.0
+│       │   │   │   │       └── digest v0.11.3 (*)
+│       │   │   │   ├── hybrid-array v0.4.15 (*)
+│       │   │   │   ├── pem-rfc7468 v1.0.0 (*)
+│       │   │   │   ├── pkcs8 v0.11.0
+│       │   │   │   │   ├── der v0.8.3 (*)
+│       │   │   │   │   ├── pkcs5 v0.8.1
+│       │   │   │   │   │   ├── aes v0.9.3 (*)
+│       │   │   │   │   │   ├── aes-gcm v0.11.1 (*)
+│       │   │   │   │   │   ├── cbc v0.2.1 (*)
+│       │   │   │   │   │   ├── der v0.8.3 (*)
+│       │   │   │   │   │   ├── pbkdf2 v0.13.0
+│       │   │   │   │   │   │   ├── digest v0.11.3 (*)
+│       │   │   │   │   │   │   └── hmac v0.13.0 (*)
+│       │   │   │   │   │   ├── rand_core v0.10.1
+│       │   │   │   │   │   ├── scrypt v0.12.0
+│       │   │   │   │   │   │   ├── cfg-if v1.0.5
+│       │   │   │   │   │   │   ├── pbkdf2 v0.13.0 (*)
+│       │   │   │   │   │   │   ├── salsa20 v0.11.0
+│       │   │   │   │   │   │   │   ├── cfg-if v1.0.5
+│       │   │   │   │   │   │   │   └── cipher v0.5.2 (*)
+│       │   │   │   │   │   │   └── sha2 v0.11.1
+│       │   │   │   │   │   │       ├── cfg-if v1.0.5
+│       │   │   │   │   │   │       ├── cpufeatures v0.3.1 (*)
+│       │   │   │   │   │   │       └── digest v0.11.3 (*)
+│       │   │   │   │   │   ├── sha2 v0.11.1 (*)
+│       │   │   │   │   │   └── spki v0.8.1
+│       │   │   │   │   │       ├── der v0.8.3 (*)
+│       │   │   │   │   │       ├── digest v0.11.3 (*)
+│       │   │   │   │   │       └── sha2 v0.11.1 (*)
+│       │   │   │   │   ├── rand_core v0.10.1
+│       │   │   │   │   └── spki v0.8.1 (*)
+│       │   │   │   ├── rand_core v0.10.1
+│       │   │   │   ├── sec1 v0.8.1
+│       │   │   │   │   ├── base16ct v1.0.0
+│       │   │   │   │   ├── ctutils v0.4.7 (*)
+│       │   │   │   │   ├── der v0.8.3 (*)
+│       │   │   │   │   ├── hybrid-array v0.4.15 (*)
+│       │   │   │   │   ├── subtle v2.6.1
+│       │   │   │   │   └── zeroize v1.9.1 (*)
+│       │   │   │   ├── subtle v2.6.1
+│       │   │   │   └── zeroize v1.9.1 (*)
+│       │   │   ├── rfc6979 v0.6.0
+│       │   │   │   ├── crypto-bigint v0.7.10 (*)
+│       │   │   │   └── hmac v0.13.0 (*)
+│       │   │   ├── signature v3.0.0
+│       │   │   │   ├── digest v0.11.3 (*)
+│       │   │   │   └── rand_core v0.10.1
+│       │   │   ├── spki v0.8.1 (*)
+│       │   │   └── zeroize v1.9.1 (*)
+│       │   ├── elliptic-curve v0.14.3 (*)
+│       │   ├── hex v0.4.3
+│       │   ├── hkdf v0.13.0 (*)
+│       │   ├── hmac v0.13.0 (*)
+│       │   ├── hybrid-array v0.4.15 (*)
+│       │   ├── kbkdf v0.1.0-rc.1
+│       │   │   └── digest v0.11.3 (*)
+│       │   ├── md5 v0.8.1
+│       │   ├── p256 v0.14.0
+│       │   │   ├── ecdsa v0.17.0 (*)
+│       │   │   ├── elliptic-curve v0.14.3 (*)
+│       │   │   ├── primefield v0.14.0
+│       │   │   │   ├── crypto-bigint v0.7.10 (*)
+│       │   │   │   ├── crypto-common v0.2.2 (*)
+│       │   │   │   ├── ff v0.14.0 (*)
+│       │   │   │   ├── rand_core v0.10.1
+│       │   │   │   ├── subtle v2.6.1
+│       │   │   │   └── zeroize v1.9.1 (*)
+│       │   │   ├── primeorder v0.14.0
+│       │   │   │   ├── elliptic-curve v0.14.3 (*)
+│       │   │   │   ├── primefield v0.14.0 (*)
+│       │   │   │   └── wnaf v0.14.1
+│       │   │   │       ├── ff v0.14.0 (*)
+│       │   │   │       ├── group v0.14.0 (*)
+│       │   │   │       ├── hybrid-array v0.4.15 (*)
+│       │   │   │       └── primefield v0.14.0 (*)
+│       │   │   └── sha2 v0.11.1 (*)
+│       │   ├── p384 v0.14.0
+│       │   │   ├── ecdsa v0.17.0 (*)
+│       │   │   ├── elliptic-curve v0.14.3 (*)
+│       │   │   ├── fiat-crypto v0.3.0
+│       │   │   ├── primefield v0.14.0 (*)
+│       │   │   ├── primeorder v0.14.0 (*)
+│       │   │   └── sha2 v0.11.1 (*)
+│       │   ├── p521 v0.14.0
+│       │   │   ├── base16ct v1.0.0
+│       │   │   ├── ecdsa v0.17.0 (*)
+│       │   │   ├── elliptic-curve v0.14.3 (*)
+│       │   │   ├── primefield v0.14.0 (*)
+│       │   │   ├── primeorder v0.14.0 (*)
+│       │   │   └── sha2 v0.11.1 (*)
+│       │   ├── pbkdf2 v0.13.0 (*)
+│       │   ├── pkcs8 v0.11.0 (*)
+│       │   ├── rand v0.10.3
+│       │   │   ├── chacha20 v0.10.2
+│       │   │   │   ├── cfg-if v1.0.5
+│       │   │   │   ├── cpufeatures v0.3.1 (*)
+│       │   │   │   └── rand_core v0.10.1
+│       │   │   ├── getrandom v0.4.3 (*)
+│       │   │   └── rand_core v0.10.1
+│       │   ├── rsa v0.10.0-rc.19
+│       │   │   ├── const-oid v0.10.2
+│       │   │   ├── crypto-bigint v0.7.10 (*)
+│       │   │   ├── crypto-primes v0.7.2
+│       │   │   │   ├── crypto-bigint v0.7.10 (*)
+│       │   │   │   └── rand_core v0.10.1
+│       │   │   ├── digest v0.11.3 (*)
+│       │   │   ├── pkcs1 v0.8.0
+│       │   │   │   ├── der v0.8.3 (*)
+│       │   │   │   └── spki v0.8.1 (*)
+│       │   │   ├── pkcs8 v0.11.0 (*)
+│       │   │   ├── rand_core v0.10.1
+│       │   │   ├── sha2 v0.11.1 (*)
+│       │   │   ├── signature v3.0.0 (*)
+│       │   │   ├── spki v0.8.1 (*)
+│       │   │   └── zeroize v1.9.1 (*)
+│       │   ├── sec1 v0.8.1 (*)
+│       │   ├── serde v1.0.229 (*)
+│       │   ├── sha1 v0.11.0
+│       │   │   ├── cfg-if v1.0.5
+│       │   │   ├── cpufeatures v0.3.1 (*)
+│       │   │   └── digest v0.11.3 (*)
+│       │   ├── sha2 v0.11.1 (*)
+│       │   ├── signature v3.0.0 (*)
+│       │   ├── spki v0.8.1 (*)
+│       │   ├── subtle v2.6.1
+│       │   ├── tracing v0.1.44 (*)
+│       │   ├── uuid v1.29.0 (*)
+│       │   ├── x509-cert v0.3.0
+│       │   │   ├── const-oid v0.10.2
+│       │   │   ├── der v0.8.3 (*)
+│       │   │   ├── sha1 v0.11.0 (*)
+│       │   │   ├── signature v3.0.0 (*)
+│       │   │   └── spki v0.8.1 (*)
+│       │   └── zeroize v1.9.1 (*)
+│       ├── der-parser v10.0.0
+│       │   ├── asn1-rs v0.7.2
+│       │   │   ├── asn1-rs-derive v0.6.0 (proc-macro)
+│       │   │   │   ├── proc-macro2 v1.0.107 (*)
+│       │   │   │   ├── quote v1.0.47 (*)
+│       │   │   │   ├── syn v2.0.119 (*)
+│       │   │   │   └── synstructure v0.13.2
+│       │   │   │       ├── proc-macro2 v1.0.107 (*)
+│       │   │   │       ├── quote v1.0.47 (*)
+│       │   │   │       └── syn v2.0.119 (*)
+│       │   │   ├── asn1-rs-impl v0.2.0 (proc-macro)
+│       │   │   │   ├── proc-macro2 v1.0.107 (*)
+│       │   │   │   ├── quote v1.0.47 (*)
+│       │   │   │   └── syn v2.0.119 (*)
+│       │   │   ├── displaydoc v0.2.7 (proc-macro) (*)
+│       │   │   ├── nom v7.1.3
+│       │   │   │   ├── memchr v2.8.3
+│       │   │   │   └── minimal-lexical v0.2.1
+│       │   │   ├── num-traits v0.2.19 (*)
+│       │   │   ├── rusticata-macros v4.1.0
+│       │   │   │   └── nom v7.1.3 (*)
+│       │   │   ├── thiserror v2.0.21
+│       │   │   │   └── thiserror-impl v2.0.21 (proc-macro)
+│       │   │   │       ├── proc-macro2 v1.0.107 (*)
+│       │   │   │       ├── quote v1.0.47 (*)
+│       │   │   │       └── syn v3.0.9 (*)
+│       │   │   └── time v0.3.55
+│       │   │       ├── deranged v0.5.9
+│       │   │       ├── num-conv v0.2.2
+│       │   │       ├── powerfmt v0.2.1
+│       │   │       ├── time-core v0.1.9
+│       │   │       └── time-macros v0.2.32 (proc-macro)
+│       │   │           ├── num-conv v0.2.2
+│       │   │           └── time-core v0.1.9
+│       │   ├── displaydoc v0.2.7 (proc-macro) (*)
+│       │   ├── nom v7.1.3 (*)
+│       │   ├── num-bigint v0.4.8
+│       │   │   ├── num-integer v0.1.47
+│       │   │   │   └── num-traits v0.2.19 (*)
+│       │   │   └── num-traits v0.2.19 (*)
+│       │   ├── num-traits v0.2.19 (*)
+│       │   └── rusticata-macros v4.1.0 (*)
+│       ├── hex v0.4.3
+│       ├── nom v7.1.3 (*)
+│       ├── rand v0.10.3 (*)
+│       ├── rand_chacha v0.10.0
+│       │   ├── ppv-lite86 v0.2.21
+│       │   │   └── zerocopy v0.8.63
+│       │   │       └── zerocopy-derive v0.8.63 (proc-macro)
+│       │   │           ├── proc-macro2 v1.0.107 (*)
+│       │   │           ├── quote v1.0.47 (*)
+│       │   │           └── syn v2.0.119 (*)
+│       │   └── rand_core v0.10.1
+│       ├── serde v1.0.229 (*)
+│       ├── serde_cbor_2 v0.13.0
+│       │   ├── half v2.7.1
+│       │   │   ├── cfg-if v1.0.5
+│       │   │   ├── crunchy v0.2.4
+│       │   │   └── zerocopy v0.8.63 (*)
+│       │   └── serde v1.0.229 (*)
+│       ├── serde_json v1.0.154
+│       │   ├── itoa v1.0.18
+│       │   ├── memchr v2.8.3
+│       │   ├── serde v1.0.229 (*)
+│       │   ├── serde_core v1.0.229 (*)
+│       │   └── zmij v1.0.23
+│       ├── serde_with v3.24.0
+│       │   ├── base64 v0.23.1
+│       │   ├── serde_core v1.0.229 (*)
+│       │   └── serde_with_macros v3.24.0 (proc-macro)
+│       │       ├── darling v0.24.1
+│       │       │   ├── darling_core v0.24.1
+│       │       │   │   ├── ident_case v1.0.1
+│       │       │   │   ├── proc-macro2 v1.0.107 (*)
+│       │       │   │   ├── quote v1.0.47 (*)
+│       │       │   │   ├── strsim v0.11.1
+│       │       │   │   └── syn v3.0.9 (*)
+│       │       │   └── darling_macro v0.24.1 (proc-macro)
+│       │       │       ├── darling_core v0.24.1 (*)
+│       │       │       ├── quote v1.0.47 (*)
+│       │       │       └── syn v3.0.9 (*)
+│       │       ├── proc-macro2 v1.0.107 (*)
+│       │       ├── quote v1.0.47 (*)
+│       │       └── syn v3.0.9 (*)
+│       ├── thiserror v1.0.69
+│       │   └── thiserror-impl v1.0.69 (proc-macro)
+│       │       ├── proc-macro2 v1.0.107 (*)
+│       │       ├── quote v1.0.47 (*)
+│       │       └── syn v2.0.119 (*)
+│       ├── tracing v0.1.44 (*)
+│       ├── url v2.5.8 (*)
+│       ├── uuid v1.29.0 (*)
+│       ├── webauthn-attestation-ca v0.6.2
+│       │   ├── crypto-glue v0.2.2 (*)
+│       │   ├── serde v1.0.229 (*)
+│       │   ├── serde_with v3.24.0 (*)
+│       │   ├── tracing v0.1.44 (*)
+│       │   └── uuid v1.29.0 (*)
+│       ├── webauthn-rs-proto v0.6.2
+│       │   ├── base64 v0.21.7
+│       │   ├── serde v1.0.229 (*)
+│       │   ├── serde_json v1.0.154 (*)
+│       │   ├── serde_with v3.24.0 (*)
+│       │   └── url v2.5.8 (*)
+│       └── x509-parser v0.18.1
+│           ├── asn1-rs v0.7.2 (*)
+│           ├── data-encoding v2.11.1
+│           ├── der-parser v10.0.0 (*)
+│           ├── lazy_static v1.5.1
+│           ├── nom v7.1.3 (*)
+│           ├── oid-registry v0.8.1
+│           │   └── asn1-rs v0.7.2 (*)
+│           ├── rusticata-macros v4.1.0 (*)
+│           ├── thiserror v2.0.21 (*)
+│           └── time v0.3.55 (*)
+└── writ-broker v0.1.0 (/home/lucio.saldivar/workspaces/Writ/.claude/worktrees/agent-a11e9f080900be29e/broker)
+    ├── hmac v0.12.1
+    │   └── digest v0.10.7 (*)
+    ├── rustix v1.1.6
+    │   ├── bitflags v2.13.2
+    │   ├── errno v0.3.14
+    │   │   ├── libc v0.2.191
+    │   │   └── windows-sys v0.61.2 (*)
+    │   ├── libc v0.2.191
+    │   ├── linux-raw-sys v0.12.1
+    │   └── windows-sys v0.61.2 (*)
+    ├── sha2 v0.10.8
+    │   ├── cfg-if v1.0.5
+    │   ├── cpufeatures v0.2.17 (*)
+    │   └── digest v0.10.7 (*)
+    └── writ-kernel v0.1.0 (/home/lucio.saldivar/workspaces/Writ/.claude/worktrees/agent-a11e9f080900be29e/kernel)
+        └── sha2 v0.10.8 (*)

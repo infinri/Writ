@@ -1,0 +1,41 @@
+writ-ledger-sqlite v0.1.0 (/home/lucio.saldivar/workspaces/Writ/.claude/worktrees/agent-a11e9f080900be29e/persistence/sqlite)
+├── rusqlite v0.41.1
+│   ├── bitflags v2.13.2
+│   ├── fallible-iterator v0.3.0
+│   ├── fallible-streaming-iterator v0.1.9
+│   ├── libsqlite3-sys v0.39.1
+│   │   [build-dependencies]
+│   │   ├── pkg-config v0.3.34
+│   │   └── vcpkg v0.2.15
+│   └── smallvec v1.16.3
+└── writ-broker v0.1.0 (/home/lucio.saldivar/workspaces/Writ/.claude/worktrees/agent-a11e9f080900be29e/broker)
+    ├── hmac v0.12.1
+    │   └── digest v0.10.7
+    │       ├── block-buffer v0.10.4
+    │       │   └── generic-array v0.14.7
+    │       │       └── typenum v1.20.1
+    │       │       [build-dependencies]
+    │       │       └── version_check v0.9.5
+    │       ├── crypto-common v0.1.7
+    │       │   ├── generic-array v0.14.7 (*)
+    │       │   └── typenum v1.20.1
+    │       └── subtle v2.6.1
+    ├── rustix v1.1.6
+    │   ├── bitflags v2.13.2
+    │   ├── errno v0.3.14
+    │   │   ├── libc v0.2.191
+    │   │   └── windows-sys v0.61.2
+    │   │       └── windows-link v0.2.1
+    │   ├── libc v0.2.191
+    │   ├── linux-raw-sys v0.12.1
+    │   └── windows-sys v0.61.2 (*)
+    ├── sha2 v0.10.8
+    │   ├── cfg-if v1.0.5
+    │   ├── cpufeatures v0.2.17
+    │   │   └── libc v0.2.191
+    │   └── digest v0.10.7 (*)
+    └── writ-kernel v0.1.0 (/home/lucio.saldivar/workspaces/Writ/.claude/worktrees/agent-a11e9f080900be29e/kernel)
+        └── sha2 v0.10.8 (*)
+[dev-dependencies]
+├── rusqlite v0.41.1 (*)
+└── writ-broker v0.1.0 (/home/lucio.saldivar/workspaces/Writ/.claude/worktrees/agent-a11e9f080900be29e/broker) (*)

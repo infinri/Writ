@@ -1,0 +1,31 @@
+aes 0.9.4 -> 0.9.3: resolves
+bumpalo 3.20.4 -> 3.20.3: resolves
+cc 1.11.2 -> 1.10.0: resolves
+const-oid 0.10.3 -> 0.10.2: resolves
+crypto-bigint 0.7.11 -> 0.7.10: resolves
+ctutils 0.4.8 -> 0.4.7: does not resolve: error: failed to select a version for the requirement `ctutils = "^0.4.8"`
+inout 0.2.6 -> 0.2.5: resolves
+itoa 1.0.19 -> 1.0.18: resolves
+jiff 0.2.43 -> 0.2.38: resolves
+jiff-core 0.1.5 -> 0.1.1: does not resolve: error: failed to select a version for the requirement `jiff-core = "^0.1.5"`
+jiff-static 0.2.43 -> 0.2.38: does not resolve: error: failed to select a version for the requirement `jiff-static = "=0.2.43"`
+mio 1.2.5 -> 1.2.4: resolves
+pkcs1 0.8.0: no compatible version at least 14 days old
+syn 3.0.10 -> 3.0.9: resolves
+uuid 1.29.2 -> 1.29.0: resolves
+webauthn-attestation-ca 0.6.2: no compatible version at least 14 days old
+webauthn-authenticator-rs 0.6.2: no compatible version at least 14 days old
+webauthn-rs 0.6.2: no compatible version at least 14 days old
+webauthn-rs-core 0.6.2: no compatible version at least 14 days old
+webauthn-rs-proto 0.6.2: no compatible version at least 14 days old
+combined: applied aes@0.9.4 -> 0.9.3
+combined: applied bumpalo@3.20.4 -> 3.20.3
+combined: applied cc@1.11.2 -> 1.10.0
+combined: applied const-oid@0.10.3 -> 0.10.2
+combined: applied crypto-bigint@0.7.11 -> 0.7.10
+combined: applied inout@0.2.6 -> 0.2.5
+combined: applied itoa@1.0.19 -> 1.0.18
+combined: applied jiff@0.2.43 -> 0.2.38
+combined: applied mio@1.2.5 -> 1.2.4
+combined: applied syn@3.0.10 -> 3.0.9
+combined: applied uuid@1.29.2 -> 1.29.0

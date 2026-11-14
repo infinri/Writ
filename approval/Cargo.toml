@@ -1,0 +1,23 @@
+[package]
+name = "writ-approval"
+version = "0.1.0"
+description = "Writ V2 human approval channel: WebAuthn passkey verifier and loopback HTTP/1 listener (M4, D-041); candidate skeleton"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Candidate dependency set under review (D-041, docs/implementation/m4-deps/). Not yet on any
+# allow-list; the dependency gate is expected to fail until the lead integrates it.
+[dependencies]
+writ-broker = { path = "../broker" }
+webauthn-rs = { version = "=0.6.2", default-features = false, features = ["danger-allow-state-serialisation"] }
+hyper = { version = "1", default-features = false, features = ["server", "http1"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+tokio = { version = "1", default-features = false, features = ["rt", "net", "time"] }
+
+[dev-dependencies]
+webauthn-authenticator-rs = { version = "=0.6.2", default-features = false, features = ["softpasskey"] }
+
+[lints]
+workspace = true
