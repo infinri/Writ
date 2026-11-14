@@ -1025,6 +1025,24 @@ fn check_order(target: &str, r: &Race) -> Result<(), String> {
 }
 
 fn race(n: usize, target: &str) -> Race {
+    // Stagger the revocation (0 to 33 ms) so both commit orders occur; the rule is checked
+    // from the recorded order whichever commits first.
+    race_with(
+        n,
+        target,
+        std::time::Duration::ZERO,
+        std::time::Duration::from_micros(n as u64 * 3_000),
+    )
+}
+
+/// One race with the promotion started after `promotion_delay` and the revocation's finish
+/// after `revocation_delay` (both after a common barrier).
+fn race_with(
+    n: usize,
+    target: &str,
+    promotion_delay: std::time::Duration,
+    revocation_delay: std::time::Duration,
+) -> Race {
     let w = W::new(&format!("m412-{target}-{n}"), vec![]);
     signed(&w, "sara").unwrap();
     let (who, t) = revocation(&w, target);
@@ -1037,13 +1055,12 @@ fn race(n: usize, target: &str) -> Race {
     let (promotion, revocation) = thread::scope(|s| {
         let p = s.spawn(|| {
             barrier.wait();
+            thread::sleep(promotion_delay);
             w.promote(&accept("race-p", 1, "acc-1"))
         });
         let r = s.spawn(|| {
             barrier.wait();
-            // Stagger the revocation (0 to 33 ms) so both commit orders occur; the rule is
-            // checked from the recorded order whichever commits first.
-            thread::sleep(std::time::Duration::from_micros(n as u64 * 3_000));
+            thread::sleep(revocation_delay);
             w.finish(&human(who), &op, &c.challenge_id, "race-r")
         });
         (p.join().unwrap(), r.join().unwrap())
@@ -1077,18 +1094,39 @@ fn race(n: usize, target: &str) -> Race {
 
 #[test]
 fn concurrent_revocation_and_promotion_follow_the_recorded_ledger_order() {
+    // Every trial must satisfy the exact ordering rule. Twelve staggered trials per target,
+    // then further trials (bounded: at most MAX_TRIALS per target) until both commit orders
+    // have been observed: alternately the promotion or the revocation starts late, by a
+    // growing delay, so scheduling under a loaded parallel test run cannot leave one order
+    // unexercised. The per-trial rule is never relaxed.
+    const MAX_TRIALS: usize = 200;
     let mut seen = std::collections::BTreeSet::new();
     for target in ["signoff", "credential", "subject", "role"] {
-        for n in 0..12 {
-            let r = race(n, target);
+        let mut n = 0;
+        while n < 12 || !(seen.contains(&(target, true)) && seen.contains(&(target, false))) {
+            assert!(
+                n < MAX_TRIALS,
+                "{target}: both orders not observed in {n} trials"
+            );
+            let r = if n < 12 {
+                race(n, target)
+            } else {
+                let delay = std::time::Duration::from_millis(5 * (1 + (n as u64 - 12) / 2));
+                if n % 2 == 0 {
+                    race_with(n, target, delay, std::time::Duration::ZERO)
+                } else {
+                    race_with(n, target, std::time::Duration::ZERO, delay)
+                }
+            };
             if let Err(e) = check_order(target, &r) {
                 panic!("{target} trial {n}: {e}");
             }
             seen.insert((target, r.promotion.is_ok()));
+            n += 1;
         }
     }
-    // Both commit orders occurred for every target (the staggering makes the late
-    // revocation lose to the promotion; the rule above holds for whichever committed).
+    // Both commit orders occurred for every target (the rule above holds for whichever
+    // committed first).
     for target in ["signoff", "credential", "subject", "role"] {
         assert!(
             seen.contains(&(target, true)),
