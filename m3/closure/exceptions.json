@@ -169,60 +169,167 @@
     {
       "set": "broker-scenarios",
       "case": "b-21-denied-verdict",
-      "kind": "adapted",
-      "decision": "D-037 item 7",
-      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "kind": "difference",
+      "decision": "D-040 I-3 and clarification 7 (a denied request is terminal and mints no grant); D-042",
+      "reason": "D-042 closure adapter on the M4 lifecycle (approval request, test-verifier ceremony, ledger-assigned grant label translated to the fixture reference): the denial ceremony commits the terminal denial and no grant (M1 stored a denied grant that never matched); the agent's reference names no grant, so the execute refuses GRANT_UNKNOWN instead of GRANT_MISMATCH; the denied action is never executed and one refusal is audited as before",
       "adaptations": [
         "C2-approval-sealing",
         "C3-synthetic-human-authority",
         "adapter-sealed"
-      ]
+      ],
+      "steps": [
+        0,
+        1
+      ],
+      "final_members": [
+        "grant_uses"
+      ],
+      "actual": {
+        "final": {
+          "consumed_permits": 0,
+          "effects_applied": 0,
+          "grant_uses": {},
+          "receipts": {},
+          "refusals": 1
+        },
+        "steps": [
+          {
+            "result": "approval_denied"
+          },
+          {
+            "code": "GRANT_UNKNOWN",
+            "result": "refused"
+          }
+        ]
+      }
     },
     {
       "set": "broker-scenarios",
       "case": "b-22-forbid-not-approvable",
-      "kind": "adapted",
-      "decision": "D-037 item 7",
-      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "kind": "difference",
+      "decision": "D-040 I-3 and M4-03 (approval requests exist only for require_approval); D-037 item 5; D-042",
+      "reason": "D-042 closure adapter on the M4 lifecycle (approval request, test-verifier ceremony, ledger-assigned grant label translated to the fixture reference): a forbidden request has no stored approval request, so no human ceremony can name one and no production operation runs for the step (answer production_difference NO_APPROVAL_REQUEST, not audited); the hard deny still never becomes approvable and the execute still refuses SECRETS_PATH_FORBIDDEN",
       "adaptations": [
         "C2-approval-sealing",
-        "C3-synthetic-human-authority",
-        "adapter-sealed"
-      ]
+        "adapter-sealed",
+        "production-difference"
+      ],
+      "steps": [
+        0
+      ],
+      "final_members": [
+        "refusals"
+      ],
+      "actual": {
+        "final": {
+          "consumed_permits": 0,
+          "effects_applied": 0,
+          "grant_uses": {},
+          "receipts": {},
+          "refusals": 1
+        },
+        "steps": [
+          {
+            "reason": "NO_APPROVAL_REQUEST",
+            "result": "production_difference"
+          },
+          {
+            "code": "SECRETS_PATH_FORBIDDEN",
+            "result": "refused"
+          }
+        ]
+      }
     },
     {
       "set": "broker-scenarios",
       "case": "b-24-wrong-credential",
-      "kind": "adapted",
-      "decision": "D-037 item 7",
-      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "kind": "difference",
+      "decision": "D-040 O-1, O-6 and I-6 (verifier refusal is ASSERTION_INVALID); D-042",
+      "reason": "D-042 closure adapter on the M4 lifecycle (approval request, test-verifier ceremony, ledger-assigned grant label translated to the fixture reference): the test verifier refuses the wrong credential; the M4 internal code is ASSERTION_INVALID (was HUMAN_UNAUTHENTICATED); nothing is decided, no grant, one refusal audited as before",
       "adaptations": [
         "C2-approval-sealing",
         "adapter-sealed"
-      ]
+      ],
+      "steps": [
+        0
+      ],
+      "final_members": [],
+      "actual": {
+        "final": {
+          "consumed_permits": 0,
+          "effects_applied": 0,
+          "grant_uses": {},
+          "receipts": {},
+          "refusals": 1
+        },
+        "steps": [
+          {
+            "code": "ASSERTION_INVALID",
+            "result": "refused"
+          }
+        ]
+      }
     },
     {
       "set": "broker-scenarios",
       "case": "b-25-untrusted-channel",
-      "kind": "adapted",
-      "decision": "D-037 item 7",
-      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "kind": "difference",
+      "decision": "D-040 O-2, O-6 and I-6 (chat never authorizes; verifier refusal is ASSERTION_INVALID); D-042",
+      "reason": "D-042 closure adapter on the M4 lifecycle (approval request, test-verifier ceremony, ledger-assigned grant label translated to the fixture reference): a presentation from the untrusted chat channel is refused by the test verifier; the M4 internal code is ASSERTION_INVALID (was HUMAN_UNAUTHENTICATED); nothing is decided, no grant, one refusal audited as before",
       "adaptations": [
         "C2-approval-sealing",
         "adapter-sealed"
-      ]
+      ],
+      "steps": [
+        0
+      ],
+      "final_members": [],
+      "actual": {
+        "final": {
+          "consumed_permits": 0,
+          "effects_applied": 0,
+          "grant_uses": {},
+          "receipts": {},
+          "refusals": 1
+        },
+        "steps": [
+          {
+            "code": "ASSERTION_INVALID",
+            "result": "refused"
+          }
+        ]
+      }
     },
     {
       "set": "broker-scenarios",
       "case": "b-26-self-approval",
-      "kind": "adapted",
-      "decision": "D-037 item 7",
-      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "kind": "difference",
+      "decision": "D-040 O-6, O-7 and I-6 (separation is SEPARATION_VIOLATED); D-042",
+      "reason": "D-042 closure adapter on the M4 lifecycle (approval request, test-verifier ceremony, ledger-assigned grant label translated to the fixture reference): the fixture lists the requesting agent's id as a human; the authenticated test subject matches the requester and separation refuses with the M4 internal code SEPARATION_VIOLATED (was SELF_APPROVAL_FORBIDDEN); no grant, one refusal audited as before",
       "adaptations": [
         "C2-approval-sealing",
         "C3-synthetic-human-authority",
         "adapter-sealed"
-      ]
+      ],
+      "steps": [
+        0
+      ],
+      "final_members": [],
+      "actual": {
+        "final": {
+          "consumed_permits": 0,
+          "effects_applied": 0,
+          "grant_uses": {},
+          "receipts": {},
+          "refusals": 1
+        },
+        "steps": [
+          {
+            "code": "SEPARATION_VIOLATED",
+            "result": "refused"
+          }
+        ]
+      }
     },
     {
       "set": "broker-scenarios",
@@ -265,14 +372,50 @@
     {
       "set": "broker-scenarios",
       "case": "b-32-same-key-other-grant",
-      "kind": "adapted",
-      "decision": "D-037 item 7",
-      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "kind": "difference",
+      "decision": "D-040 I-3 and clarification 7 (exactly one grant per approved request; approved is terminal); M4-INTERFACES G3; D-042",
+      "reason": "D-042 closure adapter on the M4 lifecycle (approval request, test-verifier ceremony, ledger-assigned grant label translated to the fixture reference): the second approval names the same approval request, which is already approved, so it is refused APPROVAL_REQUEST_CLOSED and no second grant g2 exists; the scenario's assertion is unchanged: the same key presented with another grant reference is IDEMPOTENCY_CONFLICT and the effect applies once",
       "adaptations": [
         "C2-approval-sealing",
         "C3-synthetic-human-authority",
         "adapter-sealed"
-      ]
+      ],
+      "steps": [
+        1
+      ],
+      "final_members": [
+        "grant_uses",
+        "refusals"
+      ],
+      "actual": {
+        "final": {
+          "consumed_permits": 1,
+          "effects_applied": 1,
+          "grant_uses": {
+            "g1": 1
+          },
+          "receipts": {
+            "observed_success": 1
+          },
+          "refusals": 2
+        },
+        "steps": [
+          {
+            "result": "grant_issued"
+          },
+          {
+            "code": "APPROVAL_REQUEST_CLOSED",
+            "result": "refused"
+          },
+          {
+            "result": "effect_completed"
+          },
+          {
+            "code": "IDEMPOTENCY_CONFLICT",
+            "result": "refused"
+          }
+        ]
+      }
     },
     {
       "set": "broker-scenarios",
@@ -407,14 +550,47 @@
     {
       "set": "protocol-broker",
       "case": "p-10-broker-grant-ref-reuse",
-      "kind": "adapted",
-      "decision": "D-037 item 7",
-      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "kind": "difference",
+      "decision": "D-040 I-3 and clarification 7 (approved is terminal; exactly one grant per approved request); D-042",
+      "reason": "D-042 closure adapter on the M4 lifecycle (approval request, test-verifier ceremony, ledger-assigned grant label translated to the fixture reference): a repeated approval of the approved request is refused APPROVAL_REQUEST_CLOSED (was GRANT_REF_IN_USE); the grant is never reset or replenished, so the next use is GRANT_EXHAUSTED as before",
       "adaptations": [
         "C2-approval-sealing",
         "C3-synthetic-human-authority",
         "adapter-sealed"
-      ]
+      ],
+      "steps": [
+        2
+      ],
+      "final_members": [],
+      "actual": {
+        "final": {
+          "consumed_permits": 1,
+          "effects_applied": 1,
+          "grant_uses": {
+            "g1": 1
+          },
+          "receipts": {
+            "observed_success": 1
+          },
+          "refusals": 2
+        },
+        "steps": [
+          {
+            "result": "grant_issued"
+          },
+          {
+            "result": "effect_completed"
+          },
+          {
+            "code": "APPROVAL_REQUEST_CLOSED",
+            "result": "refused"
+          },
+          {
+            "code": "GRANT_EXHAUSTED",
+            "result": "refused"
+          }
+        ]
+      }
     },
     {
       "set": "protocol-broker",

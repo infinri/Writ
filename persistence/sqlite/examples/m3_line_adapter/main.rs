@@ -16,8 +16,10 @@
 //!
 //! **Harness compositions (D-037 item 7):** C1 ingress refusal audited through
 //! `LedgerStore::record_refusal`; C2 approval requests sealed with the fixture ingress
-//! key; C3 a synthetic approval authority whose human claim tests the self-approval
-//! defense only; C4 partial transaction unavailability (lifecycle transactions fail at
+//! key, recorded as M4 approval requests, and the ledger-assigned grant label translated to
+//! the fixture reference; C3 the non-shipping test verifier of the M4 approval ceremony
+//! (D-042; never human authentication; test subjects enrolled through the production
+//! enrollment ceremony); C4 partial transaction unavailability (lifecycle transactions fail at
 //! begin, audit and time floor stay available), never a total ledger outage; C5
 //! deterministic transaction fault injection plus close and reopen (not SIGKILL); C6
 //! effect failure through the controlled effect store; C7 and C8 line-protocol answers.
