@@ -136,6 +136,8 @@ CREATE TABLE challenges (
   issued_at           TEXT NOT NULL,
   expires_at          TEXT NOT NULL,
   idempotency_key     TEXT NOT NULL,
+  rp_id               TEXT NOT NULL CHECK (rp_id <> ''),  -- configured channel at issue (M1)
+  origin              TEXT NOT NULL CHECK (origin <> ''),
   status              TEXT NOT NULL CHECK (status IN ('issued', 'consumed', 'expired',
                         'refused')),
   refusal_code        TEXT,

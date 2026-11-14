@@ -10,8 +10,11 @@
 //!   connections, headers, bodies and time, and read-only page sessions of at most 15
 //!   minutes that never authorize a state change.
 //! - [`backend`]: the broker operations the page uses ([`backend::Backend`]), with
-//!   [`backend::LedgerBackend`] over any `ApprovalLedger`; production wiring is
-//!   `LedgerBackend::new(ledger, clock, Arc::new(PasskeyVerifier::for_listener(&listener)?))`.
+//!   [`backend::LedgerBackend`] over any `ApprovalLedger`; production wiring opens the
+//!   ledger with its approval channel configured once (M1), for example
+//!   `SqliteLedger::open(path)?.with_approval_channel(ApprovalChannel::new(v.clone(), v,
+//!   channel)?)` with `v = Arc::new(PasskeyVerifier::for_listener(&listener)?)`, then
+//!   `LedgerBackend::new(Arc::new(ledger), clock)`.
 //! - [`page`]: escaped rendering of the broker's stored, fingerprint-covered context (R6).
 
 pub mod backend;

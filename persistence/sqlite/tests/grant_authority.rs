@@ -2,23 +2,32 @@
 //! and S2 of the approval-ledger security review, docs/implementation/M4-INTERFACES.md).
 //!
 //! Every public constructor reachable from another crate is used here as an attacker would:
-//! the capability constructors (allowed in test code only, `broker/tests/
-//! trusted_constructors.rs`), a stored challenge rebuilt with the ledger capability, a
-//! verifier answer built with the verifier capability, a decision from the broker's own
-//! `decide`, and the grant `NewGrant::for_decision` builds from it. The ledger refuses that
-//! grant, and the label never becomes executable. The M3 approval path refuses too. Rows
-//! shaped like an M4 grant, written behind the ledger's back (provenance v2, and even an
-//! `approval_grants` row naming a pending request and an unconsumed challenge), are never
-//! executable. A grant from the real ceremony is.
+//! the ledger capability constructor (allowed in test code only, `broker/tests/
+//! trusted_constructors.rs`), a stored challenge rebuilt with it, a verifier answer minted by
+//! a stub verifier through an approval channel the attacker builds (the verifier capability
+//! has no public constructor, M1), a decision from the broker's own `decide`, and the grant
+//! `NewGrant::for_decision` builds from it. The ledger refuses that grant, and the label
+//! never becomes executable. The M3 approval path refuses too. Rows shaped like an M4 grant,
+//! written behind the ledger's back (provenance v2, and even an `approval_grants` row naming
+//! a pending request and an unconsumed challenge), are never executable. A grant from the
+//! real ceremony is.
+//!
+//! M1 (configured approval channel): ceremony and registration calls take no verifier; a
+//! ledger without a configured channel refuses every ceremony and registration; a
+//! configured channel cannot be replaced; and a stub verifier configured on a later open
+//! of the ledger (another relying party) cannot finish a challenge issued under the real
+//! channel (the challenge is burnt, nothing is minted).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use writ_broker::approval::{
     decide, ApprovalStatus, Challenge, ChallengeOperation, ChallengeStatus, StoredChallenge,
 };
+use writ_broker::approval::{ApprovalCode, ChallengeRefusal};
 use writ_broker::approval_store::{
     approval_binding, approval_request_for, ApprovalLedger, BootstrapEnrollment, CeremonyBegin,
     CeremonyFinish, CeremonyOp, CeremonyResult, NewEnrollment, NewRole, RegistrationBegin,
@@ -32,11 +41,11 @@ use writ_broker::grants::{
     GrantInsert, NewGrant, Verdict,
 };
 use writ_broker::human::{
-    ActiveCredentials, Actor, CeremonyStart, CeremonyState, EnrollmentRecord, HumanVerifier,
-    LedgerCapability, Permission, PrincipalKind, RegistrationBinding, RegistrationStart,
-    RegistrationVerifier, RelyingParty, RoleAssignment, SubjectId, SubjectRecord, SubjectStatus,
-    VerifiedAssertion, VerifiedRegistration, VerifierCapability, VerifierError, ES256,
-    WEBAUTHN_PASSKEY,
+    ActiveCredentials, Actor, ApprovalChannel, CeremonyStart, CeremonyState, CredentialStatus,
+    EnrollmentRecord, HumanVerifier, LedgerCapability, Permission, PrincipalKind,
+    RegistrationBinding, RegistrationStart, RegistrationVerifier, RelyingParty, RoleAssignment,
+    StoredCredential, SubjectId, SubjectRecord, SubjectStatus, VerifiedAssertion,
+    VerifiedRegistration, VerifierCapability, VerifierError, ES256, WEBAUTHN_PASSKEY,
 };
 use writ_broker::ingress::{verify_ingress, Seal, VerifiedRequest};
 use writ_broker::keys::{IngressKey, MemoryKeyRing, PermitKey};
@@ -140,6 +149,7 @@ impl HumanVerifier for TestVerifier {
 
     fn finish(
         &self,
+        cap: &VerifierCapability,
         state: &CeremonyState,
         response: &[u8],
         credentials: &ActiveCredentials,
@@ -152,7 +162,7 @@ impl HumanVerifier for TestVerifier {
             return Err(VerifierError::CredentialUnknown);
         }
         Ok(VerifiedAssertion::new(
-            &VerifierCapability::for_verifier_implementation(),
+            cap,
             credentials.subject().clone(),
             credential,
             true,
@@ -161,6 +171,99 @@ impl HumanVerifier for TestVerifier {
             None,
         ))
     }
+}
+
+/// The test verifier as the ledger's configured approval channel (M1).
+fn test_channel() -> ApprovalChannel {
+    let v = Arc::new(TestVerifier);
+    ApprovalChannel::new(v.clone(), v, "approval-listener").unwrap()
+}
+
+/// An attacker's stub verifier: it accepts any response for any subject and claims any
+/// relying party it is built with.
+struct Stub {
+    origin: &'static str,
+}
+
+impl HumanVerifier for Stub {
+    fn begin(
+        &self,
+        _subject: &SubjectId,
+        _credentials: &ActiveCredentials,
+    ) -> Result<CeremonyStart, VerifierError> {
+        let state = format!("stub-{}", NONCE.fetch_add(1, Ordering::SeqCst)).into_bytes();
+        Ok(CeremonyStart {
+            client_options: Vec::new(),
+            challenge_digest: Digest::of_bytes(&state),
+            state: CeremonyState::from_bytes(state),
+        })
+    }
+
+    fn finish(
+        &self,
+        cap: &VerifierCapability,
+        state: &CeremonyState,
+        _response: &[u8],
+        credentials: &ActiveCredentials,
+    ) -> Result<VerifiedAssertion, VerifierError> {
+        let credential = credentials
+            .ids()
+            .first()
+            .cloned()
+            .ok_or(VerifierError::CredentialUnknown)?;
+        Ok(VerifiedAssertion::new(
+            cap,
+            credentials.subject().clone(),
+            &credential,
+            true,
+            WEBAUTHN_PASSKEY,
+            Digest::of_bytes(state.as_bytes()),
+            None,
+        ))
+    }
+}
+
+impl RegistrationVerifier for Stub {
+    fn relying_party(&self) -> RelyingParty {
+        RelyingParty {
+            rp_id: "localhost".into(),
+            origin: self.origin.into(),
+        }
+    }
+
+    fn begin_registration(&self, _subject: &SubjectId) -> Result<RegistrationStart, VerifierError> {
+        let state = format!("stub-reg-{}", NONCE.fetch_add(1, Ordering::SeqCst)).into_bytes();
+        Ok(RegistrationStart {
+            client_options: Vec::new(),
+            state: CeremonyState::from_bytes(state),
+        })
+    }
+
+    fn finish_registration(
+        &self,
+        cap: &VerifierCapability,
+        binding: &RegistrationBinding,
+        _state: &CeremonyState,
+        response: &[u8],
+    ) -> Result<VerifiedRegistration, VerifierError> {
+        let credential = std::str::from_utf8(response).map_err(|_| VerifierError::Malformed)?;
+        Ok(VerifiedRegistration::new(
+            cap,
+            binding,
+            credential,
+            b"stub".to_vec(),
+            ES256,
+            true,
+        ))
+    }
+}
+
+/// The stub as an approval channel for another origin than the real one.
+fn stub_channel() -> ApprovalChannel {
+    let v = Arc::new(Stub {
+        origin: "http://localhost:9999",
+    });
+    ApprovalChannel::new(v.clone(), v, "stub-listener").unwrap()
 }
 
 fn subject(name: &str) -> SubjectId {
@@ -179,7 +282,6 @@ fn ceremony(
             op,
             subject: who,
             idempotency_key: key,
-            verifier: &TestVerifier,
             now,
         })
         .unwrap()?;
@@ -190,8 +292,6 @@ fn ceremony(
             challenge_id: &c.challenge_id,
             response: response.as_bytes(),
             idempotency_key: key,
-            channel: "approval-listener",
-            verifier: &TestVerifier,
             now,
         })
         .unwrap()
@@ -218,13 +318,14 @@ impl RegistrationVerifier for TestVerifier {
 
     fn finish_registration(
         &self,
+        cap: &VerifierCapability,
         binding: &RegistrationBinding,
         _state: &CeremonyState,
         response: &[u8],
     ) -> Result<VerifiedRegistration, VerifierError> {
         let credential = std::str::from_utf8(response).map_err(|_| VerifierError::Malformed)?;
         Ok(VerifiedRegistration::new(
-            &VerifierCapability::for_verifier_implementation(),
+            cap,
             binding,
             credential,
             format!("pk-{credential}").into_bytes(),
@@ -243,7 +344,6 @@ fn register(
     let issued = ledger
         .begin_registration(&RegistrationBegin {
             subject: who,
-            verifier: &TestVerifier,
             now: now(),
         })
         .unwrap()
@@ -252,10 +352,17 @@ fn register(
         .finish_registration(&RegistrationFinish {
             registration_id: &issued.registration_id,
             response: format!("cred-{}", who.subject).as_bytes(),
-            verifier: &TestVerifier,
             now: now(),
         })
         .unwrap()
+        .unwrap()
+}
+
+/// The ledger at `db` opened for approval service with the real (test) channel.
+fn serve(db: &std::path::Path) -> SqliteLedger {
+    SqliteLedger::open(db)
+        .unwrap()
+        .with_approval_channel(test_channel())
         .unwrap()
 }
 
@@ -266,6 +373,7 @@ fn ledger_with_alice(db: &std::path::Path) -> SqliteLedger {
     let Ok(Ok(session)) = BootstrapSession::open(db) else {
         panic!("bootstrap session");
     };
+    let session = session.with_approval_channel(test_channel()).unwrap();
     let root = subject("root");
     let reg = register(&session, &|| session.observe(&TestClock).unwrap(), &root);
     let at = session.observe(&TestClock).unwrap();
@@ -280,7 +388,7 @@ fn ledger_with_alice(db: &std::path::Path) -> SqliteLedger {
         )
         .unwrap()
         .unwrap();
-    let ledger = SqliteLedger::open(db).unwrap();
+    let ledger = serve(db);
     enroll_alice(&ledger);
     ledger
 }
@@ -347,17 +455,6 @@ fn forged_grant(request: &writ_broker::approval::ApprovalRequest) -> NewGrant {
         },
     )
     .unwrap();
-    let accepted = VerifiedAssertion::new(
-        &VerifierCapability::for_verifier_implementation(),
-        alice.clone(),
-        "cred-alice",
-        true,
-        WEBAUTHN_PASSKEY,
-        digest,
-        None,
-    )
-    .check(&challenge, &binding, "forged-key", now())
-    .unwrap();
     let record = SubjectRecord {
         subject: alice.clone(),
         kind: PrincipalKind::Human,
@@ -367,7 +464,7 @@ fn forged_grant(request: &writ_broker::approval::ApprovalRequest) -> NewGrant {
         EnrollmentRecord::new(&lcap, alice.clone(), vec![], now(), subject("root")).unwrap();
     let assignments = [RoleAssignment {
         assignment_id: "role-forged".into(),
-        subject: alice,
+        subject: alice.clone(),
         kind: PrincipalKind::Human,
         permission: Permission::Approver,
         tenant_id: T.into(),
@@ -375,6 +472,36 @@ fn forged_grant(request: &writ_broker::approval::ApprovalRequest) -> NewGrant {
         granted_at: now(),
         revoked_at: None,
     }];
+    // M1: the verifier capability has no public constructor; an attacker mints the answer
+    // with a stub verifier behind an approval channel it builds itself.
+    let creds = ActiveCredentials::select(
+        &record,
+        [StoredCredential {
+            credential_id: "cred-alice".into(),
+            subject: alice,
+            public_material: b"pk-cred-alice".to_vec(),
+            status: CredentialStatus::Active,
+            enrolled_at: now(),
+            enrolled_by: subject("root"),
+        }],
+        &assignments,
+        Permission::Approver,
+        T,
+        P,
+        now(),
+    )
+    .unwrap();
+    let minted = stub_channel()
+        .finish(
+            &CeremonyState::from_bytes(b"forged ceremony".to_vec()),
+            b"anything",
+            &creds,
+        )
+        .unwrap();
+    assert_eq!(minted.challenge_digest(), &digest);
+    let accepted = minted
+        .check(&challenge, &binding, "forged-key", now())
+        .unwrap();
     let actor = Actor {
         record: &record,
         enrollment: Some(&enrollment),
@@ -514,7 +641,6 @@ fn provenance_shaped_rows_written_behind_the_ledger_are_never_executable() {
             },
             subject: &subject("alice"),
             idempotency_key: "a2",
-            verifier: &TestVerifier,
             now: observed(&ledger),
         })
         .unwrap()
@@ -564,7 +690,7 @@ fn provenance_shaped_rows_written_behind_the_ledger_are_never_executable() {
         )
         .unwrap();
     }
-    let ledger = SqliteLedger::open(&db).unwrap();
+    let ledger = serve(&db);
     assert_eq!(ledger.ledger_id(), &id);
     let effects = SqliteEffectStore::open(&d.join("effects.db"), ledger.ledger_id()).unwrap();
     let b = Broker::new(&active, &TestClock, &ledger, &effects, &key);
@@ -586,6 +712,271 @@ fn provenance_shaped_rows_written_behind_the_ledger_are_never_executable() {
     assert_eq!(count(&db, "SELECT count(*) FROM receipts"), 0);
     drop(b);
     drop(effects);
+    drop(ledger);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+fn challenge_status(path: &std::path::Path, id: &str) -> String {
+    rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .unwrap()
+        .query_row(
+            "SELECT status FROM challenges WHERE challenge_id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+fn unavailable_verifier() -> Refusal {
+    Refusal::Approval(ApprovalCode::AssertionInvalid(VerifierError::Unavailable))
+}
+
+/// M1: a ledger opened without a configured approval channel refuses every ceremony and
+/// registration (fail closed, nothing written, no challenge burnt), and so does a bootstrap
+/// session without one.
+#[test]
+fn a_ledger_without_a_configured_channel_refuses_every_ceremony() {
+    let d = tmp("no-channel");
+    let db = d.join("ledger.db");
+    let ledger = ledger_with_alice(&db);
+    let active = policy();
+    let request = request_of(&ledger, &active, &publish("k1", 1));
+    let op = CeremonyOp::Approve {
+        request_id: request.request_id().into(),
+    };
+    // A challenge issued while the channel was configured.
+    let issued = ledger
+        .begin_ceremony(&CeremonyBegin {
+            op: &op,
+            subject: &subject("alice"),
+            idempotency_key: "a1",
+            now: observed(&ledger),
+        })
+        .unwrap()
+        .unwrap();
+    drop(ledger);
+    // Reopened without a channel (the public `open` alone).
+    let bare = SqliteLedger::open(&db).unwrap();
+    let now = observed(&bare);
+    let begin = bare.begin_ceremony(&CeremonyBegin {
+        op: &op,
+        subject: &subject("alice"),
+        idempotency_key: "a2",
+        now,
+    });
+    assert_eq!(begin.unwrap(), Err(unavailable_verifier()));
+    let finish = bare.finish_ceremony(&CeremonyFinish {
+        op: &op,
+        challenge_id: &issued.challenge_id,
+        response: b"ok:cred-alice",
+        idempotency_key: "a1",
+        now,
+    });
+    assert_eq!(finish.unwrap(), Err(unavailable_verifier()));
+    for op in [
+        CeremonyOp::Deny {
+            request_id: request.request_id().into(),
+        },
+        CeremonyOp::Enroll {
+            enrollment: NewEnrollment {
+                subject: subject("bob"),
+                kind: PrincipalKind::Service,
+                credential: None,
+                linked_identities: vec![],
+                roles: vec![],
+            },
+        },
+    ] {
+        let begin = bare.begin_ceremony(&CeremonyBegin {
+            op: &op,
+            subject: &subject("root"),
+            idempotency_key: "a3",
+            now,
+        });
+        assert_eq!(begin.unwrap(), Err(unavailable_verifier()));
+    }
+    let reg = bare.begin_registration(&RegistrationBegin {
+        subject: &subject("bob"),
+        now,
+    });
+    assert_eq!(reg.unwrap(), Err(unavailable_verifier()));
+    let reg = bare.finish_registration(&RegistrationFinish {
+        registration_id: "reg-any",
+        response: b"cred-bob",
+        now,
+    });
+    assert_eq!(reg.unwrap(), Err(unavailable_verifier()));
+    drop(bare);
+    // Nothing was written and the issued challenge was not burnt.
+    assert_eq!(challenge_status(&db, &issued.challenge_id), "issued");
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM challenges WHERE operation = 'approve'"
+        ),
+        1
+    );
+    assert_eq!(count(&db, "SELECT count(*) FROM grants"), 0);
+    // With the real channel configured again, the challenge still decides.
+    let ledger = serve(&db);
+    let out = ledger
+        .finish_ceremony(&CeremonyFinish {
+            op: &op,
+            challenge_id: &issued.challenge_id,
+            response: b"ok:cred-alice",
+            idempotency_key: "a1",
+            now: observed(&ledger),
+        })
+        .unwrap()
+        .unwrap();
+    assert!(matches!(out.result, CeremonyResult::Approved { .. }));
+    drop(ledger);
+    // A bootstrap session without a channel cannot register.
+    let fresh = d.join("fresh.db");
+    drop(SqliteLedger::create(&fresh).unwrap());
+    let Ok(Ok(session)) = BootstrapSession::open(&fresh) else {
+        panic!("bootstrap session");
+    };
+    let reg = session.begin_registration(&RegistrationBegin {
+        subject: &subject("root"),
+        now: session.observe(&TestClock).unwrap(),
+    });
+    assert_eq!(reg.unwrap(), Err(unavailable_verifier()));
+    drop(session);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// M1: a stub verifier passed through the public API from this external crate cannot be
+/// used once a channel is configured. Ceremony and registration calls take no verifier (the
+/// argument no longer exists); the configured channel cannot be replaced on the serving
+/// ledger; and a stub configured on a later open (another relying party) cannot finish a
+/// challenge or registration row issued under the real channel: the challenge is refused
+/// `CHALLENGE_INVALID` and burnt before the stub sees its state, and nothing is minted.
+#[test]
+fn a_stub_verifier_cannot_be_used_once_a_channel_is_configured() {
+    let d = tmp("stub");
+    let db = d.join("ledger.db");
+    let ledger = ledger_with_alice(&db);
+    let active = policy();
+    let request = request_of(&ledger, &active, &publish("k1", 1));
+    let op = CeremonyOp::Approve {
+        request_id: request.request_id().into(),
+    };
+    // The serving ledger's channel is fixed: a second configuration is refused (and the
+    // owned ledger is released, fail closed).
+    assert!(ledger.with_approval_channel(stub_channel()).is_err());
+    let ledger = serve(&db);
+    // The real channel refuses what the stub would accept.
+    let c = ledger
+        .begin_ceremony(&CeremonyBegin {
+            op: &op,
+            subject: &subject("alice"),
+            idempotency_key: "s1",
+            now: observed(&ledger),
+        })
+        .unwrap()
+        .unwrap();
+    let forged = ledger
+        .finish_ceremony(&CeremonyFinish {
+            op: &op,
+            challenge_id: &c.challenge_id,
+            response: b"anything",
+            idempotency_key: "s1",
+            now: observed(&ledger),
+        })
+        .unwrap();
+    assert!(
+        matches!(
+            forged,
+            Err(Refusal::Approval(ApprovalCode::AssertionInvalid(_)))
+        ),
+        "{forged:?}"
+    );
+    // A fresh challenge and a registration row under the real channel.
+    let c = ledger
+        .begin_ceremony(&CeremonyBegin {
+            op: &op,
+            subject: &subject("alice"),
+            idempotency_key: "s2",
+            now: observed(&ledger),
+        })
+        .unwrap()
+        .unwrap();
+    let row = ledger
+        .begin_registration(&RegistrationBegin {
+            subject: &subject("mallory"),
+            now: observed(&ledger),
+        })
+        .unwrap()
+        .unwrap();
+    drop(ledger);
+    // The stub configured on a later open, for another relying party.
+    let stubbed = SqliteLedger::open(&db)
+        .unwrap()
+        .with_approval_channel(stub_channel())
+        .unwrap();
+    let out = stubbed
+        .finish_ceremony(&CeremonyFinish {
+            op: &op,
+            challenge_id: &c.challenge_id,
+            response: b"anything",
+            idempotency_key: "s2",
+            now: observed(&stubbed),
+        })
+        .unwrap();
+    assert_eq!(
+        out,
+        Err(Refusal::Approval(ApprovalCode::ChallengeInvalid(
+            ChallengeRefusal::ChannelMismatch
+        )))
+    );
+    let reg = stubbed
+        .finish_registration(&RegistrationFinish {
+            registration_id: &row.registration_id,
+            response: b"cred-mallory",
+            now: observed(&stubbed),
+        })
+        .unwrap();
+    assert_eq!(
+        reg,
+        Err(Refusal::Approval(ApprovalCode::EnrollmentUnsupported))
+    );
+    drop(stubbed);
+    // Both are burnt; nothing was minted or enrolled.
+    assert_eq!(challenge_status(&db, &c.challenge_id), "refused");
+    assert_eq!(count(&db, "SELECT count(*) FROM grants"), 0);
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM approval_requests WHERE status = 'pending'"
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM registrations WHERE status = 'refused' AND credential_id IS NULL"
+        ),
+        1
+    );
+    // Back under the real channel, the burnt challenge stays unusable.
+    let ledger = serve(&db);
+    let again = ledger
+        .finish_ceremony(&CeremonyFinish {
+            op: &op,
+            challenge_id: &c.challenge_id,
+            response: b"ok:cred-alice",
+            idempotency_key: "s2",
+            now: observed(&ledger),
+        })
+        .unwrap();
+    assert_eq!(
+        again,
+        Err(Refusal::Approval(ApprovalCode::ChallengeInvalid(
+            ChallengeRefusal::Consumed
+        )))
+    );
+    assert_eq!(count(&db, "SELECT count(*) FROM grants"), 0);
     drop(ledger);
     let _ = std::fs::remove_dir_all(&d);
 }

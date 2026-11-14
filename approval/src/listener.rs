@@ -21,10 +21,22 @@
 //!   idempotency key between the two, so the client never chooses them.
 //! - **Stale display:** a ceremony starts only if the fingerprint the page displayed is
 //!   the stored request's current fingerprint (and the ledger binds the challenge to it).
-//! - **Channel identity** is [`ListenerConfig::channel`], never a request field.
+//! - **Channel identity**, verifier and relying party are the ledger's configured
+//!   approval channel (`writ_broker::human::ApprovalChannel`, M1), never a request field.
+//! - **Outstanding ceremonies** (L2): at most `max_pending` per session and
+//!   `max_outstanding` issued, unexpired challenges across all sessions (each counted for
+//!   at most the 120 s challenge lifetime); further begins are refused. When
+//!   `max_sessions` is reached, only a session without a pending ceremony is evicted;
+//!   if every session has one, the new session is refused (fail closed).
 //! - **Responses** carry a strict Content-Security-Policy (no inline script or style),
-//!   `nosniff`, `frame-ancestors 'none'`, `no-referrer` and `no-store`; refusals return
-//!   the internal refusal code to the authenticated human interface only (O-6).
+//!   `nosniff`, `frame-ancestors 'none'`, `no-referrer` and `no-store`. A refused `begin`
+//!   answers one generic `refused` (L1: the page session is not an authentication, so it
+//!   never learns whether the subject is unknown, a service, revoked, without permission
+//!   or without a credential; the specific code stays in the ledger's refusal audit).
+//!   After a begin, the page receives the verifier's options including the subject's
+//!   allowed credential ids (WebAuthn `allowCredentials`; documented exposure). A refused
+//!   `finish` returns the internal refusal code (O-6); a verifier that reports itself
+//!   unavailable answers `unavailable` and keeps the pending ceremony (L6).
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -42,8 +54,10 @@ use hyper::header::{HeaderMap, HeaderValue};
 use hyper::server::conn::http1;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
+use writ_broker::approval::ApprovalCode;
 use writ_broker::approval_store::{CeremonyOp, CeremonyResult};
-use writ_broker::human::SubjectId;
+use writ_broker::human::{SubjectId, VerifierError};
+use writ_broker::refusal::Refusal;
 use writ_broker::writ_kernel::json;
 
 use crate::backend::{Backend, Unavailable};
@@ -74,10 +88,13 @@ pub struct Limits {
     pub connection_timeout: Duration,
     /// Page session lifetime (clamped to [`MAX_SESSION_SECONDS`]).
     pub session_ttl: Duration,
-    /// Live page sessions at once (the oldest expire first).
+    /// Live page sessions at once (the oldest without a pending ceremony is evicted
+    /// first; a new session is refused when every session has one).
     pub max_sessions: usize,
     /// Ceremonies pending per session.
     pub max_pending: usize,
+    /// Issued, unexpired challenges begun through this listener, across all sessions.
+    pub max_outstanding: usize,
 }
 
 impl Default for Limits {
@@ -92,17 +109,21 @@ impl Default for Limits {
             session_ttl: Duration::from_secs(MAX_SESSION_SECONDS),
             max_sessions: 64,
             max_pending: 4,
+            max_outstanding: 32,
         }
     }
 }
 
-/// The listener's trusted configuration (O-2: the channel identity comes from here).
+/// The lifetime for which a begun challenge is counted as outstanding (the ledger's
+/// challenge lifetime is at most this, I-2).
+const OUTSTANDING_SECONDS: u64 = 120;
+
+/// The listener's trusted configuration. The channel identity recorded on decisions is the
+/// ledger's configured approval channel (O-2, M1).
 #[derive(Clone, Debug)]
 pub struct ListenerConfig {
     /// Port on `127.0.0.1` (0 picks a free one; the origin uses the bound port).
     pub port: u16,
-    /// Channel identity recorded on every decision.
-    pub channel: String,
     /// Issuer (human realm) of the subjects who sign in on this page.
     pub subject_issuer: String,
     /// Bounds.
@@ -118,6 +139,8 @@ pub struct ApprovalListener {
 struct Pending {
     op: CeremonyOp,
     idempotency_key: String,
+    /// Counted as outstanding until then (L2).
+    expires: Instant,
 }
 
 struct Session {
@@ -460,6 +483,20 @@ fn sessions(state: &State) -> std::sync::MutexGuard<'_, HashMap<String, Session>
         .unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Drop expired sessions and, in the others, pending ceremonies past their challenge
+/// lifetime.
+fn prune(sessions: &mut HashMap<String, Session>, now: Instant) {
+    sessions.retain(|_, s| s.expires > now);
+    for s in sessions.values_mut() {
+        s.pending.retain(|_, p| p.expires > now);
+    }
+}
+
+/// Issued, unexpired challenges begun through this listener (after [`prune`]).
+fn outstanding(sessions: &HashMap<String, Session>) -> usize {
+    sessions.values().map(|s| s.pending.len()).sum()
+}
+
 /// GET `/request/<id>`: the stored, fingerprint-covered context and a new page session.
 fn view(state: &State, raw_id: &str) -> Response<Full> {
     let Some(id) = page::path_segment(raw_id) else {
@@ -483,14 +520,17 @@ fn view(state: &State, raw_id: &str) -> Response<Full> {
     {
         let mut sessions = sessions(state);
         let now = Instant::now();
-        sessions.retain(|_, s| s.expires > now);
+        prune(&mut sessions, now);
+        // L2: evict the oldest session without a pending ceremony; when every session has
+        // one, refuse the new session instead (fail closed).
         while sessions.len() >= limits.max_sessions {
             let Some(oldest) = sessions
                 .iter()
+                .filter(|(_, s)| s.pending.is_empty())
                 .min_by_key(|(_, s)| s.expires)
                 .map(|(k, _)| k.clone())
             else {
-                break;
+                return refused(StatusCode::SERVICE_UNAVAILABLE, "sessions");
             };
             sessions.remove(&oldest);
         }
@@ -545,13 +585,21 @@ fn checked<'a>(
 }
 
 /// POST `/ceremony/begin`: a challenge for approving or denying the session's request.
+///
+/// A slot is reserved (per session and across all sessions, L2) under the session lock
+/// before the ledger is asked, so concurrent begins never exceed the bounds; the
+/// reservation becomes the pending ceremony or is released.
 fn begin<'a>(
     state: &State,
     token: &str,
     field: &dyn Fn(&str) -> Option<&'a str>,
 ) -> Response<Full> {
-    let (request_id, op, idempotency_key) = {
+    let limits = &state.config.limits;
+    let (request_id, op, idempotency_key, reservation) = {
         let mut sessions = sessions(state);
+        let now = Instant::now();
+        prune(&mut sessions, now);
+        let total = outstanding(&sessions);
         let Some(session) = checked(&mut sessions, token, field("csrf")) else {
             return refused(StatusCode::FORBIDDEN, "session");
         };
@@ -561,7 +609,7 @@ fn begin<'a>(
         if field("fingerprint") != Some(session.fingerprint.as_str()) {
             return refused(StatusCode::CONFLICT, "stale display");
         }
-        if session.pending.len() >= state.config.limits.max_pending {
+        if session.pending.len() >= limits.max_pending || total >= limits.max_outstanding {
             return refused(StatusCode::TOO_MANY_REQUESTS, "pending");
         }
         let request_id = session.request_id.clone();
@@ -574,42 +622,56 @@ fn begin<'a>(
             },
             _ => return refused(StatusCode::BAD_REQUEST, "verdict"),
         };
-        let Some(key) = random_token() else {
+        let (Some(key), Some(slot)) = (random_token(), random_token()) else {
             return unavailable();
         };
-        (request_id, op, format!("page-{key}"))
+        let idempotency_key = format!("page-{key}");
+        let reservation = format!("reservation:{slot}");
+        session.pending.insert(
+            reservation.clone(),
+            Pending {
+                op: op.clone(),
+                idempotency_key: idempotency_key.clone(),
+                expires: now + Duration::from_secs(OUTSTANDING_SECONDS),
+            },
+        );
+        (request_id, op, idempotency_key, reservation)
+    };
+    let release = |response: Response<Full>| {
+        if let Some(session) = sessions(state).get_mut(token) {
+            session.pending.remove(&reservation);
+        }
+        response
     };
     // The displayed context must still be the stored one (stale display).
     match state.backend.request(&request_id) {
         Ok(Some((request, _))) => {
             if field("fingerprint") != Some(request.fingerprint().as_str()) {
-                return refused(StatusCode::CONFLICT, "stale display");
+                return release(refused(StatusCode::CONFLICT, "stale display"));
             }
         }
-        Ok(None) => return refused(StatusCode::NOT_FOUND, "APPROVAL_REQUEST_UNKNOWN"),
-        Err(Unavailable) => return unavailable(),
+        Ok(None) => return release(refused(StatusCode::NOT_FOUND, "APPROVAL_REQUEST_UNKNOWN")),
+        Err(Unavailable) => return release(unavailable()),
     }
     let subject = match field("subject") {
         Some(s) if !s.is_empty() => SubjectId::new(&state.config.subject_issuer, s),
-        _ => return refused(StatusCode::BAD_REQUEST, "subject"),
+        _ => return release(refused(StatusCode::BAD_REQUEST, "subject")),
     };
     let issued = match state.backend.begin(&op, &subject, &idempotency_key) {
         Ok(Ok(issued)) => issued,
-        Ok(Err(refusal)) => return refused(StatusCode::FORBIDDEN, refusal.code()),
-        Err(Unavailable) => return unavailable(),
+        // L1: one generic refusal; the specific code is in the ledger's refusal audit.
+        Ok(Err(_)) => return release(refused(StatusCode::FORBIDDEN, "refused")),
+        Err(Unavailable) => return release(unavailable()),
     };
     {
         let mut sessions = sessions(state);
-        let Some(session) = checked(&mut sessions, token, field("csrf")) else {
+        let Some(session) = sessions.get_mut(token) else {
             return refused(StatusCode::FORBIDDEN, "session");
         };
-        session.pending.insert(
-            issued.challenge_id.clone(),
-            Pending {
-                op,
-                idempotency_key,
-            },
-        );
+        let Some(pending) = session.pending.remove(&reservation) else {
+            return refused(StatusCode::FORBIDDEN, "session");
+        };
+        session.pending.insert(issued.challenge_id.clone(), pending);
     }
     // The verifier's options are JSON; anything else is sent as a string.
     let options = std::str::from_utf8(&issued.client_options)
@@ -635,7 +697,7 @@ fn begin<'a>(
 
 /// POST `/ceremony/finish`: the client's assertion for a challenge this session began.
 /// The operation, target and idempotency key are the session's server-side record of the
-/// begin; the channel is the configuration's.
+/// begin; the channel is the ledger's configured approval channel.
 fn finish<'a>(
     state: &State,
     token: &str,
@@ -657,16 +719,17 @@ fn finish<'a>(
         };
         (p.op.clone(), p.idempotency_key.clone())
     };
-    let outcome = state.backend.finish(
-        &op,
-        challenge_id,
-        response.as_bytes(),
-        &key,
-        &state.config.channel,
-    );
+    let outcome = state
+        .backend
+        .finish(&op, challenge_id, response.as_bytes(), &key);
     let answer = match outcome {
         // Unknown outcome: the pending entry stays so an identical retry replays.
         Err(Unavailable) => return unavailable(),
+        // L6: the verifier (or the channel) is unavailable; the ledger kept the challenge
+        // issued, so the pending entry stays for a retry within its lifetime.
+        Ok(Err(Refusal::Approval(ApprovalCode::AssertionInvalid(VerifierError::Unavailable)))) => {
+            return unavailable()
+        }
         Ok(answer) => answer,
     };
     if let Some(session) = sessions(state).get_mut(token) {

@@ -652,10 +652,17 @@ pub struct StoredGrant {
 /// with every field present and at most [`MAX_PROVENANCE_FIELD_LEN`]
 /// characters, an approval time no later than the grant's expiry, and the
 /// verdict and policy bundle digest of the grant's own (intact) binding.
+/// A [`PROVENANCE_VERSION_2`] record (an M4 approval decision) is intact only
+/// with the [`ApprovalLink`] its ledger read for it (D-042 X1, X2): the broker
+/// itself never treats a provenance-2 grant without an approval link as
+/// executable, whatever [`crate::store::GrantLedger`] implementation read it.
 pub fn provenance_intact(grant: &StoredGrant) -> bool {
     let Some(p) = &grant.provenance else {
         return false;
     };
+    if p.version == PROVENANCE_VERSION_2 && grant.approval.is_none() {
+        return false;
+    }
     let fields = [
         &p.approver_id,
         &p.issuer,
@@ -1650,6 +1657,55 @@ mod tests {
         let mut none = grant(&|_| {});
         none.provenance = None;
         assert!(!provenance_intact(&none), "legacy grant without provenance");
+    }
+
+    /// L5: the broker itself refuses a provenance-2 grant without its M4
+    /// approval link, at T-reserve and at T-dispatch, whatever ledger read it
+    /// (before the fix `approval: None` matched every agent and the grant was
+    /// consumed).
+    #[test]
+    fn a_provenance_2_grant_without_an_approval_link_is_never_executable() {
+        let req = publish_request();
+        decided(&req, |a| {
+            let observed = {
+                let mut l = MemoryLedger::default();
+                observe(&FixedClock::new(now()), &mut l).unwrap()
+            };
+            let label = GrantLabel::new("approval/apr-1").unwrap();
+            let r = ReserveRequest::new(a, observed, Some(&label)).unwrap();
+            let good = GrantBinding::for_decision(a, Verdict::Approved)
+                .and_then(|b| b.canonical_text())
+                .unwrap();
+            let mut p = provenance_for(&good);
+            p.version = PROVENANCE_VERSION_2.into();
+            let unlinked = StoredGrant {
+                binding: good.clone(),
+                expires_at: now().plus_seconds(600),
+                max_uses: 1,
+                uses: 0,
+                provenance: Some(p),
+                legacy: false,
+                revoked: false,
+                approval: None,
+            };
+            assert!(!provenance_intact(&unlinked));
+            assert_eq!(r.check_grant(Some(&unlinked)), GrantCheck::Provenance);
+            let mut reserved = unlinked.clone();
+            reserved.uses = 1;
+            assert_eq!(
+                r.grant().unwrap().revalidate(Some(&reserved), true),
+                Revalidation::Provenance
+            );
+            // With the link its ledger read (this request has no agent), it executes.
+            let mut linked = unlinked.clone();
+            linked.approval = Some(ApprovalLink { agent: None });
+            assert!(provenance_intact(&linked));
+            assert_eq!(r.check_grant(Some(&linked)), GrantCheck::Consume);
+            // A provenance-1 grant (M3 ledgers) needs no link.
+            let mut m3 = unlinked.clone();
+            m3.provenance.as_mut().unwrap().version = PROVENANCE_VERSION.into();
+            assert_eq!(r.check_grant(Some(&m3)), GrantCheck::Consume);
+        });
     }
 
     #[test]

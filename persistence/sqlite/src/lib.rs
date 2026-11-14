@@ -220,6 +220,9 @@ pub struct SqliteLedger {
     inner: Mutex<Inner>,
     epoch: u64,
     id: LedgerId,
+    /// The approval channel configured once for approval service (M1); none: every
+    /// ceremony and registration is refused.
+    channel: std::sync::OnceLock<writ_broker::human::ApprovalChannel>,
     _lock: Option<OwnerLock>,
 }
 
@@ -532,6 +535,7 @@ fn finish(mut conn: Connection, lock: OwnerLock) -> Result<SqliteLedger, StoreEr
         }),
         epoch,
         id,
+        channel: std::sync::OnceLock::new(),
         _lock: Some(lock),
     })
 }
@@ -690,6 +694,35 @@ impl SqliteLedger {
         let conn = connect(&canonical, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         verify(&conn, SCHEMA, SCHEMA_VERSION)?;
         finish(conn, lock)
+    }
+
+    /// Configure the approval channel this owned ledger serves (verifier, RP id, origin
+    /// and channel identity; M1, D-040 O-2), once, before the ledger is shared: the call
+    /// consumes the ledger, so a holder of a shared reference cannot change it, and a
+    /// second configuration is refused (`approval_channel`; the ledger is dropped and its
+    /// ownership released). Without a configured channel every ceremony and registration
+    /// is refused. Code that links this crate and opens the ledger is inside the trust
+    /// boundary (docs/implementation/M4-INTERFACES.md, "Configured approval channel").
+    pub fn with_approval_channel(
+        self,
+        channel: writ_broker::human::ApprovalChannel,
+    ) -> Result<SqliteLedger, StoreError> {
+        if self.channel.set(channel).is_err() {
+            return Err(unavailable("configure", "approval_channel"));
+        }
+        Ok(self)
+    }
+
+    /// The configured approval channel, if any.
+    pub(crate) fn approval_channel(&self) -> Option<&writ_broker::human::ApprovalChannel> {
+        self.channel.get()
+    }
+
+    /// Unit tests only: configure `channel` on a ledger a test world already shares, when
+    /// it has none yet (production code has only [`SqliteLedger::with_approval_channel`]).
+    #[cfg(test)]
+    pub(crate) fn approval_channel_for_tests(&self, channel: writ_broker::human::ApprovalChannel) {
+        let _ = self.channel.set(channel);
     }
 
     /// Explicit operator upgrade of an existing `writ-ledger-3`, `writ-ledger-4` or

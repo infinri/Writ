@@ -9,7 +9,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::atomic::Ordering;
-use std::sync::Barrier;
+use std::sync::{Arc, Barrier};
 use std::thread;
 
 use writ_broker::approval::{ApprovalCode, ApprovalStatus, ChallengeRefusal, RevocationTarget};
@@ -23,7 +23,7 @@ use writ_broker::execute::{Executed, Execution};
 use writ_broker::grants::{approval_grant_label, GrantLabel, Replay, ReserveOutcome};
 use writ_broker::human::{
     Permission, PrincipalKind, RegistrationBinding, RegistrationVerifier, SubjectId,
-    VerifiedRegistration, VerifierCapability, VerifierError, ES256,
+    VerifiedRegistration, VerifierError, ES256,
 };
 use writ_broker::refusal::Refusal;
 use writ_broker::store::{ExecuteLedger, StoreError, TxStage};
@@ -31,7 +31,10 @@ use writ_broker::writ_kernel::json::{self, Value};
 
 use super::execute_tests::World;
 use super::grant_tests::{approve, label, now, publish, revision, set, uses, verify};
-use super::m4_support::{bootstrap_root_at, registered, session_register, TestVerifier, ORIGIN};
+use super::m4_support::{
+    bootstrap_root_at, channel_of, forged_registration, registered, session_register, TestVerifier,
+    ORIGIN,
+};
 use super::{fault, BootstrapSession, SqliteLedger, SCHEMA_V5, SCHEMA_VERSION_V5};
 
 const T: &str = "fixture-tenant";
@@ -106,9 +109,11 @@ pub(crate) fn challenge(r: ChallengeRefusal) -> Refusal {
     ap(ApprovalCode::ChallengeInvalid(r))
 }
 
+static REOPENS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub(crate) struct M4 {
     pub(crate) w: World,
-    pub(crate) v: TestVerifier,
+    pub(crate) v: Arc<TestVerifier>,
 }
 
 impl M4 {
@@ -116,7 +121,7 @@ impl M4 {
     /// revoker `carol` in (fixture-tenant, fixture-project).
     pub(crate) fn new(name: &str) -> M4 {
         let mut w = World::new(&format!("m4-{name}"));
-        let v = TestVerifier::default();
+        let v = Arc::new(TestVerifier::default());
         // The bootstrap runs through its own entry point, which owns the ledger file
         // exclusively: release the world's ownership for it, then take it back.
         let path = w.dir.join("ledger.db");
@@ -128,7 +133,10 @@ impl M4 {
         assert_eq!(bootstrap_root_at(&path, &w.clock, &v, &root()), Ok(1));
         drop(std::mem::replace(
             &mut w.ledger,
-            SqliteLedger::open(&path).unwrap(),
+            SqliteLedger::open(&path)
+                .unwrap()
+                .with_approval_channel(channel_of(&v))
+                .unwrap(),
         ));
         let m = M4 { w, v };
         m.enroll(person("alice", &[(Permission::Approver, T, P)], vec![]))
@@ -140,6 +148,40 @@ impl M4 {
 
     pub(crate) fn l(&self) -> &SqliteLedger {
         &self.w.ledger
+    }
+
+    /// Close the ledger and open it again with `v` as its approval channel (a restart
+    /// with another configured channel, M1). Returns the previous verifier.
+    pub(crate) fn reopen_with(&mut self, v: &Arc<TestVerifier>) -> Arc<TestVerifier> {
+        let path = self.w.dir.join("ledger.db");
+        let n = REOPENS.fetch_add(1, Ordering::SeqCst);
+        drop(std::mem::replace(
+            &mut self.w.ledger,
+            SqliteLedger::create(&self.w.dir.join(format!("placeholder-{n}.db"))).unwrap(),
+        ));
+        drop(std::mem::replace(
+            &mut self.w.ledger,
+            SqliteLedger::open(&path)
+                .unwrap()
+                .with_approval_channel(channel_of(v))
+                .unwrap(),
+        ));
+        std::mem::replace(&mut self.v, v.clone())
+    }
+
+    /// Finish the registration row `id` with `response`.
+    pub(crate) fn finish_registration(
+        &self,
+        id: &str,
+        response: &str,
+    ) -> Result<VerifiedRegistration, Refusal> {
+        self.l()
+            .finish_registration(&RegistrationFinish {
+                registration_id: id,
+                response: response.as_bytes(),
+                now: self.now(),
+            })
+            .expect("store")
     }
 
     pub(crate) fn now(&self) -> ObservedTime {
@@ -158,7 +200,6 @@ impl M4 {
                 op,
                 subject: who,
                 idempotency_key: key,
-                verifier: &self.v,
                 now: self.now(),
             })
             .expect("store")
@@ -177,8 +218,6 @@ impl M4 {
                 challenge_id,
                 response: response.as_bytes(),
                 idempotency_key: key,
-                channel: "approval-listener",
-                verifier: &self.v,
                 now: self.now(),
             })
             .expect("store")
@@ -200,12 +239,12 @@ impl M4 {
         subject: &SubjectId,
         response: &str,
     ) -> Result<VerifiedRegistration, Refusal> {
-        session_register(self.l(), &|| self.now(), &self.v, subject, response)
+        session_register(self.l(), &|| self.now(), subject, response)
     }
 
     /// `e` with a registered credential `cred-<name>` when it is a human without one.
     pub(crate) fn registered(&self, e: NewEnrollment) -> NewEnrollment {
-        registered(self.l(), &|| self.now(), &self.v, e)
+        registered(self.l(), &|| self.now(), e)
     }
 
     pub(crate) fn enroll(&self, e: NewEnrollment) -> Result<CeremonyOutcome, Refusal> {
@@ -925,7 +964,6 @@ fn enrollment_refuses_raw_or_foreign_public_material() {
     let m = M4::new("enroll-raw");
     let unsupported = Some(ap(ApprovalCode::EnrollmentUnsupported));
     let enroll = |e: NewEnrollment| CeremonyOp::Enroll { enrollment: e };
-    let cap = VerifierCapability::for_verifier_implementation();
     let binding = |id: &str, subject: &SubjectId, operation| RegistrationBinding {
         registration_id: id.into(),
         operation,
@@ -939,8 +977,7 @@ fn enrollment_refuses_raw_or_foreign_public_material() {
     };
     let enroll_op = writ_broker::human::RegistrationOperation::Enroll;
     // Raw public material: a registration result that no ledger row recorded.
-    let raw = VerifiedRegistration::new(
-        &cap,
+    let raw = forged_registration(
         &binding("reg-made-up", &human("kim"), enroll_op),
         "cred-kim",
         b"pk-kim".to_vec(),
@@ -957,7 +994,7 @@ fn enrollment_refuses_raw_or_foreign_public_material() {
         ("cred-kim", b"pk-kim".to_vec(), "RS256", true),
         ("cred-kim", b"pk-kim".to_vec(), ES256, false),
     ] {
-        let forged = VerifiedRegistration::new(&cap, &b, cred, material, alg, uv);
+        let forged = forged_registration(&b, cred, material, alg, uv);
         assert_eq!(
             m.begin(&root(), &with("kim", forged), "r2").err(),
             unsupported
@@ -968,8 +1005,7 @@ fn enrollment_refuses_raw_or_foreign_public_material() {
         m.begin(&root(), &with("lea", real.clone()), "r3").err(),
         unsupported
     );
-    let as_bootstrap = VerifiedRegistration::new(
-        &cap,
+    let as_bootstrap = forged_registration(
         &RegistrationBinding {
             operation: writ_broker::human::RegistrationOperation::Bootstrap,
             ..b.clone()
@@ -1009,7 +1045,7 @@ fn enrollment_refuses_raw_or_foreign_public_material() {
 
 #[test]
 fn registration_is_verified_bound_and_single_use() {
-    let m = M4::new("registration");
+    let mut m = M4::new("registration");
     let assertion = |e| Err(ap(ApprovalCode::AssertionInvalid(e)));
     let unsupported = Err(ap(ApprovalCode::EnrollmentUnsupported));
     // Verifier refusals and unaccepted answers burn the row.
@@ -1032,7 +1068,6 @@ fn registration_is_verified_bound_and_single_use() {
             .l()
             .begin_registration(&RegistrationBegin {
                 subject: &human(name),
-                verifier: &m.v,
                 now: m.now(),
             })
             .unwrap()
@@ -1042,7 +1077,6 @@ fn registration_is_verified_bound_and_single_use() {
                 .finish_registration(&RegistrationFinish {
                     registration_id: &issued.registration_id,
                     response: response.as_bytes(),
-                    verifier: &m.v,
                     now: m.now(),
                 })
                 .unwrap()
@@ -1060,32 +1094,60 @@ fn registration_is_verified_bound_and_single_use() {
         m.count("SELECT count(*) FROM registrations WHERE status = 'refused' AND length(ceremony_state) = 0 AND credential_id IS NULL"),
         5
     );
-    // Another relying party (origin) cannot finish a row.
+    // L6: a verifier that reports itself unavailable does not burn the row; it stays
+    // issued and a later valid answer registers.
     let issued = m
         .l()
         .begin_registration(&RegistrationBegin {
-            subject: &human("o1"),
-            verifier: &m.v,
+            subject: &human("d1"),
             now: m.now(),
         })
         .unwrap()
         .unwrap();
-    m.v.other_origin.store(true, Ordering::SeqCst);
     let finish = |response: &str| {
         m.l()
             .finish_registration(&RegistrationFinish {
                 registration_id: &issued.registration_id,
                 response: response.as_bytes(),
-                verifier: &m.v,
                 now: m.now(),
             })
             .unwrap()
     };
     assert_eq!(
-        finish("ok|cred-o1|pk"),
-        assertion(VerifierError::BindingMismatch)
+        finish("down|cred-d1|pk"),
+        assertion(VerifierError::Unavailable)
     );
-    m.v.other_origin.store(false, Ordering::SeqCst);
+    assert_eq!(
+        m.text(
+            "SELECT status FROM registrations WHERE registration_id = ?1",
+            &issued.registration_id
+        )
+        .as_deref(),
+        Some("issued")
+    );
+    assert!(finish("ok|cred-d1|pk").is_ok());
+    // M1: a row issued under one approval channel cannot be finished by a ledger
+    // configured with another relying party (origin); the row is burnt.
+    let issued = m
+        .l()
+        .begin_registration(&RegistrationBegin {
+            subject: &human("o1"),
+            now: m.now(),
+        })
+        .unwrap()
+        .unwrap();
+    let other = Arc::new(TestVerifier::default());
+    other.other_origin.store(true, Ordering::SeqCst);
+    let original = m.reopen_with(&other);
+    assert_eq!(
+        m.finish_registration(&issued.registration_id, "ok|cred-o1|pk"),
+        unsupported
+    );
+    m.reopen_with(&original);
+    assert_eq!(
+        m.finish_registration(&issued.registration_id, "ok|cred-o1|pk"),
+        Err(challenge(ChallengeRefusal::Consumed))
+    );
     // A finished row is single use; an unknown row is refused.
     let reg = m.register(&human("p1"), "ok|cred-p1|pk").unwrap();
     assert_eq!(reg.subject(), &human("p1"));
@@ -1095,7 +1157,6 @@ fn registration_is_verified_bound_and_single_use() {
         .finish_registration(&RegistrationFinish {
             registration_id: reg.registration_id(),
             response: b"ok|cred-p1b|pk",
-            verifier: &m.v,
             now: m.now(),
         })
         .unwrap();
@@ -1105,7 +1166,6 @@ fn registration_is_verified_bound_and_single_use() {
         .finish_registration(&RegistrationFinish {
             registration_id: "reg-unknown",
             response: b"ok|cred-x|pk",
-            verifier: &m.v,
             now: m.now(),
         })
         .unwrap();
@@ -1120,7 +1180,6 @@ fn registration_is_verified_bound_and_single_use() {
         .l()
         .begin_registration(&RegistrationBegin {
             subject: &human("q1"),
-            verifier: &m.v,
             now: m.now(),
         })
         .unwrap()
@@ -1131,7 +1190,6 @@ fn registration_is_verified_bound_and_single_use() {
         .finish_registration(&RegistrationFinish {
             registration_id: &issued.registration_id,
             response: b"ok|cred-q1|pk",
-            verifier: &m.v,
             now: m.now(),
         })
         .unwrap();
@@ -1155,10 +1213,13 @@ fn bootstrap_is_exclusive_against_service_and_happens_once() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("ledger.db");
     let clock = super::grant_tests::TestClock::at(now());
-    let v = TestVerifier::default();
+    let v = Arc::new(TestVerifier::default());
     // While the service owns the ledger, no bootstrap session opens (no separate lock, no
     // fencing bypass): the same sidecar ownership lock refuses it.
-    let service = SqliteLedger::create(&path).unwrap();
+    let service = SqliteLedger::create(&path)
+        .unwrap()
+        .with_approval_channel(channel_of(&v))
+        .unwrap();
     assert!(matches!(
         BootstrapSession::open(&path),
         Err(StoreError::OwnedElsewhere)
@@ -1170,7 +1231,6 @@ fn bootstrap_is_exclusive_against_service_and_happens_once() {
             let mut l: &SqliteLedger = &service;
             observe(&clock, &mut l).unwrap()
         },
-        &v,
         &root(),
         "ok|cred-root|pk-root",
     );
@@ -1178,7 +1238,7 @@ fn bootstrap_is_exclusive_against_service_and_happens_once() {
     drop(service);
     // While a bootstrap session owns it, the service cannot open it.
     let session = match BootstrapSession::open(&path) {
-        Ok(Ok(s)) => s,
+        Ok(Ok(s)) => s.with_approval_channel(channel_of(&v)).unwrap(),
         _ => panic!("bootstrap session"),
     };
     assert!(matches!(
@@ -1189,7 +1249,6 @@ fn bootstrap_is_exclusive_against_service_and_happens_once() {
     let reg = session_register(
         &session,
         &|| session.observe(&clock).unwrap(),
-        &v,
         &human("someone-else"),
         "ok|cred-else|pk",
     )
@@ -1681,8 +1740,6 @@ fn an_unknown_commit_is_recovered_by_an_identical_retry_without_a_second_grant()
             challenge_id: &c.challenge_id,
             response: ok(&alice).as_bytes(),
             idempotency_key: "key",
-            channel: "approval-listener",
-            verifier: &m.v,
             now: m.now(),
         })
     };
@@ -1722,8 +1779,6 @@ fn an_unknown_commit_is_recovered_by_an_identical_retry_without_a_second_grant()
                 challenge_id: &rc.challenge_id,
                 response: ok(&human("carol")).as_bytes(),
                 idempotency_key: "rkey",
-                channel: "approval-listener",
-                verifier: &m.v,
                 now: m.now(),
             })
             .unwrap_err()
@@ -1782,7 +1837,6 @@ fn unavailable_storage_fails_closed_without_partial_state() {
             op: &op,
             subject: &alice,
             idempotency_key: "key",
-            verifier: &m.v,
             now: m.now(),
         };
         let f = m.l().begin_ceremony(&begin).unwrap_err();
@@ -1803,8 +1857,6 @@ fn unavailable_storage_fails_closed_without_partial_state() {
                 challenge_id: &c.challenge_id,
                 response: ok(&alice).as_bytes(),
                 idempotency_key: "key",
-                channel: "approval-listener",
-                verifier: &m.v,
                 now: m.now(),
             })
             .unwrap_err();

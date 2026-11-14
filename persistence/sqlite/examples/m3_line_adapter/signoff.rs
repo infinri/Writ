@@ -11,6 +11,7 @@
 //! `check_use`; nothing here switches, removes or reclassifies the human criterion.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use writ_broker::approval::NewSignoff;
 use writ_broker::approval_store::{
@@ -19,13 +20,14 @@ use writ_broker::approval_store::{
 };
 use writ_broker::clock::ObservedTime;
 use writ_broker::human::{
-    ActiveCredentials, CeremonyStart, CeremonyState, HumanVerifier, Permission, PrincipalKind,
-    SubjectId, VerifiedAssertion, VerifierCapability, VerifierError, WEBAUTHN_PASSKEY,
+    ActiveCredentials, ApprovalChannel, CeremonyStart, CeremonyState, HumanVerifier, Permission,
+    PrincipalKind, SubjectId, VerifiedAssertion, VerifierCapability, VerifierError,
+    WEBAUTHN_PASSKEY,
 };
 use writ_broker::writ_kernel::json::Digest;
 use writ_ledger_sqlite::SqliteLedger;
 
-use crate::common::register;
+use crate::common::{register, Registrar};
 
 /// Adaptation label of a case whose signoff was issued through the test verifier.
 pub const SIGNOFF_LABEL: &str = "M4-test-verifier-signoff";
@@ -67,6 +69,7 @@ impl HumanVerifier for TestVerifier {
 
     fn finish(
         &self,
+        cap: &VerifierCapability,
         state: &CeremonyState,
         response: &[u8],
         credentials: &ActiveCredentials,
@@ -79,7 +82,7 @@ impl HumanVerifier for TestVerifier {
             return Err(VerifierError::CredentialUnknown);
         }
         Ok(VerifiedAssertion::new(
-            &VerifierCapability::for_verifier_implementation(),
+            cap,
             credentials.subject().clone(),
             credential,
             true,
@@ -90,10 +93,20 @@ impl HumanVerifier for TestVerifier {
     }
 }
 
+/// The approval channel the transition harness configures on its ledger (M1): this test
+/// verifier and the harness's test registrar, under the harness's channel identity.
+pub fn channel() -> Result<ApprovalChannel, String> {
+    ApprovalChannel::new(
+        Arc::new(TestVerifier::default()),
+        Arc::new(Registrar),
+        "m3c-approval-listener",
+    )
+    .ok_or_else(|| "approval channel".to_string())
+}
+
 /// One user-verified ceremony of `who` for `op`.
 fn ceremony(
     ledger: &SqliteLedger,
-    verifier: &TestVerifier,
     now: ObservedTime,
     who: &str,
     op: &CeremonyOp,
@@ -105,7 +118,6 @@ fn ceremony(
             op,
             subject: &actor,
             idempotency_key: key,
-            verifier,
             now,
         })
         .map_err(|f| format!("ceremony begin: {}", f.error))?
@@ -117,8 +129,6 @@ fn ceremony(
             challenge_id: &issued.challenge_id,
             response: response.as_bytes(),
             idempotency_key: key,
-            channel: "m3c-approval-listener",
-            verifier,
             now,
         })
         .map_err(|f| format!("ceremony finish: {}", f.error))?
@@ -137,7 +147,6 @@ pub fn administrator() -> (SubjectId, String) {
 /// The reviewer links no requester identity (an explicit, empty set, R1).
 pub fn enroll_reviewer(
     ledger: &SqliteLedger,
-    verifier: &TestVerifier,
     now: ObservedTime,
     tenant: &str,
     project: &str,
@@ -160,7 +169,6 @@ pub fn enroll_reviewer(
     };
     ceremony(
         ledger,
-        verifier,
         now,
         ADMINISTRATOR,
         &CeremonyOp::Enroll { enrollment },
@@ -169,16 +177,11 @@ pub fn enroll_reviewer(
 }
 
 /// The reviewer signs `binding` (the ledger reads the exclusions itself; nothing added).
-pub fn sign(
-    ledger: &SqliteLedger,
-    verifier: &TestVerifier,
-    now: ObservedTime,
-    binding: NewSignoff,
-) -> Result<(), String> {
+pub fn sign(ledger: &SqliteLedger, now: ObservedTime, binding: NewSignoff) -> Result<(), String> {
     let key = format!("m3c-signoff-{}", binding.signoff_id);
     let op = CeremonyOp::Signoff {
         binding: Box::new(binding),
         parties: SignoffParties::default(),
     };
-    ceremony(ledger, verifier, now, REVIEWER, &op, &key)
+    ceremony(ledger, now, REVIEWER, &op, &key)
 }

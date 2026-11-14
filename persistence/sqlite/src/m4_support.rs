@@ -3,13 +3,15 @@
 //! M3 `approve` path is closed, so every test that needs an executable grant records the
 //! approval request the broker would record, has an enrolled approver approve it through a
 //! ceremony (`begin_ceremony`, `finish_ceremony`) and uses the ledger's own grant.
-//! `VerifierCapability` is allowed here (test code).
+//! The verifier reaches the ledger only as its configured approval channel (M1); it builds
+//! its answers with the capability the channel lends it for each call.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 
 use writ_broker::approval_store::{
     approval_request_for, ApprovalLedger, BootstrapEnrollment, CeremonyBegin, CeremonyFinish,
@@ -20,10 +22,10 @@ use writ_broker::authorize::{authorize, UseTimeStatus};
 use writ_broker::clock::ObservedTime;
 use writ_broker::grants::{approval_grant_label, GrantIssued, GrantLabel, GrantService};
 use writ_broker::human::{
-    ActiveCredentials, CeremonyStart, CeremonyState, CredentialUpdate, HumanVerifier, Permission,
-    PrincipalKind, RegistrationBinding, RegistrationStart, RegistrationVerifier, RelyingParty,
-    SubjectId, VerifiedAssertion, VerifiedRegistration, VerifierCapability, VerifierError, ES256,
-    WEBAUTHN_PASSKEY,
+    ActiveCredentials, ApprovalChannel, CeremonyStart, CeremonyState, CredentialUpdate,
+    HumanVerifier, Permission, PrincipalKind, RegistrationBinding, RegistrationStart,
+    RegistrationVerifier, RelyingParty, SubjectId, VerifiedAssertion, VerifiedRegistration,
+    VerifierCapability, VerifierError, ES256, WEBAUTHN_PASSKEY,
 };
 use writ_broker::refusal::Refusal;
 use writ_broker::store::ExecuteLedger;
@@ -33,24 +35,39 @@ use super::grant_tests::{revision, verify};
 use super::{BootstrapSession, SqliteLedger};
 
 /// Responses are `<mode>:<credential id>`: `ok`, `nouv` (no user verification), `other`
-/// (an assertion from another ceremony), `update` (with a credential update); anything else
-/// is a forged signature. `fixed` makes every ceremony reuse one challenge (C1 test).
+/// (an assertion from another ceremony), `update` (with a credential update), `down` (the
+/// verifier reports itself unavailable); anything else is a forged signature. `fixed`
+/// makes every ceremony reuse one challenge (C1 test).
 static NONCES: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Default)]
 pub(crate) struct TestVerifier {
     pub(crate) next: AtomicU64,
     pub(crate) fixed: AtomicBool,
-    /// Report another origin than the one rows are issued for (registration RP test).
+    /// Report another origin than [`ORIGIN`] (read once, when a channel is built).
     pub(crate) other_origin: AtomicBool,
 }
 
 /// The test relying party's origin.
 pub(crate) const ORIGIN: &str = "http://localhost:8443";
 
+/// The channel identity of the test approval channel.
+pub(crate) const CHANNEL: &str = "approval-listener";
+
+/// `v` as a configured approval channel.
+pub(crate) fn channel_of(v: &Arc<TestVerifier>) -> ApprovalChannel {
+    ApprovalChannel::new(v.clone(), v.clone(), CHANNEL).unwrap()
+}
+
+/// A fresh test verifier as a configured approval channel.
+pub(crate) fn support_channel() -> ApprovalChannel {
+    channel_of(&Arc::new(TestVerifier::default()))
+}
+
 /// Registration responses are `<mode>|<credential id>|<public material>`: `ok`, `nouv` (no
 /// user verification), `rs256` (an RS256 credential), `other` (a result for another
-/// registration row); anything else is a forged attestation.
+/// registration row), `down` (the verifier reports itself unavailable); anything else is a
+/// forged attestation.
 impl RegistrationVerifier for TestVerifier {
     fn relying_party(&self) -> RelyingParty {
         let origin = if self.other_origin.load(Ordering::SeqCst) {
@@ -74,6 +91,7 @@ impl RegistrationVerifier for TestVerifier {
 
     fn finish_registration(
         &self,
+        cap: &VerifierCapability,
         binding: &RegistrationBinding,
         _state: &CeremonyState,
         response: &[u8],
@@ -85,10 +103,9 @@ impl RegistrationVerifier for TestVerifier {
         else {
             return Err(VerifierError::Malformed);
         };
-        let cap = VerifierCapability::for_verifier_implementation();
         let make = |b: &RegistrationBinding, algorithm: &str, uv: bool| {
             VerifiedRegistration::new(
-                &cap,
+                cap,
                 b,
                 credential,
                 material.as_bytes().to_vec(),
@@ -105,23 +122,22 @@ impl RegistrationVerifier for TestVerifier {
                 b.registration_id = "reg-another".into();
                 Ok(make(&b, ES256, true))
             }
+            "down" => Err(VerifierError::Unavailable),
             _ => Err(VerifierError::SignatureInvalid),
         }
     }
 }
 
-/// One registration ceremony on `ledger`.
+/// One registration ceremony on `ledger` (through its configured channel).
 pub(crate) fn session_register(
     ledger: &dyn RegistrationLedger,
     now: &dyn Fn() -> ObservedTime,
-    v: &TestVerifier,
     subject: &SubjectId,
     response: &str,
 ) -> Result<VerifiedRegistration, Refusal> {
     let issued = ledger
         .begin_registration(&RegistrationBegin {
             subject,
-            verifier: v,
             now: now(),
         })
         .expect("store")?;
@@ -129,7 +145,6 @@ pub(crate) fn session_register(
         .finish_registration(&RegistrationFinish {
             registration_id: &issued.registration_id,
             response: response.as_bytes(),
-            verifier: v,
             now: now(),
         })
         .expect("store")
@@ -140,29 +155,31 @@ pub(crate) fn session_register(
 pub(crate) fn registered(
     ledger: &dyn RegistrationLedger,
     now: &dyn Fn() -> ObservedTime,
-    v: &TestVerifier,
     mut e: NewEnrollment,
 ) -> NewEnrollment {
     if e.kind == PrincipalKind::Human && e.credential.is_none() {
         let name = &e.subject.subject;
         let response = format!("ok|cred-{name}|pk-{name}");
-        e.credential = Some(session_register(ledger, now, v, &e.subject, &response).unwrap());
+        e.credential = Some(session_register(ledger, now, &e.subject, &response).unwrap());
     }
     e
 }
 
 /// Bootstrap `admin` (credential `cred-<subject>`) through the separate entry point (S5,
-/// X8) on the closed ledger file at `path`: an exclusive session, its `bootstrap`
-/// registration, then the bootstrap enrollment.
+/// X8) on the closed ledger file at `path`, with `v` as the session's approval channel: an
+/// exclusive session, its `bootstrap` registration, then the bootstrap enrollment.
 pub(crate) fn bootstrap_root_at(
     path: &std::path::Path,
     clock: &dyn writ_broker::clock::EffectiveClock,
-    v: &TestVerifier,
+    v: &Arc<TestVerifier>,
     admin: &SubjectId,
 ) -> Result<i64, Refusal> {
-    let s = BootstrapSession::open(path).expect("store")?;
+    let s = BootstrapSession::open(path)
+        .expect("store")?
+        .with_approval_channel(channel_of(v))
+        .expect("store");
     let response = format!("ok|{}|pk-{}", credential(admin), admin.subject);
-    let reg = session_register(&s, &|| s.observe(clock).unwrap(), v, admin, &response)?;
+    let reg = session_register(&s, &|| s.observe(clock).unwrap(), admin, &response)?;
     let now = s.observe(clock).unwrap();
     s.bootstrap(
         &BootstrapEnrollment {
@@ -198,20 +215,23 @@ impl HumanVerifier for TestVerifier {
 
     fn finish(
         &self,
+        cap: &VerifierCapability,
         state: &CeremonyState,
         response: &[u8],
         credentials: &ActiveCredentials,
     ) -> Result<VerifiedAssertion, VerifierError> {
         let text = std::str::from_utf8(response).map_err(|_| VerifierError::Malformed)?;
         let (mode, credential) = text.split_once(':').ok_or(VerifierError::Malformed)?;
+        if mode == "down" {
+            return Err(VerifierError::Unavailable);
+        }
         if !credentials.ids().iter().any(|c| c == credential) {
             return Err(VerifierError::CredentialUnknown);
         }
-        let cap = VerifierCapability::for_verifier_implementation();
         let digest = Digest::of_bytes(state.as_bytes());
         let make = |uv: bool, digest: Digest, update: Option<CredentialUpdate>| {
             VerifiedAssertion::new(
-                &cap,
+                cap,
                 credentials.subject().clone(),
                 credential,
                 uv,
@@ -253,7 +273,6 @@ fn credential(s: &SubjectId) -> String {
 
 fn ceremony(
     ledger: &SqliteLedger,
-    v: &TestVerifier,
     who: &SubjectId,
     op: &CeremonyOp,
     key: &str,
@@ -264,7 +283,6 @@ fn ceremony(
             op,
             subject: who,
             idempotency_key: key,
-            verifier: v,
             now,
         })
         .map_err(|f| Refusal::LedgerUnavailable(f.error))??;
@@ -275,8 +293,6 @@ fn ceremony(
             challenge_id: &c.challenge_id,
             response: response.as_bytes(),
             idempotency_key: key,
-            channel: "approval-listener",
-            verifier: v,
             now,
         })
         .map_err(|f| Refusal::LedgerUnavailable(f.error))?
@@ -284,8 +300,10 @@ fn ceremony(
 }
 
 /// Bootstrap [`support_root`] and enroll [`support_approver`] once per ledger (only in a
-/// ledger with no subject yet).
+/// ledger with no subject yet). A support ledger without an approval channel gets a test
+/// channel ([`support_channel`]).
 pub(crate) fn ensure_approver(ledger: &SqliteLedger, now: ObservedTime) -> Result<(), Refusal> {
+    ledger.approval_channel_for_tests(support_channel());
     let subjects: i64 = ledger
         .db()
         .conn
@@ -295,14 +313,12 @@ pub(crate) fn ensure_approver(ledger: &SqliteLedger, now: ObservedTime) -> Resul
         return Ok(());
     }
     let root = support_root();
-    let v = TestVerifier::default();
     // The support ledger is already exclusively owned by this test (production bootstraps
     // only through `BootstrapSession`); the bootstrap registration and enrollment still go
     // through the ledger's own registration row (S5, X8).
     ledger
         .bootstrap_owned_for_tests(
             &root,
-            &v,
             format!("ok|{}|pk-support-root", credential(&root)).as_bytes(),
             now,
         )
@@ -311,7 +327,6 @@ pub(crate) fn ensure_approver(ledger: &SqliteLedger, now: ObservedTime) -> Resul
     let enrollment = registered(
         ledger,
         &|| now,
-        &v,
         NewEnrollment {
             subject: approver.clone(),
             kind: PrincipalKind::Human,
@@ -326,7 +341,6 @@ pub(crate) fn ensure_approver(ledger: &SqliteLedger, now: ObservedTime) -> Resul
     );
     ceremony(
         ledger,
-        &v,
         &root,
         &CeremonyOp::Enroll { enrollment },
         "support-enroll-approver",
@@ -391,9 +405,8 @@ pub(crate) fn deny(
     let op = CeremonyOp::Deny {
         request_id: request_id.clone(),
     };
-    let v = TestVerifier::default();
     let key = format!("support-deny-{request_id}");
-    match ceremony(svc.ledger(), &v, &support_approver(), &op, &key, observed)? {
+    match ceremony(svc.ledger(), &support_approver(), &op, &key, observed)? {
         CeremonyResult::Denied => Ok(approval_grant_label(&request_id).unwrap()),
         other => panic!("a denial ceremony answers Denied, got {other:?}"),
     }
@@ -414,10 +427,9 @@ pub(crate) fn issue(
     let op = CeremonyOp::Approve {
         request_id: request_id.clone(),
     };
-    let v = TestVerifier::default();
     let key = format!("support-approve-{request_id}");
     let CeremonyResult::Approved { grant } =
-        ceremony(ledger, &v, &support_approver(), &op, &key, observed)?
+        ceremony(ledger, &support_approver(), &op, &key, observed)?
     else {
         panic!("an approval ceremony answers Approved");
     };
@@ -443,4 +455,85 @@ pub(crate) fn issue(
         .unwrap(),
         binding,
     })
+}
+
+/// A stub verifier that answers every registration with a fixed result (an attacker linking
+/// the crates can build one; M1). Its assertions are always refused.
+struct Forger {
+    credential: String,
+    material: Vec<u8>,
+    algorithm: String,
+    user_verified: bool,
+}
+
+impl RegistrationVerifier for Forger {
+    fn relying_party(&self) -> RelyingParty {
+        RelyingParty {
+            rp_id: "localhost".into(),
+            origin: ORIGIN.into(),
+        }
+    }
+
+    fn begin_registration(&self, _subject: &SubjectId) -> Result<RegistrationStart, VerifierError> {
+        Err(VerifierError::Unavailable)
+    }
+
+    fn finish_registration(
+        &self,
+        cap: &VerifierCapability,
+        binding: &RegistrationBinding,
+        _state: &CeremonyState,
+        _response: &[u8],
+    ) -> Result<VerifiedRegistration, VerifierError> {
+        Ok(VerifiedRegistration::new(
+            cap,
+            binding,
+            &self.credential,
+            self.material.clone(),
+            &self.algorithm,
+            self.user_verified,
+        ))
+    }
+}
+
+impl HumanVerifier for Forger {
+    fn begin(
+        &self,
+        _subject: &SubjectId,
+        _credentials: &ActiveCredentials,
+    ) -> Result<CeremonyStart, VerifierError> {
+        Err(VerifierError::Unavailable)
+    }
+
+    fn finish(
+        &self,
+        _cap: &VerifierCapability,
+        _state: &CeremonyState,
+        _response: &[u8],
+        _credentials: &ActiveCredentials,
+    ) -> Result<VerifiedAssertion, VerifierError> {
+        Err(VerifierError::Unavailable)
+    }
+}
+
+/// A registration result for `binding` minted outside any ledger, through a stub approval
+/// channel (what any linking code can build; the ledger accepts only what its own
+/// registration row recorded, S5, X8).
+pub(crate) fn forged_registration(
+    binding: &RegistrationBinding,
+    credential: &str,
+    material: Vec<u8>,
+    algorithm: &str,
+    user_verified: bool,
+) -> VerifiedRegistration {
+    let f = Arc::new(Forger {
+        credential: credential.into(),
+        material,
+        algorithm: algorithm.into(),
+        user_verified,
+    });
+    ApprovalChannel::new(f.clone(), f, "forger")
+        .unwrap()
+        .finish_registration(binding, &CeremonyState::from_bytes(Vec::new()), b"")
+        .unwrap()
 }
