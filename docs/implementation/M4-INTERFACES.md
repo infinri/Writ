@@ -48,7 +48,7 @@ A challenge row binds, server-side: challenge id, `challenge_digest`, ceremony s
 
 ## I-7 Persistence (`writ-ledger-6`, tables only)
 
-`subjects`, `credentials`, `role_assignments`, `approval_requests`, `approval_decisions`, `challenges`, `revocations`, `signoffs`, `consumed_signoffs`, `approval_events` (provenance v2, no credential material). `SqliteLedger::open` accepts only `writ-ledger-6`; `SqliteLedger::upgrade` from exact `-3`, `-4`, `-5` keeps every row; at upgrade every pre-M4 grant becomes non-executable (O-14) by a recorded marker (no row rewritten or deleted; reservation and use history kept; dispatched or completed receipts keep reconciliation and replay). Enrollment and recovery: only the documented administrative ceremony (M4-08); otherwise `ENROLLMENT_UNSUPPORTED`.
+Additions during remediation (D-042, `writ-ledger-6` still unreleased, amended in place): `approval_grants` (X1 link), `registrations` (X8 server-held registration ceremony), `signoff_requests` (X7 stored promotion context), `signoffs.exclusions`, challenge status `refused` with `refusal_code`, challenge `rp_id` and `origin` (configured channel), `ledger_sequence` kinds `expiry` and role change. `subjects`, `credentials`, `role_assignments`, `approval_requests`, `approval_decisions`, `challenges`, `revocations`, `signoffs`, `consumed_signoffs`, `approval_events` (provenance v2, no credential material). `SqliteLedger::open` accepts only `writ-ledger-6`; `SqliteLedger::upgrade` from exact `-3`, `-4`, `-5` keeps every row; at upgrade every pre-M4 grant becomes non-executable (O-14) by a recorded marker (no row rewritten or deleted; reservation and use history kept; dispatched or completed receipts keep reconciliation and replay). Enrollment and recovery: only the documented administrative ceremony (M4-08); otherwise `ENROLLMENT_UNSUPPORTED`.
 
 ## I-8 Ordering evidence (CO-PROP-02)
 
@@ -93,7 +93,7 @@ Independent review of M4-01 (`c412f6f`, fixes `d86513f`, `36d05d5`): all medium 
 - **G5** stored digests compared as text; verifier `finish` runs inside the store transaction.
 - **C3** scanner extension still open.
 
-## Security review of the approval ledger (2026-11-14; remediation authorized by D-042, in progress)
+## Security review of the approval ledger (2026-11-14; remediated under D-042, E-075; independent re-review: S1..S8 fixed)
 
 - **S1 HIGH (G1 confirmed):** `GrantService::approve` (broker/src/grants.rs) mints executable `writ-provenance-1` grants on `writ-ledger-6` through `insert_grant` with any `ApprovalAuthority` implementation; such grants ignore subject, credential and role revocation, and the caller may take the `approval/<rid>` label first (the real M4 approval then fails `GRANT_REF_IN_USE`). No production binary calls it today (only the M3 closure adapter). Fix: on `-6`, a grant is executable only with an `approval_grants` row; `GrantService::approve` refuses on `-6` (or is removed from production); `insert_grant` reserves the `approval/` prefix; the closure adapter's broker approvals move to the M4 path with a test verifier (outputs measured).
 - **S2 MEDIUM:** `LedgerCapability::for_ledger_implementation` is public, so `ApprovalDecision::from_stored` plus `NewGrant::for_decision` plus `insert_grant` yields a provenance-2 grant without a challenge; closed by S1's `approval_grants` rule and by C3.
