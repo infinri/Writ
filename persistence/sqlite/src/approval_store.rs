@@ -1,0 +1,1884 @@
+//! The approval ledger on SQLite (M4-03, M4-04, M4-05, M4-08 storage, M4-09, M4-10; schema
+//! `writ-ledger-6`): [`ApprovalLedger`] for [`SqliteLedger`], the explicit bootstrap
+//! enrollment ([`SqliteLedger::bootstrap_administrator`], docs/implementation/
+//! M4-ENROLLMENT-CEREMONY.md), the grant revocation read used by T-reserve, T-dispatch and
+//! promotion, signoff consumption inside a promotion transaction, and the I-8 sequence.
+//!
+//! Every state change is one fenced `BEGIN IMMEDIATE` transaction on the single owner
+//! connection, so ceremonies, revocations, T-reserve, T-dispatch and promotions are totally
+//! ordered (O-5): a revocation committed before a reservation refuses it; one committed after
+//! the reservation and before the dispatch makes T-dispatch refuse with the receipt kept
+//! `reserved` and its grant use kept; one committed after the dispatch undoes nothing and
+//! records `use_state` `dispatched`. The semantics are the broker's: rows are read inside the
+//! transaction and handed to `writ_broker::approval` (C2); a refusal rolls back and is then
+//! audited in its own transaction (a failed audit never changes the answer).
+//!
+//! Stored digests: the kernel's `Digest` has no constructor from text, so a stored challenge
+//! digest or context fingerprint is compared as text with the value presented (the
+//! assertion's ceremony digest, the binding recomputed from current state); the stored
+//! challenge is rebuilt with that presented value when the texts are equal and with a fixed
+//! sentinel digest otherwise, so `Challenge::check` refuses in its own order.
+
+use rusqlite::{Connection, OptionalExtension, Transaction};
+use writ_broker::approval::{
+    decide, ApprovalCode, ApprovalRequest, ApprovalStatus, Challenge, ChallengeBinding,
+    ChallengeOperation, ChallengeRefusal, ChallengeStatus, NewApprovalRequest, NewChallenge,
+    NewSignoff, OwnUnusedGrant, RevocationTarget, Signoff, SignoffExclusions, SignoffFields,
+    StoredChallenge, CHALLENGE_TTL_SECONDS, PROVENANCE_VERSION_2,
+};
+use writ_broker::approval_store::{
+    approval_binding, kind_text, parse_kind, parse_permission, permission_text, revocation_binding,
+    signoff_binding, ApprovalLedger, BootstrapEnrollment, CeremonyBegin, CeremonyFinish,
+    CeremonyOp, CeremonyOutcome, CeremonyResult, Expired, IssuedChallenge, NewEnrollment,
+    RequestRecorded, SignoffState, UseState, APPROVAL_GRANT_TTL_SECONDS, BOOTSTRAP_ISSUER,
+    BOOTSTRAP_SUBJECT, GLOBAL_SCOPE,
+};
+use writ_broker::clock::ObservedTime;
+use writ_broker::grants::{GrantLabel, NewGrant, Verdict};
+use writ_broker::human::{
+    check_actor, check_service_permission, same_subject, ActiveCredentials, Actor, CeremonyState,
+    CredentialStatus, EnrollmentRecord, LedgerCapability, Parties, Permission, PrincipalKind,
+    RoleAssignment, StoredCredential, SubjectId, SubjectRecord, SubjectStatus, VerifiedAssertion,
+};
+use writ_broker::refusal::Refusal;
+use writ_broker::store::{StoreError, TxFailure, TxStage};
+use writ_broker::writ_kernel::json::{self, Digest, Value};
+use writ_broker::writ_kernel::time::Timestamp;
+
+use crate::workflow::read_workflow;
+use crate::{
+    code_name, insert_grant_rows, stored_grant, unavailable, BodyError, End, SqliteLedger,
+};
+
+/// A transaction body's answer: a refusal rolls back, a store failure fails closed.
+type Outcome<T> = Result<Result<T, Refusal>, BodyError>;
+
+/// Early return of a refusal from an [`Outcome`] body.
+macro_rules! check {
+    ($e:expr) => {
+        match $e {
+            Ok(v) => v,
+            Err(r) => return Ok(Err(r)),
+        }
+    };
+}
+
+fn ap(code: ApprovalCode) -> Refusal {
+    Refusal::Approval(code)
+}
+
+fn challenge_refused(r: ChallengeRefusal) -> Refusal {
+    ap(ApprovalCode::ChallengeInvalid(r))
+}
+
+fn cap() -> LedgerCapability {
+    LedgerCapability::for_ledger_implementation()
+}
+
+fn ts(text: &str) -> Result<Timestamp, BodyError> {
+    Timestamp::parse_rfc3339(text).ok_or(BodyError::Integrity)
+}
+
+/// A digest that no presented value equals (see the module notes).
+fn sentinel() -> Digest {
+    Digest::of_bytes(b"writ-ledger-6: stored digest differs from the presented value")
+}
+
+/// I-8: append one row to the ledger-wide sequence inside the calling transaction.
+pub(crate) fn next_seq(tx: &Transaction<'_>, kind: &str, reference: &str) -> rusqlite::Result<i64> {
+    tx.execute(
+        "INSERT INTO ledger_sequence (kind, reference) VALUES (?1, ?2)",
+        (kind, reference),
+    )?;
+    Ok(tx.last_insert_rowid())
+}
+
+/// The grant is invalidated by a committed revocation (I-4, O-5): revoked itself, or minted
+/// by an M4 decision whose approver's subject or credential is revoked, or whose approver no
+/// longer holds an unrevoked `approver` role in the request's scope.
+pub(crate) fn grant_revoked(conn: &Connection, label: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM revocations WHERE target_kind = 'grant' \
+           AND target_id = 'grant:' || ?1) \
+         OR EXISTS (SELECT 1 FROM approval_grants g \
+           JOIN approval_decisions d ON d.challenge_id = g.challenge_id \
+           JOIN approval_requests r ON r.request_id = g.request_id \
+           WHERE g.label = ?1 AND ( \
+             EXISTS (SELECT 1 FROM subjects s WHERE s.issuer = d.issuer \
+               AND s.subject = d.subject AND s.revoked_at IS NOT NULL) \
+             OR EXISTS (SELECT 1 FROM credentials c WHERE c.credential_id = d.credential_id \
+               AND c.status = 'revoked') \
+             OR NOT EXISTS (SELECT 1 FROM role_assignments a WHERE a.issuer = d.issuer \
+               AND a.subject = d.subject AND a.kind = 'human' AND a.permission = 'approver' \
+               AND a.tenant_id = r.tenant_id AND a.project_id = r.project_id \
+               AND a.revoked_at IS NULL)))",
+        [label],
+        |r| r.get(0),
+    )
+}
+
+/// Consume `signoff_id` single-use ledger-wide inside the calling promotion transaction
+/// (I-5): `SIGNOFF_UNKNOWN`, `SIGNOFF_REVOKED` (the signoff, or its signer's subject or
+/// credential), `SIGNOFF_CONSUMED`, else one `consumed_signoffs` row. The promotion's own
+/// I-5 use-time checks (binding, freshness, role, separation) are the caller's (M4-06).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn consume_signoff(
+    tx: &Transaction<'_>,
+    signoff_id: &str,
+    tenant_id: &str,
+    idempotency_key: &str,
+) -> Result<Result<(), ApprovalCode>, BodyError> {
+    if read_signoff(tx, signoff_id)?.is_none() {
+        return Ok(Err(ApprovalCode::SignoffUnknown));
+    }
+    if signoff_revoked(tx, signoff_id)? {
+        return Ok(Err(ApprovalCode::SignoffRevoked));
+    }
+    let consumed: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM consumed_signoffs WHERE signoff_id = ?1)",
+        [signoff_id],
+        |r| r.get(0),
+    )?;
+    if consumed {
+        return Ok(Err(ApprovalCode::SignoffConsumed));
+    }
+    tx.execute(
+        "INSERT INTO consumed_signoffs (signoff_id, tenant_id, idempotency_key) VALUES (?1, ?2, ?3)",
+        (signoff_id, tenant_id, idempotency_key),
+    )?;
+    Ok(Ok(()))
+}
+
+fn signoff_revoked(conn: &Connection, signoff_id: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM revocations WHERE target_kind = 'signoff' \
+           AND target_id = 'signoff:' || ?1) \
+         OR EXISTS (SELECT 1 FROM signoffs g WHERE g.signoff_id = ?1 AND ( \
+           EXISTS (SELECT 1 FROM subjects s WHERE s.issuer = g.issuer AND s.subject = g.subject \
+             AND s.revoked_at IS NOT NULL) \
+           OR EXISTS (SELECT 1 FROM credentials c WHERE c.credential_id = g.credential_id \
+             AND c.status = 'revoked')))",
+        [signoff_id],
+        |r| r.get(0),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Stored records.
+
+fn subject_value(s: &SubjectId) -> Value {
+    json::obj([
+        ("issuer", json::s(&s.issuer)),
+        ("subject", json::s(&s.subject)),
+    ])
+}
+
+fn subject_record(conn: &Connection, s: &SubjectId) -> Result<Option<SubjectRecord>, BodyError> {
+    let row: Option<(String, Option<String>)> = conn
+        .query_row(
+            "SELECT kind, revoked_at FROM subjects WHERE issuer = ?1 AND subject = ?2",
+            (&s.issuer, &s.subject),
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((kind, revoked)) = row else {
+        return Ok(None);
+    };
+    Ok(Some(SubjectRecord {
+        subject: s.clone(),
+        kind: parse_kind(&kind).ok_or(BodyError::Integrity)?,
+        status: match revoked {
+            None => SubjectStatus::Active,
+            Some(at) => SubjectStatus::Revoked { at: ts(&at)? },
+        },
+    }))
+}
+
+fn assignments(conn: &Connection, s: &SubjectId) -> Result<Vec<RoleAssignment>, BodyError> {
+    let mut stmt = conn.prepare(
+        "SELECT assignment_id, kind, permission, tenant_id, project_id, granted_at, revoked_at \
+         FROM role_assignments WHERE issuer = ?1 AND subject = ?2 ORDER BY assignment_id",
+    )?;
+    let rows = stmt
+        .query_map((&s.issuer, &s.subject), |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, Option<String>>(6)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (id, kind, permission, tenant, project, granted, revoked) in rows {
+        out.push(RoleAssignment {
+            assignment_id: id,
+            subject: s.clone(),
+            kind: parse_kind(&kind).ok_or(BodyError::Integrity)?,
+            permission: parse_permission(&permission).ok_or(BodyError::Integrity)?,
+            tenant_id: tenant,
+            project_id: project,
+            granted_at: ts(&granted)?,
+            revoked_at: revoked.as_deref().map(ts).transpose()?,
+        });
+    }
+    Ok(out)
+}
+
+fn enrollment(conn: &Connection, s: &SubjectId) -> Result<Option<EnrollmentRecord>, BodyError> {
+    let row: Option<(String, String, String)> = conn
+        .query_row(
+            "SELECT enrolled_at, enrolled_by_issuer, enrolled_by FROM enrollments \
+             WHERE issuer = ?1 AND subject = ?2",
+            (&s.issuer, &s.subject),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let Some((at, by_issuer, by)) = row else {
+        return Ok(None);
+    };
+    let mut stmt = conn.prepare(
+        "SELECT linked_issuer, linked_subject FROM enrollment_links \
+         WHERE issuer = ?1 AND subject = ?2 ORDER BY linked_issuer, linked_subject",
+    )?;
+    let linked = stmt
+        .query_map((&s.issuer, &s.subject), |r| {
+            Ok(SubjectId {
+                issuer: r.get(0)?,
+                subject: r.get(1)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    EnrollmentRecord::new(
+        &cap(),
+        s.clone(),
+        linked,
+        ts(&at)?,
+        SubjectId::new(&by_issuer, &by),
+    )
+    .map(Some)
+    .map_err(|_| BodyError::Integrity)
+}
+
+fn credentials(conn: &Connection, s: &SubjectId) -> Result<Vec<StoredCredential>, BodyError> {
+    let mut stmt = conn.prepare(
+        "SELECT credential_id, public_material, status, enrolled_at, enrolled_by_issuer, \
+         enrolled_by FROM credentials WHERE issuer = ?1 AND subject = ?2 ORDER BY credential_id",
+    )?;
+    let rows = stmt
+        .query_map((&s.issuer, &s.subject), |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Vec<u8>>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (id, material, status, at, by_issuer, by) in rows {
+        out.push(StoredCredential {
+            credential_id: id,
+            subject: s.clone(),
+            public_material: material,
+            status: match status.as_str() {
+                "active" => CredentialStatus::Active,
+                "revoked" => CredentialStatus::Revoked,
+                _ => return Err(BodyError::Integrity),
+            },
+            enrolled_at: ts(&at)?,
+            enrolled_by: SubjectId::new(&by_issuer, &by),
+        });
+    }
+    Ok(out)
+}
+
+/// An actor's stored records, read inside the deciding transaction (C2).
+struct ActorRows {
+    record: SubjectRecord,
+    enrollment: Option<EnrollmentRecord>,
+    assignments: Vec<RoleAssignment>,
+    credentials: Vec<StoredCredential>,
+}
+
+impl ActorRows {
+    fn read(conn: &Connection, s: &SubjectId) -> Result<Option<ActorRows>, BodyError> {
+        let Some(record) = subject_record(conn, s)? else {
+            return Ok(None);
+        };
+        Ok(Some(ActorRows {
+            record,
+            enrollment: enrollment(conn, s)?,
+            assignments: assignments(conn, s)?,
+            credentials: credentials(conn, s)?,
+        }))
+    }
+
+    fn actor(&self) -> Actor<'_> {
+        Actor {
+            record: &self.record,
+            enrollment: self.enrollment.as_ref(),
+            assignments: &self.assignments,
+        }
+    }
+
+    /// The active credentials for `permission` in the target's scope; for the revocation
+    /// of the actor's own unused grant, the approver permission instead (I-4).
+    fn select(&self, t: &Target, now: Timestamp) -> Result<ActiveCredentials, Refusal> {
+        let b = &t.binding;
+        let select = |p: Permission| {
+            ActiveCredentials::select(
+                &self.record,
+                self.credentials.iter().cloned(),
+                &self.assignments,
+                p,
+                &b.tenant_id,
+                &b.project_id,
+                now,
+            )
+        };
+        let creds = match select(t.permission) {
+            Err(ApprovalCode::PermissionMissing) if t.own_grant(&self.record.subject) => {
+                select(Permission::Approver)
+            }
+            other => other,
+        }
+        .map_err(ap)?;
+        if creds.as_slice().is_empty() {
+            return Err(ap(ApprovalCode::CredentialRevoked));
+        }
+        Ok(creds)
+    }
+}
+
+fn request_from_context(v: &Value) -> Option<NewApprovalRequest> {
+    let s = |k: &str| v.get(k)?.as_str().map(str::to_string);
+    let subject = |v: &Value| {
+        Some(SubjectId::new(
+            v.get("issuer")?.as_str()?,
+            v.get("subject")?.as_str()?,
+        ))
+    };
+    let t = |k: &str| Timestamp::parse_rfc3339(v.get(k)?.as_str()?);
+    let agent = match v.get("agent")? {
+        Value::Null => None,
+        a => Some(subject(a)?),
+    };
+    Some(NewApprovalRequest {
+        request_id: s("request_id")?,
+        tenant_id: s("tenant_id")?,
+        project_id: s("project_id")?,
+        requester: subject(v.get("requester")?)?,
+        agent,
+        delegation_chain: v
+            .get("delegation_chain")?
+            .as_arr()?
+            .iter()
+            .map(subject)
+            .collect::<Option<Vec<_>>>()?,
+        action_kind: s("action_kind")?,
+        canonical_resource_id: s("canonical_resource_id")?,
+        action_digest: s("action_digest")?,
+        action: v.get("action")?.clone(),
+        capabilities: v
+            .get("capabilities")?
+            .as_arr()?
+            .iter()
+            .map(|c| c.as_str().map(str::to_string))
+            .collect::<Option<Vec<_>>>()?,
+        policy_bundle_sha: s("policy_bundle_sha")?,
+        request_fingerprint: s("request_fingerprint")?,
+        created_at: t("created_at")?,
+        expires_at: t("expires_at")?,
+        required_approvers: u32::try_from(v.get("required_approvers")?.as_int()?).ok()?,
+    })
+}
+
+fn load_request(
+    conn: &Connection,
+    request_id: &str,
+) -> Result<Option<(ApprovalRequest, ApprovalStatus)>, BodyError> {
+    let row: Option<(String, String, String)> = conn
+        .query_row(
+            "SELECT context, context_fingerprint, status FROM approval_requests \
+             WHERE request_id = ?1",
+            [request_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let Some((context, fingerprint, status)) = row else {
+        return Ok(None);
+    };
+    let value = json::parse(context.as_bytes()).map_err(|_| BodyError::Integrity)?;
+    let request = request_from_context(&value)
+        .and_then(|fields| ApprovalRequest::new(fields).ok())
+        .ok_or(BodyError::Integrity)?;
+    if request.fingerprint().as_str() != fingerprint || request.request_id() != request_id {
+        return Err(BodyError::Integrity);
+    }
+    let status = ApprovalStatus::parse(&status).ok_or(BodyError::Integrity)?;
+    Ok(Some((request, status)))
+}
+
+fn read_signoff(conn: &Connection, signoff_id: &str) -> Result<Option<Signoff>, BodyError> {
+    let row = conn
+        .query_row(
+            "SELECT tenant_id, project_id, task_id, workflow_id, from_state, to_state, \
+             acceptance_record_id, criterion_id, artifact_snapshot_id, artifact_digest, \
+             acceptance_policy_id, acceptance_policy_version, acceptance_policy_bundle_sha, \
+             state_revision, issued_at, expires_at, issuer, subject, credential_id, \
+             challenge_id, provenance_version FROM signoffs WHERE signoff_id = ?1",
+            [signoff_id],
+            |r| {
+                let text = |i: usize| r.get::<_, String>(i);
+                Ok((
+                    [
+                        text(0)?,
+                        text(1)?,
+                        text(2)?,
+                        text(3)?,
+                        text(4)?,
+                        text(5)?,
+                        text(6)?,
+                        text(7)?,
+                        text(8)?,
+                        text(9)?,
+                        text(10)?,
+                        text(11)?,
+                        text(12)?,
+                    ],
+                    r.get::<_, i64>(13)?,
+                    [
+                        text(14)?,
+                        text(15)?,
+                        text(16)?,
+                        text(17)?,
+                        text(18)?,
+                        text(19)?,
+                        text(20)?,
+                    ],
+                ))
+            },
+        )
+        .optional()?;
+    let Some((b, revision, p)) = row else {
+        return Ok(None);
+    };
+    let [tenant, project, task, workflow, from, to, record, criterion, snapshot, digest, policy, version, sha] =
+        b;
+    let [issued, expires, issuer, subject, credential, challenge, provenance] = p;
+    let binding = NewSignoff {
+        signoff_id: signoff_id.to_string(),
+        tenant_id: tenant,
+        project_id: project,
+        task_id: task,
+        workflow_id: workflow,
+        from_state: from,
+        to_state: to,
+        acceptance_record_id: record,
+        criterion_id: criterion,
+        artifact_snapshot_id: snapshot,
+        artifact_digest: digest,
+        acceptance_policy_id: policy,
+        acceptance_policy_version: version,
+        acceptance_policy_bundle_sha: sha,
+        state_revision: revision,
+        expires_at: ts(&expires)?,
+    };
+    Signoff::from_stored(
+        &cap(),
+        SignoffFields {
+            binding,
+            issued_at: ts(&issued)?,
+            subject: SubjectId::new(&issuer, &subject),
+            credential_id: credential,
+            challenge_id: challenge,
+            provenance_version: provenance,
+        },
+    )
+    .map(Some)
+    .map_err(|_| BodyError::Integrity)
+}
+
+// ---------------------------------------------------------------------------
+// Targets: what a ceremony binds, recomputed from current stored state.
+
+enum TargetKind {
+    Request {
+        request: Box<ApprovalRequest>,
+        status: ApprovalStatus,
+    },
+    Revoke {
+        /// For a grant minted by an M4 decision: its approver and whether it is unused.
+        grant_approver: Option<(SubjectId, bool)>,
+    },
+    Signoff,
+    Enroll,
+}
+
+struct Target {
+    binding: ChallengeBinding,
+    permission: Permission,
+    expiry: Option<Timestamp>,
+    /// A refusal that applies once the assertion is accepted (already revoked, signoff id
+    /// taken, enrollment unsupported).
+    blocked: Option<Refusal>,
+    kind: TargetKind,
+}
+
+impl Target {
+    fn own_grant(&self, subject: &SubjectId) -> bool {
+        matches!(&self.kind, TargetKind::Revoke { grant_approver: Some((s, true)) } if s == subject)
+    }
+}
+
+fn revoked_target(conn: &Connection, target: &RevocationTarget) -> rusqlite::Result<bool> {
+    let kind = match target {
+        RevocationTarget::Grant(_) => "grant",
+        RevocationTarget::Signoff(_) => "signoff",
+        RevocationTarget::Credential(_) => "credential",
+        RevocationTarget::Subject(_) => "subject",
+        RevocationTarget::Role(_) => "role",
+    };
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM revocations WHERE target_kind = ?1 AND target_id = ?2)",
+        (kind, target.target_id()),
+        |r| r.get(0),
+    )
+}
+
+fn target_kind_text(target: &RevocationTarget) -> &'static str {
+    match target {
+        RevocationTarget::Grant(_) => "grant",
+        RevocationTarget::Signoff(_) => "signoff",
+        RevocationTarget::Credential(_) => "credential",
+        RevocationTarget::Subject(_) => "subject",
+        RevocationTarget::Role(_) => "role",
+    }
+}
+
+fn unknown_target() -> Refusal {
+    challenge_refused(ChallengeRefusal::TargetMismatch)
+}
+
+fn revoke_target(conn: &Connection, target: &RevocationTarget, reason: &str) -> Outcome<Target> {
+    let global = (GLOBAL_SCOPE.to_string(), GLOBAL_SCOPE.to_string());
+    let already = revoked_target(conn, target)?;
+    let mut grant_approver = None;
+    let (scope, record, blocked) = match target {
+        RevocationTarget::Grant(label) => {
+            let Some(stored) = stored_grant(conn, label)? else {
+                return Ok(Err(Refusal::GrantUnknown));
+            };
+            let link: Option<(String, String, String, String)> = conn
+                .query_row(
+                    "SELECT r.tenant_id, r.project_id, d.issuer, d.subject FROM approval_grants g \
+                     JOIN approval_requests r ON r.request_id = g.request_id \
+                     JOIN approval_decisions d ON d.challenge_id = g.challenge_id \
+                     WHERE g.label = ?1",
+                    [label],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .optional()?;
+            let scope = match link {
+                Some((tenant, project, issuer, subject)) => {
+                    grant_approver = Some((SubjectId::new(&issuer, &subject), stored.uses == 0));
+                    (tenant, project)
+                }
+                None => global,
+            };
+            let record = json::obj([
+                ("binding", json::s(&stored.binding)),
+                ("expires_at", json::s(&stored.expires_at.to_string())),
+                ("label", json::s(label)),
+            ]);
+            (
+                scope,
+                record,
+                already.then(|| ap(ApprovalCode::GrantRevoked)),
+            )
+        }
+        RevocationTarget::Signoff(id) => {
+            let Some(signoff) = read_signoff(conn, id)? else {
+                return Ok(Err(ap(ApprovalCode::SignoffUnknown)));
+            };
+            let b = &signoff.fields().binding;
+            (
+                (b.tenant_id.clone(), b.project_id.clone()),
+                signoff.context(),
+                already.then(|| ap(ApprovalCode::SignoffRevoked)),
+            )
+        }
+        RevocationTarget::Credential(id) => {
+            let row: Option<(String, String)> = conn
+                .query_row(
+                    "SELECT issuer, subject FROM credentials WHERE credential_id = ?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let Some((issuer, subject)) = row else {
+                return Ok(Err(unknown_target()));
+            };
+            let record = json::obj([
+                ("credential_id", json::s(id)),
+                ("subject", subject_value(&SubjectId::new(&issuer, &subject))),
+            ]);
+            (
+                global,
+                record,
+                already.then(|| ap(ApprovalCode::CredentialRevoked)),
+            )
+        }
+        RevocationTarget::Subject(s) => {
+            let Some(record) = subject_record(conn, s)? else {
+                return Ok(Err(unknown_target()));
+            };
+            let value = json::obj([
+                ("kind", json::s(kind_text(record.kind))),
+                ("subject", subject_value(s)),
+            ]);
+            (
+                global,
+                value,
+                already.then(|| ap(ApprovalCode::SubjectRevoked)),
+            )
+        }
+        RevocationTarget::Role(id) => {
+            let row: Option<[String; 7]> = conn
+                .query_row(
+                    "SELECT issuer, subject, kind, permission, tenant_id, project_id, granted_at \
+                     FROM role_assignments WHERE assignment_id = ?1",
+                    [id],
+                    |r| {
+                        Ok([
+                            r.get(0)?,
+                            r.get(1)?,
+                            r.get(2)?,
+                            r.get(3)?,
+                            r.get(4)?,
+                            r.get(5)?,
+                            r.get(6)?,
+                        ])
+                    },
+                )
+                .optional()?;
+            let Some([issuer, subject, kind, permission, tenant, project, granted]) = row else {
+                return Ok(Err(unknown_target()));
+            };
+            let record = json::obj([
+                ("assignment_id", json::s(id)),
+                ("granted_at", json::s(&granted)),
+                ("kind", json::s(&kind)),
+                ("permission", json::s(&permission)),
+                ("project_id", json::s(&project)),
+                ("subject", subject_value(&SubjectId::new(&issuer, &subject))),
+                ("tenant_id", json::s(&tenant)),
+            ]);
+            (
+                global,
+                record,
+                already.then(|| ap(ApprovalCode::PermissionMissing)),
+            )
+        }
+    };
+    let binding = revocation_binding(target, reason, &scope.0, &scope.1, record)
+        .map_err(|_| BodyError::Integrity)?;
+    Ok(Ok(Target {
+        binding,
+        permission: Permission::Revoker,
+        expiry: None,
+        blocked,
+        kind: TargetKind::Revoke { grant_approver },
+    }))
+}
+
+/// The signoff binding is current: the workflow is in the binding's source state at its
+/// revision with its artifact, and the project's active acceptance policy is the bound one.
+fn signoff_current(conn: &Connection, b: &NewSignoff) -> Result<bool, BodyError> {
+    let Some(w) = read_workflow(conn, &b.tenant_id, &b.project_id, &b.workflow_id)? else {
+        return Ok(false);
+    };
+    let policy: Option<(String, String)> = conn
+        .query_row(
+            "SELECT requirements, bundle_sha FROM acceptance_policies \
+             WHERE tenant_id = ?1 AND project_id = ?2",
+            (&b.tenant_id, &b.project_id),
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((requirements, sha)) = policy else {
+        return Ok(false);
+    };
+    let req = json::parse(requirements.as_bytes()).map_err(|_| BodyError::Integrity)?;
+    let member = |k: &str| req.get(k).and_then(Value::as_str).map(str::to_string);
+    Ok(w.task_id == b.task_id
+        && w.state == b.from_state
+        && w.revision == b.state_revision
+        && w.artifact_snapshot_id == b.artifact_snapshot_id
+        && w.artifact_digest == b.artifact_digest
+        && sha == b.acceptance_policy_bundle_sha
+        && member("acceptance_policy_id").as_deref() == Some(b.acceptance_policy_id.as_str())
+        && member("acceptance_policy_version").as_deref()
+            == Some(b.acceptance_policy_version.as_str()))
+}
+
+/// Why `e` cannot be enrolled (ENROLLMENT_UNSUPPORTED), if anything.
+fn enrollment_blocked(conn: &Connection, e: &NewEnrollment) -> Result<bool, BodyError> {
+    let identities_ok = e.subject.is_well_formed()
+        && e.linked_identities.iter().all(SubjectId::is_well_formed)
+        && e.roles
+            .iter()
+            .all(|r| !r.tenant_id.is_empty() && !r.project_id.is_empty());
+    let credential_ok = match (e.kind, &e.credential) {
+        (PrincipalKind::Human, Some(c)) => {
+            !c.credential_id.is_empty() && !c.public_material.is_empty()
+        }
+        (PrincipalKind::Service, None) => true,
+        _ => false,
+    };
+    let roles_ok = e
+        .roles
+        .iter()
+        .all(|r| check_service_permission(e.kind, r.permission).is_ok());
+    if !(identities_ok && credential_ok && roles_ok) {
+        return Ok(true);
+    }
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM subjects WHERE issuer = ?1 AND subject = ?2)",
+        (&e.subject.issuer, &e.subject.subject),
+        |r| r.get(0),
+    )?;
+    let credential_taken = match &e.credential {
+        Some(c) => conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM credentials WHERE credential_id = ?1)",
+            [&c.credential_id],
+            |r| r.get(0),
+        )?,
+        None => false,
+    };
+    Ok(exists || credential_taken)
+}
+
+fn target(conn: &Connection, op: &CeremonyOp) -> Outcome<Target> {
+    match op {
+        CeremonyOp::Approve { request_id } | CeremonyOp::Deny { request_id } => {
+            let Some((request, status)) = load_request(conn, request_id)? else {
+                return Ok(Err(ap(ApprovalCode::RequestUnknown)));
+            };
+            Ok(Ok(Target {
+                binding: approval_binding(&request, op.operation()),
+                permission: Permission::Approver,
+                expiry: Some(request.expires_at()),
+                blocked: None,
+                kind: TargetKind::Request {
+                    request: Box::new(request),
+                    status,
+                },
+            }))
+        }
+        CeremonyOp::Revoke { target, reason } => revoke_target(conn, target, reason),
+        CeremonyOp::Signoff { binding, .. } => {
+            let Ok(challenge_binding) = signoff_binding(binding) else {
+                return Ok(Err(challenge_refused(ChallengeRefusal::Malformed)));
+            };
+            let taken: bool = conn.query_row(
+                "SELECT EXISTS (SELECT 1 FROM signoffs WHERE signoff_id = ?1)",
+                [&binding.signoff_id],
+                |r| r.get(0),
+            )?;
+            let blocked = (taken || !signoff_current(conn, binding)?)
+                .then(|| ap(ApprovalCode::SignoffMismatch));
+            Ok(Ok(Target {
+                binding: challenge_binding,
+                permission: Permission::SignoffAuthority,
+                expiry: Some(binding.expires_at),
+                blocked,
+                kind: TargetKind::Signoff,
+            }))
+        }
+        CeremonyOp::Enroll { enrollment } => {
+            let Ok(binding) = enrollment.binding() else {
+                return Ok(Err(ap(ApprovalCode::EnrollmentUnsupported)));
+            };
+            let blocked = enrollment_blocked(conn, enrollment)?
+                .then(|| ap(ApprovalCode::EnrollmentUnsupported));
+            Ok(Ok(Target {
+                binding,
+                permission: Permission::Operator,
+                expiry: None,
+                blocked,
+                kind: TargetKind::Enroll,
+            }))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ceremony transactions.
+
+fn begin_in(
+    tx: &Transaction<'_>,
+    b: &CeremonyBegin<'_>,
+    challenge_id: &str,
+) -> Outcome<IssuedChallenge> {
+    let now = b.now.at();
+    let t = check!(target(tx, b.op)?);
+    if let Some(refusal) = t.blocked.clone() {
+        return Ok(Err(refusal));
+    }
+    if let TargetKind::Request { request, status } = &t.kind {
+        match status {
+            ApprovalStatus::Pending if now >= request.expires_at() => {
+                return Ok(Err(ap(ApprovalCode::RequestExpired)))
+            }
+            ApprovalStatus::Pending => {}
+            ApprovalStatus::Expired => return Ok(Err(ap(ApprovalCode::RequestExpired))),
+            ApprovalStatus::Approved | ApprovalStatus::Denied => {
+                return Ok(Err(ap(ApprovalCode::RequestClosed)))
+            }
+        }
+    }
+    let Some(rows) = ActorRows::read(tx, b.subject)? else {
+        return Ok(Err(ap(ApprovalCode::PermissionMissing)));
+    };
+    let creds = check!(rows.select(&t, now));
+    let start = check!(b
+        .verifier
+        .begin(b.subject, &creds)
+        .map_err(|e| ap(ApprovalCode::AssertionInvalid(e))));
+    let challenge = check!(Challenge::issue(NewChallenge {
+        challenge_id: challenge_id.to_string(),
+        challenge_digest: start.challenge_digest,
+        ceremony_state: start.state,
+        subject: b.subject.clone(),
+        allowed_credentials: creds.ids(),
+        binding: t.binding,
+        issued_at: now,
+        target_expiry: t
+            .expiry
+            .unwrap_or_else(|| now.plus_seconds(CHALLENGE_TTL_SECONDS)),
+        idempotency_key: b.idempotency_key.to_string(),
+    })
+    .map_err(challenge_refused));
+    // C1: challenge ids and digests are unique ledger-wide (also UNIQUE in the schema).
+    let duplicate: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM challenges WHERE challenge_id = ?1 OR challenge_digest = ?2)",
+        (
+            challenge.challenge_id(),
+            challenge.challenge_digest().as_str(),
+        ),
+        |r| r.get(0),
+    )?;
+    if duplicate {
+        return Ok(Err(challenge_refused(ChallengeRefusal::Malformed)));
+    }
+    let allowed = Value::Arr(
+        challenge
+            .allowed_credentials()
+            .iter()
+            .map(|c| json::s(c))
+            .collect(),
+    );
+    let bind = challenge.binding();
+    tx.execute(
+        "INSERT INTO challenges (challenge_id, challenge_digest, ceremony_state, issuer, subject, \
+         allowed_credentials, operation, verdict, tenant_id, project_id, target_id, \
+         context_fingerprint, policy_bundle_sha, revision, issued_at, expires_at, \
+         idempotency_key, status) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 'issued')",
+        rusqlite::params![
+            challenge.challenge_id(),
+            challenge.challenge_digest().as_str(),
+            challenge.ceremony_state().as_bytes(),
+            challenge.subject().issuer,
+            challenge.subject().subject,
+            json::canonical(&allowed).map_err(|_| BodyError::Integrity)?,
+            bind.operation.as_str(),
+            challenge.verdict(),
+            bind.tenant_id,
+            bind.project_id,
+            bind.target_id,
+            bind.context_fingerprint.as_str(),
+            bind.policy_bundle_sha,
+            bind.revision,
+            challenge.issued_at().to_string(),
+            challenge.expires_at().to_string(),
+            challenge.idempotency_key(),
+        ],
+    )?;
+    Ok(Ok(IssuedChallenge {
+        challenge_id: challenge.challenge_id().to_string(),
+        client_options: start.client_options,
+        expires_at: challenge.expires_at(),
+    }))
+}
+
+/// A stored challenge row with its digests as text.
+struct ChallengeRow {
+    digest: String,
+    state: Vec<u8>,
+    subject: SubjectId,
+    allowed: Vec<String>,
+    operation: ChallengeOperation,
+    verdict: String,
+    tenant_id: String,
+    project_id: String,
+    target_id: String,
+    fingerprint: String,
+    policy: String,
+    revision: i64,
+    issued_at: Timestamp,
+    expires_at: Timestamp,
+    key: String,
+    status: ChallengeStatus,
+}
+
+fn challenge_row(conn: &Connection, id: &str) -> Result<Option<ChallengeRow>, BodyError> {
+    let row = conn
+        .query_row(
+            "SELECT challenge_digest, ceremony_state, issuer, subject, allowed_credentials, \
+             operation, verdict, tenant_id, project_id, target_id, context_fingerprint, \
+             policy_bundle_sha, revision, issued_at, expires_at, idempotency_key, status \
+             FROM challenges WHERE challenge_id = ?1",
+            [id],
+            |r| {
+                let text = |i: usize| r.get::<_, String>(i);
+                Ok((
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, i64>(12)?,
+                    [
+                        text(0)?,
+                        text(2)?,
+                        text(3)?,
+                        text(4)?,
+                        text(5)?,
+                        text(6)?,
+                        text(7)?,
+                        text(8)?,
+                        text(9)?,
+                        text(10)?,
+                        text(11)?,
+                        text(13)?,
+                        text(14)?,
+                        text(15)?,
+                        text(16)?,
+                    ],
+                ))
+            },
+        )
+        .optional()?;
+    let Some((state, revision, t)) = row else {
+        return Ok(None);
+    };
+    let [digest, issuer, subject, allowed, operation, verdict, tenant, project, target, fingerprint, policy, issued, expires, key, status] =
+        t;
+    let allowed = json::parse(allowed.as_bytes())
+        .ok()
+        .and_then(|v| {
+            v.as_arr()?
+                .iter()
+                .map(|c| c.as_str().map(str::to_string))
+                .collect::<Option<Vec<_>>>()
+        })
+        .ok_or(BodyError::Integrity)?;
+    Ok(Some(ChallengeRow {
+        digest,
+        state,
+        subject: SubjectId::new(&issuer, &subject),
+        allowed,
+        operation: ChallengeOperation::parse(&operation).ok_or(BodyError::Integrity)?,
+        verdict,
+        tenant_id: tenant,
+        project_id: project,
+        target_id: target,
+        fingerprint,
+        policy,
+        revision,
+        issued_at: ts(&issued)?,
+        expires_at: ts(&expires)?,
+        key,
+        status: match status.as_str() {
+            "issued" => ChallengeStatus::Issued,
+            "consumed" => ChallengeStatus::Consumed,
+            "expired" => ChallengeStatus::Expired,
+            _ => return Err(BodyError::Integrity),
+        },
+    }))
+}
+
+/// Rebuild the stored challenge for `check` (module notes on stored digests).
+fn rebuild(
+    id: &str,
+    row: ChallengeRow,
+    assertion: &VerifiedAssertion,
+    presented: &ChallengeBinding,
+) -> Result<Challenge, Refusal> {
+    let pick = |stored: &str, presented: &Digest| {
+        if stored == presented.as_str() {
+            presented.clone()
+        } else {
+            sentinel()
+        }
+    };
+    Challenge::from_stored(
+        &cap(),
+        StoredChallenge {
+            challenge_id: id.to_string(),
+            challenge_digest: pick(&row.digest, assertion.challenge_digest()),
+            ceremony_state: CeremonyState::from_bytes(row.state),
+            subject: row.subject,
+            allowed_credentials: row.allowed,
+            binding: ChallengeBinding {
+                operation: row.operation,
+                tenant_id: row.tenant_id,
+                project_id: row.project_id,
+                target_id: row.target_id,
+                context_fingerprint: pick(&row.fingerprint, &presented.context_fingerprint),
+                policy_bundle_sha: row.policy,
+                revision: row.revision,
+            },
+            verdict: row.verdict,
+            issued_at: row.issued_at,
+            expires_at: row.expires_at,
+            idempotency_key: row.key,
+            status: row.status,
+        },
+    )
+    .map_err(challenge_refused)
+}
+
+/// An identical retry of a committed ceremony replays it (module documentation of
+/// `writ_broker::approval_store`); anything else on a consumed challenge is refused.
+fn replay(
+    conn: &Connection,
+    challenge_id: &str,
+    row: &ChallengeRow,
+    assertion: &VerifiedAssertion,
+    f: &CeremonyFinish<'_>,
+) -> Outcome<CeremonyOutcome> {
+    let consumed = || Ok(Err(challenge_refused(ChallengeRefusal::Consumed)));
+    let event: Option<(String, Option<String>, Option<i64>)> = conn
+        .query_row(
+            "SELECT kind, credential_id, ledger_seq FROM approval_events WHERE challenge_id = ?1",
+            [challenge_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let Some((kind, credential, Some(seq))) = event else {
+        return consumed();
+    };
+    let identical = row.key == f.idempotency_key
+        && row.operation == f.op.operation()
+        && assertion.subject() == &row.subject
+        && credential.as_deref() == Some(assertion.credential_id())
+        && assertion.challenge_digest().as_str() == row.digest;
+    if !identical {
+        return consumed();
+    }
+    let result = match kind.as_str() {
+        "approved" => {
+            let label: Option<String> = conn.query_row(
+                "SELECT grant_label FROM approval_decisions WHERE challenge_id = ?1",
+                [challenge_id],
+                |r| r.get(0),
+            )?;
+            CeremonyResult::Approved {
+                grant: label
+                    .as_deref()
+                    .and_then(GrantLabel::new)
+                    .ok_or(BodyError::Integrity)?,
+            }
+        }
+        "denied" => CeremonyResult::Denied,
+        "revoked" => {
+            let state: String = conn.query_row(
+                "SELECT use_state FROM revocations WHERE challenge_id = ?1",
+                [challenge_id],
+                |r| r.get(0),
+            )?;
+            CeremonyResult::Revoked {
+                use_state: UseState::parse(&state).ok_or(BodyError::Integrity)?,
+            }
+        }
+        "signed_off" => CeremonyResult::SignedOff {
+            signoff_id: conn.query_row(
+                "SELECT signoff_id FROM signoffs WHERE challenge_id = ?1",
+                [challenge_id],
+                |r| r.get(0),
+            )?,
+        },
+        "enrolled" => {
+            let (issuer, subject): (String, String) = conn.query_row(
+                "SELECT issuer, subject FROM enrollments WHERE challenge_id = ?1",
+                [challenge_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            CeremonyResult::Enrolled {
+                subject: SubjectId::new(&issuer, &subject),
+            }
+        }
+        _ => return Err(BodyError::Integrity),
+    };
+    Ok(Ok(CeremonyOutcome {
+        result,
+        ledger_seq: seq,
+        replayed: true,
+    }))
+}
+
+/// Where a revocation target's use stands now (O-5), inside the revoking transaction.
+fn use_state(conn: &Connection, target: &RevocationTarget) -> rusqlite::Result<UseState> {
+    match target {
+        RevocationTarget::Grant(label) => {
+            let states: Vec<Option<String>> = conn
+                .prepare(
+                    "SELECT r.status FROM grant_uses u LEFT JOIN receipts r \
+                     ON r.tenant_id = u.tenant_id AND r.idempotency_key = u.idempotency_key \
+                     WHERE u.label = ?1 ORDER BY u.seq",
+                )?
+                .query_map([label], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(match states.first() {
+                None => UseState::Unused,
+                Some(None) => UseState::Consumed,
+                Some(Some(s)) if s == "reserved" => UseState::Reserved,
+                Some(Some(_)) => UseState::Dispatched,
+            })
+        }
+        RevocationTarget::Signoff(id) => {
+            let consumed: bool = conn.query_row(
+                "SELECT EXISTS (SELECT 1 FROM consumed_signoffs WHERE signoff_id = ?1)",
+                [id],
+                |r| r.get(0),
+            )?;
+            Ok(if consumed {
+                UseState::Consumed
+            } else {
+                UseState::Unused
+            })
+        }
+        _ => Ok(UseState::NotApplicable),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn approval_event(
+    tx: &Transaction<'_>,
+    kind: &str,
+    target_id: &str,
+    tenant_id: &str,
+    project_id: &str,
+    actor: Option<&SubjectId>,
+    credential_id: Option<&str>,
+    channel: Option<&str>,
+    at: Timestamp,
+    challenge_id: Option<&str>,
+    request: Option<(&str, &str)>,
+    ledger_seq: Option<i64>,
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT INTO approval_events (kind, target_id, tenant_id, project_id, actor_issuer, \
+         actor_subject, credential_id, channel, at, challenge_id, request_fingerprint, \
+         policy_bundle_sha, provenance_version, ledger_seq) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        rusqlite::params![
+            kind,
+            target_id,
+            tenant_id,
+            project_id,
+            actor.map(|a| a.issuer.as_str()),
+            actor.map(|a| a.subject.as_str()),
+            credential_id,
+            channel,
+            at.to_string(),
+            challenge_id,
+            request.map(|r| r.0),
+            request.map(|r| r.1),
+            PROVENANCE_VERSION_2,
+            ledger_seq,
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_subject(
+    tx: &Transaction<'_>,
+    s: &SubjectId,
+    kind: PrincipalKind,
+    at: Timestamp,
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT INTO subjects (issuer, subject, kind, created_at) VALUES (?1, ?2, ?3, ?4)",
+        (&s.issuer, &s.subject, kind_text(kind), at.to_string()),
+    )?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_enrollment(
+    tx: &Transaction<'_>,
+    e: &NewEnrollment,
+    by: &SubjectId,
+    at: Timestamp,
+    challenge_id: Option<&str>,
+    role_prefix: &str,
+) -> Result<(), BodyError> {
+    // Validated as an enrollment record before anything is written.
+    let record = EnrollmentRecord::new(
+        &cap(),
+        e.subject.clone(),
+        e.linked_identities.clone(),
+        at,
+        by.clone(),
+    )
+    .map_err(|_| BodyError::Integrity)?;
+    insert_subject(tx, &e.subject, e.kind, at)?;
+    if let Some(c) = &e.credential {
+        tx.execute(
+            "INSERT INTO credentials (credential_id, issuer, subject, public_material, status, \
+             enrolled_at, enrolled_by_issuer, enrolled_by) \
+             VALUES (?1, ?2, ?3, ?4, 'active', ?5, ?6, ?7)",
+            rusqlite::params![
+                c.credential_id,
+                e.subject.issuer,
+                e.subject.subject,
+                c.public_material,
+                at.to_string(),
+                by.issuer,
+                by.subject,
+            ],
+        )?;
+    }
+    tx.execute(
+        "INSERT INTO enrollments (issuer, subject, enrolled_at, enrolled_by_issuer, enrolled_by, \
+         challenge_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            e.subject.issuer,
+            e.subject.subject,
+            at.to_string(),
+            by.issuer,
+            by.subject,
+            challenge_id,
+        ],
+    )?;
+    for l in record.linked_identities() {
+        tx.execute(
+            "INSERT INTO enrollment_links (issuer, subject, linked_issuer, linked_subject) \
+             VALUES (?1, ?2, ?3, ?4)",
+            (&e.subject.issuer, &e.subject.subject, &l.issuer, &l.subject),
+        )?;
+    }
+    let mut roles: Vec<(&str, &str, &str)> = e
+        .roles
+        .iter()
+        .map(|r| {
+            (
+                permission_text(r.permission),
+                r.tenant_id.as_str(),
+                r.project_id.as_str(),
+            )
+        })
+        .collect();
+    roles.sort();
+    roles.dedup();
+    for (i, (permission, tenant, project)) in roles.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO role_assignments (assignment_id, issuer, subject, kind, permission, \
+             tenant_id, project_id, granted_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                format!("role:{role_prefix}:{i}"),
+                e.subject.issuer,
+                e.subject.subject,
+                kind_text(e.kind),
+                permission,
+                tenant,
+                project,
+                at.to_string(),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// Subjects who changed the artifact of the signoff's workflow, and who activated the
+/// project's acceptance policy, from durable administrative events (C2; fail closed: every
+/// such change, not only those of this revision).
+fn changers(
+    conn: &Connection,
+    b: &NewSignoff,
+) -> rusqlite::Result<(Vec<SubjectId>, Vec<SubjectId>)> {
+    let read = |sql: &str, args: &[&str]| -> rusqlite::Result<Vec<SubjectId>> {
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(args.iter()), |r| {
+                Ok(SubjectId {
+                    issuer: r.get(0)?,
+                    subject: r.get(1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    };
+    let artifact = read(
+        "SELECT DISTINCT operator_issuer, operator_id FROM admin_events \
+         WHERE operation IN ('create_workflow', 'update_artifact') \
+         AND tenant_id = ?1 AND project_id = ?2 AND target = ?3 ORDER BY 1, 2",
+        &[&b.tenant_id, &b.project_id, &b.workflow_id],
+    )?;
+    let policy = read(
+        "SELECT DISTINCT operator_issuer, operator_id FROM admin_events \
+         WHERE operation = 'activate_acceptance_policy' AND tenant_id = ?1 AND project_id = ?2 \
+         ORDER BY 1, 2",
+        &[&b.tenant_id, &b.project_id],
+    )?;
+    Ok((artifact, policy))
+}
+
+fn finish_in(tx: &Transaction<'_>, f: &CeremonyFinish<'_>) -> Outcome<CeremonyOutcome> {
+    let now = f.now.at();
+    let Some(row) = challenge_row(tx, f.challenge_id)? else {
+        return Ok(Err(challenge_refused(ChallengeRefusal::Unknown)));
+    };
+    let t = check!(target(tx, f.op)?);
+    let Some(rows) = ActorRows::read(tx, &row.subject)? else {
+        return Ok(Err(ap(ApprovalCode::PermissionMissing)));
+    };
+    let creds = check!(rows.select(&t, now));
+    let assertion = check!(f
+        .verifier
+        .finish(
+            &CeremonyState::from_bytes(row.state.clone()),
+            f.response,
+            &creds
+        )
+        .map_err(|e| ap(ApprovalCode::AssertionInvalid(e))));
+    if row.status == ChallengeStatus::Consumed {
+        return replay(tx, f.challenge_id, &row, &assertion, f);
+    }
+    let challenge = check!(rebuild(f.challenge_id, row, &assertion, &t.binding));
+    let accepted = check!(assertion
+        .check(&challenge, &t.binding, f.idempotency_key, now)
+        .map_err(ap));
+    if let Some(refusal) = t.blocked.clone() {
+        return Ok(Err(refusal));
+    }
+    let actor = rows.actor();
+    let subject = accepted.subject().clone();
+    let credential = accepted.credential_id().to_string();
+    let b = accepted.binding().clone();
+    let (result, kind, request_ref): (CeremonyResult, &str, Option<(String, String)>);
+    let seq;
+    match (f.op, t.kind) {
+        (
+            CeremonyOp::Approve { .. } | CeremonyOp::Deny { .. },
+            TargetKind::Request { request, status },
+        ) => {
+            let (new_status, decision) =
+                check!(decide(&request, status, &accepted, &actor, f.channel).map_err(ap));
+            let grant = match new_status {
+                ApprovalStatus::Approved => Some(
+                    NewGrant::for_decision(&request, &decision, APPROVAL_GRANT_TTL_SECONDS)
+                        .ok_or(BodyError::Integrity)?,
+                ),
+                _ => None,
+            };
+            if let Some(g) = &grant {
+                let taken: bool = tx.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM grants WHERE label = ?1)",
+                    [g.label().as_str()],
+                    |r| r.get(0),
+                )?;
+                if taken {
+                    return Ok(Err(Refusal::GrantRefInUse));
+                }
+            }
+            seq = next_seq(tx, "decision", f.challenge_id)?;
+            let changed = tx.execute(
+                "UPDATE approval_requests SET status = ?2 WHERE request_id = ?1 AND status = 'pending'",
+                (request.request_id(), new_status.as_str()),
+            )?;
+            if changed != 1 {
+                return Err(BodyError::StateConflict);
+            }
+            if let Some(g) = &grant {
+                insert_grant_rows(tx, g)?;
+                tx.execute(
+                    "INSERT INTO approval_grants (label, request_id, challenge_id) VALUES (?1, ?2, ?3)",
+                    (g.label().as_str(), request.request_id(), f.challenge_id),
+                )?;
+            }
+            let d = decision.fields();
+            tx.execute(
+                "INSERT INTO approval_decisions (request_id, verdict, issuer, subject, \
+                 credential_id, channel, decided_at, challenge_id, provenance_version, grant_label) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                rusqlite::params![
+                    d.request_id,
+                    d.verdict.as_str(),
+                    d.subject.issuer,
+                    d.subject.subject,
+                    d.credential_id,
+                    d.channel,
+                    d.decided_at.to_string(),
+                    d.challenge_id,
+                    d.provenance_version,
+                    grant.as_ref().map(|g| g.label().as_str()),
+                ],
+            )?;
+            let r = request.fields();
+            request_ref = Some((r.request_fingerprint.clone(), r.policy_bundle_sha.clone()));
+            (result, kind) = match grant {
+                Some(g) => (
+                    CeremonyResult::Approved {
+                        grant: g.label().clone(),
+                    },
+                    "approved",
+                ),
+                None => {
+                    debug_assert_eq!(d.verdict, Verdict::Denied);
+                    (CeremonyResult::Denied, "denied")
+                }
+            };
+        }
+        (CeremonyOp::Revoke { target, reason }, TargetKind::Revoke { grant_approver }) => {
+            let own = match (target, &grant_approver) {
+                (RevocationTarget::Grant(label), Some((approver, true))) => Some((label, approver)),
+                _ => None,
+            };
+            let revocation = check!(writ_broker::approval::Revocation::record(
+                target.clone(),
+                reason,
+                &accepted,
+                &actor,
+                own.map(|(label, approver)| OwnUnusedGrant {
+                    grant_label: label,
+                    approved_by: approver,
+                }),
+            )
+            .map_err(ap));
+            let state = use_state(tx, target)?;
+            seq = next_seq(tx, "revocation", f.challenge_id)?;
+            let r = revocation.fields();
+            tx.execute(
+                "INSERT INTO revocations (target_kind, target_id, by_issuer, by_subject, at, reason, \
+                 challenge_id, use_state, ledger_seq) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                rusqlite::params![
+                    target_kind_text(&r.target),
+                    r.target.target_id(),
+                    r.by.issuer,
+                    r.by.subject,
+                    r.at.to_string(),
+                    r.reason,
+                    r.challenge_id,
+                    state.as_str(),
+                    seq,
+                ],
+            )?;
+            let marked = match &r.target {
+                RevocationTarget::Credential(id) => tx.execute(
+                    "UPDATE credentials SET status = 'revoked' WHERE credential_id = ?1 \
+                     AND status = 'active'",
+                    [id],
+                )?,
+                RevocationTarget::Subject(s) => tx.execute(
+                    "UPDATE subjects SET revoked_at = ?3 WHERE issuer = ?1 AND subject = ?2 \
+                     AND revoked_at IS NULL",
+                    (&s.issuer, &s.subject, r.at.to_string()),
+                )?,
+                RevocationTarget::Role(id) => tx.execute(
+                    "UPDATE role_assignments SET revoked_at = ?2 WHERE assignment_id = ?1 \
+                     AND revoked_at IS NULL",
+                    (id, r.at.to_string()),
+                )?,
+                RevocationTarget::Grant(_) | RevocationTarget::Signoff(_) => 1,
+            };
+            if marked != 1 {
+                return Err(BodyError::StateConflict);
+            }
+            request_ref = None;
+            result = CeremonyResult::Revoked { use_state: state };
+            kind = "revoked";
+        }
+        (CeremonyOp::Signoff { binding, parties }, TargetKind::Signoff) => {
+            let (artifact, policy) = changers(tx, binding)?;
+            let signoff = check!(Signoff::sign(
+                (**binding).clone(),
+                &accepted,
+                &actor,
+                &SignoffExclusions {
+                    parties: Parties {
+                        requester: &parties.requester,
+                        agent: parties.agent.as_ref(),
+                        delegation_chain: &parties.delegation_chain,
+                    },
+                    artifact_changers: &artifact,
+                    policy_changers: &policy,
+                },
+            )
+            .map_err(ap));
+            seq = next_seq(tx, "signoff", f.challenge_id)?;
+            let s = signoff.fields();
+            let n = &s.binding;
+            tx.execute(
+                "INSERT INTO signoffs (signoff_id, tenant_id, project_id, task_id, workflow_id, \
+                 from_state, to_state, acceptance_record_id, criterion_id, artifact_snapshot_id, \
+                 artifact_digest, acceptance_policy_id, acceptance_policy_version, \
+                 acceptance_policy_bundle_sha, state_revision, issued_at, expires_at, issuer, \
+                 subject, credential_id, challenge_id, provenance_version) VALUES (?1, ?2, ?3, \
+                 ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, \
+                 ?21, ?22)",
+                rusqlite::params![
+                    n.signoff_id,
+                    n.tenant_id,
+                    n.project_id,
+                    n.task_id,
+                    n.workflow_id,
+                    n.from_state,
+                    n.to_state,
+                    n.acceptance_record_id,
+                    n.criterion_id,
+                    n.artifact_snapshot_id,
+                    n.artifact_digest,
+                    n.acceptance_policy_id,
+                    n.acceptance_policy_version,
+                    n.acceptance_policy_bundle_sha,
+                    n.state_revision,
+                    s.issued_at.to_string(),
+                    n.expires_at.to_string(),
+                    s.subject.issuer,
+                    s.subject.subject,
+                    s.credential_id,
+                    s.challenge_id,
+                    s.provenance_version,
+                ],
+            )?;
+            request_ref = None;
+            result = CeremonyResult::SignedOff {
+                signoff_id: n.signoff_id.clone(),
+            };
+            kind = "signed_off";
+        }
+        (CeremonyOp::Enroll { enrollment }, TargetKind::Enroll) => {
+            check!(check_actor(&actor, &accepted, Permission::Operator).map_err(ap));
+            if same_subject(&subject, &enrollment.subject)
+                || enrollment
+                    .linked_identities
+                    .iter()
+                    .any(|l| same_subject(&subject, l))
+            {
+                return Ok(Err(ap(ApprovalCode::SeparationViolated)));
+            }
+            seq = next_seq(tx, "enrollment", f.challenge_id)?;
+            write_enrollment(
+                tx,
+                enrollment,
+                &subject,
+                now,
+                Some(f.challenge_id),
+                f.challenge_id,
+            )?;
+            request_ref = None;
+            result = CeremonyResult::Enrolled {
+                subject: enrollment.subject.clone(),
+            };
+            kind = "enrolled";
+        }
+        _ => return Err(BodyError::Integrity),
+    }
+    let consumed = tx.execute(
+        "UPDATE challenges SET status = 'consumed' WHERE challenge_id = ?1 AND status = 'issued'",
+        [f.challenge_id],
+    )?;
+    if consumed != 1 {
+        return Err(BodyError::StateConflict);
+    }
+    if let Some(u) = accepted.credential_update() {
+        tx.execute(
+            "UPDATE credentials SET public_material = ?2 WHERE credential_id = ?1 AND status = 'active'",
+            (&u.credential_id, &u.public_material),
+        )?;
+    }
+    approval_event(
+        tx,
+        kind,
+        &b.target_id,
+        &b.tenant_id,
+        &b.project_id,
+        Some(&subject),
+        Some(&credential),
+        Some(f.channel),
+        now,
+        Some(f.challenge_id),
+        request_ref
+            .as_ref()
+            .map(|(fp, sha)| (fp.as_str(), sha.as_str())),
+        Some(seq),
+    )?;
+    Ok(Ok(CeremonyOutcome {
+        result,
+        ledger_seq: seq,
+        replayed: false,
+    }))
+}
+
+/// One random identifier (`<prefix>-<32 hex>`) from the operating system's random source.
+fn random_id(prefix: &str) -> Result<String, TxFailure> {
+    use std::io::Read;
+    let mut bytes = [0u8; 16];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut bytes))
+        .map_err(|_| {
+            TxFailure::new(
+                TxStage::Begin,
+                unavailable("transaction challenge_issue", "io"),
+            )
+        })?;
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    Ok(format!("{prefix}-{hex}"))
+}
+
+/// Map a body answer to its transaction end: refusals and replays roll back.
+fn end<T>(out: Result<T, Refusal>, replayed: impl Fn(&T) -> bool) -> End<Result<T, Refusal>> {
+    match out {
+        Ok(v) if !replayed(&v) => End::Commit(Ok(v)),
+        other => End::Rollback(other),
+    }
+}
+
+impl SqliteLedger {
+    /// Audit a refusal of the approval channel in its own transaction (storage rule 2: a
+    /// failed audit never changes the answer).
+    fn audited<T>(
+        &self,
+        result: Result<Result<T, Refusal>, TxFailure>,
+    ) -> Result<Result<T, Refusal>, TxFailure> {
+        if let Ok(Err(refusal)) = &result {
+            let _ = self.audit(refusal.code());
+        }
+        result
+    }
+
+    /// The `approval_request` transaction (`ExecuteLedger::record_approval_request`).
+    pub(crate) fn record_request(
+        &self,
+        request: &ApprovalRequest,
+    ) -> Result<RequestRecorded, TxFailure> {
+        self.transact("approval_request", |tx| {
+            let status: Option<String> = tx
+                .query_row(
+                    "SELECT status FROM approval_requests WHERE request_id = ?1",
+                    [request.request_id()],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(status) = status {
+                let status = ApprovalStatus::parse(&status).ok_or(BodyError::Integrity)?;
+                return Ok(End::Rollback(RequestRecorded::Exists(status)));
+            }
+            let r = request.fields();
+            let context = json::canonical(request.context()).map_err(|_| BodyError::Integrity)?;
+            tx.execute(
+                "INSERT INTO approval_requests (request_id, tenant_id, project_id, context, \
+                 context_fingerprint, created_at, expires_at, status) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending')",
+                rusqlite::params![
+                    r.request_id,
+                    r.tenant_id,
+                    r.project_id,
+                    context,
+                    request.fingerprint().as_str(),
+                    r.created_at.to_string(),
+                    r.expires_at.to_string(),
+                ],
+            )?;
+            approval_event(
+                tx,
+                "request_created",
+                &r.request_id,
+                &r.tenant_id,
+                &r.project_id,
+                None,
+                None,
+                None,
+                r.created_at,
+                None,
+                Some((&r.request_fingerprint, &r.policy_bundle_sha)),
+                None,
+            )?;
+            Ok(End::Commit(RequestRecorded::Created))
+        })
+    }
+
+    /// The bootstrap enrollment of the first administrator
+    /// (docs/implementation/M4-ENROLLMENT-CEREMONY.md section 2): an explicit operator
+    /// call, never reachable from agent ingress or the approval listener. Only in a ledger
+    /// that has never had a subject or a bootstrap; otherwise `ENROLLMENT_UNSUPPORTED`, as
+    /// for an ill-formed identity or credential. The subject is human and receives exactly
+    /// `operator` and `revoker` in the global scope. Returns its I-8 sequence number.
+    pub fn bootstrap_administrator(
+        &self,
+        bootstrap: &BootstrapEnrollment,
+        now: ObservedTime,
+    ) -> Result<Result<i64, Refusal>, TxFailure> {
+        let at = now.at();
+        let enrollment = NewEnrollment {
+            subject: bootstrap.subject.clone(),
+            kind: PrincipalKind::Human,
+            credential: Some(bootstrap.credential.clone()),
+            linked_identities: bootstrap.linked_identities.clone(),
+            roles: [Permission::Operator, Permission::Revoker]
+                .into_iter()
+                .map(|permission| writ_broker::approval_store::NewRole {
+                    permission,
+                    tenant_id: GLOBAL_SCOPE.into(),
+                    project_id: GLOBAL_SCOPE.into(),
+                })
+                .collect(),
+        };
+        let result = self.transact("bootstrap", |tx| {
+            let used: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM subjects) \
+                 OR EXISTS (SELECT 1 FROM approval_events WHERE kind = 'bootstrap')",
+                [],
+                |r| r.get(0),
+            )?;
+            if used || enrollment_blocked(tx, &enrollment)? {
+                return Ok(End::Rollback(Err(ap(ApprovalCode::EnrollmentUnsupported))));
+            }
+            let by = SubjectId::new(BOOTSTRAP_ISSUER, BOOTSTRAP_SUBJECT);
+            let target = enrollment.target_id();
+            let seq = next_seq(tx, "bootstrap", &target)?;
+            write_enrollment(tx, &enrollment, &by, at, None, "bootstrap")?;
+            approval_event(
+                tx,
+                "bootstrap",
+                &target,
+                GLOBAL_SCOPE,
+                GLOBAL_SCOPE,
+                Some(&by),
+                None,
+                None,
+                at,
+                None,
+                None,
+                Some(seq),
+            )?;
+            Ok(End::Commit(Ok(seq)))
+        });
+        self.audited(result)
+    }
+}
+
+impl ApprovalLedger for SqliteLedger {
+    fn approval_request(
+        &self,
+        request_id: &str,
+    ) -> Result<Option<(ApprovalRequest, ApprovalStatus)>, StoreError> {
+        let inner = self.lock("read")?;
+        load_request(&inner.conn, request_id).map_err(|e| match e {
+            BodyError::Sql(e) => unavailable("read", code_name(&e)),
+            _ => unavailable("read", "integrity"),
+        })
+    }
+
+    fn expire(&self, now: ObservedTime) -> Result<Expired, TxFailure> {
+        let now = now.at();
+        self.transact("expire", |tx| {
+            let mut out = Expired::default();
+            let pending: Vec<(String, String, String, String)> = tx
+                .prepare(
+                    "SELECT request_id, tenant_id, project_id, expires_at FROM approval_requests \
+                     WHERE status = 'pending' ORDER BY request_id",
+                )?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for (id, tenant, project, expires) in pending {
+                if now < ts(&expires)? {
+                    continue;
+                }
+                let changed = tx.execute(
+                    "UPDATE approval_requests SET status = 'expired' \
+                     WHERE request_id = ?1 AND status = 'pending'",
+                    [&id],
+                )?;
+                if changed != 1 {
+                    return Err(BodyError::StateConflict);
+                }
+                approval_event(
+                    tx, "expired", &id, &tenant, &project, None, None, None, now, None, None, None,
+                )?;
+                out.requests += 1;
+            }
+            let issued: Vec<(String, String)> = tx
+                .prepare(
+                    "SELECT challenge_id, expires_at FROM challenges WHERE status = 'issued' \
+                     ORDER BY challenge_id",
+                )?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for (id, expires) in issued {
+                if now < ts(&expires)? {
+                    continue;
+                }
+                tx.execute(
+                    "UPDATE challenges SET status = 'expired' WHERE challenge_id = ?1 \
+                     AND status = 'issued'",
+                    [&id],
+                )?;
+                out.challenges += 1;
+            }
+            Ok(End::Commit(out))
+        })
+    }
+
+    fn begin_ceremony(
+        &self,
+        begin: &CeremonyBegin<'_>,
+    ) -> Result<Result<IssuedChallenge, Refusal>, TxFailure> {
+        let id = random_id("chl")?;
+        let result = self.transact("challenge_issue", |tx| {
+            Ok(end(begin_in(tx, begin, &id)?, |_| false))
+        });
+        self.audited(result)
+    }
+
+    fn finish_ceremony(
+        &self,
+        finish: &CeremonyFinish<'_>,
+    ) -> Result<Result<CeremonyOutcome, Refusal>, TxFailure> {
+        let result = self.transact("ceremony", |tx| {
+            Ok(end(finish_in(tx, finish)?, |o| o.replayed))
+        });
+        self.audited(result)
+    }
+
+    fn signoff(&self, signoff_id: &str) -> Result<Option<SignoffState>, StoreError> {
+        let inner = self.lock("read")?;
+        let conn = &inner.conn;
+        let read = || -> Result<Option<SignoffState>, BodyError> {
+            let Some(signoff) = read_signoff(conn, signoff_id)? else {
+                return Ok(None);
+            };
+            let consumed: bool = conn.query_row(
+                "SELECT EXISTS (SELECT 1 FROM consumed_signoffs WHERE signoff_id = ?1)",
+                [signoff_id],
+                |r| r.get(0),
+            )?;
+            Ok(Some(SignoffState {
+                signoff,
+                revoked: signoff_revoked(conn, signoff_id)?,
+                consumed,
+            }))
+        };
+        read().map_err(|e| match e {
+            BodyError::Sql(e) => unavailable("read", code_name(&e)),
+            _ => unavailable("read", "integrity"),
+        })
+    }
+}

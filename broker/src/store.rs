@@ -7,6 +7,8 @@
 
 use std::fmt;
 
+use crate::approval::ApprovalRequest;
+use crate::approval_store::RequestRecorded;
 use crate::clock::ClockEvent;
 use crate::execute::{
     DispatchIntent, Dispatched, FailureRecord, Observation, PendingReceipt, Reconciled, Resolution,
@@ -279,4 +281,26 @@ pub trait ExecuteLedger: GrantLedger {
     /// failed transaction, its stage, the sanitized category and code, the
     /// durable progress and whether a commit outcome is unknown; D-035 item 4).
     fn record_failure(&self, code: &str, record: &FailureRecord) -> Result<(), StoreError>;
+
+    /// The `approval_request` logical transaction (M4-03): store `request`
+    /// as `pending` with a `request_created` approval event, or keep an
+    /// existing request with the same id unchanged whatever its status (a
+    /// denied or expired request is never reopened or replaced). Not a
+    /// lifecycle transaction: [`crate::execute::Broker::execute`] answers
+    /// `APPROVAL_REQUIRED` whatever this returns. The provided
+    /// implementation (a ledger without approval storage) records nothing
+    /// and fails with the code `unsupported`.
+    fn record_approval_request(
+        &self,
+        request: &ApprovalRequest,
+    ) -> Result<RequestRecorded, TxFailure> {
+        let _ = request;
+        Err(TxFailure::new(
+            TxStage::Begin,
+            StoreError::Unavailable {
+                category: "transaction approval_request".into(),
+                code: "unsupported".into(),
+            },
+        ))
+    }
 }

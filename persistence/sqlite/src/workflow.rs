@@ -1,4 +1,5 @@
-//! The transition service's ledger transactions (M3-05, D-036, schema `writ-ledger-5`):
+//! The transition service's ledger transactions (M3-05, D-036, schema `writ-ledger-5`; since
+//! `writ-ledger-6` each `admin` and `promote` commit also takes one I-8 `ledger_sequence` row):
 //! [`WorkflowLedger`] for [`SqliteLedger`] and the effect-prerequisite read used inside
 //! T-reserve. Every write is one fenced `BEGIN IMMEDIATE` transaction; the semantics are
 //! the broker's (`writ_broker::workflow`), the store reads rows, hands them to the broker's
@@ -16,9 +17,10 @@ use writ_broker::workflow::{
 };
 use writ_broker::writ_kernel::json;
 
+use crate::approval_store::next_seq;
 use crate::{code_name, stored_grant, unavailable, BodyError, End, SqliteLedger};
 
-fn read_workflow(
+pub(crate) fn read_workflow(
     conn: &rusqlite::Connection,
     tenant: &str,
     project: &str,
@@ -522,6 +524,8 @@ impl WorkflowLedger for SqliteLedger {
                 Some(&write.receipt_id),
                 write.record_id.as_deref(),
             )?;
+            // I-8: the promotion's place in the ledger-wide order.
+            next_seq(tx, "promotion", &write.receipt_id)?;
             Ok(End::Commit(Ok(PromotionOutcome::Committed {
                 revision: write.revision,
                 receipt_id: write.receipt_id,
@@ -588,6 +592,12 @@ fn admin_event(
             op.evidence_ref,
             change.at().to_string()
         ],
+    )?;
+    // I-8: the administrative operation's place in the ledger-wide order.
+    next_seq(
+        tx,
+        "administration",
+        &format!("{operation}:{tenant}/{project}/{target}"),
     )?;
     Ok(())
 }

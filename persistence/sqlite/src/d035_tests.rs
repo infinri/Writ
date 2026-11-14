@@ -756,7 +756,15 @@ fn the_explicit_upgrade_keeps_legacy_data_and_legacy_grants_stay_non_executable(
             "schema_version"
         )
         .as_deref(),
-        Some("writ-ledger-5")
+        Some("writ-ledger-6")
+    );
+    // O-14: both carried-over grants are marked non-executable; nothing else changes.
+    assert_eq!(
+        one(
+            &ledger,
+            "SELECT count(*) FROM legacy_grants WHERE upgraded_from = 'writ-ledger-3'"
+        ),
+        2
     );
     let effects = SqliteEffectStore::create(&d.join("effects.db"), ledger.ledger_id()).unwrap();
     let w = World::new("d035-upgrade-policy");

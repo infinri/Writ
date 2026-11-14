@@ -85,6 +85,7 @@ use writ_kernel::contracts::StateRevision;
 use writ_kernel::json::{self, Value};
 use writ_kernel::time::Timestamp;
 
+use crate::approval::{ApprovalCode, ApprovalDecision, ApprovalRequest, PROVENANCE_VERSION_2};
 use crate::authorize::{authorize, Authorized, UseTimeStatus};
 use crate::clock::{observe, EffectiveClock, ObservedTime};
 use crate::ingress::VerifiedRequest;
@@ -310,6 +311,26 @@ impl GrantBinding {
         })
     }
 
+    /// The binding of a stored approval request with `verdict` (M4-04): the
+    /// same members as [`GrantBinding::for_decision`] gives at use time for
+    /// the request's action under the request's policy bundle (the request
+    /// stores the kernel's approval request id, the requester principal, and
+    /// the sorted unique capability set).
+    pub fn for_approval_request(request: &ApprovalRequest, verdict: Verdict) -> GrantBinding {
+        let r = request.fields();
+        GrantBinding {
+            verdict,
+            approval_request_id: r.request_id.clone(),
+            tenant_id: r.tenant_id.clone(),
+            principal_id: r.requester.subject.clone(),
+            action_kind: r.action_kind.clone(),
+            canonical_resource_id: r.canonical_resource_id.clone(),
+            action_digest: r.action_digest.clone(),
+            requested_capabilities: r.capabilities.clone(),
+            policy_bundle_sha: r.policy_bundle_sha.clone(),
+        }
+    }
+
     /// The binding as a JSON object with exactly [`BINDING_MEMBERS`].
     pub fn to_value(&self) -> Value {
         json::obj([
@@ -405,6 +426,7 @@ pub struct NewGrant {
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GrantProvenance {
+    version: &'static str,
     approver_id: String,
     issuer: String,
     channel: String,
@@ -416,9 +438,10 @@ pub struct GrantProvenance {
 }
 
 impl GrantProvenance {
-    /// [`PROVENANCE_VERSION`].
+    /// [`PROVENANCE_VERSION`], or [`PROVENANCE_VERSION_2`] for a grant
+    /// minted by an authenticated M4 decision ([`NewGrant::for_decision`]).
     pub fn version(&self) -> &'static str {
-        PROVENANCE_VERSION
+        self.version
     }
 
     /// The approver's stable id.
@@ -462,7 +485,53 @@ impl GrantProvenance {
     }
 }
 
+/// The label of the single grant an approved approval request produces
+/// (`approval/<request id>`); `None` when that is not a valid label.
+pub fn approval_grant_label(request_id: &str) -> Option<GrantLabel> {
+    GrantLabel::new(&format!("approval/{request_id}"))
+}
+
 impl NewGrant {
+    /// The single-use grant of an `approved` M4 decision on `request`
+    /// (M4-04): label [`approval_grant_label`], the binding of
+    /// [`GrantBinding::for_approval_request`], expiry `ttl` seconds after the
+    /// decision's trusted time, and provenance [`PROVENANCE_VERSION_2`] from
+    /// the decision (subject, issuer, channel, time, verdict, the consumed
+    /// challenge as the evidence reference, the request fingerprint and
+    /// policy bundle digest). `None` for a denial, a decision on another
+    /// request, or a binding outside the D-006 domain. An
+    /// [`ApprovalDecision`] exists only from [`crate::approval::decide`] or a
+    /// ledger read.
+    pub fn for_decision(
+        request: &ApprovalRequest,
+        decision: &ApprovalDecision,
+        ttl_seconds: u32,
+    ) -> Option<NewGrant> {
+        let d = decision.fields();
+        if d.verdict != Verdict::Approved || d.request_id != request.request_id() {
+            return None;
+        }
+        let r = request.fields();
+        Some(NewGrant {
+            label: approval_grant_label(&r.request_id)?,
+            binding: GrantBinding::for_approval_request(request, Verdict::Approved)
+                .canonical_text()?,
+            expires_at: d.decided_at.plus_seconds(i64::from(ttl_seconds)),
+            max_uses: GRANT_MAX_USES,
+            provenance: GrantProvenance {
+                version: PROVENANCE_VERSION_2,
+                approver_id: d.subject.subject.clone(),
+                issuer: d.subject.issuer.clone(),
+                channel: d.channel.clone(),
+                approved_at: d.decided_at,
+                verdict: Verdict::Approved,
+                evidence_ref: format!("challenge:{}", d.challenge_id),
+                request_fingerprint: r.request_fingerprint.clone(),
+                policy_bundle_sha: r.policy_bundle_sha.clone(),
+            },
+        })
+    }
+
     /// The grant label.
     pub fn label(&self) -> &GrantLabel {
         &self.label
@@ -534,6 +603,14 @@ pub struct StoredGrant {
     pub uses: i64,
     /// Stored approver provenance; `None` when the grant has none (legacy).
     pub provenance: Option<StoredProvenance>,
+    /// The grant carries the O-14 marker written by the upgrade to
+    /// `writ-ledger-6`: it existed before M4 and is never executable.
+    pub legacy: bool,
+    /// A committed revocation invalidates the grant (I-4, O-5): the grant
+    /// itself is revoked, or, for a grant minted by an M4 decision, its
+    /// approver's subject or credential is revoked or the approver no
+    /// longer holds an unrevoked approver role in the request's scope.
+    pub revoked: bool,
 }
 
 /// Provenance integrity (D-035 item 5): a record of [`PROVENANCE_VERSION`]
@@ -552,7 +629,7 @@ pub fn provenance_intact(grant: &StoredGrant) -> bool {
         &p.request_fingerprint,
         &p.policy_bundle_sha,
     ];
-    if p.version != PROVENANCE_VERSION
+    if (p.version != PROVENANCE_VERSION && p.version != PROVENANCE_VERSION_2)
         || !fields
             .iter()
             .all(|f| !f.is_empty() && f.chars().count() <= MAX_PROVENANCE_FIELD_LEN)
@@ -692,7 +769,7 @@ impl GrantUse {
     }
 
     /// Revalidation before dispatch: integrity (row, use recorded, binding),
-    /// provenance, `GRANT_MISMATCH` against the current use-time binding,
+    /// provenance (and the O-14 legacy marker), `GRANT_REVOKED`, `GRANT_MISMATCH` against the current use-time binding,
     /// `GRANT_EXPIRED` at the operation's observed time. Uses are not
     /// checked: the reservation already holds its use.
     pub(crate) fn revalidate(
@@ -706,8 +783,13 @@ impl GrantUse {
         if !use_recorded || !binding_intact(&stored.binding) {
             return Revalidation::Integrity;
         }
-        if !provenance_intact(stored) {
+        if stored.legacy || !provenance_intact(stored) {
             return Revalidation::Provenance;
+        }
+        if stored.revoked {
+            // Revoked after T-reserve: refused, the receipt stays `reserved`
+            // with its grant use; nothing is refunded (I-4, O-5).
+            return Revalidation::Refuse(Refusal::Approval(ApprovalCode::GrantRevoked));
         }
         if self.expected.as_deref() != Some(stored.binding.as_str()) {
             return Revalidation::Refuse(Refusal::GrantMismatch);
@@ -920,8 +1002,9 @@ impl<'a> ReserveRequest<'a> {
     }
 
     /// Check the effective grant's stored row (`None`: no such label), in the
-    /// order `GRANT_UNKNOWN`, integrity (C-4), provenance (D-035 item 5),
-    /// `GRANT_MISMATCH` (canonical text comparison), `GRANT_EXPIRED`
+    /// order `GRANT_UNKNOWN`, integrity (C-4), provenance (D-035 item 5; the
+    /// O-14 legacy marker is non-executable in the same way), `GRANT_REVOKED`
+    /// (I-4), `GRANT_MISMATCH` (canonical text comparison), `GRANT_EXPIRED`
     /// (observed time at or after expiry), `GRANT_EXHAUSTED`. Without an
     /// effective grant nothing may be consumed (`GRANT_UNKNOWN`).
     pub fn check_grant(&self, stored: Option<&StoredGrant>) -> GrantCheck {
@@ -931,8 +1014,11 @@ impl<'a> ReserveRequest<'a> {
         if !binding_intact(&stored.binding) {
             return GrantCheck::Integrity;
         }
-        if !provenance_intact(stored) {
+        if stored.legacy || !provenance_intact(stored) {
             return GrantCheck::Provenance;
+        }
+        if stored.revoked {
+            return GrantCheck::Refuse(Refusal::Approval(ApprovalCode::GrantRevoked));
         }
         if grant.expected.as_deref() != Some(stored.binding.as_str()) {
             return GrantCheck::Refuse(Refusal::GrantMismatch);
@@ -1133,6 +1219,7 @@ where
             .ok_or(Refusal::NotApprovable)?;
         let ttl = approval.ttl_seconds.unwrap_or(DEFAULT_GRANT_TTL_SECONDS);
         let provenance = GrantProvenance {
+            version: PROVENANCE_VERSION,
             approver_id: approver.id,
             issuer: approver.issuer,
             channel: approver.channel,
@@ -1329,6 +1416,8 @@ mod tests {
                 max_uses: 1,
                 uses,
                 provenance: Some(provenance_for(binding)),
+                legacy: false,
+                revoked: false,
             };
             assert_eq!(
                 r.check_grant(None),
@@ -1363,6 +1452,36 @@ mod tests {
             let mut bad = grant(&good, 1, 0);
             bad.provenance.as_mut().unwrap().verdict = "denied".into();
             assert_eq!(r.check_grant(Some(&bad)), GrantCheck::Provenance);
+            // O-14 legacy marker: non-executable like missing provenance.
+            let mut marked = grant(&good, 1, 0);
+            marked.legacy = true;
+            assert_eq!(r.check_grant(Some(&marked)), GrantCheck::Provenance);
+            // I-4: revoked after provenance, before the mismatch and every
+            // later check; the same at T-dispatch revalidation.
+            let mut revoked = grant(&other, 0, 9);
+            revoked.revoked = true;
+            let grant_revoked = Refusal::Approval(ApprovalCode::GrantRevoked);
+            assert_eq!(
+                r.check_grant(Some(&revoked)),
+                GrantCheck::Refuse(grant_revoked.clone())
+            );
+            let mut live = grant(&good, 1, 1);
+            assert_eq!(
+                r.grant().unwrap().revalidate(Some(&live), true),
+                Revalidation::Valid {
+                    grant_expires_at: now().plus_seconds(1)
+                }
+            );
+            live.revoked = true;
+            assert_eq!(
+                r.grant().unwrap().revalidate(Some(&live), true),
+                Revalidation::Refuse(grant_revoked)
+            );
+            live.legacy = true;
+            assert_eq!(
+                r.grant().unwrap().revalidate(Some(&live), true),
+                Revalidation::Provenance
+            );
         });
     }
 
@@ -1401,6 +1520,8 @@ mod tests {
                 max_uses: 1,
                 uses: 0,
                 provenance: Some(p),
+                legacy: false,
+                revoked: false,
             }
         };
         assert!(provenance_intact(&grant(&|_| {})));

@@ -580,6 +580,23 @@ fn a_protected_promotion_commits_state_and_consumes_its_evidence_atomically() {
         ),
         "create,promote,promote"
     );
+    // I-8: every administrative operation and promotion took one ledger sequence row, in
+    // commit order.
+    let order = || {
+        w.text(
+            "SELECT group_concat(kind, ',') FROM (SELECT kind FROM ledger_sequence ORDER BY seq)",
+        )
+    };
+    let before = order();
+    assert!(
+        before.ends_with("administration,promotion,promotion"),
+        "{before}"
+    );
+    assert!(!before.contains("promotion,administration"), "{before}");
+    assert_eq!(
+        w.text("SELECT reference FROM ledger_sequence ORDER BY seq DESC LIMIT 1"),
+        "promotion:wf-1:2"
+    );
     // An identical retry replays the durable receipt; a changed request is a conflict.
     let replay = PromotionOutcome::Replayed {
         revision: 2,
@@ -589,6 +606,7 @@ fn a_protected_promotion_commits_state_and_consumes_its_evidence_atomically() {
     let changed = set(&accept("k1", 1), &["trace_id"], json::s("trace-2"));
     assert_eq!(w.promote(&changed), Err(Refusal::IdempotencyConflict));
     assert_eq!(w.state(), ("accepted".into(), 2));
+    assert_eq!(order(), before, "a replay or refusal takes no sequence row");
 }
 
 #[test]
@@ -1310,6 +1328,15 @@ fn a_writ_ledger_4_ledger_is_upgraded_explicitly_keeping_its_identity_and_rows()
         1
     );
     assert_eq!(one("SELECT count(*) FROM workflows"), 0, "nothing invented");
+    assert_eq!(
+        one("SELECT count(*) FROM legacy_grants"),
+        0,
+        "no grants to mark"
+    );
+    assert_eq!(
+        one("SELECT count(*) FROM meta WHERE key = 'schema_version' AND value = 'writ-ledger-6'"),
+        1
+    );
     drop(l);
     assert_eq!(
         SqliteLedger::upgrade(&path).err(),

@@ -47,6 +47,10 @@
 //!   challenges, revocations, signoffs, context fingerprints and I-6 codes.
 //!   Decisions, signoffs and revocations decide eligibility themselves
 //!   (human subject, permission in scope, separation; [`human::Actor`]).
+//! - [`approval_store`]: the approval ledger interface ([`approval_store::ApprovalLedger`]):
+//!   stored approval requests (created by [`execute::Broker::execute`] on
+//!   `require_approval` without a grant), ceremonies with single-use
+//!   challenges, decisions, revocations, signoffs, enrollment and expiry.
 //! - Trusted constructors (verifier answers, enrollment records, stored rows)
 //!   need a [`human::VerifierCapability`] or [`human::LedgerCapability`];
 //!   `tests/trusted_constructors.rs` confines their constructors to the
@@ -54,6 +58,7 @@
 
 pub mod acceptance;
 pub mod approval;
+pub mod approval_store;
 pub mod authorize;
 pub mod clock;
 pub mod contracts;

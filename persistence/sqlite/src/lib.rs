@@ -83,12 +83,20 @@
 //! and effects live in the controlled effect adapter's own store, [`SqliteEffectStore`]
 //! (module `effects`), which is bound to this ledger's [`LedgerId`].
 //!
-//! **Schema versions:** a new ledger is `writ-ledger-5` (`schema.sql`, `schema_v4.sql`, then
-//! `schema_v5.sql`, plus a random `ledger_id`). [`SqliteLedger::open`] accepts only
-//! `writ-ledger-5`. [`SqliteLedger::upgrade`] is the explicit operator upgrade of an exact
-//! `writ-ledger-3` or `writ-ledger-4` ledger: it adds the missing tables in one transaction
-//! and keeps every row; grants carried over from `writ-ledger-3` have no provenance and stay
-//! non-executable (D-035 item 5).
+//! **Schema versions:** a new ledger is `writ-ledger-6` (`schema.sql`, `schema_v4.sql`,
+//! `schema_v5.sql`, then `schema_v6.sql`, plus a random `ledger_id`). [`SqliteLedger::open`]
+//! accepts only `writ-ledger-6`. [`SqliteLedger::upgrade`] is the explicit operator upgrade of
+//! an exact `writ-ledger-3`, `writ-ledger-4` or `writ-ledger-5` ledger: it adds the missing
+//! tables in one transaction and keeps every row; grants carried over from `writ-ledger-3` have
+//! no provenance and stay non-executable (D-035 item 5), and every grant that existed before
+//! the upgrade gets the O-14 `legacy_grants` marker (non-executable; nothing rewritten or
+//! deleted; reservations, uses and receipts kept, so dispatched or completed receipts keep
+//! reconciliation and replay).
+//!
+//! **Approval ledger (M4, schema `writ-ledger-6`):** stored approval requests, single-use
+//! challenges, decisions minting provenance-v2 grants, revocations serialized with T-reserve,
+//! T-dispatch and promotion, signoffs, enrollment and the I-8 `ledger_sequence` are in module
+//! `approval_store` ([`writ_broker::approval_store::ApprovalLedger`] for [`SqliteLedger`]).
 //!
 //! **Transition service (M3-05, D-036, schema `writ-ledger-5`):** workflows, project
 //! acceptance policies and effect prerequisites, the evaluator registry, promotion
@@ -120,6 +128,8 @@ use std::sync::{Mutex, MutexGuard};
 use rusqlite::{
     Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
 };
+use writ_broker::approval::ApprovalRequest;
+use writ_broker::approval_store::RequestRecorded;
 use writ_broker::clock::{timestamp_from_parts, ClockEvent};
 use writ_broker::execute::{
     DispatchIntent, Dispatched, FailureRecord, Observation, PendingReceipt, Reconciled, Resolution,
@@ -134,6 +144,7 @@ use writ_broker::refusal::Refusal;
 use writ_broker::store::Timestamp;
 pub use writ_broker::store::{ExecuteLedger, GrantLedger, LedgerStore, StoreError};
 
+mod approval_store;
 mod effects;
 mod runner_store;
 mod workflow;
@@ -148,20 +159,31 @@ pub const SCHEMA_V4_ADDITIONS: &str = include_str!("schema_v4.sql");
 /// The production schema, applied once to a newly created ledger inside one transaction.
 /// The tables `writ-ledger-5` adds (M3-05, D-036).
 pub const SCHEMA_V5_ADDITIONS: &str = include_str!("schema_v5.sql");
+/// The tables `writ-ledger-6` adds (M4, D-040; M4-INTERFACES I-7, I-8).
+pub const SCHEMA_V6_ADDITIONS: &str = include_str!("schema_v6.sql");
 /// The exact `writ-ledger-4` schema.
 pub const SCHEMA_V4: &str = concat!(include_str!("schema.sql"), include_str!("schema_v4.sql"));
-/// The production schema, applied once to a newly created ledger inside one transaction.
-pub const SCHEMA: &str = concat!(
+/// The exact `writ-ledger-5` schema.
+pub const SCHEMA_V5: &str = concat!(
     include_str!("schema.sql"),
     include_str!("schema_v4.sql"),
     include_str!("schema_v5.sql")
 );
+/// The production schema, applied once to a newly created ledger inside one transaction.
+pub const SCHEMA: &str = concat!(
+    include_str!("schema.sql"),
+    include_str!("schema_v4.sql"),
+    include_str!("schema_v5.sql"),
+    include_str!("schema_v6.sql")
+);
 /// The schema version this crate writes and accepts.
-pub const SCHEMA_VERSION: &str = "writ-ledger-5";
+pub const SCHEMA_VERSION: &str = "writ-ledger-6";
 /// Older versions [`SqliteLedger::upgrade`] accepts.
 pub const SCHEMA_VERSION_V3: &str = "writ-ledger-3";
 /// See [`SCHEMA_VERSION_V3`].
 pub const SCHEMA_VERSION_V4: &str = "writ-ledger-4";
+/// See [`SCHEMA_VERSION_V3`].
+pub const SCHEMA_VERSION_V5: &str = "writ-ledger-5";
 
 /// The random identity of one ledger (32 lowercase hexadecimal digits), fixed at creation
 /// and stored in its metadata. An effect store is bound to exactly one ledger identity.
@@ -669,8 +691,9 @@ impl SqliteLedger {
         finish(conn, lock)
     }
 
-    /// Explicit operator upgrade of an existing `writ-ledger-3` or `writ-ledger-4` ledger
-    /// at `path` to the current schema, then take ownership of it (D-035 item 5, D-036).
+    /// Explicit operator upgrade of an existing `writ-ledger-3`, `writ-ledger-4` or
+    /// `writ-ledger-5` ledger at `path` to the current schema, then take ownership of it
+    /// (D-035 item 5, D-036, D-040 O-14).
     ///
     /// Order: canonical identity; ownership lock; read-only verification of the exact
     /// older schema (any other file, including a current ledger, is refused unchanged);
@@ -680,23 +703,31 @@ impl SqliteLedger {
     /// grants get no provenance (not executable until an explicit reviewed migration or
     /// recovery), carried-over `dispatched` receipts get no permit number (their
     /// uncertainty is retained by reconciliation), and there are no workflows until an
-    /// operator creates them.
+    /// operator creates them. Every carried-over grant gets the O-14 `legacy_grants`
+    /// marker (never executable again; no approval request, subject or role is invented).
     pub fn upgrade(path: &Path) -> Result<SqliteLedger, StoreError> {
         let canonical = existing_identity(path)?;
         let lock = take_ownership(&canonical)?;
         let mut conn = connect(&canonical, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-        let from_v3 = match verify(&conn, SCHEMA_V3, SCHEMA_VERSION_V3) {
-            Ok(()) => true,
-            Err(_) => {
-                verify(&conn, SCHEMA_V4, SCHEMA_VERSION_V4)?;
-                false
+        let older = [
+            (SCHEMA_V3, SCHEMA_VERSION_V3),
+            (SCHEMA_V4, SCHEMA_VERSION_V4),
+        ]
+        .into_iter()
+        .find(|(schema, version)| verify(&conn, schema, version).is_ok())
+        .map(|(_, version)| version);
+        let from = match older {
+            Some(version) => version,
+            None => {
+                verify(&conn, SCHEMA_V5, SCHEMA_VERSION_V5)?;
+                SCHEMA_VERSION_V5
             }
         };
         let sql = |e: rusqlite::Error| unavailable("upgrade", code_name(&e));
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql)?;
-        if from_v3 {
+        if from == SCHEMA_VERSION_V3 {
             tx.execute_batch(SCHEMA_V4_ADDITIONS).map_err(sql)?;
             tx.execute(
                 "INSERT INTO meta (key, value) VALUES ('ledger_id', ?1)",
@@ -704,7 +735,17 @@ impl SqliteLedger {
             )
             .map_err(sql)?;
         }
-        tx.execute_batch(SCHEMA_V5_ADDITIONS).map_err(sql)?;
+        if from != SCHEMA_VERSION_V5 {
+            tx.execute_batch(SCHEMA_V5_ADDITIONS).map_err(sql)?;
+        }
+        tx.execute_batch(SCHEMA_V6_ADDITIONS).map_err(sql)?;
+        // O-14: every grant that exists before M4 becomes non-executable by a marker;
+        // the grant rows, their provenance, uses, reservations and receipts are kept.
+        tx.execute(
+            "INSERT INTO legacy_grants (label, upgraded_from) SELECT label, ?1 FROM grants",
+            [from],
+        )
+        .map_err(sql)?;
         tx.commit().map_err(sql)?;
         verify(&conn, SCHEMA, SCHEMA_VERSION)?;
         finish(conn, lock)
@@ -899,7 +940,6 @@ impl LedgerStore for SqliteLedger {
 
 impl GrantLedger for SqliteLedger {
     fn insert_grant(&self, grant: &NewGrant) -> Result<GrantInsert, StoreError> {
-        let expires = grant.expires_at();
         self.transact("approve", |tx| {
             let exists: bool = tx.query_row(
                 "SELECT EXISTS (SELECT 1 FROM grants WHERE label = ?1)",
@@ -909,35 +949,7 @@ impl GrantLedger for SqliteLedger {
             if exists {
                 return Ok(End::Rollback(GrantInsert::LabelInUse));
             }
-            tx.execute(
-                "INSERT INTO grants (label, binding, expires_s, expires_ns, max_uses, uses) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, 0)",
-                (
-                    grant.label().as_str(),
-                    grant.binding(),
-                    expires.unix_seconds(),
-                    i64::from(expires.subsec_nanos()),
-                    i64::from(grant.max_uses()),
-                ),
-            )?;
-            let p = grant.provenance();
-            tx.execute(
-                "INSERT INTO grant_provenance (label, version, approver_id, approver_issuer, \
-                 channel, approved_at, verdict, auth_evidence_ref, request_fingerprint, \
-                 policy_bundle_sha) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                rusqlite::params![
-                    grant.label().as_str(),
-                    p.version(),
-                    p.approver_id(),
-                    p.issuer(),
-                    p.channel(),
-                    p.approved_at().to_string(),
-                    p.verdict().as_str(),
-                    p.evidence_ref(),
-                    p.request_fingerprint(),
-                    p.policy_bundle_sha(),
-                ],
-            )?;
+            insert_grant_rows(tx, grant)?;
             Ok(End::Commit(GrantInsert::Inserted))
         })
         .map_err(StoreError::from)
@@ -1013,9 +1025,44 @@ impl GrantLedger for SqliteLedger {
     }
 }
 
+/// Insert `grant` with `uses` 0 and its provenance (the label must be free).
+pub(crate) fn insert_grant_rows(tx: &Transaction<'_>, grant: &NewGrant) -> rusqlite::Result<()> {
+    let expires = grant.expires_at();
+    tx.execute(
+        "INSERT INTO grants (label, binding, expires_s, expires_ns, max_uses, uses) \
+         VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+        (
+            grant.label().as_str(),
+            grant.binding(),
+            expires.unix_seconds(),
+            i64::from(expires.subsec_nanos()),
+            i64::from(grant.max_uses()),
+        ),
+    )?;
+    let p = grant.provenance();
+    tx.execute(
+        "INSERT INTO grant_provenance (label, version, approver_id, approver_issuer, \
+         channel, approved_at, verdict, auth_evidence_ref, request_fingerprint, \
+         policy_bundle_sha) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        rusqlite::params![
+            grant.label().as_str(),
+            p.version(),
+            p.approver_id(),
+            p.issuer(),
+            p.channel(),
+            p.approved_at().to_string(),
+            p.verdict().as_str(),
+            p.evidence_ref(),
+            p.request_fingerprint(),
+            p.policy_bundle_sha(),
+        ],
+    )?;
+    Ok(())
+}
+
 /// The grant `label` with its provenance as read inside a transaction (`None`: no such
 /// grant). An unrepresentable stored expiry is an integrity failure.
-fn stored_grant(tx: &Transaction<'_>, label: &str) -> Result<Option<StoredGrant>, BodyError> {
+fn stored_grant(tx: &Connection, label: &str) -> Result<Option<StoredGrant>, BodyError> {
     let row: Option<(String, i64, i64, i64, i64)> = tx
         .query_row(
             "SELECT binding, expires_s, expires_ns, max_uses, uses FROM grants WHERE label = ?1",
@@ -1047,6 +1094,12 @@ fn stored_grant(tx: &Transaction<'_>, label: &str) -> Result<Option<StoredGrant>
             },
         )
         .optional()?;
+    let legacy: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM legacy_grants WHERE label = ?1)",
+        [label],
+        |r| r.get(0),
+    )?;
+    let revoked = approval_store::grant_revoked(tx, label)?;
     Ok(Some(StoredGrant {
         binding,
         expires_at: u32::try_from(nanos)
@@ -1056,6 +1109,8 @@ fn stored_grant(tx: &Transaction<'_>, label: &str) -> Result<Option<StoredGrant>
         max_uses,
         uses,
         provenance,
+        legacy,
+        revoked,
     }))
 }
 
@@ -1302,6 +1357,13 @@ impl ExecuteLedger for SqliteLedger {
         })
     }
 
+    fn record_approval_request(
+        &self,
+        request: &ApprovalRequest,
+    ) -> Result<RequestRecorded, TxFailure> {
+        self.record_request(request)
+    }
+
     fn record_failure(&self, code: &str, record: &FailureRecord) -> Result<(), StoreError> {
         self.write("audit", |tx| {
             tx.execute("INSERT INTO audit_refusals (code) VALUES (?1)", [code])?;
@@ -1358,6 +1420,9 @@ mod transition_props;
 
 #[cfg(test)]
 mod runner_tests;
+
+#[cfg(test)]
+mod m4_approval_tests;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -1614,14 +1679,14 @@ mod tests {
     }
 
     #[test]
-    fn new_ledger_is_writ_ledger_5_with_an_identity_and_without_a_floor() {
+    fn new_ledger_is_writ_ledger_6_with_an_identity_and_without_a_floor() {
         let db = tmp("v4");
         let l = SqliteLedger::create(&db).unwrap();
         assert_eq!(
             meta_value(&l.db().conn, "schema_version")
                 .unwrap()
                 .as_deref(),
-            Some("writ-ledger-5")
+            Some("writ-ledger-6")
         );
         let id = meta_value(&l.db().conn, "ledger_id").unwrap().unwrap();
         assert_eq!(LedgerId::parse(&id).as_ref(), Some(l.ledger_id()));

@@ -172,6 +172,7 @@
 //!   `reserved` receipt keeps its key and grant use until it is resumed;
 //!   explicit cancellation or recovery is designed separately.
 
+use crate::approval_store::approval_request_for;
 use crate::authorize::{authorize, Authorized};
 use crate::clock::{observe, ClockError, EffectiveClock, TrustedClock};
 use crate::effects::{EffectAdapter, EffectEvidence, EffectResult, VerifiedEffect};
@@ -757,7 +758,18 @@ where
         let observed = self.grants.observe()?;
         let inputs = shared.trusted_inputs(state_revision);
         let authorized = authorize(verified, &inputs, &observed)?;
-        let request = ReserveRequest::new(&authorized, observed, grant)?;
+        let request = match ReserveRequest::new(&authorized, observed, grant) {
+            Err(Refusal::ApprovalRequired) => {
+                // M4-03: the broker stores the approval request for the human
+                // channel in its own transaction (not a lifecycle one); the
+                // agent's answer is `APPROVAL_REQUIRED` whatever it does.
+                if let Some(approval) = approval_request_for(&authorized, observed) {
+                    let _ = self.grants.ledger.record_approval_request(&approval);
+                }
+                return Err(Refusal::ApprovalRequired);
+            }
+            other => other?,
+        };
         if is_runner(verified.request()) && self.runner.is_none() {
             return Err(Refusal::RequestScopeMismatch);
         }
