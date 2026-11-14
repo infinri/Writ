@@ -93,7 +93,9 @@
 //! policy and the current state (`SIGNOFF_MISMATCH`); neither the signoff nor
 //! its credential, signer subject or `SignoffAuthority` role for the scope is
 //! revoked (`SIGNOFF_REVOKED`; any committed revocation counts, fail closed);
-//! trusted time is before its expiry (`SIGNOFF_EXPIRED`); the signer is a
+//! its stored lifetime is at most 600 s (`SIGNOFF_EXPIRED`, diagnostic
+//! `exceeds maximum lifetime`; D-043 Y1, never rewritten) and trusted time
+//! (with the persisted floor) is before its expiry (`SIGNOFF_EXPIRED`); the signer is a
 //! human currently holding `SignoffAuthority` for the scope
 //! (`SERVICE_NOT_PERMITTED`, `PERMISSION_MISSING`); separation
 //! (`SEPARATION_VIOLATED`) against the exclusions stored with the signoff,
@@ -118,7 +120,9 @@ use writ_kernel::ids::{is_digest, is_id, is_name};
 use writ_kernel::json::{self, Map, Value};
 use writ_kernel::time::Timestamp;
 
-use crate::approval::{ApprovalCode, Signoff, SignoffExclusions, PROVENANCE_VERSION_2};
+use crate::approval::{
+    signoff_lifetime_within_maximum, ApprovalCode, Signoff, SignoffExclusions, PROVENANCE_VERSION_2,
+};
 use crate::contracts::{RegistryEntry, RunnerAttestation};
 use crate::human::{
     check_human_permission, scope_contains, signoff_separation, EnrollmentRecord, Permission,
@@ -891,7 +895,14 @@ fn check_signoff(
     {
         return Err(SignoffRevoked);
     }
-    if now >= b.expires_at {
+    // D-043 item 2 (Y1): a stored lifetime above the 600 s maximum is refused
+    // (never rewritten or grandfathered); otherwise trusted time (the promotion's
+    // observation, which raised the persisted floor, so a clock rollback cannot
+    // revive it) must be before the expiry fixed at ceremony begin.
+    if !signoff_lifetime_within_maximum(f.issued_at, f.expires_at) {
+        return Err(SignoffLifetimeExceeded);
+    }
+    if now >= f.expires_at {
         return Err(SignoffExpired);
     }
     check_human_permission(

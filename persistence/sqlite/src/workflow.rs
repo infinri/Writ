@@ -556,8 +556,9 @@ impl WorkflowLedger for SqliteLedger {
                     "INSERT OR IGNORE INTO signoff_requests (signoff_id, request_fingerprint, \
                      tenant_id, project_id, workflow_id, acceptance_record_id, criterion_id, \
                      from_state, to_state, state_revision, requester_issuer, requester_subject, \
-                     agent_issuer, agent_subject, created_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                     agent_issuer, agent_subject, created_at, deadline_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
+                     ?16)",
                     rusqlite::params![
                         r.signoff_id(),
                         r.request_fingerprint(),
@@ -574,6 +575,7 @@ impl WorkflowLedger for SqliteLedger {
                         r.agent().map(|a| a.issuer.as_str()),
                         r.agent().map(|a| a.subject.as_str()),
                         r.created_at().to_string(),
+                        r.deadline_at().to_string(),
                     ],
                 )?;
             }
