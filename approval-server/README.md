@@ -59,17 +59,25 @@ Run locally (pinned toolchain, Chrome at `/usr/bin/google-chrome`, Node 22):
 approval/browser-tests/run.sh
 ```
 
-It builds the release binary and the fixture (`--locked`), runs the release-binary check, and then runs `node approval/browser-tests/run.mjs` under `m3/tools/run-with-clean-fds.sh`. Every result line is `PASS` or `FAIL` and carries the label `[CDP virtual authenticator, simulated UV]`. `--only <substring>` selects flows.
+It builds the release binary and the fixture (`--locked`), runs the release-binary check, and then runs `node approval/browser-tests/run.mjs` under `m3/tools/run-with-clean-fds.sh`. Every result line is `PASS` or `FAIL` and carries the label `[CDP virtual authenticator, simulated UV]`. `--only <substring>` selects flows locally; CI mode refuses it.
 
 Adding flows (signoff, revoke, enrollment and role-change pages): add a module under `flows/` exporting `flows`, each `{ name, requests, expect, run(t) }`, and list it in `FLOW_MODULES` in `run.mjs`. Any new fixture state goes into `approval-server/examples/browser_fixture.rs` as further JSON-line steps.
 
-Proposed CI step (not applied; the lead owns CI). It assumes the job already sourced the toolchain and SQLite environment like the Rust job, and the runner has Google Chrome and Node 22:
+Required CI (D-044 item 2). The complete suite is a step of the required job "Production Rust workspace" in `.github/workflows/v2-docs.yml`; it is a step rather than a new job because only existing job names are required checks, and branch protection is not changed. The step reuses the job's pinned Rust 1.99.1 (`rust-toolchain.toml`) and pinned SQLite 3.54.1 (D-023); in CI mode `run.sh` uses that environment as is (it checks `rustc 1.99.1` and the SQLite library instead of sourcing `m1/tools/env.sh`). Tool versions:
 
-```yaml
-      - name: Approval browser suite (CDP virtual authenticator, simulated UV)
-        run: |
-          source m1/tools/env.sh
-          approval/browser-tests/run.sh
+- Node: installed by `actions/setup-node@v4` with `node-version: '22.22.3'` (exact pin). The job checks `node --version` is `v22.*`, and `run.mjs` refuses any other major than `node_major` in `approval/browser-tests/ci-manifest.json`.
+- Chrome: the runner image's Google Chrome (`ubuntu-latest`), verified with `command -v google-chrome` and `google-chrome --version`. `run.mjs` refuses a missing Chrome or a major below `chrome_min_major` in the manifest. Chrome is not pinned to an exact version; the version that ran is recorded.
+- The job log prints both versions, and the results file records them (`tools.node`, `tools.chrome`, `tools.chrome_cdp` from CDP `Browser.getVersion`).
+
+CI mode (`WRIT_BROWSER_CI=1`) fails the step when Node or Chrome is missing or of the wrong major, when setup fails, when `--only` or any other reduced selection is given, when the flows loaded from `FLOW_MODULES` do not number exactly `expected_flow_count` in `approval/browser-tests/ci-manifest.json`, when any loaded flow did not run, or when any flow or final ledger check fails. There is no `continue-on-error` and no skip. When a flow is added or removed, `expected_flow_count` must change in the same commit.
+
+Results: `--results` and `--diagnostics` (both required in CI mode) write `browser-suite-results.json` (flow names, executed list, pass or fail, expected and actual ledger statuses, tool versions, and a failed flow's reason) and `browser-suite-diagnostics.log` (harness log, server and fixture stderr, Chrome console messages and page exceptions). Both are written on failure too, and `actions/upload-artifact@v4` uploads them as `approval-browser-suite-results` with `if: always()`. Every string passes through `approval/browser-tests/lib/sanitize.mjs`, which redacts session cookies, CSRF tokens, ceremony ids and state, challenges, credential ids, assertion and attestation fields, keys, tokens, and long random base64, base64url or hex runs (over-redaction is accepted). The results file holds no flow detail text and no stored record contents. `approval/browser-tests/sanitize-selftest.mjs` runs as its own CI step before the suite and proves the known secret shapes are redacted. Cleanup of Chrome, the server, the fixture and the temporary directory runs on failure as well as on success.
+
+Local CI-mode run (pinned environment sourced first, as the CI job provides it):
+
+```
+source m1/tools/env.sh
+WRIT_BROWSER_CI=1 NODE=<node 22> TMPDIR=/tmp approval/browser-tests/run.sh --results results.json --diagnostics diagnostics.log
 ```
 
 Notes: Chrome's singleton socket path must be short, so `TMPDIR` must not be a deeply nested directory. The suite points Chrome's `TMPDIR` at its own temporary directory, and on SIGINT or SIGTERM it closes the browser and removes that directory.
