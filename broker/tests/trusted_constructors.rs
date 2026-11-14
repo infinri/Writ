@@ -6,7 +6,9 @@
 //! `.venv/` and `node_modules/` directories):
 //!
 //! - `VerifierCapability::for_verifier_implementation`: production code only
-//!   under `approval/` (the `writ-approval` crate);
+//!   under `approval/` (the `writ-approval` crate), and the one non-shipping
+//!   test verifier of the closure adapter
+//!   (`persistence/sqlite/examples/m3_line_adapter/signoff.rs`, a Cargo example);
 //! - `LedgerCapability::for_ledger_implementation`: production code only
 //!   under `persistence/sqlite/src/` (the SQLite ledger);
 //! - either, in test code of the `broker/`, `approval/` or
@@ -29,7 +31,15 @@ const LEDGER: &str = "for_ledger_implementation";
 
 /// Production path prefixes allowed per capability constructor.
 const PRODUCTION_ALLOWED: [(&str, &[&str]); 2] = [
-    (VERIFIER, &["approval/"]),
+    // The closure adapter's non-shipping test verifier (a Cargo example, never in a release
+    // binary; M4-11 signoffs) is named exactly; no other example file is allowed.
+    (
+        VERIFIER,
+        &[
+            "approval/",
+            "persistence/sqlite/examples/m3_line_adapter/signoff.rs",
+        ],
+    ),
     (LEDGER, &["persistence/sqlite/src/"]),
 ];
 
