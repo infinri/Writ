@@ -1,22 +1,11 @@
 // Revoke, role-change, enrollment and signoff pages (W-F, D-043 item 4 and Y2) through the
 // real writ-approval-server binary, the real HTTP listener and the production webauthn-rs
 // verifier. User verification is SIMULATED by CDP virtual authenticators (no real user, no
-// real credential). Flow shape: see flows/approve-deny.mjs.
+// real credential). Flow shape: see flows/approve-deny.mjs. Every flow signs in first
+// (D-044 item 3: every page needs an authenticated read session; flows/login.mjs).
 
-import { request, sleep } from "../lib/harness.mjs";
-
-const assert = (cond, msg) => { if (!cond) throw new Error(msg); };
-
-/** Wait until `expr` (evaluated in the page) is truthy; navigation in between is tolerated. */
-async function until(t, expr, what) {
-  for (let i = 0; i < 300; i++) {
-    try {
-      if (await t.page.evaluate(expr)) return;
-    } catch { /* the page is navigating */ }
-    await sleep(100);
-  }
-  throw new Error(`timeout waiting for ${what}`);
-}
+import { request } from "../lib/harness.mjs";
+import { assert, get, httpLogin, refusalReference, assertRefused, signIn, until } from "./login.mjs";
 
 /** Fill the page's `form#prepare` with `fields`, submit it and wait for the `/view` page. */
 async function prepare(t, fields) {
@@ -32,12 +21,12 @@ async function prepare(t, fields) {
     text: document.querySelector(".context").textContent })`);
 }
 
-/** GET `path` over loopback HTTP: the page session's cookie and CSRF token. */
-async function session(t, path) {
-  const r = await request(t.port, "GET", path, { host: `localhost:${t.port}`, "sec-fetch-site": "none" });
-  const cookie = ((r.headers["set-cookie"] || [])[0] || "").split(";")[0];
+/** Sign in as `subject` over loopback HTTP, then GET `path`: the session's cookie and CSRF. */
+async function session(t, subject, path) {
+  const s = await httpLogin(t, subject);
+  const r = await get(t, path, { cookie: s.cookie });
   const m = r.body.match(/data-csrf="([^"]+)"/);
-  return { status: r.status, cookie, csrf: m && m[1], body: r.body, headers: r.headers };
+  return { status: r.status, cookie: s.cookie, csrf: m && m[1], body: r.body, headers: r.headers };
 }
 
 /** Open the pending signoff page; the displayed exclusions, delegation chain and expiry. */
@@ -72,6 +61,7 @@ export const flows = [
     requests: [],
     expect: {},
     async run(t) {
+      await signIn(t, t.subjects.admin);
       await t.page.navigate(`${t.origin}/revoke`);
       const shown = await prepare(t, {
         target_kind: "subject", target: t.subjects.target, reason: "browser suite <revocation>",
@@ -89,17 +79,19 @@ export const flows = [
     requests: [],
     expect: {},
     async run(t) {
-      const s = await session(t, "/revoke");
+      const s = await session(t, t.subjects.admin, "/revoke");
+      assert(s.status === 200 && s.csrf, `revoke page ${s.status}`);
       const fields = { operation: "revoke", target_kind: "subject", target: t.subjects.approver, reason: "x" };
+      // A wrong CSRF token is the one generic refusal of a read (D-044 Z3).
       const bad = await t.post("/prepare", { ...fields, csrf: "0".repeat(64) }, { cookie: s.cookie });
-      assert(bad.status === 403 && JSON.parse(bad.body).error === "session", `csrf: ${bad.status} ${bad.body}`);
+      assert(bad.status === 403 && JSON.parse(bad.body).error === "refused", `csrf: ${bad.status} ${bad.body}`);
       const wrong = await t.post("/prepare", { ...fields, csrf: s.csrf }, { cookie: s.cookie, origin: t.wrongOrigin });
       assert(wrong.status === 403 && JSON.parse(wrong.body).error === "origin", `origin: ${wrong.status} ${wrong.body}`);
       // LOW-1: the session's cookie and CSRF token used from another localhost port
       // (Sec-Fetch-Site same-site) are refused.
       const planted = await t.post("/prepare", { ...fields, csrf: s.csrf }, { cookie: s.cookie, site: "same-site" });
       assert(planted.status === 403 && JSON.parse(planted.body).error === "fetch site", `fetch site: ${planted.status} ${planted.body}`);
-      return "prepare with a wrong CSRF token answered 403 session; with Origin of another port 403 origin; with Sec-Fetch-Site same-site 403 fetch site";
+      return "prepare with a wrong CSRF token answered 403 refused; with Origin of another port 403 origin; with Sec-Fetch-Site same-site 403 fetch site";
     },
   },
   {
@@ -107,6 +99,7 @@ export const flows = [
     requests: [],
     expect: {},
     async run(t) {
+      await signIn(t, t.subjects.admin);
       await t.page.navigate(`${t.origin}/role`);
       const shown = await prepare(t, {
         operation: "role-grant", target: t.subjects.approver, permission: "signoff_authority",
@@ -124,6 +117,7 @@ export const flows = [
     requests: [],
     expect: {},
     async run(t) {
+      await signIn(t, t.subjects.admin);
       await t.page.navigate(`${t.origin}/role`);
       await prepare(t, {
         operation: "role-grant", target: t.subjects.approver, permission: "revoker",
@@ -141,9 +135,11 @@ export const flows = [
     expect: {},
     async run(t) {
       const newbie = "browser-newbie";
+      await signIn(t, t.subjects.admin);
       await t.page.navigate(`${t.origin}/enroll`);
-      // 1. The operator's registration start: displayed, then the operator's passkey.
-      const start = await prepare(t, { operator: t.subjects.admin, subject: newbie });
+      // 1. The operator's registration start (the operator is the signed-in subject):
+      // displayed, then the operator's passkey.
+      const start = await prepare(t, { subject: newbie });
       assert(start.title === "Registration start", `title ${start.title}`);
       assert(start.text.includes(newbie) && start.text.includes("localhost"), "start context incomplete");
       const started = await t.decide("confirm", t.subjects.admin);
@@ -186,11 +182,22 @@ export const flows = [
     requests: [],
     expect: {},
     async run(t) {
+      // D-044 Z3: the registration-start context is an operator read; an approver's
+      // prepare is refused before anything is displayed or begun.
+      await signIn(t, t.subjects.approver);
       await t.page.navigate(`${t.origin}/enroll`);
-      await prepare(t, { operator: t.subjects.approver, subject: "browser-nobody" });
-      const result = await t.decide("confirm", t.subjects.approver);
+      await t.page.evaluate(`(() => {
+        document.getElementById("result").textContent = "";
+        const f = document.getElementById("prepare");
+        f.elements.subject.value = "browser-nobody";
+        f.requestSubmit();
+      })()`);
+      await until(t, `document.getElementById("result").textContent !== ""`, "the prepare result");
+      const result = await t.page.evaluate(`document.getElementById("result").textContent`);
       assert(result === "refused", `result ${JSON.stringify(result)}`);
-      return `registration start by ${t.subjects.approver} (approver, not operator) answered refused; no row created`;
+      const path = await t.page.evaluate("location.pathname");
+      assert(path === "/enroll", `navigated to ${path}`);
+      return `registration start prepared by ${t.subjects.approver} (approver, not operator) answered refused; nothing displayed, no row created`;
     },
   },
   {
@@ -198,6 +205,7 @@ export const flows = [
     requests: [],
     expect: {},
     async run(t) {
+      await signIn(t, t.subjects.excluded);
       const shown = await openSignoff(t);
       assert(shown.linked.includes(t.subjects.excluded), `exclusions ${shown.linked}`);
       const result = await t.decide("confirm", t.subjects.excluded);
@@ -210,6 +218,7 @@ export const flows = [
     requests: [],
     expect: {},
     async run(t) {
+      await signIn(t, t.subjects.reviewer);
       const shown = await openSignoff(t);
       assert(shown.requesters.includes("agent:session-1"), `requesters ${shown.requesters}`);
       assert(shown.delegation === "unavailable", `delegation_chain ${shown.delegation}`);
@@ -226,12 +235,15 @@ export const flows = [
     requests: [],
     expect: {},
     async run(t) {
-      const r = await session(t, "/signoff/so-not-pending");
-      assert(r.status === 404, `status ${r.status}`);
-      assert(!r.headers["set-cookie"], "a session was created");
-      const bad = await request(t.port, "GET", "/signoff/so%2Fx", { host: `localhost:${t.port}`, "sec-fetch-site": "none" });
+      const reference = await refusalReference(t);
+      const r = await session(t, t.subjects.reviewer, "/signoff/so-not-pending");
+      assertRefused(r, reference, "unknown signoff id");
+      // The signed signoff is no longer pending: the same refusal.
+      assertRefused(await session(t, t.subjects.reviewer, `/signoff/${t.signoffId}`), reference, "signed signoff");
+      const s = await httpLogin(t, t.subjects.reviewer);
+      const bad = await request(t.port, "GET", "/signoff/so%2Fx", { host: `localhost:${t.port}`, "sec-fetch-site": "none", cookie: s.cookie });
       assert(bad.status === 400, `malformed id ${bad.status}`);
-      return "GET /signoff/<unknown> answered 404 without a session; a malformed id 400";
+      return "GET /signoff/<unknown> and /signoff/<signed> answered the one 404 without a new session; a malformed id 400";
     },
   },
 ];

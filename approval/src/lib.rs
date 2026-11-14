@@ -7,9 +7,11 @@
 //! - [`listener`]: the loopback-only Hyper HTTP/1 approval listener and page, with a fixed
 //!   origin `http://localhost:<port>` and RP id `localhost`, exact Host and Origin checks,
 //!   CSRF tokens, a strict Content-Security-Policy, escaped untrusted text, bounded
-//!   connections, headers, bodies and time, and read-only page sessions of at most 15
-//!   minutes that never authorize a state change.
-//! - [`backend`]: the broker operations the page uses ([`backend::Backend`]), with
+//!   connections, headers, bodies and time, and passkey-authenticated read sessions of at
+//!   most 15 minutes (D-044 Z1..Z4: every record read goes through the ledger's scoped
+//!   read) that never authorize a state change.
+//! - [`backend`]: the broker operations the page uses ([`backend::Backend`]: the one
+//!   protected read, the ceremonies and the registration finish), with
 //!   [`backend::LedgerBackend`] over any `ApprovalLedger`; production wiring opens the
 //!   ledger with its approval channel configured once (M1), for example
 //!   `SqliteLedger::open(path)?.with_approval_channel(ApprovalChannel::new(v.clone(), v,

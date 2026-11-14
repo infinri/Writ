@@ -16,49 +16,66 @@
 //!   same-site, so every page that creates or uses a session requires `Sec-Fetch-Site:
 //!   same-origin` or `none`, while every `POST` and `GET /view` require exactly
 //!   `same-origin`; `same-site`, `cross-site` and a missing header are refused (fail closed).
-//! - **Sessions** (at most 15 minutes, [`MAX_SESSION_SECONDS`]): viewing a stored request
-//!   creates a server-side page session (random token in an `HttpOnly`, `SameSite=Strict`
-//!   cookie) holding a CSRF token, the viewed request and the fingerprint displayed. A
-//!   session is read-only: it never authorizes a state change. Approve and deny each need
-//!   a fresh user-verified ceremony through the ledger (`begin_ceremony` then
-//!   `finish_ceremony`); the session only carries the server-side operation, target and
-//!   idempotency key between the two, so the client never chooses them.
-//! - **Routes** (W-F, D-043; documented in M4-INTERFACES "Pages and registration binding"):
-//!   `GET /request/<id>` (approve or deny), `GET /signoff/<id>` (a pending signoff of a
-//!   stored promotion context), the operator forms `GET /revoke`, `GET /role` and
-//!   `GET /enroll`, `POST /prepare` (a form's operation becomes the session's displayed
-//!   target with the ledger's context for it; a read) and `GET /view` (that context),
-//!   `POST /registration/finish` (the new person's passkey registration for a row the
-//!   operator's authenticated registration-start ceremony created, bound to the operator
-//!   and this page session, D-043 Y2; there is no registration begin route), and
-//!   `POST /ceremony/begin` and `POST /ceremony/finish` for every operation. Every page
-//!   displays only the ledger's context for the ceremony, which is what its fingerprint
-//!   covers (R6); the operation, target, idempotency key, registration result and
-//!   page-session id are server-side session state, never request fields once displayed.
+//! - **Read sessions** (D-044 item 3, Z1..Z4; at most 15 minutes, [`MAX_SESSION_SECONDS`]):
+//!   the landing page `GET /` offers the login form and static assets only, with no record
+//!   or session data. `POST /login/begin` (the subject identifier; no prior session) opens a
+//!   pre-authentication page session (random token in an `HttpOnly`, `SameSite=Strict`
+//!   cookie, a CSRF token and a page-session id) and asks the ledger for a purpose-separated
+//!   `ReadSession` challenge bound to the subject, its active credentials, the page session
+//!   and the configured channel; `POST /login/finish` completes it with a fresh
+//!   user-verified assertion, binds the authenticated subject and credential (the ledger's
+//!   read session) to the page session and rotates the session token and CSRF token. The
+//!   session expires absolutely with the read session (never extended). Every page and every
+//!   other `POST` needs an authenticated session.
+//! - **Protected reads** (Z3): every lookup or display of stored record context (an approval
+//!   request, a pending signoff, the context `/prepare` and `/view` show, the stale-display
+//!   check of a begin) is the ledger's one protected read ([`Backend::read`]), which
+//!   rechecks the read session, the subject, the credential and the scoped permission for
+//!   the target inside its read transaction. No session, an unauthenticated or expired
+//!   session, a revoked subject, credential or role, an out-of-scope target and an unknown
+//!   or guessed id all receive one identical answer (404 "Not found", no session created;
+//!   `POST /prepare`: 403 `refused`).
+//! - **Mutations:** a read session never authorizes a state change. Approve, deny, signoff,
+//!   revocation, enrollment and role change each need a fresh user-verified,
+//!   operation-bound ceremony through the ledger (`begin_ceremony` then `finish_ceremony`)
+//!   whose actor is always the read session's subject (a page naming another subject is
+//!   refused); the session only carries the server-side operation, target and idempotency
+//!   key between the two, so the client never chooses them.
+//! - **Routes** (W-F, D-043; D-044): `GET /` (landing, login), `POST /login/begin`,
+//!   `POST /login/finish`, `GET /request/<id>` (approve or deny), `GET /signoff/<id>` (a
+//!   pending signoff of a stored promotion context), the operator forms `GET /revoke`,
+//!   `GET /role` and `GET /enroll`, `POST /prepare` (a form's operation becomes the
+//!   session's displayed target with the ledger's context for it; a protected read) and
+//!   `GET /view` (that context, read again), `POST /registration/finish` (the new person's
+//!   passkey registration for a row the operator's authenticated registration-start
+//!   ceremony created, bound to the operator and this page session, D-043 Y2; there is no
+//!   registration begin route), and `POST /ceremony/begin` and `POST /ceremony/finish` for
+//!   every operation. Every page displays only the ledger's context for the ceremony, which
+//!   is what its fingerprint covers (R6); the operation, target, idempotency key,
+//!   registration result and page-session id are server-side session state, never request
+//!   fields once displayed.
 //! - **Stale display:** a ceremony starts only if the fingerprint the page displayed is
 //!   the current fingerprint of the stored request or of the ledger's recomputed context
 //!   (and the ledger binds the challenge to it).
 //! - **Channel identity**, verifier and relying party are the ledger's configured
 //!   approval channel (`writ_broker::human::ApprovalChannel`, M1), never a request field.
 //! - **Outstanding ceremonies** (L2): at most `max_pending` per session and
-//!   `max_outstanding` issued, unexpired challenges and registration rows across all
-//!   sessions (a challenge counted for at most the 120 s challenge lifetime, a registration
-//!   row for its 600 s lifetime); further begins are refused. When `max_sessions` is
-//!   reached, only a session without a pending ceremony or registration is evicted; if
-//!   every session has one, the new session is refused (fail closed). Repeated hostile
-//!   loopback requests can sustain this denial of service: 120 s bounds one challenge, not
-//!   the overall outage (N2).
+//!   `max_outstanding` issued, unexpired challenges (login challenges included) and
+//!   registration rows across all sessions (a challenge counted for at most the 120 s
+//!   challenge lifetime, a registration row for its 600 s lifetime); further begins are
+//!   refused. When `max_sessions` is reached, only a session without a pending ceremony or
+//!   registration is evicted; if every session has one, the new session is refused (fail
+//!   closed). Repeated hostile loopback requests can sustain this denial of service: 120 s
+//!   bounds one challenge, not the overall outage (N2).
 //! - **Responses** carry a strict Content-Security-Policy (no inline script or style),
-//!   `nosniff`, `frame-ancestors 'none'`, `no-referrer` and `no-store`. A refused `begin`
-//!   answers one generic `refused` (L1: the page session is not an authentication, so it
-//!   never learns whether the subject is unknown, a service, revoked, without permission
-//!   or without a credential; the specific code stays in the ledger's refusal audit);
-//!   `/prepare` answers the same generic `refused`, and a
-//!   signoff id the ledger does not offer is one generic not-found page.
-//!   After a begin, the page receives the verifier's options including the subject's
-//!   allowed credential ids (WebAuthn `allowCredentials`; documented exposure). A refused
-//!   `finish` returns the internal refusal code (O-6); a verifier that reports itself
-//!   unavailable answers `unavailable` and keeps the pending ceremony (L6).
+//!   `nosniff`, `frame-ancestors 'none'`, `no-referrer` and `no-store`. A refused login or
+//!   ceremony `begin` answers one generic `refused` (L1, Z1: it never tells whether the
+//!   subject is unknown, a service, revoked, without permission or without a credential;
+//!   the specific code stays in the ledger's refusal audit). After a successful begin, the
+//!   page receives the verifier's options including the subject's allowed credential ids
+//!   (WebAuthn `allowCredentials`; documented L1 exposure). A refused `finish` returns the
+//!   internal refusal code (O-6); a verifier that reports itself unavailable answers
+//!   `unavailable` and keeps the pending ceremony (L6).
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -79,12 +96,12 @@ use hyper_util::rt::{TokioIo, TokioTimer};
 use writ_broker::approval::{ApprovalCode, RevocationTarget};
 use writ_broker::approval_store::{
     parse_permission, CeremonyOp, CeremonyOutcome, CeremonyResult, NewEnrollment, NewRole,
-    OperatorSession, RoleChange, SignoffParties, REGISTRATION_TTL_SECONDS,
+    OperatorSession, ReadSession, ReadTarget, RecordView, RoleChange, READ_SESSION_MAX_SECONDS,
+    REGISTRATION_TTL_SECONDS,
 };
 use writ_broker::human::{PrincipalKind, SubjectId, VerifiedRegistration, VerifierError};
 use writ_broker::refusal::Refusal;
 use writ_broker::writ_kernel::json::{self, Value};
-use writ_broker::writ_kernel::time::Timestamp;
 
 use crate::backend::{Backend, Unavailable};
 use crate::page;
@@ -147,6 +164,10 @@ const OUTSTANDING_SECONDS: u64 = 120;
 /// The lifetime for which a begun registration row is counted as outstanding (the
 /// ledger's row lifetime, D-043 Y2).
 const REGISTRATION_SECONDS: u64 = REGISTRATION_TTL_SECONDS as u64;
+
+/// The read session's lifetime (D-044 Z1, Z2): an authenticated page session never
+/// outlives it.
+const READ_SESSION_SECONDS: u64 = READ_SESSION_MAX_SECONDS as u64;
 
 /// The listener's trusted configuration. The channel identity recorded on decisions is the
 /// ledger's configured approval channel (O-2, M1).
@@ -213,6 +234,9 @@ struct Session {
     expires: Instant,
     pending: HashMap<String, Pending>,
     registrations: HashMap<String, Registration>,
+    /// The authenticated read session bound to this page session (D-044 Z2); `None` for
+    /// a login (pre-authentication) session, which reads and changes nothing.
+    auth: Option<ReadSession>,
 }
 
 impl Session {
@@ -494,7 +518,12 @@ async fn handle(state: &State, req: Request<Incoming>) -> Response<Full> {
         if parts.uri.query().is_some() {
             return refused(StatusCode::BAD_REQUEST, "query");
         }
+        let token = cookie_token(&parts.headers);
+        let token = token.as_deref();
         return match path {
+            // Z4: the landing page (login) and the static assets need no session and show
+            // no record.
+            "/" => html(StatusCode::OK, page::landing_page()),
             "/static/approval.js" => respond(
                 StatusCode::OK,
                 "text/javascript; charset=utf-8",
@@ -505,22 +534,22 @@ async fn handle(state: &State, req: Request<Incoming>) -> Response<Full> {
                 "text/css; charset=utf-8",
                 page::STYLE.into(),
             ),
-            // LOW-1: every other page creates or uses a session; it is served only to a
-            // navigation from this origin or a direct one (address bar, bookmark).
+            // LOW-1: every other page uses a session; it is served only to a navigation
+            // from this origin or a direct one (address bar, bookmark).
             _ if !page_fetch_site(&parts.headers) => refused(StatusCode::FORBIDDEN, "fetch site"),
-            "/revoke" => form(state, page::FormKind::Revoke),
-            "/role" => form(state, page::FormKind::Role),
-            "/enroll" => form(state, page::FormKind::Enroll),
+            "/revoke" => form(state, token, page::FormKind::Revoke),
+            "/role" => form(state, token, page::FormKind::Role),
+            "/enroll" => form(state, token, page::FormKind::Enroll),
             // `/view` shows a staged operation from an existing session; it is reached only by
             // the page script's same-origin navigation, never directly (re-review residual of
             // LOW-1: a reload after a cookie overwrite from another port would send `none`).
             "/view" if !same_origin(&parts.headers) => refused(StatusCode::FORBIDDEN, "fetch site"),
-            "/view" => shown_view(state, cookie_token(&parts.headers).as_deref()),
+            "/view" => shown_view(state, token),
             _ => {
                 if let Some(id) = path.strip_prefix("/request/") {
-                    view(state, id)
+                    view(state, token, id)
                 } else if let Some(id) = path.strip_prefix("/signoff/") {
-                    signoff_view(state, id)
+                    signoff_view(state, token, id)
                 } else {
                     not_found()
                 }
@@ -560,10 +589,20 @@ async fn handle(state: &State, req: Request<Incoming>) -> Response<Full> {
     if !same_origin(&parts.headers) {
         return refused(StatusCode::FORBIDDEN, "fetch site");
     }
-    let Some(token) = cookie_token(&parts.headers) else {
-        return refused(StatusCode::FORBIDDEN, "session");
+    let token = cookie_token(&parts.headers);
+    // Z1: a login needs no prior session (a presented one is ended: every login rotates).
+    if path == "/login/begin" {
+        return login_begin(state, token.as_deref(), &field);
+    }
+    let Some(token) = token else {
+        return match path {
+            // Z3: an unauthenticated prepare is the one generic refusal of a read.
+            "/prepare" => refused(StatusCode::FORBIDDEN, "refused"),
+            _ => refused(StatusCode::FORBIDDEN, "session"),
+        };
     };
     match path {
+        "/login/finish" => login_finish(state, &token, &field),
         "/ceremony/begin" => begin(state, &token, &field),
         "/ceremony/finish" => finish(state, &token, &field),
         "/prepare" => prepare(state, &token, &field),
@@ -572,11 +611,11 @@ async fn handle(state: &State, req: Request<Incoming>) -> Response<Full> {
     }
 }
 
-/// LOW-1: `Sec-Fetch-Site` of a GET that creates or uses a page session: `same-origin` (a
-/// navigation from this listener's own pages) or `none` (a user-initiated navigation:
-/// address bar, bookmark, reload). `same-site` (another localhost port, whose cookies the
-/// browser shares because cookies are not port-scoped), `cross-site` and a missing header
-/// (a non-browser client, or a browser without Fetch Metadata) are refused: fail closed.
+/// LOW-1: `Sec-Fetch-Site` of a GET that uses a page session: `same-origin` (a navigation
+/// from this listener's own pages) or `none` (a user-initiated navigation: address bar,
+/// bookmark, reload). `same-site` (another localhost port, whose cookies the browser shares
+/// because cookies are not port-scoped), `cross-site` and a missing header (a non-browser
+/// client, or a browser without Fetch Metadata) are refused: fail closed.
 fn page_fetch_site(headers: &HeaderMap) -> bool {
     matches!(
         header(headers, "sec-fetch-site"),
@@ -589,6 +628,10 @@ fn same_origin(headers: &HeaderMap) -> bool {
     header(headers, "sec-fetch-site") == Some("same-origin")
 }
 
+/// The one answer of every page that is not available to the request (D-044 Z3): an
+/// unknown path, no or an expired session, a session that is not authenticated, an
+/// unknown, guessed or out-of-scope record and a session whose subject, credential or
+/// permission was revoked receive the same status and body, and no session is created.
 fn not_found() -> Response<Full> {
     html(
         StatusCode::NOT_FOUND,
@@ -619,21 +662,13 @@ fn outstanding(sessions: &HashMap<String, Session>) -> usize {
     sessions.values().map(Session::outstanding).sum()
 }
 
-/// A new page session displaying `shown`: (cookie token, CSRF token). L2: the oldest
-/// session without a pending ceremony or registration is evicted at the bound; when every
-/// session has one, the new session is refused (fail closed).
-fn new_session(
-    state: &State,
-    shown: Option<Shown>,
-) -> Result<(String, String), Box<Response<Full>>> {
-    let (Some(token), Some(csrf), Some(id)) = (random_token(), random_token(), random_token())
-    else {
-        return Err(Box::new(unavailable()));
-    };
-    let limits = &state.config.limits;
-    let mut sessions = sessions(state);
-    let now = Instant::now();
-    prune(&mut sessions, now);
+/// Make room for one more session (L2): the oldest session without a pending ceremony or
+/// registration is evicted at the bound; when every session has one, the new session is
+/// refused (fail closed).
+fn make_room(
+    sessions: &mut HashMap<String, Session>,
+    limits: &Limits,
+) -> Result<(), Box<Response<Full>>> {
     while sessions.len() >= limits.max_sessions {
         let Some(oldest) = sessions
             .iter()
@@ -648,25 +683,14 @@ fn new_session(
         };
         sessions.remove(&oldest);
     }
-    sessions.insert(
-        token.clone(),
-        Session {
-            csrf: csrf.clone(),
-            id: format!("page-session-{id}"),
-            shown,
-            expires: now + limits.session_ttl,
-            pending: HashMap::new(),
-            registrations: HashMap::new(),
-        },
-    );
-    Ok((token, csrf))
+    Ok(())
 }
 
-/// `body` with the new session's cookie.
-fn with_cookie(state: &State, mut response: Response<Full>, token: &str) -> Response<Full> {
+/// `response` with the session cookie `token` (`max_age` seconds).
+fn with_cookie(mut response: Response<Full>, token: &str, max_age: Duration) -> Response<Full> {
     let cookie = format!(
         "{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}",
-        state.config.limits.session_ttl.as_secs()
+        max_age.as_secs()
     );
     if let Ok(v) = HeaderValue::from_str(&cookie) {
         response.headers_mut().insert("set-cookie", v);
@@ -674,179 +698,24 @@ fn with_cookie(state: &State, mut response: Response<Full>, token: &str) -> Resp
     response
 }
 
-/// GET `/request/<id>`: the stored, fingerprint-covered context and a new page session.
-fn view(state: &State, raw_id: &str) -> Response<Full> {
-    let Some(id) = page::path_segment(raw_id) else {
-        return refused(StatusCode::BAD_REQUEST, "request id");
-    };
-    let (request, status) = match state.backend.request(&id) {
-        Ok(Some(found)) => found,
-        Ok(None) => {
-            return html(
-                StatusCode::NOT_FOUND,
-                page::message_page("Unknown request", "No stored approval request has this id."),
-            )
-        }
-        Err(Unavailable) => return unavailable(),
-    };
-    let fingerprint = request.fingerprint().as_str().to_string();
-    let shown = Shown::Request {
-        request_id: id.clone(),
-        fingerprint: fingerprint.clone(),
-    };
-    let (token, csrf) = match new_session(state, Some(shown)) {
-        Ok(t) => t,
-        Err(response) => return *response,
-    };
-    let expires = request.expires_at().to_string();
-    let body = page::request_page(&page::Displayed {
-        request_id: &id,
-        status: status.as_str(),
-        expires_at: &expires,
-        fingerprint: &fingerprint,
-        context: request.context(),
-        csrf: &csrf,
-        decidable: status == writ_broker::approval::ApprovalStatus::Pending,
-    });
-    with_cookie(state, html(StatusCode::OK, body), &token)
+/// The lifetime of a login (pre-authentication) session: the challenge lifetime, bounded
+/// by the configured session lifetime.
+fn login_ttl(state: &State) -> Duration {
+    state
+        .config
+        .limits
+        .session_ttl
+        .min(Duration::from_secs(OUTSTANDING_SECONDS))
 }
 
-/// The fixed page title of a ceremony operation.
-fn title(op: &CeremonyOp) -> &'static str {
-    match op {
-        CeremonyOp::Approve { .. } | CeremonyOp::Deny { .. } => "Approval request",
-        CeremonyOp::Revoke { .. } => "Revocation",
-        CeremonyOp::Signoff { .. } => "Signoff",
-        CeremonyOp::Enroll { .. } => "Enrollment",
-        CeremonyOp::RoleChange { .. } => "Role change",
-        CeremonyOp::RegistrationStart { .. } => "Registration start",
-    }
-}
-
-/// GET `/signoff/<id>`: the ledger's pending signoff binding of a stored promotion context
-/// and the complete context a signoff ceremony binds (its reviewed parties and exclusions,
-/// `delegation_chain: unavailable` and the expiry the ledger set), with a new page session.
-fn signoff_view(state: &State, raw_id: &str) -> Response<Full> {
-    let Some(id) = page::path_segment(raw_id) else {
-        return refused(StatusCode::BAD_REQUEST, "signoff id");
-    };
-    let none = || {
-        html(
-            StatusCode::NOT_FOUND,
-            page::message_page("No pending signoff", "No pending signoff has this id."),
-        )
-    };
-    let binding = match state.backend.pending_signoff(&id) {
-        Ok(Some(b)) => b,
-        Ok(None) => return none(),
-        Err(Unavailable) => return unavailable(),
-    };
-    // D-043 Y1: the ledger computes the effective expiry (as a begin at this trusted time
-    // would); the page pins exactly that value as the requested expiry, re-reads the
-    // context with it (unchanged unless a deadline moved, then refused) and displays it.
-    // The begin computes min(its own cap, trusted deadline, this value) = this value, or a
-    // different context, which the fingerprint comparison refuses as a stale display: the
-    // page never shows one expiry and signs another.
-    let mut op = CeremonyOp::Signoff {
-        binding: Box::new(binding),
-        parties: SignoffParties::default(),
-        requested_expires_at: None,
-    };
-    let first = match state.backend.context(&op) {
-        Ok(Ok(c)) => c,
-        Ok(Err(_)) => return none(),
-        Err(Unavailable) => return unavailable(),
-    };
-    let Some(effective) = first
-        .context
-        .get("expires_at")
-        .and_then(Value::as_str)
-        .and_then(Timestamp::parse_rfc3339)
-    else {
-        return none();
-    };
-    if let CeremonyOp::Signoff {
-        requested_expires_at,
-        ..
-    } = &mut op
-    {
-        *requested_expires_at = Some(effective);
-    }
-    let context = match state.backend.context(&op) {
-        Ok(Ok(c)) if c.binding.context_fingerprint == first.binding.context_fingerprint => c,
-        Ok(_) => return none(),
-        Err(Unavailable) => return unavailable(),
-    };
-    let fingerprint = context.binding.context_fingerprint.as_str().to_string();
-    let shown = Shown::Op {
-        title: title(&op),
-        fingerprint: fingerprint.clone(),
-        context: context.context.clone(),
-        op: Box::new(op),
-        actor: None,
-    };
-    let (token, csrf) = match new_session(state, Some(shown)) {
-        Ok(t) => t,
-        Err(response) => return *response,
-    };
-    let body = page::target_page(&page::Target {
-        then_enroll: false,
-        title: "Signoff",
-        fingerprint: &fingerprint,
-        context: &context.context,
-        csrf: &csrf,
-    });
-    with_cookie(state, html(StatusCode::OK, body), &token)
-}
-
-/// GET `/revoke`, `/role`, `/enroll`: an operator form with a new page session (nothing
-/// displayed yet; the form goes to `/prepare`).
-fn form(state: &State, kind: page::FormKind) -> Response<Full> {
-    let (token, csrf) = match new_session(state, None) {
-        Ok(t) => t,
-        Err(response) => return *response,
-    };
-    with_cookie(
-        state,
-        html(StatusCode::OK, page::form_page(kind, &csrf)),
-        &token,
-    )
-}
-
-/// GET `/view`: the context this session prepared (as the ledger returned it, R6).
-fn shown_view(state: &State, token: Option<&str>) -> Response<Full> {
-    let Some(token) = token else {
-        return not_found();
-    };
-    let mut sessions = sessions(state);
-    let Some(session) = sessions.get(token) else {
-        return not_found();
-    };
-    if session.expires <= Instant::now() {
-        sessions.remove(token);
-        return not_found();
-    }
-    match &session.shown {
-        Some(Shown::Op {
-            title,
-            context,
-            fingerprint,
-            op,
-            ..
-        }) => html(
-            StatusCode::OK,
-            page::target_page(&page::Target {
-                title,
-                fingerprint,
-                context,
-                csrf: &session.csrf,
-                // D-043 Y2: after the operator's start ceremony, the new person's passkey
-                // is registered on this page and the enrollment is prepared from it.
-                then_enroll: matches!(**op, CeremonyOp::RegistrationStart { .. }),
-            }),
-        ),
-        _ => not_found(),
-    }
+/// The lifetime of an authenticated session: the configured session lifetime, bounded by
+/// the read session's (Z2: absolute, at most 900 s, never extended).
+fn session_ttl(state: &State) -> Duration {
+    state
+        .config
+        .limits
+        .session_ttl
+        .min(Duration::from_secs(READ_SESSION_SECONDS))
 }
 
 fn unavailable() -> Response<Full> {
@@ -865,6 +734,38 @@ fn checked<'a>(
     }
     let session = sessions.get_mut(token)?;
     (csrf.is_some_and(|c| same_token(c, &session.csrf))).then_some(session)
+}
+
+/// The live, authenticated session for `token` whose CSRF token is `csrf` (Z2).
+fn authed<'a>(
+    sessions: &'a mut HashMap<String, Session>,
+    token: &str,
+    csrf: Option<&str>,
+) -> Option<&'a mut Session> {
+    checked(sessions, token, csrf).filter(|s| s.auth.is_some())
+}
+
+/// The live, authenticated session for a GET (cookie only): its read session and CSRF token.
+fn authed_get(state: &State, token: Option<&str>) -> Option<(ReadSession, String)> {
+    let token = token?;
+    let mut sessions = sessions(state);
+    if sessions.get(token)?.expires <= Instant::now() {
+        sessions.remove(token);
+        return None;
+    }
+    let session = sessions.get(token)?;
+    Some((session.auth.clone()?, session.csrf.clone()))
+}
+
+/// Set what the authenticated session `token` displays.
+fn show(state: &State, token: &str, shown: Shown) -> bool {
+    match sessions(state).get_mut(token) {
+        Some(s) if s.auth.is_some() && s.expires > Instant::now() => {
+            s.shown = Some(shown);
+            true
+        }
+        _ => false,
+    }
 }
 
 /// The verifier's options as JSON (anything else is sent as a string).
@@ -889,8 +790,364 @@ fn subject_field(state: &State, value: Option<&str>) -> Option<SubjectId> {
     }
 }
 
+/// POST `/login/begin` (Z1): a read-session login challenge for the subject named by the
+/// page, in a new pre-authentication session (cookie, CSRF token, page-session id); a
+/// session the request presents is ended first (every login rotates the token). A begin
+/// the ledger refuses (unknown, revoked or service subject, no active credential) is the
+/// one generic `refused` and leaves no session. Answers the challenge, the verifier's
+/// options and the session's CSRF token.
+fn login_begin<'a>(
+    state: &State,
+    presented: Option<&str>,
+    field: &dyn Fn(&str) -> Option<&'a str>,
+) -> Response<Full> {
+    let Some(subject) = subject_field(state, field("subject")) else {
+        return refused(StatusCode::BAD_REQUEST, "subject");
+    };
+    let (Some(token), Some(csrf), Some(id), Some(key), Some(slot)) = (
+        random_token(),
+        random_token(),
+        random_token(),
+        random_token(),
+        random_token(),
+    ) else {
+        return unavailable();
+    };
+    let page_session = format!("page-session-{id}");
+    let idempotency_key = format!("login-{key}");
+    let reservation = format!("reservation:{slot}");
+    let op = CeremonyOp::ReadSession {
+        subject: subject.clone(),
+        page_session: page_session.clone(),
+    };
+    let ttl = login_ttl(state);
+    {
+        let limits = &state.config.limits;
+        let mut sessions = sessions(state);
+        if let Some(old) = presented {
+            sessions.remove(old);
+        }
+        let now = Instant::now();
+        prune(&mut sessions, now);
+        if outstanding(&sessions) >= limits.max_outstanding {
+            return refused(StatusCode::TOO_MANY_REQUESTS, "pending");
+        }
+        if let Err(response) = make_room(&mut sessions, limits) {
+            return *response;
+        }
+        let mut pending = HashMap::new();
+        pending.insert(
+            reservation.clone(),
+            Pending {
+                op: op.clone(),
+                idempotency_key: idempotency_key.clone(),
+                expires: now + Duration::from_secs(OUTSTANDING_SECONDS),
+            },
+        );
+        sessions.insert(
+            token.clone(),
+            Session {
+                csrf: csrf.clone(),
+                id: page_session,
+                shown: None,
+                expires: now + ttl,
+                pending,
+                registrations: HashMap::new(),
+                auth: None,
+            },
+        );
+    }
+    let drop_session = |response: Response<Full>| {
+        sessions(state).remove(&token);
+        response
+    };
+    let issued = match state.backend.begin(&op, &subject, &idempotency_key) {
+        Ok(Ok(issued)) => issued,
+        // L1, Z1: one generic refusal; no existence oracle beyond the documented L1
+        // exposure of a successful begin.
+        Ok(Err(_)) => return drop_session(refused(StatusCode::FORBIDDEN, "refused")),
+        Err(Unavailable) => return drop_session(unavailable()),
+    };
+    {
+        let mut sessions = sessions(state);
+        let Some(session) = sessions.get_mut(&token) else {
+            return refused(StatusCode::FORBIDDEN, "session");
+        };
+        let Some(pending) = session.pending.remove(&reservation) else {
+            return refused(StatusCode::FORBIDDEN, "session");
+        };
+        session.pending.insert(issued.challenge_id.clone(), pending);
+    }
+    with_cookie(
+        respond(
+            StatusCode::OK,
+            "application/json",
+            format!(
+                "{{\"challenge_id\":\"{}\",\"expires_at\":\"{}\",\"csrf\":\"{}\",\"options\":{}}}",
+                page::json_string(&issued.challenge_id),
+                page::json_string(&issued.expires_at.to_string()),
+                page::json_string(&csrf),
+                options_json(&issued.client_options),
+            ),
+        ),
+        &token,
+        ttl,
+    )
+}
+
+/// POST `/login/finish` (Z1, Z2): the assertion for this session's login challenge. On
+/// success the authenticated subject and credential are bound to the page session and the
+/// session token and CSRF token are rotated (the pre-authentication token stops working);
+/// the session expires absolutely with the read session. A refusal keeps the internal code
+/// (O-6) and leaves the session unauthenticated.
+fn login_finish<'a>(
+    state: &State,
+    token: &str,
+    field: &dyn Fn(&str) -> Option<&'a str>,
+) -> Response<Full> {
+    let Some(challenge_id) = field("challenge_id") else {
+        return refused(StatusCode::BAD_REQUEST, "challenge");
+    };
+    let Some(response) = field("response") else {
+        return refused(StatusCode::BAD_REQUEST, "response");
+    };
+    let (op, key, page_session) = {
+        let mut sessions = sessions(state);
+        let Some(session) = checked(&mut sessions, token, field("csrf")) else {
+            return refused(StatusCode::FORBIDDEN, "session");
+        };
+        match session.pending.get(challenge_id) {
+            Some(p) if matches!(p.op, CeremonyOp::ReadSession { .. }) => {
+                (p.op.clone(), p.idempotency_key.clone(), session.id.clone())
+            }
+            _ => return refused(StatusCode::FORBIDDEN, "challenge"),
+        }
+    };
+    let answer = match state
+        .backend
+        .finish(&op, challenge_id, response.as_bytes(), &key)
+    {
+        // Unknown outcome or L6: the pending entry stays so an identical retry replays.
+        Err(Unavailable)
+        | Ok(Err(Refusal::Approval(ApprovalCode::AssertionInvalid(VerifierError::Unavailable)))) => {
+            return unavailable()
+        }
+        Ok(answer) => answer,
+    };
+    let (Some(new_token), Some(new_csrf)) = (random_token(), random_token()) else {
+        return unavailable();
+    };
+    let ttl = session_ttl(state);
+    let mut sessions = sessions(state);
+    let Some(mut session) = sessions.remove(token) else {
+        return refused(StatusCode::FORBIDDEN, "session");
+    };
+    session.pending.remove(challenge_id);
+    let read = match answer {
+        Ok(CeremonyOutcome {
+            result: CeremonyResult::ReadSessionOpened { session: read },
+            ..
+        }) if read.page_session() == page_session
+            && matches!(&op, CeremonyOp::ReadSession { subject, .. } if subject == read.subject()) =>
+        {
+            read
+        }
+        Ok(_) => {
+            sessions.insert(token.to_string(), session);
+            return refused(StatusCode::FORBIDDEN, "refused");
+        }
+        Err(refusal) => {
+            sessions.insert(token.to_string(), session);
+            return refused(StatusCode::FORBIDDEN, refusal.code());
+        }
+    };
+    let subject = read.subject().subject.clone();
+    // Z2: a new token and CSRF token; the old token is gone. Nothing displayed carries over.
+    sessions.insert(
+        new_token.clone(),
+        Session {
+            csrf: new_csrf.clone(),
+            id: page_session,
+            shown: None,
+            expires: Instant::now() + ttl,
+            pending: HashMap::new(),
+            registrations: HashMap::new(),
+            auth: Some(read),
+        },
+    );
+    with_cookie(
+        respond(
+            StatusCode::OK,
+            "application/json",
+            format!(
+                "{{\"result\":\"signed in\",\"subject\":\"{}\",\"csrf\":\"{}\"}}",
+                page::json_string(&subject),
+                page::json_string(&new_csrf)
+            ),
+        ),
+        &new_token,
+        ttl,
+    )
+}
+
+/// GET `/request/<id>`: the stored, fingerprint-covered context of an approval request the
+/// session's subject may decide (Z3: the ledger's protected read), displayed in the
+/// session.
+fn view(state: &State, token: Option<&str>, raw_id: &str) -> Response<Full> {
+    let Some((read, csrf)) = authed_get(state, token) else {
+        return not_found();
+    };
+    let Some(id) = page::path_segment(raw_id) else {
+        return refused(StatusCode::BAD_REQUEST, "request id");
+    };
+    let target = ReadTarget::ApprovalRequest {
+        request_id: id.clone(),
+    };
+    let (request, status) = match state.backend.read(&read, &target) {
+        Ok(Ok(RecordView::ApprovalRequest { request, status })) => (request, status),
+        Ok(_) => return not_found(),
+        Err(Unavailable) => return unavailable(),
+    };
+    let fingerprint = request.fingerprint().as_str().to_string();
+    let shown = Shown::Request {
+        request_id: id.clone(),
+        fingerprint: fingerprint.clone(),
+    };
+    if !show(state, token.unwrap_or(""), shown) {
+        return not_found();
+    }
+    let expires = request.expires_at().to_string();
+    let body = page::request_page(&page::Displayed {
+        request_id: &id,
+        status: status.as_str(),
+        expires_at: &expires,
+        fingerprint: &fingerprint,
+        context: request.context(),
+        csrf: &csrf,
+        subject: &read.subject().subject,
+        decidable: status == writ_broker::approval::ApprovalStatus::Pending,
+    });
+    html(StatusCode::OK, body)
+}
+
+/// The fixed page title of a ceremony operation.
+fn title(op: &CeremonyOp) -> &'static str {
+    match op {
+        CeremonyOp::Approve { .. } | CeremonyOp::Deny { .. } => "Approval request",
+        CeremonyOp::Revoke { .. } => "Revocation",
+        CeremonyOp::Signoff { .. } => "Signoff",
+        CeremonyOp::Enroll { .. } => "Enrollment",
+        CeremonyOp::RoleChange { .. } => "Role change",
+        CeremonyOp::RegistrationStart { .. } => "Registration start",
+        CeremonyOp::ReadSession { .. } => "Sign in",
+    }
+}
+
+/// GET `/signoff/<id>`: the pending signoff of a stored promotion context the session's
+/// subject may sign (Z3: the ledger's protected read), with the complete context a signoff
+/// ceremony binds (its reviewed parties and exclusions, `delegation_chain: unavailable` and
+/// the effective expiry the ledger computed and pinned, D-043 Y1).
+fn signoff_view(state: &State, token: Option<&str>, raw_id: &str) -> Response<Full> {
+    let Some((read, csrf)) = authed_get(state, token) else {
+        return not_found();
+    };
+    let Some(id) = page::path_segment(raw_id) else {
+        return refused(StatusCode::BAD_REQUEST, "signoff id");
+    };
+    let target = ReadTarget::Signoff { signoff_id: id };
+    let (op, context) = match state.backend.read(&read, &target) {
+        Ok(Ok(RecordView::Ceremony { op, context })) => (op, context),
+        Ok(_) => return not_found(),
+        Err(Unavailable) => return unavailable(),
+    };
+    let fingerprint = context.binding.context_fingerprint.as_str().to_string();
+    let shown = Shown::Op {
+        title: title(&op),
+        fingerprint: fingerprint.clone(),
+        context: context.context.clone(),
+        op,
+        actor: None,
+    };
+    if !show(state, token.unwrap_or(""), shown) {
+        return not_found();
+    }
+    let body = page::target_page(&page::Target {
+        then_enroll: false,
+        title: "Signoff",
+        fingerprint: &fingerprint,
+        context: &context.context,
+        csrf: &csrf,
+        subject: &read.subject().subject,
+    });
+    html(StatusCode::OK, body)
+}
+
+/// GET `/revoke`, `/role`, `/enroll`: an operator form in the authenticated session
+/// (nothing displayed yet; the form goes to `/prepare`, whose read checks the permission).
+fn form(state: &State, token: Option<&str>, kind: page::FormKind) -> Response<Full> {
+    let Some((read, csrf)) = authed_get(state, token) else {
+        return not_found();
+    };
+    html(
+        StatusCode::OK,
+        page::form_page(kind, &csrf, &read.subject().subject),
+    )
+}
+
+/// GET `/view`: the context this session prepared, read again through the ledger's
+/// protected read (Z3: the session, subject, credential and permission are rechecked); the
+/// session then displays exactly what was read.
+fn shown_view(state: &State, token: Option<&str>) -> Response<Full> {
+    let Some((read, csrf)) = authed_get(state, token) else {
+        return not_found();
+    };
+    let token = token.unwrap_or("");
+    let op = match sessions(state).get(token).and_then(|s| s.shown.as_ref()) {
+        Some(Shown::Op { op, .. }) => op.clone(),
+        _ => return not_found(),
+    };
+    let context = match state.backend.read(&read, &ReadTarget::Ceremony(op.clone())) {
+        Ok(Ok(RecordView::Ceremony { context, .. })) => context,
+        Ok(_) => return not_found(),
+        Err(Unavailable) => return unavailable(),
+    };
+    let fingerprint = context.binding.context_fingerprint.as_str().to_string();
+    let mut sessions = sessions(state);
+    let Some(Shown::Op {
+        op: shown_op,
+        context: shown_context,
+        fingerprint: shown_fingerprint,
+        title,
+        ..
+    }) = sessions.get_mut(token).and_then(|s| s.shown.as_mut())
+    else {
+        return not_found();
+    };
+    if **shown_op != *op {
+        return not_found();
+    }
+    *shown_context = context.context.clone();
+    *shown_fingerprint = fingerprint.clone();
+    html(
+        StatusCode::OK,
+        page::target_page(&page::Target {
+            title,
+            fingerprint: &fingerprint,
+            context: &context.context,
+            csrf: &csrf,
+            subject: &read.subject().subject,
+            // D-043 Y2: after the operator's start ceremony, the new person's passkey
+            // is registered on this page and the enrollment is prepared from it.
+            then_enroll: matches!(*op, CeremonyOp::RegistrationStart { .. }),
+        }),
+    )
+}
+
 /// POST `/ceremony/begin`: a challenge for the session's displayed target (approve or deny
-/// a request; confirm a signoff, revocation, enrollment or role change).
+/// a request; confirm a signoff, revocation, enrollment or role change), always for the
+/// session's authenticated subject (Z3: the actor of every mutation is the read session's
+/// subject; a different `subject` field is refused). The read session authorizes nothing
+/// here: the ledger issues a fresh operation-bound challenge.
 ///
 /// A slot is reserved (per session and across all sessions, L2) under the session lock
 /// before the ledger is asked, so concurrent begins never exceed the bounds; the
@@ -901,12 +1158,15 @@ fn begin<'a>(
     field: &dyn Fn(&str) -> Option<&'a str>,
 ) -> Response<Full> {
     let limits = &state.config.limits;
-    let (op, actor, idempotency_key, reservation) = {
+    let (op, actor, read, idempotency_key, reservation) = {
         let mut sessions = sessions(state);
         let now = Instant::now();
         prune(&mut sessions, now);
         let total = outstanding(&sessions);
-        let Some(session) = checked(&mut sessions, token, field("csrf")) else {
+        let Some(session) = authed(&mut sessions, token, field("csrf")) else {
+            return refused(StatusCode::FORBIDDEN, "session");
+        };
+        let Some(read) = session.auth.clone() else {
             return refused(StatusCode::FORBIDDEN, "session");
         };
         let (op, actor) = match &session.shown {
@@ -963,7 +1223,7 @@ fn begin<'a>(
                 expires: now + Duration::from_secs(OUTSTANDING_SECONDS),
             },
         );
-        (op, actor, idempotency_key, reservation)
+        (op, actor, read, idempotency_key, reservation)
     };
     let release = |response: Response<Full>| {
         if let Some(session) = sessions(state).get_mut(token) {
@@ -971,30 +1231,35 @@ fn begin<'a>(
         }
         response
     };
-    // The displayed context must still be the stored one (stale display).
-    let current = match &op {
+    // Z3: the actor is the read session's subject; a page naming another is refused.
+    let subject = read.subject().clone();
+    if field("subject").is_some_and(|s| subject_field(state, Some(s)).as_ref() != Some(&subject)) {
+        return release(refused(StatusCode::FORBIDDEN, "refused"));
+    }
+    // The displayed context must still be the stored one (stale display), read through the
+    // protected read (the session, credential and permission rechecked).
+    let target = match &op {
         CeremonyOp::Approve { request_id } | CeremonyOp::Deny { request_id } => {
-            match state.backend.request(request_id) {
-                Ok(Some((request, _))) => request.fingerprint().as_str().to_string(),
-                Ok(None) => {
-                    return release(refused(StatusCode::NOT_FOUND, "APPROVAL_REQUEST_UNKNOWN"))
-                }
-                Err(Unavailable) => return release(unavailable()),
+            ReadTarget::ApprovalRequest {
+                request_id: request_id.clone(),
             }
         }
-        _ => match state.backend.context(&op) {
-            Ok(Ok(c)) => c.binding.context_fingerprint.as_str().to_string(),
-            // L1: one generic refusal.
-            Ok(Err(_)) => return release(refused(StatusCode::FORBIDDEN, "refused")),
-            Err(Unavailable) => return release(unavailable()),
-        },
+        other => ReadTarget::Ceremony(Box::new(other.clone())),
+    };
+    let current = match state.backend.read(&read, &target) {
+        Ok(Ok(RecordView::ApprovalRequest { request, .. })) => {
+            request.fingerprint().as_str().to_string()
+        }
+        Ok(Ok(RecordView::Ceremony { context, .. })) => {
+            context.binding.context_fingerprint.as_str().to_string()
+        }
+        // Z3, L1: one generic refusal.
+        Ok(Err(_)) => return release(refused(StatusCode::FORBIDDEN, "refused")),
+        Err(Unavailable) => return release(unavailable()),
     };
     if field("fingerprint") != Some(current.as_str()) {
         return release(refused(StatusCode::CONFLICT, "stale display"));
     }
-    let Some(subject) = subject_field(state, field("subject")) else {
-        return release(refused(StatusCode::BAD_REQUEST, "subject"));
-    };
     // D-043 Y2: an enrollment is begun only by the operator who registered the credential
     // in this session (the ledger checks it again).
     if actor.as_ref().is_some_and(|a| a != &subject) {
@@ -1028,9 +1293,9 @@ fn begin<'a>(
     )
 }
 
-/// POST `/ceremony/finish`: the client's assertion for a challenge this session began.
-/// The operation, target and idempotency key are the session's server-side record of the
-/// begin; the channel is the ledger's configured approval channel.
+/// POST `/ceremony/finish`: the client's assertion for a challenge this authenticated
+/// session began. The operation, target and idempotency key are the session's server-side
+/// record of the begin; the channel is the ledger's configured approval channel.
 fn finish<'a>(
     state: &State,
     token: &str,
@@ -1044,13 +1309,15 @@ fn finish<'a>(
     };
     let (op, key) = {
         let mut sessions = sessions(state);
-        let Some(session) = checked(&mut sessions, token, field("csrf")) else {
+        let Some(session) = authed(&mut sessions, token, field("csrf")) else {
             return refused(StatusCode::FORBIDDEN, "session");
         };
-        let Some(p) = session.pending.get(challenge_id) else {
-            return refused(StatusCode::FORBIDDEN, "challenge");
-        };
-        (p.op.clone(), p.idempotency_key.clone())
+        match session.pending.get(challenge_id) {
+            Some(p) if !matches!(p.op, CeremonyOp::ReadSession { .. }) => {
+                (p.op.clone(), p.idempotency_key.clone())
+            }
+            _ => return refused(StatusCode::FORBIDDEN, "challenge"),
+        }
     };
     let outcome = state
         .backend
@@ -1127,6 +1394,10 @@ fn finish<'a>(
                 CeremonyResult::Enrolled { .. } => "enrolled",
                 CeremonyResult::RoleChanged { .. } => "role changed",
                 CeremonyResult::RegistrationStarted { .. } => "registration started",
+                // Never for a mutation's challenge (purpose separation, Z1).
+                CeremonyResult::ReadSessionOpened { .. } => {
+                    return refused(StatusCode::FORBIDDEN, "refused")
+                }
             };
             respond(
                 StatusCode::OK,
@@ -1196,10 +1467,13 @@ fn nonempty(value: Option<&str>) -> Option<&str> {
 }
 
 /// The operation an operator form names (never an approval: those come only from a stored
-/// request's page). `Err` names the malformed field.
+/// request's page). `Err` names the malformed field. The operator of a registration start
+/// is the session's authenticated subject (Z3; an `operator` field naming another is
+/// refused).
 fn form_op<'a>(
     state: &State,
     session: &Session,
+    operator: &SubjectId,
     field: &dyn Fn(&str) -> Option<&'a str>,
 ) -> Result<(CeremonyOp, Option<SubjectId>), &'static str> {
     let target = || nonempty(field("target")).ok_or("target");
@@ -1248,7 +1522,11 @@ fn form_op<'a>(
             None,
         )),
         Some("registration-start") => {
-            let operator = subject_field(state, field("operator")).ok_or("operator")?;
+            if let Some(named) = nonempty(field("operator")) {
+                if subject_field(state, Some(named)).as_ref() != Some(operator) {
+                    return Err("operator");
+                }
+            }
             let subject = subject_field(state, field("subject")).ok_or("subject")?;
             Ok((
                 CeremonyOp::RegistrationStart {
@@ -1256,7 +1534,7 @@ fn form_op<'a>(
                     operator: operator.clone(),
                     operator_session: session.id.clone(),
                 },
-                Some(operator),
+                Some(operator.clone()),
             ))
         }
         Some("enroll") => {
@@ -1283,36 +1561,43 @@ fn form_op<'a>(
     }
 }
 
-/// POST `/prepare`: an operator form's operation becomes this session's displayed target
-/// with the ledger's context for it (a read; nothing is begun). Answers `{"view":"/view"}`;
-/// a ledger refusal is one generic `refused` (L1).
+/// POST `/prepare`: an operator form's operation becomes this authenticated session's
+/// displayed target with the ledger's context for it (Z3: the protected read; nothing is
+/// begun). Answers `{"view":"/view"}`; no or an unauthenticated session, a wrong CSRF
+/// token and every ledger refusal are the one generic `refused` (L1, Z3).
 fn prepare<'a>(
     state: &State,
     token: &str,
     field: &dyn Fn(&str) -> Option<&'a str>,
 ) -> Response<Full> {
-    let (op, actor) = {
+    let (op, actor, read) = {
         let mut sessions = sessions(state);
-        let Some(session) = checked(&mut sessions, token, field("csrf")) else {
-            return refused(StatusCode::FORBIDDEN, "session");
+        let Some(session) = authed(&mut sessions, token, field("csrf")) else {
+            return refused(StatusCode::FORBIDDEN, "refused");
+        };
+        let Some(read) = session.auth.clone() else {
+            return refused(StatusCode::FORBIDDEN, "refused");
         };
         // A displayed target never changes under a pending ceremony.
         if !session.pending.is_empty() {
             return refused(StatusCode::CONFLICT, "pending");
         }
-        match form_op(state, session, field) {
-            Ok(found) => found,
+        match form_op(state, session, read.subject(), field) {
+            Ok((op, actor)) => (op, actor, read),
             Err(what) => return refused(StatusCode::BAD_REQUEST, what),
         }
     };
-    let context = match state.backend.context(&op) {
-        Ok(Ok(c)) => c,
-        Ok(Err(_)) => return refused(StatusCode::FORBIDDEN, "refused"),
+    let context = match state
+        .backend
+        .read(&read, &ReadTarget::Ceremony(Box::new(op.clone())))
+    {
+        Ok(Ok(RecordView::Ceremony { context, .. })) => context,
+        Ok(_) => return refused(StatusCode::FORBIDDEN, "refused"),
         Err(Unavailable) => return unavailable(),
     };
     let mut sessions = sessions(state);
-    let Some(session) = checked(&mut sessions, token, field("csrf")) else {
-        return refused(StatusCode::FORBIDDEN, "session");
+    let Some(session) = authed(&mut sessions, token, field("csrf")) else {
+        return refused(StatusCode::FORBIDDEN, "refused");
     };
     if !session.pending.is_empty() {
         return refused(StatusCode::CONFLICT, "pending");
@@ -1332,8 +1617,9 @@ fn prepare<'a>(
 }
 
 /// POST `/registration/finish`: the new person's registration response for a row this
-/// session began, finished in this operator session (D-043 Y2). The verified result stays
-/// in the session for `/prepare` (`operation=enroll`); it is never sent to the client.
+/// authenticated operator session began, finished in this operator session (D-043 Y2). The
+/// verified result stays in the session for `/prepare` (`operation=enroll`); it is never
+/// sent to the client.
 fn registration_finish<'a>(
     state: &State,
     token: &str,
@@ -1347,7 +1633,7 @@ fn registration_finish<'a>(
     };
     let operator_session = {
         let mut sessions = sessions(state);
-        let Some(session) = checked(&mut sessions, token, field("csrf")) else {
+        let Some(session) = authed(&mut sessions, token, field("csrf")) else {
             return refused(StatusCode::FORBIDDEN, "session");
         };
         match session.registrations.get(registration_id) {

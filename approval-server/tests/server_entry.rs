@@ -180,8 +180,20 @@ fn a_valid_configuration_serves_the_loopback_page() {
     .unwrap();
     let mut answer = String::new();
     s.read_to_string(&mut answer).unwrap();
+    // D-044 Z3: without an authenticated read session, the one refusal (no record lookup).
     assert!(answer.starts_with("HTTP/1.1 404"), "{answer}");
-    assert!(answer.contains("No stored approval request has this id."));
+    assert!(answer.contains("No such page."));
+    // Z4: the landing page offers the login form.
+    let mut s = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+    write!(
+        s,
+        "GET / HTTP/1.1\r\nHost: localhost:{port}\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut answer = String::new();
+    s.read_to_string(&mut answer).unwrap();
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    assert!(answer.contains("<form id=\"login\">"));
     // The ledger is owned while serving.
     assert!(SqliteLedger::open(&path).is_err());
     child.kill().unwrap();

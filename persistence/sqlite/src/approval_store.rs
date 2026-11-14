@@ -33,22 +33,24 @@ use writ_broker::approval::{
 };
 use writ_broker::approval_store::{
     approval_binding, kind_text, parse_kind, parse_permission, permission_text,
-    registration_start_binding, registration_start_context, revocation_binding, revocation_context,
-    role_change_binding, role_change_context, signoff_binding, ApprovalLedger, BootstrapEnrollment,
-    CeremonyBegin, CeremonyContext, CeremonyFinish, CeremonyOp, CeremonyOutcome, CeremonyResult,
-    Expired, IssuedChallenge, IssuedRegistration, NewEnrollment, OperatorSession,
-    RegistrationBegin, RegistrationFinish, RegistrationLedger, RequestRecorded, RoleChange,
-    SignoffState, UseState, APPROVAL_GRANT_TTL_SECONDS, BOOTSTRAP_ISSUER, BOOTSTRAP_SUBJECT,
-    GLOBAL_SCOPE, REGISTRATION_TTL_SECONDS,
+    read_session_binding, read_session_context, read_session_target, registration_start_binding,
+    registration_start_context, revocation_binding, revocation_context, role_change_binding,
+    role_change_context, signoff_binding, ApprovalLedger, BootstrapEnrollment, CeremonyBegin,
+    CeremonyContext, CeremonyFinish, CeremonyOp, CeremonyOutcome, CeremonyResult, Expired,
+    IssuedChallenge, IssuedRegistration, NewEnrollment, OperatorSession, ReadRefused, ReadSession,
+    ReadTarget, RecordRead, RecordView, RegistrationBegin, RegistrationFinish, RegistrationLedger,
+    RequestRecorded, RoleChange, SignoffState, UseState, APPROVAL_GRANT_TTL_SECONDS,
+    BOOTSTRAP_ISSUER, BOOTSTRAP_SUBJECT, GLOBAL_SCOPE, READ_SESSION_MAX_SECONDS,
+    REGISTRATION_TTL_SECONDS,
 };
 use writ_broker::clock::ObservedTime;
 use writ_broker::grants::{ApprovalLink, GrantBinding, GrantLabel, NewGrant, Verdict};
 use writ_broker::human::{
-    check_actor, check_service_permission, same_subject, ActiveCredentials, Actor, ApprovalChannel,
-    CeremonyState, CredentialStatus, EnrollmentRecord, LedgerCapability, Permission, PrincipalKind,
-    RegistrationBinding, RegistrationOperation, RelyingParty, RoleAssignment, StoredCredential,
-    SubjectId, SubjectRecord, SubjectStatus, VerifiedAssertion, VerifiedRegistration,
-    VerifierError, ES256,
+    check_actor, check_human_permission, check_service_permission, same_subject, ActiveCredentials,
+    Actor, ApprovalChannel, CeremonyState, CredentialStatus, EnrollmentRecord, LedgerCapability,
+    Permission, PrincipalKind, RegistrationBinding, RegistrationOperation, RelyingParty,
+    RoleAssignment, StoredCredential, SubjectId, SubjectRecord, SubjectStatus, VerifiedAssertion,
+    VerifiedRegistration, VerifierError, ES256,
 };
 use writ_broker::refusal::Refusal;
 use writ_broker::store::{StoreError, TxFailure, TxStage};
@@ -535,6 +537,20 @@ impl ActorRows {
     /// The active credentials for `permission` in the target's scope; for the revocation
     /// of the actor's own unused grant, the approver permission instead (I-4).
     fn select(&self, t: &Target, now: Timestamp) -> Result<ActiveCredentials, Refusal> {
+        // D-044 Z1: a read-session login needs an active human and an active credential,
+        // no permission (every protected read checks the scoped permission of its target).
+        if matches!(t.kind, TargetKind::ReadSession) {
+            let creds = ActiveCredentials::select_for_read_session(
+                &self.record,
+                self.credentials.iter().cloned(),
+                now,
+            )
+            .map_err(ap)?;
+            if creds.as_slice().is_empty() {
+                return Err(ap(ApprovalCode::CredentialRevoked));
+            }
+            return Ok(creds);
+        }
         let b = &t.binding;
         let select = |p: Permission| {
             ActiveCredentials::select(
@@ -739,6 +755,8 @@ enum TargetKind {
     },
     /// A registration start (D-043 Y2).
     RegistrationStart,
+    /// A read-session login (D-044 Z1).
+    ReadSession,
 }
 
 struct Target {
@@ -1395,6 +1413,30 @@ fn target(
                 kind: TargetKind::RegistrationStart,
             }))
         }
+        CeremonyOp::ReadSession {
+            subject,
+            page_session,
+        } => {
+            // M1: the session binds the configured channel's relying party; none configured,
+            // no ceremony.
+            let Some(rp) = rp else {
+                return Ok(Err(no_channel()));
+            };
+            if !subject.is_well_formed() || page_session.is_empty() {
+                return Ok(Err(challenge_refused(ChallengeRefusal::Malformed)));
+            }
+            let binding = read_session_binding(subject, page_session, rp)
+                .map_err(|_| BodyError::Integrity)?;
+            Ok(Ok(Target {
+                binding,
+                context: read_session_context(subject, page_session, rp),
+                // Not used: a login needs no permission (ActorRows::select).
+                permission: Permission::Operator,
+                expiry: None,
+                blocked: None,
+                kind: TargetKind::ReadSession,
+            }))
+        }
     }
 }
 
@@ -1442,6 +1484,12 @@ fn begin_in(
     if let CeremonyOp::RegistrationStart { operator, .. } = b.op {
         if operator != b.subject {
             return Ok(Err(ap(ApprovalCode::EnrollmentUnsupported)));
+        }
+    }
+    // D-044 Z1: a read session is opened only by the subject it names.
+    if let CeremonyOp::ReadSession { subject, .. } = b.op {
+        if subject != b.subject {
+            return Ok(Err(challenge_refused(ChallengeRefusal::SubjectMismatch)));
         }
     }
     // D-043 Y2: only the operator who began the credential's registration row enrolls it,
@@ -1793,6 +1841,28 @@ fn replay(
                 )?,
             };
             CeremonyResult::RoleChanged { assignment_id }
+        }
+        "read_session" => {
+            // D-044 Z1: the page session is fingerprinted, so an identical retry names the
+            // same one; the replay returns the same session, never a new one.
+            let CeremonyOp::ReadSession { page_session, .. } = f.op else {
+                return Ok(Err(challenge_refused(ChallengeRefusal::BindingMismatch)));
+            };
+            let at: String = conn.query_row(
+                "SELECT at FROM approval_events WHERE challenge_id = ?1 AND kind = 'read_session'",
+                [challenge_id],
+                |r| r.get(0),
+            )?;
+            CeremonyResult::ReadSessionOpened {
+                session: ReadSession::from_ledger(
+                    &cap(),
+                    challenge_id,
+                    row.subject.clone(),
+                    credential.as_deref().ok_or(BodyError::Integrity)?,
+                    page_session,
+                    ts(&at)?,
+                ),
+            }
         }
         _ => return Err(BodyError::Integrity),
     };
@@ -2466,6 +2536,36 @@ fn finish_in(
                 },
             };
             kind = "registration_started";
+        }
+        (
+            CeremonyOp::ReadSession {
+                subject: named,
+                page_session,
+            },
+            TargetKind::ReadSession,
+        ) => {
+            // D-044 Z1: the subject the login names, an active human (checked by the credential
+            // selection and again here at the accepted time); it authorizes reads only.
+            if &actor.record.subject != accepted.subject() || &subject != named {
+                return Ok(Err(challenge_refused(ChallengeRefusal::SubjectMismatch)));
+            }
+            if actor.record.kind != PrincipalKind::Human {
+                return Ok(Err(ap(ApprovalCode::ServiceNotPermitted)));
+            }
+            check!(actor.record.check_active(now).map_err(ap));
+            seq = next_seq(tx, "read_session", f.challenge_id)?;
+            request_ref = None;
+            result = CeremonyResult::ReadSessionOpened {
+                session: ReadSession::from_ledger(
+                    &cap(),
+                    f.challenge_id,
+                    subject.clone(),
+                    &credential,
+                    page_session,
+                    now,
+                ),
+            };
+            kind = "read_session";
         }
         _ => return Err(BodyError::Integrity),
     }
@@ -3190,7 +3290,33 @@ impl ApprovalLedger for SqliteLedger {
             _ => unavailable("read", "integrity"),
         })
     }
-    fn ceremony_context(
+    fn read_record(
+        &self,
+        read: &RecordRead<'_>,
+    ) -> Result<Result<RecordView, ReadRefused>, StoreError> {
+        let inner = self.lock("read")?;
+        // M1: a session is valid only under the configured channel it was opened with.
+        let Some(channel) = self.approval_channel() else {
+            return Ok(Err(ReadRefused));
+        };
+        let body = || -> Result<Result<RecordView, ReadRefused>, BodyError> {
+            // One read transaction; dropped (rolled back) after the read: nothing is written.
+            let tx = inner.conn.unchecked_transaction()?;
+            read_in(&tx, read, channel.relying_party())
+        };
+        body().map_err(|e| match e {
+            BodyError::Sql(e) => unavailable("read", code_name(&e)),
+            _ => unavailable("read", "integrity"),
+        })
+    }
+}
+
+/// Test builds only: the context a ceremony would bind and the pending signoff binding,
+/// without a read session (the unit tests of the ledger's own computations; the approval
+/// page reads only through [`ApprovalLedger::read_record`], D-044 Z3).
+#[cfg(test)]
+impl SqliteLedger {
+    pub(crate) fn ceremony_context_for_tests(
         &self,
         op: &CeremonyOp,
         now: ObservedTime,
@@ -3198,23 +3324,13 @@ impl ApprovalLedger for SqliteLedger {
         let inner = self.lock("read")?;
         let read = || -> Outcome<CeremonyContext> {
             let rp = self.approval_channel().map(|c| c.relying_party().clone());
-            // Exactly the begin's computation at this trusted time (a signoff's effective
-            // expiry included, Y1).
             let t = check!(target(
                 &inner.conn,
                 op,
                 SignoffExpiry::Compute(now.at()),
                 rp.as_ref()
             )?);
-            // R6: the displayed context is exactly the one whose fingerprint is bound.
-            if context_fingerprint(&t.context).ok().as_ref() != Some(&t.binding.context_fingerprint)
-            {
-                return Err(BodyError::Integrity);
-            }
-            Ok(Ok(CeremonyContext {
-                context: t.context,
-                binding: t.binding,
-            }))
+            Ok(Ok(displayed(t)?))
         };
         read().map_err(|e| match e {
             BodyError::Sql(e) => unavailable("read", code_name(&e)),
@@ -3222,23 +3338,199 @@ impl ApprovalLedger for SqliteLedger {
         })
     }
 
-    fn pending_signoff(
+    pub(crate) fn pending_signoff_for_tests(
         &self,
         signoff_id: &str,
-        _now: ObservedTime,
     ) -> Result<Option<NewSignoff>, StoreError> {
         let inner = self.lock("read")?;
-        let read = || -> Result<Option<NewSignoff>, BodyError> {
-            pending_signoff_in(&inner.conn, signoff_id)
-        };
-        read().map_err(|e| match e {
+        pending_signoff_in(&inner.conn, signoff_id).map_err(|e| match e {
             BodyError::Sql(e) => unavailable("read", code_name(&e)),
             _ => unavailable("read", "integrity"),
         })
     }
 }
 
-/// [`ApprovalLedger::pending_signoff`]: the first stored promotion context of `signoff_id`
+/// R6: the displayed context is exactly the one whose fingerprint the binding carries.
+fn displayed(t: Target) -> Result<CeremonyContext, BodyError> {
+    if context_fingerprint(&t.context).ok().as_ref() != Some(&t.binding.context_fingerprint) {
+        return Err(BodyError::Integrity);
+    }
+    Ok(CeremonyContext {
+        context: t.context,
+        binding: t.binding,
+    })
+}
+
+/// D-044 Z1, Z2: `s` is exactly a consumed read-session login of the configured channel
+/// `rp` (subject, page-session target, credential and issue time as recorded by its
+/// challenge and approval event), with the fixed lifetime, unexpired at `now`.
+fn read_session_valid(
+    conn: &Connection,
+    s: &ReadSession,
+    rp: &RelyingParty,
+    now: Timestamp,
+) -> Result<bool, BodyError> {
+    type Row = (
+        String,
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        String,
+    );
+    let row: Option<Row> = conn
+        .query_row(
+            "SELECT c.issuer, c.subject, c.target_id, c.rp_id, c.origin, e.credential_id, e.at \
+             FROM challenges c JOIN approval_events e ON e.challenge_id = c.challenge_id \
+               AND e.kind = 'read_session' \
+             WHERE c.challenge_id = ?1 AND c.status = 'consumed' \
+               AND c.operation = 'read_session'",
+            [s.session_id()],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((issuer, subject, target_id, rp_id, origin, credential, at)) = row else {
+        return Ok(false);
+    };
+    Ok(&SubjectId::new(&issuer, &subject) == s.subject()
+        && target_id == read_session_target(s.subject(), s.page_session())
+        && rp_id == rp.rp_id
+        && origin == rp.origin
+        && credential.as_deref() == Some(s.credential_id())
+        && ts(&at)? == s.issued_at()
+        && s.expires_at() == s.issued_at().plus_seconds(READ_SESSION_MAX_SECONDS)
+        && s.issued_at() <= now
+        && now < s.expires_at())
+}
+
+/// The body of [`ApprovalLedger::read_record`] inside its read transaction (D-044 Z3): the
+/// session, the subject (active human) and its credential (active), then the target and the
+/// subject's permission for it over a scope containing the target's. Every refusal is the
+/// one [`ReadRefused`].
+fn read_in(
+    conn: &Connection,
+    read: &RecordRead<'_>,
+    rp: &RelyingParty,
+) -> Result<Result<RecordView, ReadRefused>, BodyError> {
+    let now = read.now.at();
+    let s = read.session;
+    let refused = || Ok(Err(ReadRefused));
+    if !read_session_valid(conn, s, rp, now)? {
+        return refused();
+    }
+    let Some(rows) = ActorRows::read(conn, s.subject())? else {
+        return refused();
+    };
+    let Ok(creds) = ActiveCredentials::select_for_read_session(
+        &rows.record,
+        rows.credentials.iter().cloned(),
+        now,
+    ) else {
+        return refused();
+    };
+    if !creds.ids().iter().any(|c| c == s.credential_id()) {
+        return refused();
+    }
+    match read.target {
+        ReadTarget::ApprovalRequest { request_id } => {
+            let Some((request, status)) = load_request(conn, request_id)? else {
+                return refused();
+            };
+            let r = request.fields();
+            if check_human_permission(
+                &rows.record,
+                &rows.assignments,
+                Permission::Approver,
+                &r.tenant_id,
+                &r.project_id,
+                now,
+            )
+            .is_err()
+            {
+                return refused();
+            }
+            Ok(Ok(RecordView::ApprovalRequest {
+                request: Box::new(request),
+                status,
+            }))
+        }
+        ReadTarget::Signoff { signoff_id } => {
+            let Some(binding) = pending_signoff_in(conn, signoff_id)? else {
+                return refused();
+            };
+            // D-043 Y1: the ledger computes the effective expiry (as a begin at this trusted
+            // time would); the read pins exactly that value as the requested expiry and
+            // recomputes the context with it (unchanged unless a deadline moved, then
+            // refused). A later begin computes min(its own cap, trusted deadline, this value)
+            // = this value, or a different context, which the page's fingerprint comparison
+            // refuses as a stale display: the page never shows one expiry and signs another.
+            let mut op = CeremonyOp::Signoff {
+                binding: Box::new(binding),
+                parties: Default::default(),
+                requested_expires_at: None,
+            };
+            let Ok(first) = target(conn, &op, SignoffExpiry::Compute(now), Some(rp))? else {
+                return refused();
+            };
+            let TargetKind::Signoff { expires_at, .. } = &first.kind else {
+                return Err(BodyError::Integrity);
+            };
+            if let CeremonyOp::Signoff {
+                requested_expires_at,
+                ..
+            } = &mut op
+            {
+                *requested_expires_at = Some(*expires_at);
+            }
+            let Ok(t) = target(conn, &op, SignoffExpiry::Compute(now), Some(rp))? else {
+                return refused();
+            };
+            if t.binding.context_fingerprint != first.binding.context_fingerprint
+                || rows.select(&t, now).is_err()
+            {
+                return refused();
+            }
+            Ok(Ok(RecordView::Ceremony {
+                op: Box::new(op),
+                context: displayed(t)?,
+            }))
+        }
+        ReadTarget::Ceremony(op) => {
+            match &**op {
+                // A login is never a readable target.
+                CeremonyOp::ReadSession { .. } => return refused(),
+                // D-043 Y2: a registration start is read only by the operator it names.
+                CeremonyOp::RegistrationStart { operator, .. } if operator != s.subject() => {
+                    return refused()
+                }
+                _ => {}
+            }
+            let Ok(t) = target(conn, op, SignoffExpiry::Compute(now), Some(rp))? else {
+                return refused();
+            };
+            if rows.select(&t, now).is_err() {
+                return refused();
+            }
+            Ok(Ok(RecordView::Ceremony {
+                op: op.clone(),
+                context: displayed(t)?,
+            }))
+        }
+    }
+}
+
+/// The first stored promotion context of `signoff_id`
 /// (the others must agree; [`target`] refuses a disagreement as `SIGNOFF_MISMATCH`), the
 /// workflow's current task and artifact and the project's active acceptance policy.
 fn pending_signoff_in(

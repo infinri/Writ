@@ -1428,6 +1428,9 @@ mod m4_approval_tests;
 mod m4_signoff_tests;
 
 #[cfg(test)]
+mod d044_tests;
+
+#[cfg(test)]
 mod m4_support;
 
 #[cfg(test)]

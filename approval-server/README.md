@@ -36,13 +36,33 @@ Dependencies: workspace path crates only (`writ-approval`, `writ-broker`, `writ-
 
 Trust boundary (M4-INTERFACES, configured approval channel): any code that links these crates and opens the ledger is inside the trust boundary. Deploying only this reviewed binary is the operational requirement of the local profile.
 
+## Routes of the loopback listener (D-043; D-044 item 3, M4-INTERFACES Z1..Z4)
+
+Every route keeps exact `Host`, `Origin` (required on every `POST`), form bodies within the bounds, Fetch Metadata (LOW-1: pages `same-origin` or `none`, every `POST` and `GET /view` exactly `same-origin`), the per-session CSRF token, the `HttpOnly` `SameSite=Strict` cookie `writ_session` and the strict Content-Security-Policy. Authentication is a purpose-separated passkey login (`ReadSession` ceremony, purpose `read`) that opens a read session of at most 900 s; a read session never authorizes a change.
+
+| Route | Needs | Purpose |
+|---|---|---|
+| `GET /` | nothing | landing page: the login form only (no record, no session) |
+| `GET /static/approval.js`, `GET /static/approval.css` | nothing | page script and style |
+| `POST /login/begin` | nothing (`subject`) | login challenge in a new pre-authentication session; a presented session is ended; a refusal is one generic `refused` |
+| `POST /login/finish` | the login session (`csrf`, `challenge_id`, `response`) | verifies the assertion, binds the read session (subject, credential) to the page session, rotates the cookie and CSRF token |
+| `GET /request/<id>` | read session; `approver` over the request's scope | approval request page (approve or deny) |
+| `GET /signoff/<id>` | read session; `signoff_authority` over the signoff's scope | pending signoff page (exclusions, `delegation_chain: unavailable`, pinned effective expiry) |
+| `GET /revoke`, `GET /role`, `GET /enroll` | read session | operator forms (nothing read yet) |
+| `POST /prepare` | read session; the operation's permission (`revoker`, or `operator` for roles, enrollment and registration start) | the form's context through the ledger's scoped read; answers `{"view":"/view"}` |
+| `GET /view` | read session (re-read at every display) | the prepared context |
+| `POST /ceremony/begin`, `POST /ceremony/finish` | read session; a fresh operation-bound ceremony whose actor is the read session's subject | approve, deny, signoff, revocation, role change, registration start, enrollment |
+| `POST /registration/finish` | read session of the operator who started the row | the new person's passkey registration (D-043 Y2) |
+
+Every protected read is the ledger's one read API (`ApprovalLedger::read_record`), which rechecks the session, the subject, the credential and the scoped permission inside its read transaction. Anonymous, unauthenticated, expired, revoked, out-of-scope, unknown and guessed targets all receive one identical answer: the same 404 page and no session (`POST /prepare`: 403 `refused`). There is no unauthenticated status or context endpoint. The fixture's `status` command reads the disposable ledger in process after the server exited; it is not a route.
+
 ## End-to-end browser suite (`approval/browser-tests/`)
 
 Real path: headless Google Chrome, then the real `writ-approval-server` binary, then the production `webauthn-rs` verifier and the SQLite ledger. User verification is simulated: the authenticator is a CDP virtual authenticator (`WebAuthn.enable`, `WebAuthn.addVirtualAuthenticator` with `hasUserVerification: true, isUserVerified: true`; `WebAuthn.setUserVerified` turns it off for the negative cases). No real user or credential is enrolled. Nothing binds beyond `127.0.0.1`. The suite uses no npm package: Node 22's built-in `WebSocket` drives CDP, and `node:http` serves a placeholder page. The temporary directory (ledger, Chrome `--user-data-dir`, Chrome's own temporary files) is created with `mkdtemp`, and the suite removes it after closing the browser.
 
 Setup: the non-shipping example `approval-server/examples/browser_fixture.rs` creates the ledger. It then bootstraps the administrator through `BootstrapSession`; the creation options go to the browser, whose virtual authenticator creates the credential on a placeholder page served at the server's future origin. Next it reopens the ledger normally, registers the approver's credential in the browser the same way, and enrolls the approver (`approver` in every scope) through the administrator's `Enroll` ceremony, also signed in the browser. Last, it records the pending approval requests the flows need and exits. After the run, the fixture's `status` command reads the final ledger state.
 
-Flows (`approval/browser-tests/flows/approve-deny.mjs`):
+Every flow signs in first through the landing page or the login routes (`flows/login.mjs`, D-044 Z1). Flows (`approval/browser-tests/flows/approve-deny.mjs`, which also carries `flows/read-sessions.mjs`, and `flows/operator-pages.mjs`):
 
 - **approve via page:** the page shows the stored fingerprint and escapes the untrusted requester text. Approving answers `approved`, and the ledger status is `approved`.
 - **deny via page:** answers `denied`, and the ledger status is `denied`.
@@ -52,6 +72,13 @@ Flows (`approval/browser-tests/flows/approve-deny.mjs`):
 - **wrong origin, relayed assertion:** the challenge is begun on the real origin and signed in the browser on another port (same RP id). The finish answers `ASSERTION_INVALID`, and the request stays pending.
 - **stale display, fingerprint:** a displayed fingerprint other than the stored one answers `stale display`.
 - **stale display, decided:** the page was shown while the request was pending and the request was then denied. Approving from that page answers `refused`, and the ledger status is `denied`.
+- **the actor is the signed-in subject:** a begin naming another subject than the signed-in one answers `refused`; the request stays pending.
+- **anonymous direct URLs (D-044):** every page and direct URL (`/request/<id>`, guessed ids, `/signoff/<id>`, the operator forms, `/view`) answers the same 404 body without a session; `POST /prepare` answers 403 `refused`; the browser without cookies sees the login page and the same refusal.
+- **valid scoped read:** the target subject (approver in `t-browser`/`p-browser`) signs in with its passkey and reads a request of its scope.
+- **cross-scope reads:** a request of tenant `t-other` for that approver, a request for the signoff reviewer and for the operator, the signoff for the approver, and an approver's role `prepare` all answer the one refusal.
+- **replayed login assertion:** the same login finish again (old and rotated cookie) is refused; the old assertion on a new login challenge answers `ASSERTION_INVALID` and leaves that session unauthenticated; a login challenge finished as a ceremony is refused.
+- **session invalidated after revocation:** the target's open session reads a request; the administrator revokes its credential through the revoke page's ceremony; the open session (raw and in the browser) then gets the one refusal and a new login is refused.
+- **operator pages:** revoke, role change, enrollment (the operator is the signed-in subject), signoff and their refusals, each after signing in; a registration start prepared by an approver is refused before anything is displayed.
 
 Run locally (pinned toolchain, Chrome at `/usr/bin/google-chrome`, Node 22):
 
@@ -86,3 +113,10 @@ Notes: Chrome's singleton socket path must be short, so `TMPDIR` must not be a d
 
 - `approval/browser-tests/run.sh`: `check-release-binary: PASS`, and the browser suite reported 16 passed, 0 failed (8 flows plus 8 final ledger-status checks), all labelled CDP virtual authenticator, simulated UV. The temporary directory was removed.
 - `cargo test --locked --workspace`, run under `run-with-clean-fds.sh`, passed, including `approval-server/tests/server_entry.rs` (5 tests). `cargo clippy --workspace --all-targets -D warnings` and `cargo fmt --check` were clean. `check_deps.py` reported 0 problems, and `check-v2-docs.py` passed.
+
+## Results (worker W-H, D-044 item 3, read sessions Z1..Z4; 2026-11-14, Chrome 150.0.7871.46, Node 22.22.3)
+
+Local results on the worker branch, not yet integrated, not yet run in CI, and not yet independently reviewed (D-044 item 5 asks for an independent security review of the new read boundary).
+
+- `approval/browser-tests/run.sh`, run twice: `check-release-binary: PASS`, and each run reported 38 passed, 0 failed (23 flows, 14 final ledger-status checks, 1 stored-signoff check), all labelled CDP virtual authenticator, simulated UV; the temporary directory was removed each time.
+- `cargo test --locked --workspace` under `run-with-clean-fds.sh`: 563 passed, 0 failed, 4 ignored (the kill tests, then run alone: 4 passed). `cargo fmt --check` and `cargo clippy --workspace --all-targets -D warnings` clean. Closure gate `--repeat 2`: exact 17, adapted 72, approved differences 38, deferred 0, GATE PASS, report verifies. Property gate (CI profile): 19,796 checks, 0 failed. `check_deps.py`: 0 problems. `check-v2-docs.py` passed.
