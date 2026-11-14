@@ -1,6 +1,6 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-13 (M3 ACCEPTED under D-039; M4 AUTHORIZED under D-040, implementation starting) · **Branch:** v2/architecture-rebuild · **Milestone:** M3 accepted (scoped); M4 next, awaiting owner decisions. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md) section "Current recovery state".
+**Last updated:** 2026-11-14 (M3 ACCEPTED under D-039; M4 IN PROGRESS under D-040..D-043: approval ledger `writ-ledger-6`, S1..S8 remediated (E-075), completion work under D-043) · **Branch:** v2/architecture-rebuild · **Milestone:** M4 in progress. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md) section "Current recovery state".
 
 ## Current
 
@@ -11,7 +11,7 @@
 - **M3-07 implemented (E-069):** runner, process lifecycle gate, unlock-before-close ownership locks; production configuration refuses every job until a contained sandbox exists (M5). Exact-SHA CI: `146260e` run 43475168083, 6/6 (after the E-071 CI-host fix).
 - **M3-08 DONE (E-072..E-074):** scoped closure gate: exact 17, adapted 64, approved differences 21, deferred to M4 25 (carried, not passes), unexplained 0, unclassified 0; companions 33/33; required CI step with corrected report verification. Not 127/127 exact parity; not production enforcement.
 - **M3 status:** ACCEPTED for its documented development scope (D-039). Carried obligations CO-M4-01..CO-HR-01 in TASKS (assigned to M4..M10 gates); M4 plan [M4-START-PLAN](M4-START-PLAN.md) awaits owner decisions O-1..O-14.
-- **Next task:** M4 under D-040; SESSION-HANDOFF section 6.
+- **Next task:** M4 completion under D-043; SESSION-HANDOFF section 6. Schemas now: ledger `writ-ledger-6`, provenance v2, record `/2`.
 - **Enterprise direction:** [readiness plan](../security/ENTERPRISE-READINESS.md), ENT-OWNER-01 and ENT-00..ENT-08. PostgreSQL targets enterprise operational state, SQLite remains local/offline; durable multi-worker coordination requires separate future acceptance. Controls, SOC 2 scope and any examination remain planned, not implemented or attested.
 - **Historical benchmarks (M1, complete):** three official M1-06 run sets plus the process-concurrency correction (E-046, E-052, E-054) and real-edit M1-07 build timings (E-053); bundles in `m1/bench/evidence/`.
 
