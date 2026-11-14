@@ -148,16 +148,18 @@ async function main() {
         throw new Error("no result on the page");
       },
       async view(id) {
-        const r = await request(port, "GET", `/request/${encodeURIComponent(id)}`, { host: `localhost:${port}` });
+        // Raw HTTP is not a browser: it states the Fetch Metadata of a direct navigation.
+        const r = await request(port, "GET", `/request/${encodeURIComponent(id)}`, { host: `localhost:${port}`, "sec-fetch-site": "none" });
         const cookie = (r.headers["set-cookie"] || [])[0].split(";")[0];
         const csrf = r.body.match(/data-csrf="([^"]+)"/)[1];
         const fingerprint = r.body.match(/data-fingerprint="([^"]+)"/)[1];
         return { cookie, csrf, fingerprint };
       },
-      post(p, fields, { cookie, origin: o = origin, host = `localhost:${port}` } = {}) {
+      post(p, fields, { cookie, origin: o = origin, host = `localhost:${port}`, site = "same-origin" } = {}) {
         const body = form(fields);
+        // Raw HTTP is not a browser: it states the Fetch Metadata of this origin's page script.
         return request(port, "POST", p, {
-          host, origin: o, cookie, "content-type": "application/x-www-form-urlencoded",
+          host, origin: o, cookie, "sec-fetch-site": site, "content-type": "application/x-www-form-urlencoded",
           "content-length": Buffer.byteLength(body),
         }, body);
       },

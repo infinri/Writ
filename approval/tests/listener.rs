@@ -459,22 +459,36 @@ impl Server {
         String::from_utf8_lossy(&out).into_owned()
     }
 
+    /// A GET as a browser's direct navigation (`Sec-Fetch-Site: none`) unless `extra` names
+    /// another `Sec-Fetch-Site`.
     fn get(&self, path: &str, extra: &str) -> String {
+        let site = if extra.contains("Sec-Fetch-Site") {
+            ""
+        } else {
+            "Sec-Fetch-Site: none\r\n"
+        };
         self.raw(
             format!(
-                "GET {path} HTTP/1.1\r\nHost: localhost:{}\r\n{extra}Connection: close\r\n\r\n",
+                "GET {path} HTTP/1.1\r\nHost: localhost:{}\r\n{site}{extra}Connection: close\r\n\r\n",
                 self.port
             )
             .as_bytes(),
         )
     }
 
+    /// A POST as this origin's page script (`Sec-Fetch-Site: same-origin`) unless `extra`
+    /// names another `Sec-Fetch-Site`.
     fn post(&self, path: &str, cookie: &str, body: &str, extra: &str) -> String {
+        let site = if extra.contains("Sec-Fetch-Site") {
+            ""
+        } else {
+            "Sec-Fetch-Site: same-origin\r\n"
+        };
         self.raw(
             format!(
                 "POST {path} HTTP/1.1\r\nHost: localhost:{}\r\nOrigin: {}\r\n\
                  Content-Type: application/x-www-form-urlencoded\r\nCookie: writ_session={cookie}\r\n\
-                 Content-Length: {}\r\n{extra}Connection: close\r\n\r\n{body}",
+                 Content-Length: {}\r\n{site}{extra}Connection: close\r\n\r\n{body}",
                 self.port,
                 self.origin,
                 body.len()
@@ -1613,4 +1627,78 @@ fn prepared_pages_are_read_only_protected_and_never_stale() {
     let page = view_of(&s, &cookie);
     let csp = header_of(&page, "content-security-policy").unwrap();
     assert!(csp.contains("default-src 'none'") && csp.contains("form-action 'none'"));
+}
+
+/// LOW-1: a page from another localhost port shares this origin's cookies (cookies are not
+/// port-scoped) and its requests are `same-site`. A cookie planted there, and any page or
+/// POST that is not a same-origin or direct navigation (or carries no Fetch Metadata), is
+/// refused before a session is created, used or changed.
+#[test]
+fn a_cookie_planted_from_another_port_is_refused() {
+    let s = Server::start(Limits::default());
+    // The attacker's session on this listener (a direct navigation of its own).
+    let (cookie, csrf, fp) = s.view();
+    let planted = format!("Cookie: writ_session={cookie}\r\n");
+    for site in ["same-site", "cross-site"] {
+        let header = format!("Sec-Fetch-Site: {site}\r\n");
+        // Pages that create a session: refused, no cookie set.
+        for path in [
+            "/request/req-1",
+            "/signoff/so-1",
+            "/revoke",
+            "/role",
+            "/enroll",
+        ] {
+            let r = s.get(path, &header);
+            assert_eq!(status(&r), 403, "{site} {path}");
+            assert!(header_of(&r, "set-cookie").is_none(), "{site} {path}");
+        }
+        // The page that uses the planted session.
+        let r = s.get("/view", &format!("{header}{planted}"));
+        assert_eq!(status(&r), 403, "{site} /view");
+        // A POST in the planted session with this origin's CSRF token and Origin.
+        let r = s.post(
+            "/ceremony/begin",
+            &cookie,
+            &format!(
+                "csrf={csrf}&request_id=req-1&fingerprint={}&verdict=deny&subject=bob",
+                enc(&fp)
+            ),
+            &header,
+        );
+        assert_eq!(status(&r), 403, "{site} POST");
+        assert!(r.ends_with("{\"error\":\"fetch site\"}"), "{r}");
+    }
+    // Missing Fetch Metadata is refused too (fail closed), for pages and POSTs.
+    let r = s.raw(
+        format!(
+            "GET /request/req-1 HTTP/1.1\r\nHost: localhost:{}\r\nConnection: close\r\n\r\n",
+            s.port
+        )
+        .as_bytes(),
+    );
+    assert_eq!(status(&r), 403, "{r}");
+    let body = format!(
+        "csrf={csrf}&request_id=req-1&fingerprint={}&verdict=deny&subject=bob",
+        enc(&fp)
+    );
+    let r = s.raw(
+        format!(
+            "POST /ceremony/begin HTTP/1.1\r\nHost: localhost:{0}\r\nOrigin: {1}\r\n\
+             Content-Type: application/x-www-form-urlencoded\r\nCookie: writ_session={cookie}\r\n\
+             Content-Length: {2}\r\nConnection: close\r\n\r\n{body}",
+            s.port,
+            s.origin,
+            body.len()
+        )
+        .as_bytes(),
+    );
+    assert_eq!(status(&r), 403, "{r}");
+    // Nothing reached the ledger.
+    assert!(s.fake.calls().is_empty());
+    // The static assets need no session and stay available to this origin's pages.
+    assert_eq!(
+        status(&s.get("/static/approval.js", "Sec-Fetch-Site: same-origin\r\n")),
+        200
+    );
 }

@@ -12,6 +12,10 @@
 //!   rebinding and other names refused); an absolute-form target is refused; `Origin`,
 //!   when present, must equal the origin exactly and is required on every `POST`;
 //!   `POST` bodies must be `application/x-www-form-urlencoded`.
+//! - **Fetch Metadata (LOW-1):** cookies are not port-scoped and another localhost port is
+//!   same-site, so every page that creates or uses a session and every `POST` requires
+//!   `Sec-Fetch-Site: same-origin` or `none`; `same-site`, `cross-site` and a missing header
+//!   are refused (fail closed).
 //! - **Sessions** (at most 15 minutes, [`MAX_SESSION_SECONDS`]): viewing a stored request
 //!   creates a server-side page session (random token in an `HttpOnly`, `SameSite=Strict`
 //!   cookie) holding a CSRF token, the viewed request and the fingerprint displayed. A
@@ -501,6 +505,9 @@ async fn handle(state: &State, req: Request<Incoming>) -> Response<Full> {
                 "text/css; charset=utf-8",
                 page::STYLE.into(),
             ),
+            // LOW-1: every other page creates or uses a session; it is served only to a
+            // navigation from this origin or a direct one (address bar, bookmark).
+            _ if !page_fetch_site(&parts.headers) => refused(StatusCode::FORBIDDEN, "fetch site"),
             "/revoke" => form(state, page::FormKind::Revoke),
             "/role" => form(state, page::FormKind::Role),
             "/enroll" => form(state, page::FormKind::Enroll),
@@ -542,6 +549,15 @@ async fn handle(state: &State, req: Request<Incoming>) -> Response<Full> {
             .find(|(k, _)| k == name)
             .map(|(_, v)| v.as_str())
     };
+    // LOW-1: a state-changing or session-using POST comes only from this origin's own page
+    // (a request from another localhost port is `same-site`, and cookies are not scoped by
+    // port, so a cookie planted there is refused here); missing is refused (fail closed).
+    if !matches!(
+        header(&parts.headers, "sec-fetch-site"),
+        Some("same-origin" | "none")
+    ) {
+        return refused(StatusCode::FORBIDDEN, "fetch site");
+    }
     let Some(token) = cookie_token(&parts.headers) else {
         return refused(StatusCode::FORBIDDEN, "session");
     };
@@ -552,6 +568,18 @@ async fn handle(state: &State, req: Request<Incoming>) -> Response<Full> {
         "/registration/finish" => registration_finish(state, &token, &field),
         _ => refused(StatusCode::NOT_FOUND, "path"),
     }
+}
+
+/// LOW-1: `Sec-Fetch-Site` of a GET that creates or uses a page session: `same-origin` (a
+/// navigation from this listener's own pages) or `none` (a user-initiated navigation:
+/// address bar, bookmark, reload). `same-site` (another localhost port, whose cookies the
+/// browser shares because cookies are not port-scoped), `cross-site` and a missing header
+/// (a non-browser client, or a browser without Fetch Metadata) are refused: fail closed.
+fn page_fetch_site(headers: &HeaderMap) -> bool {
+    matches!(
+        header(headers, "sec-fetch-site"),
+        Some("same-origin" | "none")
+    )
 }
 
 fn not_found() -> Response<Full> {

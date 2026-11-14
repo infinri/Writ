@@ -34,7 +34,7 @@ async function prepare(t, fields) {
 
 /** GET `path` over loopback HTTP: the page session's cookie and CSRF token. */
 async function session(t, path) {
-  const r = await request(t.port, "GET", path, { host: `localhost:${t.port}` });
+  const r = await request(t.port, "GET", path, { host: `localhost:${t.port}`, "sec-fetch-site": "none" });
   const cookie = ((r.headers["set-cookie"] || [])[0] || "").split(";")[0];
   const m = r.body.match(/data-csrf="([^"]+)"/);
   return { status: r.status, cookie, csrf: m && m[1], body: r.body, headers: r.headers };
@@ -95,7 +95,11 @@ export const flows = [
       assert(bad.status === 403 && JSON.parse(bad.body).error === "session", `csrf: ${bad.status} ${bad.body}`);
       const wrong = await t.post("/prepare", { ...fields, csrf: s.csrf }, { cookie: s.cookie, origin: t.wrongOrigin });
       assert(wrong.status === 403 && JSON.parse(wrong.body).error === "origin", `origin: ${wrong.status} ${wrong.body}`);
-      return "prepare with a wrong CSRF token answered 403 session; with Origin of another port 403 origin";
+      // LOW-1: the session's cookie and CSRF token used from another localhost port
+      // (Sec-Fetch-Site same-site) are refused.
+      const planted = await t.post("/prepare", { ...fields, csrf: s.csrf }, { cookie: s.cookie, site: "same-site" });
+      assert(planted.status === 403 && JSON.parse(planted.body).error === "fetch site", `fetch site: ${planted.status} ${planted.body}`);
+      return "prepare with a wrong CSRF token answered 403 session; with Origin of another port 403 origin; with Sec-Fetch-Site same-site 403 fetch site";
     },
   },
   {
@@ -225,7 +229,7 @@ export const flows = [
       const r = await session(t, "/signoff/so-not-pending");
       assert(r.status === 404, `status ${r.status}`);
       assert(!r.headers["set-cookie"], "a session was created");
-      const bad = await request(t.port, "GET", "/signoff/so%2Fx", { host: `localhost:${t.port}` });
+      const bad = await request(t.port, "GET", "/signoff/so%2Fx", { host: `localhost:${t.port}`, "sec-fetch-site": "none" });
       assert(bad.status === 400, `malformed id ${bad.status}`);
       return "GET /signoff/<unknown> answered 404 without a session; a malformed id 400";
     },
