@@ -174,7 +174,8 @@ fn a_valid_configuration_serves_the_loopback_page() {
     let mut s = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
     write!(
         s,
-        "GET /request/none HTTP/1.1\r\nHost: localhost:{port}\r\nConnection: close\r\n\r\n"
+        "GET /request/none HTTP/1.1\r\nHost: localhost:{port}\r\nSec-Fetch-Site: none\r\n\
+         Connection: close\r\n\r\n"
     )
     .unwrap();
     let mut answer = String::new();
