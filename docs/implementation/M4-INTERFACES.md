@@ -53,3 +53,13 @@ A challenge row binds, server-side: challenge id, `challenge_digest`, ceremony s
 ## I-8 Ordering evidence (CO-PROP-02)
 
 Every promotion, administrative operation and revocation commits a row in one ledger-wide monotonic sequence (`ledger_seq`, assigned inside the transaction), so tests establish the actual order of concurrent invalidations and commits and check each exactly.
+
+## Clarifications after M4-01 (lead, 2026-11-14)
+
+1. Separation identity: the requester's identity is in the agent-ingress realm, not the human realm; until an explicit, administratively recorded link between a human subject and requester identities exists, `same_subject` also refuses a match of the subject text under a different issuer (fail closed). An explicit link table is M4-08 work.
+2. `RoleAssignment` carries `assignment_id` (revocation target, I-4).
+3. Record `/2` keeps purpose `writ.acceptance-record.v1`; the contract version is inside the MAC, so relabelling `/1` as `/2` fails authentication.
+4. Challenge `verdict` is a closed string per operation; `revision` is `i64` (as stored).
+5. A malformed approval request is `RequestInvalid::Malformed` (internal construction error, never stored).
+6. Expiry is a separate `expire` step on trusted time, never early.
+7. `approved` is also terminal (`APPROVAL_REQUEST_CLOSED`); exactly one grant per approved request.
