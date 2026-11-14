@@ -1,0 +1,29 @@
+# M4 enrollment ceremony (M4-08 storage side; D-040 O-1, O-7, O-8, O-13; M4-INTERFACES I-1, I-7, R1)
+
+**Status:** documented before implementation (D-040 O-1: "Enrollment, additional credentials and recovery only through an explicit trusted administrative ceremony, documented before implementation"). This document fixes what the ledger (`writ-ledger-6`) accepts. The WebAuthn registration that produces a credential's public material is the verifier's (`writ-approval`, worker W1) and is not specified here. Release and production stay NO-GO.
+
+## 1. What enrollment writes
+
+One enrollment writes, in one fenced ledger transaction: the subject (`subjects`: issuer, subject, principal kind), at most one credential (`credentials`: id, public material only, status `active`, enrolling administrator), the enrollment record (`enrollments` plus `enrollment_links`: the explicit, possibly empty set of requester identities the subject controls, R1), its role assignments (`role_assignments`, each with its own id, permission and (tenant, project) scope), an `approval_events` row and a `ledger_sequence` row (I-8). Nothing else ever writes these tables except revocation (which only marks: credential `revoked`, subject `revoked_at`, assignment `revoked_at`).
+
+## 2. Bootstrap (the first administrator)
+
+- **Operation:** `SqliteLedger::bootstrap_administrator`, an explicit operator call against the ledger file. It is not reachable from agent ingress, the approval listener or any network path; only an operator process that owns the ledger (single-owner lock, M3-01) can run it, so the broker must not be serving.
+- **Precondition:** the ledger has never had a subject and has no bootstrap event. Any later call fails closed with `ENROLLMENT_UNSUPPORTED`, whether or not the first administrator still exists or is revoked. This is not first-caller-wins on any channel: there is exactly one bootstrap per ledger, performed by whoever already controls the ledger file, which is the same trust the local profile already places in the ledger owner.
+- **Input:** a human subject (issuer and subject, never a display name), one credential produced by a user-verified WebAuthn registration (public material only), the subject's linked requester identities (explicit, possibly empty), and the trusted time of the call. A service subject, an empty identity or a missing credential is `ENROLLMENT_UNSUPPORTED`.
+- **Roles:** exactly `Operator` and `Revoker` in the global administrative scope (`*`, `*`). Never `Approver` or `SignoffAuthority`: the bootstrap administrator cannot approve or sign off anything until another administrator grants it a role, and separation still applies.
+- **Recorded:** an `approval_events` row of kind `bootstrap` with enrolling administrator `writ-local:bootstrap` (no human is invented as the enroller) and a `ledger_sequence` row.
+
+## 3. Later enrollments (administrative ceremony)
+
+- An active, enrolled human subject holding `Operator` in the global scope (`*`, `*`) obtains an `Enroll` challenge whose target is the new subject and whose context fingerprint covers the complete enrollment as displayed (subject, kind, credential id and the digest of its public material, linked identities, roles), then completes it with a fresh user-verified assertion. The challenge is consumed in the same transaction as the writes (C1); the actor's subject, enrollment and role rows are read inside that transaction (C2).
+- Refused: an actor that is a service (`SERVICE_NOT_PERMITTED`), revoked (`SUBJECT_REVOKED`) or without `Operator` in the global scope (`PERMISSION_MISSING`); an actor enrolling itself or a subject whose text equals its own under any issuer (`SEPARATION_VIOLATED`, no self-escalation); a subject that already exists (additional credentials and recovery are unsupported: `ENROLLMENT_UNSUPPORTED`); a human without a credential, a service with a credential or with any permission other than `Operator` (O-8), a credential id already stored, or an empty identity (`ENROLLMENT_UNSUPPORTED`).
+
+## 4. Unsupported (fail closed, `ENROLLMENT_UNSUPPORTED`)
+
+Recovery of a lost or revoked credential, additional credentials for an existing subject, changing linked identities, re-enrolling a revoked subject, a second bootstrap, enrollment from agent ingress or from any request field, and any enrollment without a consumed `Enroll` challenge. Role changes after enrollment other than revocation are not implemented in this step (later M4-08 work).
+
+## 5. Carried risks
+
+- Same OS user: on a single-user workstation the agent can run the operator's bootstrap call if it can reach the ledger file. The bootstrap is one-shot and recorded, and a human factor (user presence and verification on the authenticator) is required for every later decision, but bootstrap itself rests on control of the ledger file (M4-START-PLAN section 2).
+- One human controlling two enrolled subjects cannot be detected by the ledger; separation relies on the administrator's enrollment links (R1) and the fail-closed text match.
