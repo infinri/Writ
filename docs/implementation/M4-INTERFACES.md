@@ -74,3 +74,12 @@ Every promotion, administrative operation and revocation commits a row in one le
 - **R6** the approval page renders only fields covered by the context fingerprint; the fingerprint covers the complete displayed context (including the stored action body).
 - **R7** subject status model (`active | revoked` with time) and non-empty subjects for requester, agent and every chain member.
 - **R8** `signoff_ids()` is a reference only; nothing treats it as authority before the I-5 use-time checks.
+
+## Contract review status and consumer obligations (2026-11-14)
+
+Independent review of M4-01 (`c412f6f`, fixes `d86513f`, `36d05d5`): all medium findings resolved; contracts cleared for consumers. Remaining low findings are binding obligations on consumers:
+
+- **C1** The ledger enforces challenge single use: UNIQUE `challenge_id` and `challenge_digest`; consumption in the same transaction as the decision, signoff, revocation, enrollment or role change.
+- **C2** `SubjectRecord`, `RoleAssignment`, `SignoffExclusions` (artifact and policy changers from durable admin events) and `OwnUnusedGrant` passed to `decide`/`sign`/`record` are read from the ledger inside the deciding transaction, never assembled from request input.
+- **C3** Extend `broker/tests/trusted_constructors.rs` when `writ-approval` and the ledger land: flag any `pub` item in `approval/` or `persistence/sqlite/src/` returning a `*Capability` or a `VerifiedAssertion`; treat a file as test code only if its declaring `mod` line is `#[cfg(test)]` (not by name).
+- **C4** No `build.rs` code generation or `include!` of non-Rust files in these crates without a scanner update.
