@@ -939,20 +939,16 @@ impl LedgerStore for SqliteLedger {
 }
 
 impl GrantLedger for SqliteLedger {
+    /// D-042 X1 (finding S1): `writ-ledger-6` (the only schema this ledger opens) mints
+    /// executable grants only inside its own approval ceremony
+    /// (`ApprovalLedger::finish_ceremony`), so this path refuses every grant, whatever its
+    /// provenance (`writ-provenance-1` is the legacy path, `-2` is minted only internally) or
+    /// label (`approval/` is reserved for the ceremony). The fenced transaction still runs, so
+    /// ownership and fault semantics are unchanged; it writes nothing.
     fn insert_grant(&self, grant: &NewGrant) -> Result<GrantInsert, StoreError> {
-        self.transact("approve", |tx| {
-            let exists: bool = tx.query_row(
-                "SELECT EXISTS (SELECT 1 FROM grants WHERE label = ?1)",
-                [grant.label().as_str()],
-                |r| r.get(0),
-            )?;
-            if exists {
-                return Ok(End::Rollback(GrantInsert::LabelInUse));
-            }
-            insert_grant_rows(tx, grant)?;
-            Ok(End::Commit(GrantInsert::Inserted))
-        })
-        .map_err(StoreError::from)
+        let _ = grant;
+        self.transact("approve", |_tx| Ok(End::Rollback(GrantInsert::Refused)))
+            .map_err(StoreError::from)
     }
 
     fn reserve(
@@ -1025,41 +1021,6 @@ impl GrantLedger for SqliteLedger {
     }
 }
 
-/// Insert `grant` with `uses` 0 and its provenance (the label must be free).
-pub(crate) fn insert_grant_rows(tx: &Transaction<'_>, grant: &NewGrant) -> rusqlite::Result<()> {
-    let expires = grant.expires_at();
-    tx.execute(
-        "INSERT INTO grants (label, binding, expires_s, expires_ns, max_uses, uses) \
-         VALUES (?1, ?2, ?3, ?4, ?5, 0)",
-        (
-            grant.label().as_str(),
-            grant.binding(),
-            expires.unix_seconds(),
-            i64::from(expires.subsec_nanos()),
-            i64::from(grant.max_uses()),
-        ),
-    )?;
-    let p = grant.provenance();
-    tx.execute(
-        "INSERT INTO grant_provenance (label, version, approver_id, approver_issuer, \
-         channel, approved_at, verdict, auth_evidence_ref, request_fingerprint, \
-         policy_bundle_sha) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        rusqlite::params![
-            grant.label().as_str(),
-            p.version(),
-            p.approver_id(),
-            p.issuer(),
-            p.channel(),
-            p.approved_at().to_string(),
-            p.verdict().as_str(),
-            p.evidence_ref(),
-            p.request_fingerprint(),
-            p.policy_bundle_sha(),
-        ],
-    )?;
-    Ok(())
-}
-
 /// The grant `label` with its provenance as read inside a transaction (`None`: no such
 /// grant). An unrepresentable stored expiry is an integrity failure.
 fn stored_grant(tx: &Connection, label: &str) -> Result<Option<StoredGrant>, BodyError> {
@@ -1094,11 +1055,15 @@ fn stored_grant(tx: &Connection, label: &str) -> Result<Option<StoredGrant>, Bod
             },
         )
         .optional()?;
-    let legacy: bool = tx.query_row(
+    let marked: bool = tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM legacy_grants WHERE label = ?1)",
         [label],
         |r| r.get(0),
     )?;
+    // D-042 X1, X2: executable only with the link the ledger's own ceremony wrote, re-read
+    // inside this transaction (with the approved request's agent).
+    let approval = approval_store::approval_link(tx, label, &binding)?;
+    let legacy = marked || approval.is_none();
     let revoked = approval_store::grant_revoked(tx, label)?;
     Ok(Some(StoredGrant {
         binding,
@@ -1111,6 +1076,7 @@ fn stored_grant(tx: &Connection, label: &str) -> Result<Option<StoredGrant>, Bod
         provenance,
         legacy,
         revoked,
+        approval,
     }))
 }
 
@@ -1423,6 +1389,12 @@ mod runner_tests;
 
 #[cfg(test)]
 mod m4_approval_tests;
+
+#[cfg(test)]
+mod m4_support;
+
+#[cfg(test)]
+mod d042_tests;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

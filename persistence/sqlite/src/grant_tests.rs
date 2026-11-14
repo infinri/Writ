@@ -45,8 +45,10 @@ pub(crate) fn revision() -> StateRevision {
     StateRevision::new(5).unwrap()
 }
 
+/// The grant label `s` names: a test alias of a grant issued on this thread through the M4
+/// lifecycle ([`super::m4_support::issue`]), otherwise the text itself.
 pub(crate) fn label(s: &str) -> GrantLabel {
-    GrantLabel::new(s).unwrap()
+    GrantLabel::new(&super::m4_support::resolve(s)).unwrap()
 }
 
 fn tmp(name: &str) -> PathBuf {
@@ -254,9 +256,11 @@ pub(crate) fn count(l: &SqliteLedger, sql: &str) -> i64 {
 pub(crate) fn uses(l: &SqliteLedger, g: &str) -> Option<i64> {
     l.db()
         .conn
-        .query_row("SELECT uses FROM grants WHERE label = ?1", [g], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT uses FROM grants WHERE label = ?1",
+            [super::m4_support::resolve(g)],
+            |r| r.get(0),
+        )
         .ok()
 }
 
@@ -334,8 +338,38 @@ pub(crate) fn approve_as(
     )
 }
 
+/// An executable grant for `req`, issued through the M4 lifecycle (on `writ-ledger-6` the M3
+/// [`approve_as`] path is closed, D-042 X1) and registered as alias `g` on this thread.
 pub(crate) fn approve(svc: &Svc<'_>, req: &Value, g: &str) -> Result<GrantIssued, Refusal> {
+    super::m4_support::issue(svc, req, g)
+}
+
+/// The M3 approval path through the approval authority (closed on `writ-ledger-6`).
+fn legacy(svc: &Svc<'_>, req: &Value, g: &str) -> Result<GrantIssued, Refusal> {
     approve_as(svc, req, g, Verdict::Approved, None, &alice(), &channels())
+}
+
+/// `publish(idem)` with an action digest derived from `idem`: a distinct action (and so a
+/// distinct M4 approval request and grant) per key.
+pub(crate) fn publish_distinct(idem: &str) -> Value {
+    set(
+        &publish(idem),
+        &["action", "action_digest"],
+        json::s(writ_broker::writ_kernel::json::Digest::of_bytes(idem.as_bytes()).as_str()),
+    )
+}
+
+/// `req` with the distinct action digest `n` (one M4 approval request per action).
+pub(crate) fn nth(req: &Value, n: u32) -> Value {
+    set(
+        req,
+        &["action", "action_digest"],
+        json::s(&format!("sha256:{n:064x}")),
+    )
+}
+
+fn closed() -> Refusal {
+    Refusal::HumanUnauthenticated(ApproverRefusal::LegacyPathClosed)
 }
 
 pub(crate) fn reserve(
@@ -391,8 +425,8 @@ fn approval_issues_a_single_use_grant_bound_to_the_full_request_with_trusted_exp
         .db()
         .conn
         .query_row(
-            "SELECT binding, expires_s, expires_ns, max_uses, uses FROM grants WHERE label = 'g1'",
-            [],
+            "SELECT binding, expires_s, expires_ns, max_uses, uses FROM grants WHERE label = ?1",
+            [issued.label.as_str()],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .unwrap();
@@ -426,19 +460,24 @@ fn approval_issues_a_single_use_grant_bound_to_the_full_request_with_trusted_exp
     );
     // The decision time was observed and persisted as the floor.
     assert_eq!(w.ledger.time_floor().unwrap(), Some(now()));
-    // A given lifetime.
-    let short = approve_as(
-        &svc,
-        &publish("k2"),
-        "g2",
-        Verdict::Approved,
-        Some(30),
-        &alice(),
-        &channels(),
-    )
-    .unwrap();
-    assert_eq!(short.expires_at, now().plus_seconds(30));
+    // The M4 grant label is the ledger's (D-042 X1), linked to its approved request.
+    assert!(issued.label.as_str().starts_with("approval/apr:"));
+    assert_eq!(count(&w.ledger, "SELECT count(*) FROM approval_grants"), 1);
     assert_eq!(count(&w.ledger, "SELECT count(*) FROM audit_refusals"), 0);
+    // The M3 path with a given lifetime mints nothing on writ-ledger-6.
+    assert_eq!(
+        approve_as(
+            &svc,
+            &nth(&publish("k2"), 2),
+            "g2",
+            Verdict::Approved,
+            Some(30),
+            &alice(),
+            &channels(),
+        ),
+        Err(closed())
+    );
+    assert_eq!(grant_rows(&w.ledger), 1);
 }
 
 #[test]
@@ -550,7 +589,7 @@ fn approval_of_a_request_that_does_not_require_approval_is_not_approvable() {
     let svc = w.svc();
     // allow
     assert_eq!(
-        approve(&svc, &file_write("k1"), "g1"),
+        legacy(&svc, &file_write("k1"), "g1"),
         Err(Refusal::NotApprovable)
     );
     // forbid (hard deny never becomes approvable)
@@ -560,15 +599,15 @@ fn approval_of_a_request_that_does_not_require_approval_is_not_approvable() {
         "workspace:fixture-tenant/fixture-project/secrets/k",
         "k2",
     );
-    assert_eq!(approve(&svc, &secrets, "g2"), Err(Refusal::NotApprovable));
+    assert_eq!(legacy(&svc, &secrets, "g2"), Err(Refusal::NotApprovable));
     // invalid request
     let stale = set(&publish("k3"), &["expected_state_revision"], Value::Int(4));
-    assert_eq!(approve(&svc, &stale, "g3"), Err(Refusal::NotApprovable));
+    assert_eq!(legacy(&svc, &stale, "g3"), Err(Refusal::NotApprovable));
     // policy unavailable or rejected
     for state in [PolicyState::Absent, PolicyState::Rejected] {
         w.active.activate(state);
         assert_eq!(
-            approve(&svc, &publish("k4"), "g4"),
+            legacy(&svc, &publish("k4"), "g4"),
             Err(Refusal::NotApprovable)
         );
     }
@@ -634,43 +673,60 @@ fn self_approval_is_forbidden() {
 }
 
 #[test]
-fn a_reused_label_is_refused_and_never_resets_or_replenishes_the_grant() {
-    let w = World::new("label-reuse");
+fn the_m3_approve_path_is_closed_on_writ_ledger_6_and_never_touches_an_m4_grant() {
+    // D-042 X1 (finding S1): the ledger refuses every grant from the approval-authority path,
+    // whatever its label, verdict or lifetime, before and after an M4 grant exists; it can
+    // neither take an `approval/` label first nor reset or replenish the M4 grant.
+    let w = World::new("legacy-closed");
     let svc = w.svc();
+    for (g, verdict, ttl) in [
+        ("g1", Verdict::Approved, None),
+        ("g2", Verdict::Denied, Some(9)),
+        (
+            "approval/apr:7e86ae365c17791d15e6bf3dead6bc87",
+            Verdict::Approved,
+            None,
+        ),
+    ] {
+        assert_eq!(
+            approve_as(&svc, &publish("k1"), g, verdict, ttl, &alice(), &channels()),
+            Err(closed()),
+            "{g}"
+        );
+    }
+    assert_eq!(grant_rows(&w.ledger), 0);
+    assert_eq!(count(&w.ledger, "SELECT count(*) FROM grant_provenance"), 0);
     let first = approve(&svc, &publish("k1"), "g1").unwrap();
     assert_eq!(
         reserve(&svc, &publish("k1"), Some("g1")),
         Ok(ReserveOutcome::Reserved)
     );
-    assert_eq!(uses(&w.ledger, "g1"), Some(1));
-    // Replayed approval, another request, another verdict, another lifetime: all refused.
-    assert_eq!(
-        approve(&svc, &publish("k1"), "g1"),
-        Err(Refusal::GrantRefInUse)
-    );
-    assert_eq!(
-        approve(&svc, &publish("k9"), "g1"),
-        Err(Refusal::GrantRefInUse)
-    );
     assert_eq!(
         approve_as(
             &svc,
             &publish("k1"),
-            "g1",
-            Verdict::Denied,
-            Some(9),
+            first.label.as_str(),
+            Verdict::Approved,
+            None,
             &alice(),
             &channels()
         ),
-        Err(Refusal::GrantRefInUse)
+        Err(closed())
+    );
+    // One grant per approved request: a second M4 approval is closed.
+    assert_eq!(
+        approve(&svc, &publish("k1"), "g1-again"),
+        Err(Refusal::Approval(
+            writ_broker::approval::ApprovalCode::RequestClosed
+        ))
     );
     let stored: (String, i64, i64) = w
         .ledger
         .db()
         .conn
         .query_row(
-            "SELECT binding, expires_s, uses FROM grants WHERE label = 'g1'",
-            [],
+            "SELECT binding, expires_s, uses FROM grants WHERE label = ?1",
+            [first.label.as_str()],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .unwrap();
@@ -686,11 +742,11 @@ fn a_reused_label_is_refused_and_never_resets_or_replenishes_the_grant() {
     assert_eq!(uses(&w.ledger, "g1"), Some(1));
     assert_eq!(use_rows(&w.ledger), 1);
     assert_eq!(grant_rows(&w.ledger), 1);
-    assert_eq!(audited(&w.ledger, "GRANT_REF_IN_USE"), 3);
+    assert_eq!(audited(&w.ledger, "HUMAN_UNAUTHENTICATED"), 4);
 }
 
 #[test]
-fn injected_approve_transaction_faults_issue_no_grant() {
+fn injected_ceremony_transaction_faults_issue_no_grant() {
     for (i, stage) in [
         fault::Stage::Begin,
         fault::Stage::Body,
@@ -699,24 +755,25 @@ fn injected_approve_transaction_faults_issue_no_grant() {
     .into_iter()
     .enumerate()
     {
-        let w = World::new(&format!("approve-fault-{i}"));
+        let w = World::new(&format!("ceremony-fault-{i}"));
         let svc = w.svc();
+        super::m4_support::ensure_approver(&w.ledger, svc.observe().unwrap()).unwrap();
         w.ledger
-            .inject("approve", stage, rusqlite::ffi::SQLITE_IOERR);
-        assert_eq!(
-            approve(&svc, &publish("k1"), "g1"),
-            Err(Refusal::LedgerUnavailable(StoreError::Unavailable {
-                category: "transaction approve".into(),
-                code: "SQLITE_IOERR".into(),
-            })),
-            "{stage:?}"
+            .inject("ceremony", stage, rusqlite::ffi::SQLITE_IOERR);
+        let failed = approve(&svc, &publish("k1"), "g1").unwrap_err();
+        assert!(
+            matches!(&failed, Refusal::LedgerUnavailable(StoreError::Unavailable { category, .. })
+                if category == "transaction ceremony"),
+            "{stage:?}: {failed:?}"
         );
         assert_eq!(grant_rows(&w.ledger), 0, "{stage:?}");
         assert!(w.ledger.db().conn.is_autocommit());
+        // The request stays pending; a new ceremony approves it.
         assert!(
             approve(&svc, &publish("k1"), "g1").is_ok(),
-            "{stage:?}: label reusable"
+            "{stage:?}: request still approvable"
         );
+        assert_eq!(grant_rows(&w.ledger), 1, "{stage:?}");
     }
 }
 
@@ -792,64 +849,39 @@ fn a_grant_for_another_binding_is_a_mismatch() {
             "{req:?}"
         );
     }
-    // A denial is recorded as a grant that never matches (b-21).
-    approve_as(
-        &svc,
-        &publish("k2"),
-        "denied",
-        Verdict::Denied,
-        None,
-        &alice(),
-        &channels(),
-    )
-    .unwrap();
+    // A denied request mints no grant (D-040 I-3; M3 stored a never-matching denied
+    // grant, b-21): its would-be label names nothing.
+    let denied = super::m4_support::deny(&svc, &nth(&publish("k2"), 2)).unwrap();
     assert_eq!(
-        reserve(&svc, &publish("k2"), Some("denied")),
-        Err(Refusal::GrantMismatch)
+        reserve(&svc, &nth(&publish("k2"), 2), Some(denied.as_str())),
+        Err(Refusal::GrantUnknown)
     );
     assert_untouched(&w.ledger, "g1");
-    assert_eq!(uses(&w.ledger, "denied"), Some(0));
-    assert_eq!(audited(&w.ledger, "GRANT_MISMATCH"), 5);
+    assert_eq!(grant_rows(&w.ledger), 1);
+    assert_eq!(audited(&w.ledger, "GRANT_MISMATCH"), 4);
 }
 
 #[test]
 fn grant_expiry_is_decided_on_trusted_time_and_the_floor_persists_although_refused() {
     let w = World::new("expiry");
     let svc = w.svc();
-    approve_as(
-        &svc,
-        &publish("k1"),
-        "g1",
-        Verdict::Approved,
-        Some(30),
-        &alice(),
-        &channels(),
-    )
-    .unwrap();
-    approve_as(
-        &svc,
-        &publish("k2"),
-        "g2",
-        Verdict::Approved,
-        Some(30),
-        &alice(),
-        &channels(),
-    )
-    .unwrap();
+    // M4 grants live 600 s (APPROVAL_GRANT_TTL_SECONDS).
+    approve(&svc, &nth(&publish("k1"), 1), "g1").unwrap();
+    approve(&svc, &nth(&publish("k2"), 2), "g2").unwrap();
     // Just before expiry: consumed.
-    w.clock.set(ts("2026-11-05T12:00:29.999999999Z"));
+    w.clock.set(ts("2026-11-05T12:09:59.999999999Z"));
     assert_eq!(
-        reserve(&svc, &publish("k1"), Some("g1")),
+        reserve(&svc, &nth(&publish("k1"), 1), Some("g1")),
         Ok(ReserveOutcome::Reserved)
     );
     // At expiry (exclusive): refused, and the time that decided it is the persisted floor.
-    let expiry = ts("2026-11-05T12:00:30Z");
+    let expiry = ts("2026-11-05T12:10:00Z");
     w.clock.set(expiry);
     // The refusal audit fails as well: the floor is durable regardless.
     w.ledger
         .inject("audit", fault::Stage::Commit, rusqlite::ffi::SQLITE_FULL);
     assert_eq!(
-        reserve(&svc, &publish("k2"), Some("g2")),
+        reserve(&svc, &nth(&publish("k2"), 2), Some("g2")),
         Err(Refusal::GrantExpired)
     );
     assert_eq!(audited(&w.ledger, "GRANT_EXPIRED"), 0, "audit rolled back");
@@ -859,7 +891,7 @@ fn grant_expiry_is_decided_on_trusted_time_and_the_floor_persists_although_refus
     // A clock set back afterwards never revives the grant: time is unavailable.
     w.clock.set(now());
     assert_eq!(
-        reserve(&svc, &publish("k2"), Some("g2")),
+        reserve(&svc, &nth(&publish("k2"), 2), Some("g2")),
         Err(Refusal::TimeUnavailable)
     );
     assert_eq!(
@@ -882,7 +914,7 @@ fn grant_expiry_is_decided_on_trusted_time_and_the_floor_persists_although_refus
     clock.set(expiry.plus_seconds(1));
     let svc = GrantService::new(&active, &clock, &ledger);
     assert_eq!(
-        reserve(&svc, &publish("k2"), Some("g2")),
+        reserve(&svc, &nth(&publish("k2"), 2), Some("g2")),
         Err(Refusal::GrantExpired)
     );
 }
@@ -918,7 +950,14 @@ fn exhausted_grant_is_refused_without_a_second_use() {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .unwrap();
-    assert_eq!(row, ("g1".into(), "fixture-tenant".into(), "k1".into()));
+    assert_eq!(
+        row,
+        (
+            label("g1").as_str().into(),
+            "fixture-tenant".into(),
+            "k1".into()
+        )
+    );
     let receipt: (Option<String>, String) = w
         .ledger
         .db()
@@ -929,7 +968,10 @@ fn exhausted_grant_is_refused_without_a_second_use() {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    assert_eq!(receipt, (Some("g1".into()), "reserved".into()));
+    assert_eq!(
+        receipt,
+        (Some(label("g1").as_str().into()), "reserved".into())
+    );
     let event: (String, String) = w
         .ledger
         .db()
@@ -985,7 +1027,8 @@ fn an_existing_receipt_gives_conflict_replay_reconciliation_or_resume() {
     let w = World::new("idempotency");
     let svc = w.svc();
     approve(&svc, &publish("k1"), "g1").unwrap();
-    approve(&svc, &publish("k1"), "g2").unwrap();
+    // Another grant (for another action: one M4 grant per approved request).
+    approve(&svc, &nth(&publish("k1"), 2), "g2").unwrap();
     assert_eq!(
         reserve(&svc, &publish("k1"), Some("g1")),
         Ok(ReserveOutcome::Reserved)
@@ -1089,6 +1132,7 @@ fn a_malformed_stored_binding_is_a_ledger_integrity_failure_without_a_grant_use(
         let svc = GrantService::new(&active, &clock, &ledger);
         approve(&svc, &publish("k0"), "g1").unwrap().binding
     };
+    let g1 = label("g1").as_str().to_string();
     let value = json::parse(good.as_bytes()).unwrap();
     let canonical = |v: &Value| json::canonical(v).unwrap();
     let reordered = {
@@ -1143,8 +1187,11 @@ fn a_malformed_stored_binding_is_a_ledger_integrity_failure_without_a_grant_use(
     for (i, (what, text)) in malformed.iter().enumerate() {
         {
             let raw = rusqlite::Connection::open(&path).unwrap();
-            raw.execute("UPDATE grants SET binding = ?1 WHERE label = 'g1'", [text])
-                .unwrap();
+            raw.execute(
+                "UPDATE grants SET binding = ?1 WHERE label = ?2",
+                [text, &g1],
+            )
+            .unwrap();
         }
         let ledger = SqliteLedger::open(&path).unwrap();
         let svc = GrantService::new(&active, &clock, &ledger);
@@ -1159,24 +1206,31 @@ fn a_malformed_stored_binding_is_a_ledger_integrity_failure_without_a_grant_use(
         );
         assert!(ledger.db().conn.is_autocommit(), "{what}");
     }
-    // A well-formed binding that differs from the request stays a mismatch.
+    // A well-formed binding that differs from the one its approved request derives is a
+    // ledger-integrity failure too (D-042 X1: the M4 link re-derives it inside T-reserve).
     {
         let raw = rusqlite::Connection::open(&path).unwrap();
         let other = canonical(&set(&value, &["tenant_id"], json::s("other-tenant")));
-        raw.execute("UPDATE grants SET binding = ?1 WHERE label = 'g1'", [other])
-            .unwrap();
+        raw.execute(
+            "UPDATE grants SET binding = ?1 WHERE label = ?2",
+            [&other, &g1],
+        )
+        .unwrap();
     }
     let ledger = SqliteLedger::open(&path).unwrap();
     let svc = GrantService::new(&active, &clock, &ledger);
     assert_eq!(
         reserve(&svc, &publish("k-last"), Some("g1")),
-        Err(Refusal::GrantMismatch)
+        Err(reserve_unavailable("integrity"))
     );
     // The original binding consumes normally.
     ledger
         .db()
         .conn
-        .execute("UPDATE grants SET binding = ?1 WHERE label = 'g1'", [&good])
+        .execute(
+            "UPDATE grants SET binding = ?1 WHERE label = ?2",
+            [&good, &g1],
+        )
         .unwrap();
     assert_eq!(
         reserve(&svc, &publish("k-good"), Some("g1")),
@@ -1397,9 +1451,10 @@ fn sixty_four_threads_with_distinct_keys_race_for_one_single_use_grant() {
     let svc = w.svc();
     for round in 0..ROUNDS {
         let g = format!("g{round}");
-        approve(&svc, &publish(&format!("approve-{round}")), &g).unwrap();
+        let n = u32::try_from(round).unwrap() + 1;
+        approve(&svc, &nth(&publish(&format!("approve-{round}")), n), &g).unwrap();
         let requests: Vec<VerifiedRequest> = (0..WORKERS)
-            .map(|i| verify(&publish(&format!("r{round}-k{i}"))))
+            .map(|i| verify(&nth(&publish(&format!("r{round}-k{i}")), n)))
             .collect();
         let start = Barrier::new(WORKERS);
         let grant = label(&g);
@@ -1436,7 +1491,7 @@ fn sixty_four_threads_with_distinct_keys_race_for_one_single_use_grant() {
             .conn
             .query_row(
                 "SELECT count(*) FROM grant_uses WHERE label = ?1",
-                [&g],
+                [grant.as_str()],
                 |r| r.get(0),
             )
             .unwrap();
@@ -1447,7 +1502,7 @@ fn sixty_four_threads_with_distinct_keys_race_for_one_single_use_grant() {
             .conn
             .query_row(
                 "SELECT count(*) FROM receipts WHERE grant_label = ?1",
-                [&g],
+                [grant.as_str()],
                 |r| r.get(0),
             )
             .unwrap();
@@ -1549,22 +1604,24 @@ fn activation_is_never_observed_inside_a_consumption_and_a_later_consumption_red
         hook: &hook,
     };
     let svc = GrantService::new(&active, &clock, &wrapped);
-    for (k, g) in [("k1", "g1"), ("k2", "g2"), ("k3", "g3")] {
-        let verified = verify(&publish(k));
-        let g = label(g);
-        svc.approve(
-            &Approval {
-                request: &verified,
-                state_revision: revision(),
-                label: &g,
-                verdict: Verdict::Approved,
-                ttl_seconds: None,
-            },
-            &alice(),
-            &channels(),
-        )
-        .unwrap();
+    {
+        // Issued through the M4 lifecycle on the same ledger (D-042 X1).
+        let direct = GrantService::new(&active, &clock, &ledger);
+        for (n, (k, g)) in [("k1", "g1"), ("k2", "g2"), ("k3", "g3")]
+            .into_iter()
+            .enumerate()
+        {
+            approve(&direct, &nth(&publish(k), n as u32 + 1), g).unwrap();
+        }
     }
+    let publish = |k: &str| {
+        let n = match k {
+            "k1" => 1,
+            "k2" => 2,
+            _ => 3,
+        };
+        nth(&publish(k), n)
+    };
     let v1 = verify(&publish("k1"));
     let g1 = label("g1");
     let first = thread::scope(|s| {
@@ -1621,11 +1678,12 @@ fn concurrent_consumptions_racing_an_activation_are_each_decided_under_one_polic
     const CONSUMERS: usize = 32;
     let w = World::new("activation-stress");
     let svc = w.svc();
+    let req = |i: usize| nth(&publish(&format!("k{i}")), u32::try_from(i).unwrap() + 1);
     for i in 0..CONSUMERS {
-        approve(&svc, &publish(&format!("k{i}")), &format!("g{i}")).unwrap();
+        approve(&svc, &req(i), &format!("g{i}")).unwrap();
     }
     let requests: Vec<(VerifiedRequest, GrantLabel)> = (0..CONSUMERS)
-        .map(|i| (verify(&publish(&format!("k{i}"))), label(&format!("g{i}"))))
+        .map(|i| (verify(&req(i)), label(&format!("g{i}"))))
         .collect();
     let start = Barrier::new(CONSUMERS + 1);
     let outcomes: Vec<Result<ReserveOutcome, Refusal>> = thread::scope(|s| {
@@ -1674,7 +1732,7 @@ fn grants_and_their_uses_persist_across_a_restart() {
         let ledger = SqliteLedger::create(&path).unwrap();
         let svc = GrantService::new(&active, &clock, &ledger);
         approve(&svc, &publish("k1"), "g1").unwrap();
-        approve(&svc, &publish("k2"), "g2").unwrap();
+        approve(&svc, &nth(&publish("k2"), 2), "g2").unwrap();
         assert_eq!(
             reserve(&svc, &publish("k1"), Some("g1")),
             Ok(ReserveOutcome::Reserved)
@@ -1695,14 +1753,16 @@ fn grants_and_their_uses_persist_across_a_restart() {
         reserve(&svc, &publish("k3"), Some("g1")),
         Err(Refusal::GrantExhausted)
     );
-    // A replayed approval after the restart does not reset the grant.
+    // A replayed approval after the restart does not reset the grant: the request is closed.
     assert_eq!(
-        approve(&svc, &publish("k1"), "g1"),
-        Err(Refusal::GrantRefInUse)
+        approve(&svc, &publish("k1"), "g1-again"),
+        Err(Refusal::Approval(
+            writ_broker::approval::ApprovalCode::RequestClosed
+        ))
     );
     // The unused grant survived and is consumed exactly once.
     assert_eq!(
-        reserve(&svc, &publish("k2"), Some("g2")),
+        reserve(&svc, &nth(&publish("k2"), 2), Some("g2")),
         Ok(ReserveOutcome::Reserved)
     );
     assert_eq!(uses(&ledger, "g1"), Some(1));

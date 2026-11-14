@@ -28,9 +28,12 @@
 //! human subject (`SERVICE_NOT_PERMITTED`), active (`SUBJECT_REVOKED`),
 //! the operation's permission in the challenge's scope at the acceptance
 //! time (`PERMISSION_MISSING`), and for decisions and signoffs separation
-//! (`SEPARATION_VIOLATED`). Each also has a `from_stored` constructor that
-//! requires a [`LedgerCapability`] and revalidates the record's invariants
-//! when a stored row is read back.
+//! (`SEPARATION_VIOLATED`). Signoffs, revocations and challenges also have a
+//! `from_stored` constructor that requires a [`LedgerCapability`] and
+//! revalidates the record's invariants when a stored row is read back; an
+//! [`ApprovalDecision`] has none outside unit tests (S2: a decision exists
+//! only from [`decide`], so no public chain turns a stored or forged row into
+//! a grant).
 //!
 //! **Displayed context** (R6): the approval and signoff pages render only a
 //! [`DisplayedContext`], whose fingerprint is the D-006 digest of exactly
@@ -180,6 +183,10 @@ pub enum ChallengeRefusal {
     IdempotencyMismatch,
     /// An empty or inconsistent field.
     Malformed,
+    /// A retry on a consumed challenge differs from the committed ceremony in
+    /// subject, credential, operation, verdict, target or context fingerprint
+    /// (X3): never the earlier result.
+    BindingMismatch,
 }
 
 impl ChallengeRefusal {
@@ -203,6 +210,7 @@ impl ChallengeRefusal {
             CeremonyMismatch => "challenge: ceremony mismatch",
             IdempotencyMismatch => "challenge: idempotency key mismatch",
             Malformed => "challenge: malformed",
+            BindingMismatch => "challenge: binding mismatch",
         }
     }
 }
@@ -539,15 +547,29 @@ pub struct DecisionFields {
 ///     ApprovalDecision { fields: f }
 /// }
 /// ```
+///
+/// Nor from a stored or forged row (D-042 X1, finding S2: the former public
+/// `from_stored` exists only in unit tests):
+///
+/// ```compile_fail
+/// use writ_broker::approval::{ApprovalDecision, DecisionFields};
+/// use writ_broker::human::LedgerCapability;
+/// fn forge(f: DecisionFields) -> ApprovalDecision {
+///     ApprovalDecision::from_stored(&LedgerCapability::for_ledger_implementation(), f).unwrap()
+/// }
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApprovalDecision {
     fields: DecisionFields,
 }
 
 impl ApprovalDecision {
-    /// Reconstruct a stored row (the ledger only, [`LedgerCapability`]):
-    /// revalidates non-empty identifiers and the provenance version.
-    pub fn from_stored(
+    /// Reconstruct a stored row: revalidates non-empty identifiers and the
+    /// provenance version. Unit tests only (S2, X1): a decision outside
+    /// [`decide`] is never public API, so no stored or forged decision can be
+    /// turned into a [`crate::grants::NewGrant`].
+    #[cfg(test)]
+    pub(crate) fn from_stored(
         _capability: &LedgerCapability,
         fields: DecisionFields,
     ) -> Result<ApprovalDecision, InvalidRecord> {
@@ -694,6 +716,9 @@ pub enum ChallengeStatus {
     Consumed,
     /// Expired.
     Expired,
+    /// Burned by a terminal refusal of its identified ceremony (X4): never
+    /// usable again; a retry is `CHALLENGE_INVALID` (consumed).
+    Refused,
 }
 
 /// What a challenge is bound to, and what a decision presents (recomputed
@@ -984,7 +1009,7 @@ impl Challenge {
     ) -> Result<(), ChallengeRefusal> {
         use ChallengeRefusal::*;
         match self.status {
-            ChallengeStatus::Consumed => return Err(Consumed),
+            ChallengeStatus::Consumed | ChallengeStatus::Refused => return Err(Consumed),
             ChallengeStatus::Expired => return Err(Expired),
             ChallengeStatus::Issued => {}
         }
@@ -1027,7 +1052,7 @@ impl Challenge {
                 status: ChallengeStatus::Consumed,
                 ..self.clone()
             }),
-            ChallengeStatus::Consumed => Err(ChallengeRefusal::Consumed),
+            ChallengeStatus::Consumed | ChallengeStatus::Refused => Err(ChallengeRefusal::Consumed),
             ChallengeStatus::Expired => Err(ChallengeRefusal::Expired),
         }
     }

@@ -41,7 +41,8 @@ use writ_broker::refusal::Refusal;
 use writ_broker::writ_kernel::json::Value;
 
 use super::grant_tests::{
-    approve, file_write, label, now, publish, reference, revision, verify, TestClock,
+    approve, file_write, label, now, publish, publish_distinct, reference, revision, verify,
+    TestClock,
 };
 use super::{fault, SqliteEffectStore, SqliteLedger};
 
@@ -85,8 +86,11 @@ impl Rng {
 /// The request of a workload key: `a-<n>` is an allowed `file.write`, `p-<n>` a
 /// `repository.publish` needing grant `g-p-<n>`.
 fn request_of(key: &str) -> (Value, Option<String>) {
-    if key.starts_with("p-") {
-        (publish(key), Some(format!("g-{key}")))
+    if key == BOUNDARY_KEY {
+        (publish(key), Some(BOUNDARY_GRANT.to_string()))
+    } else if key.starts_with("p-") {
+        // A distinct action per key: one M4 approval request and grant each (D-042 X1).
+        (publish_distinct(key), Some(format!("g-{key}")))
     } else {
         (file_write(key), None)
     }
@@ -560,8 +564,18 @@ fn uncertain_receipts_are_never_redispatched(dir: &Path, facts: &Facts) {
         .unwrap();
     for (k, status) in &facts.receipts {
         if status == "dispatched" || status == "unknown_reconcile" {
-            let (req, grant) = request_of(k);
-            let g = grant.as_deref().map(label);
+            let (req, _) = request_of(k);
+            // The grant the receipt was reserved under (an M4 label issued in the child).
+            let g: Option<String> = ledger
+                .db()
+                .conn
+                .query_row(
+                    "SELECT grant_label FROM receipts WHERE idempotency_key = ?1",
+                    [k],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let g = g.as_deref().map(label);
             assert_eq!(
                 b.execute(&verify(&req), revision(), g.as_ref()).result,
                 Err(Refusal::ReconciliationRequired),
@@ -711,11 +725,17 @@ fn sigkill_at_every_lifecycle_boundary_leaves_the_implied_crash_state() {
         let clock = TestClock::at(now());
         let key = permit_key();
         let b = Broker::new(&active, &clock, &ledger, &effects, &key);
+        // The child's M4 grant: the ledger-assigned label (its only grant).
+        let grant: String = ledger
+            .db()
+            .conn
+            .query_row("SELECT label FROM approval_grants", [], |r| r.get(0))
+            .unwrap();
         let retry = b
             .execute(
                 &verify(&publish(BOUNDARY_KEY)),
                 revision(),
-                Some(&label(BOUNDARY_GRANT)),
+                Some(&label(&grant)),
             )
             .result;
         // Recovery recorded the outcome where the adapter's evidence exists (the effect
@@ -742,11 +762,9 @@ fn sigkill_at_every_lifecycle_boundary_leaves_the_implied_crash_state() {
         let uses: i64 = ledger
             .db()
             .conn
-            .query_row(
-                "SELECT uses FROM grants WHERE label = ?1",
-                [BOUNDARY_GRANT],
-                |r| r.get(0),
-            )
+            .query_row("SELECT uses FROM grants WHERE label = ?1", [&grant], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(uses, 1, "{case}: one grant use");
         let _ = std::fs::remove_dir_all(&dir);
