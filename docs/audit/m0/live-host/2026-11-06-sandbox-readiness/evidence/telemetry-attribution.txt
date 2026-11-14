@@ -1,0 +1,46 @@
+SR-06 sandbox egress anomaly investigation, 2026-11-06 (no credential present; no trial run)
+
+Observation: the egress proxy refused repeated CONNECT requests from the sandbox (10.231.61.10)
+to mobile.events.data.microsoft.com:443. Full proxy log: proxy-log-full.txt. 16 attempts by 20:18:47Z
+(the earlier readiness note cited 2 because its excerpt used `tail -6`).
+
+1. Command-by-command reproduction: 0 new attempts from each of
+   node -e "1"; claude --version; claude --help; claude plugin --help;
+   claude plugin validate /opt/writ-v1; claude -p hi (no credential).
+2. Timing: first attempt 19:38:53Z, 11 s after `writ serve` started (19:38:42Z); later attempts at
+   growing intervals (about 5 s to 4 min), consistent with a retrying background uploader.
+   Long-running processes: sleep (pid 1), writ serve (pid 8), http_probe (started 19:39:02Z, after
+   the first attempt).
+3. Static search of the daemon venv: the hostname occurs only in
+   onnxruntime/capi/libonnxruntime.so.1.31.1 and
+   onnxruntime/capi/onnxruntime_pybind11_state.cpython-311-x86_64-linux-gnu.so
+   (onnxruntime 1.31.1). No occurrence of "microsoft" in V1's writ/ or bin/ source.
+4. Socket polling (100 ms) for 420 s missed both attempts in that window (refused connections are
+   shorter than the polling interval).
+5. On/off test: writ serve stopped 20:10:37Z -> 0 attempts in 480 s. Restarted 20:18:37Z -> first
+   attempt about 10 s later. Daemon healthy afterwards (HTTP 200).
+
+Conclusion: the requests come from the V1 daemon process (`writ serve`). The endpoint string is
+present only in the onnxruntime native library the daemon loads, so ONNX Runtime telemetry is the
+most likely source. Not proven at packet level: no packet capture or library-level trace was made.
+Not assumed malicious. All attempts were blocked by the allowlist.
+
+Controlled comparison with ORT_DISABLE_TELEMETRY=1, 2026-11-06 (no credential; proxy deny rules unchanged)
+
+Reference: the owner reports Microsoft's ONNX Runtime documentation describes ORT_DISABLE_TELEMETRY=1
+as a process-lifetime opt-out when set before initialization (not independently fetched in this session).
+
+Baseline: 62 refused CONNECT requests to mobile.events.data.microsoft.com since 19:38:53Z, latest at
+22:40:27Z; running daemon (pid 11499) environment did not contain ORT_DISABLE_TELEMETRY. Proxy filter
+unchanged: ^api\.anthropic\.com$.
+22:42:37Z: daemon stopped and restarted with ORT_DISABLE_TELEMETRY=1 set in its environment before start;
+new pid 11606, /proc/11606/environ contains ORT_DISABLE_TELEMETRY=1; /health 200 (288 rules).
+Observation window 22:42:37Z to about 22:52:42Z (about 10 min): 0 new requests (count stayed 62).
+Comparison: without the variable, the restart at 20:18:37Z produced its first request about 10 s later,
+and the first 8 minutes after the initial start produced 8 requests.
+
+Outcome: setting ORT_DISABLE_TELEMETRY=1 stopped the observed requests in this window. This is
+consistent with ONNX Runtime telemetry in the V1 daemon process.
+Limitations: one run; 10-minute window; no packet capture or library-level trace; attribution to
+ONNX Runtime rests on the on/off correlation, the opt-out effect and the hostname string in the
+onnxruntime native library, not on direct observation of the library opening the connection.

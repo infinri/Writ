@@ -1,0 +1,7112 @@
+{
+ "benchmark_version": "v2-0.1",
+ "cold_start": {
+  "launches": 30,
+  "measurements": {
+   "go": {
+    "to_first_answer_s": {
+     "max": 0.002285132999986672,
+     "mean": 0.002015093699992576,
+     "min": 0.0017377469999928508,
+     "n": 30,
+     "p50": 0.0019841580000274917,
+     "p95": 0.0021987510000371913,
+     "p99": 0.002285132999986672,
+     "stdev": 0.0001326319240299396
+    }
+   },
+   "rust": {
+    "to_first_answer_s": {
+     "max": 0.0009483380000574471,
+     "mean": 0.00069592236667404,
+     "min": 0.0005409540000300694,
+     "n": 30,
+     "p50": 0.0006822489999649406,
+     "p95": 0.0008973320000222884,
+     "p99": 0.0009483380000574471,
+     "stdev": 9.249155208663663e-05
+    }
+   }
+  },
+  "method": "process launch (decide, one golden case) to first answered line"
+ },
+ "concurrency": {
+  "digest": "sha256:002d1c59192e9fd9c2a0c5b47d54f8bfe036390839b9f98b4b345abc0004dd45",
+  "levels": {
+   "1": {
+    "decisions": 10000,
+    "measurements": {
+     "go": {
+      "decisions_per_sec": 21525.298030558093,
+      "wall_s": 0.46456964200001494
+     },
+     "rust": {
+      "decisions_per_sec": 27437.718279573506,
+      "wall_s": 0.36446179299991854
+     }
+    },
+    "sessions": 1
+   },
+   "10": {
+    "decisions": 10000,
+    "measurements": {
+     "go": {
+      "decisions_per_sec": 85950.6465542625,
+      "wall_s": 0.11634583800002929
+     },
+     "rust": {
+      "decisions_per_sec": 151425.20952943407,
+      "wall_s": 0.06603920199995628
+     }
+    },
+    "sessions": 10
+   },
+   "100": {
+    "decisions": 10000,
+    "measurements": {
+     "go": {
+      "decisions_per_sec": 91578.44861298133,
+      "wall_s": 0.10919599699991522
+     },
+     "rust": {
+      "decisions_per_sec": 200839.0694812134,
+      "wall_s": 0.0497911090000116
+     }
+    },
+    "sessions": 100
+   },
+   "1000": {
+    "decisions": 10000,
+    "measurements": {
+     "go": {
+      "decisions_per_sec": 24802.404329200348,
+      "wall_s": 0.40318671800002903
+     },
+     "rust": {
+      "decisions_per_sec": 54409.37373394942,
+      "wall_s": 0.1837918600000421
+     }
+    },
+    "sessions": 1000
+   }
+  },
+  "method": "decisions split across k simultaneously started single-threaded prototype processes (one per simulated session); wall time until all exit",
+  "seed": 20261123
+ },
+ "correctness": {
+  "checks": {
+   "A.bench_decide_equals_decide": 0,
+   "A.differential": 0,
+   "B-cold.broker.effects_applied_le_consumed_permits": 0,
+   "B-cold.broker.grant_uses_never_exceed_max_uses": 0,
+   "B-cold.broker.refusals_counted_exactly": 0,
+   "B-cold.concurrent_group_equals_a_serialization": 0,
+   "B-cold.timed_output_shape": 0,
+   "B-mem.broker.effects_applied_le_consumed_permits": 0,
+   "B-mem.broker.grant_uses_never_exceed_max_uses": 0,
+   "B-mem.broker.refusals_counted_exactly": 0,
+   "B-mem.concurrent_group_equals_a_serialization": 0,
+   "B-mem.timed_output_shape": 0,
+   "B.broker.effects_applied_le_consumed_permits": 0,
+   "B.broker.grant_uses_never_exceed_max_uses": 0,
+   "B.broker.refusals_counted_exactly": 0,
+   "B.concurrent_group_equals_a_serialization": 0,
+   "B.timed_output_shape": 0,
+   "G.differential": 0,
+   "G.repeat_identical": 0,
+   "H-mem.differential": 0,
+   "H-mem.repeat_identical": 0,
+   "H-mem.timed_output_shape": 0,
+   "H-mem.timed_scenario_equals_plain": 0,
+   "H.differential": 0,
+   "H.repeat_identical": 0,
+   "H.timed_output_shape": 0,
+   "H.timed_scenario_equals_plain": 0,
+   "cold.differential": 0,
+   "concurrency.1.differential": 0,
+   "concurrency.10.differential": 0,
+   "concurrency.100.differential": 0,
+   "concurrency.1000.differential": 0,
+   "sqlite.engine_and_settings_identical": 0,
+   "sqlite.info_available": 0,
+   "sqlite.required_settings": 0
+  },
+  "examples": [],
+  "failed": 0
+ },
+ "environment": {
+  "cpufreq": {
+   "boost": "1",
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4992691,
+     "mean": 2799756,
+     "min": 846181
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4992691,
+     "mean": 2799756,
+     "min": 846181
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "drivers": [
+    "amd-pstate-epp"
+   ],
+   "energy_performance_preference": [
+    "performance"
+   ],
+   "governors": [
+    "performance"
+   ],
+   "platform_profile": "balanced",
+   "policies": 16,
+   "scaling_max_khz": [
+    "5263061"
+   ],
+   "scaling_min_khz": [
+    "1100947"
+   ]
+  },
+  "hardware": {
+   "cpu_model": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics",
+   "kernel": "6.17.0-40-generic",
+   "logical_cpus": 16,
+   "machine": "x86_64",
+   "memory_mib": 31393,
+   "os": "Ubuntu 24.04.3 LTS"
+  },
+  "load": {
+   "loadavg_1m": 0.55,
+   "loadavg_5m": 1.11
+  },
+  "power": {
+   "batteries": [
+    {
+     "capacity_percent": "74",
+     "name": "BAT1",
+     "status": "Charging"
+    }
+   ],
+   "mains": [
+    {
+     "name": "ACAD",
+     "online": true
+    }
+   ],
+   "on_mains": true,
+   "usb_sources_online": [
+    {
+     "current_max_ua": "3000000",
+     "name": "ucsi-source-psy-USBC000:004",
+     "voltage_max_uv": "5000000"
+    }
+   ]
+  },
+  "thermals": {
+   "cpu_c": 46.625,
+   "cpu_sensor": "k10temp/temp1",
+   "zones_c": {
+    "thermal_zone0:acpitz": 38.8,
+    "thermal_zone1:acpitz": 39.8,
+    "thermal_zone2:acpitz": 41.8,
+    "thermal_zone3:acpitz": 45.8
+   }
+  }
+ },
+ "environment_end": {
+  "cpufreq": {
+   "boost": "1",
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4990908,
+     "mean": 3839555,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4990781,
+     "mean": 3839842,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "drivers": [
+    "amd-pstate-epp"
+   ],
+   "energy_performance_preference": [
+    "performance"
+   ],
+   "governors": [
+    "performance"
+   ],
+   "platform_profile": "balanced",
+   "policies": 16,
+   "scaling_max_khz": [
+    "5263061"
+   ],
+   "scaling_min_khz": [
+    "1100947"
+   ]
+  },
+  "load": {
+   "loadavg_1m": 2.84,
+   "loadavg_5m": 2.02
+  },
+  "power": {
+   "batteries": [
+    {
+     "capacity_percent": "79",
+     "name": "BAT1",
+     "status": "Charging"
+    }
+   ],
+   "mains": [
+    {
+     "name": "ACAD",
+     "online": true
+    }
+   ],
+   "on_mains": true,
+   "usb_sources_online": [
+    {
+     "current_max_ua": "3000000",
+     "name": "ucsi-source-psy-USBC000:004",
+     "voltage_max_uv": "5000000"
+    }
+   ]
+  },
+  "thermals": {
+   "cpu_c": 80.5,
+   "cpu_sensor": "k10temp/temp1",
+   "zones_c": {
+    "thermal_zone0:acpitz": 46.8,
+    "thermal_zone1:acpitz": 48.8,
+    "thermal_zone2:acpitz": 52.8,
+    "thermal_zone3:acpitz": 79.8
+   }
+  }
+ },
+ "environment_samples": [
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5010170,
+     "mean": 3858421,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5010170,
+     "mean": 3933383,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 46.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.55,
+   "t_s": 0.0
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5092303,
+     "mean": 2569271,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5092303,
+     "mean": 2569271,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 72.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.58,
+   "t_s": 5.0
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4891179,
+     "mean": 3393604,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4891179,
+     "mean": 3395988,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 74.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.62,
+   "t_s": 10.0
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5090734,
+     "mean": 3308823,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5090734,
+     "mean": 3308823,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 74.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.81,
+   "t_s": 15.0
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4841099,
+     "mean": 2776055,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4841099,
+     "mean": 2776055,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 76.875,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.82,
+   "t_s": 20.0
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4093839,
+     "mean": 3490536,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4093839,
+     "mean": 3561159,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 65.5,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.76,
+   "t_s": 25.0
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4663777,
+     "mean": 2511956,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4663777,
+     "mean": 2511956,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 52.0,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.1,
+   "t_s": 30.0
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4960052,
+     "mean": 4523832,
+     "min": 3390760
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4960052,
+     "mean": 4523832,
+     "min": 3390760
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 54.125,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.01,
+   "t_s": 35.0
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4997963,
+     "mean": 3141405,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4997963,
+     "mean": 3221183,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 52.0,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.01,
+   "t_s": 40.0
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 3967586,
+     "mean": 3309348,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 3967586,
+     "mean": 3309348,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 49.25,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.01,
+   "t_s": 45.0
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4966546,
+     "mean": 4028469,
+     "min": 3959555
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4966546,
+     "mean": 4028469,
+     "min": 3959555
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 53.25,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.01,
+   "t_s": 50.0
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5140685,
+     "mean": 3607311,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5140685,
+     "mean": 3607311,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 57.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.01,
+   "t_s": 55.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4878013,
+     "mean": 3442868,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4878013,
+     "mean": 3442868,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 58.875,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.0,
+   "t_s": 60.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4390741,
+     "mean": 2767291,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4390741,
+     "mean": 2767291,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 51.625,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.0,
+   "t_s": 65.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4891163,
+     "mean": 3860860,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4891163,
+     "mean": 3860860,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 68.25,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.48,
+   "t_s": 70.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 3969849,
+     "mean": 3580184,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 3969849,
+     "mean": 3607118,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 55.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.45,
+   "t_s": 75.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4990053,
+     "mean": 4638219,
+     "min": 3501922
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4990053,
+     "mean": 4638219,
+     "min": 3501922
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 64.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.33,
+   "t_s": 80.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4944369,
+     "mean": 3900480,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4944369,
+     "mean": 3900480,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 52.0,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.22,
+   "t_s": 85.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4302108,
+     "mean": 2500775,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4302108,
+     "mean": 2500775,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 51.5,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.45,
+   "t_s": 90.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4890646,
+     "mean": 3811545,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4884682,
+     "mean": 3753870,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 57.125,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.33,
+   "t_s": 95.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4710892,
+     "mean": 3397320,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4710892,
+     "mean": 3397320,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 54.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.38,
+   "t_s": 100.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4691182,
+     "mean": 3292748,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4032465,
+     "mean": 3243096,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 57.125,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.43,
+   "t_s": 105.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5015914,
+     "mean": 3376268,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5015914,
+     "mean": 3376268,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 51.5,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.32,
+   "t_s": 110.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4803857,
+     "mean": 3532930,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4656116,
+     "mean": 3919430,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 62.5,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.45,
+   "t_s": 115.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4940568,
+     "mean": 3959708,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4940770,
+     "mean": 3905007,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 53.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.5,
+   "t_s": 120.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4792595,
+     "mean": 3770444,
+     "min": 3426408
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4792595,
+     "mean": 3804194,
+     "min": 3426408
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 61.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.38,
+   "t_s": 125.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4800275,
+     "mean": 2917839,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4800275,
+     "mean": 2917839,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 53.875,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.35,
+   "t_s": 130.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4841137,
+     "mean": 4343001,
+     "min": 3857811
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4841110,
+     "mean": 4362206,
+     "min": 3865117
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 57.25,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.24,
+   "t_s": 135.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5057796,
+     "mean": 3969123,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5057796,
+     "mean": 3949531,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 53.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.14,
+   "t_s": 140.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4630576,
+     "mean": 2322639,
+     "min": 724336
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4630576,
+     "mean": 2322639,
+     "min": 724336
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 52.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.05,
+   "t_s": 145.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5190612,
+     "mean": 3091207,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4059910,
+     "mean": 3020538,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 58.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.12,
+   "t_s": 150.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4965914,
+     "mean": 3970666,
+     "min": 3325423
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4965914,
+     "mean": 3970666,
+     "min": 3325423
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 53.0,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.03,
+   "t_s": 155.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 3968587,
+     "mean": 2348958,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 3968587,
+     "mean": 2348958,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 58.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.95,
+   "t_s": 160.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4839843,
+     "mean": 2423781,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 3967765,
+     "mean": 2410261,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 53.875,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.95,
+   "t_s": 165.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4847553,
+     "mean": 3422459,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4847553,
+     "mean": 3422459,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 62.125,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.2,
+   "t_s": 170.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5043053,
+     "mean": 3885888,
+     "min": 3350565
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4964970,
+     "mean": 3898005,
+     "min": 3472429
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 55.125,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.1,
+   "t_s": 175.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5087820,
+     "mean": 3710089,
+     "min": 3380289
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5087820,
+     "mean": 3710089,
+     "min": 3380289
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 66.625,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.01,
+   "t_s": 180.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 3968200,
+     "mean": 3752224,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 3968200,
+     "mean": 3752224,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 54.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.93,
+   "t_s": 185.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5065786,
+     "mean": 3672189,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5065786,
+     "mean": 3672189,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 53.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.86,
+   "t_s": 190.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4498139,
+     "mean": 3234625,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 3967777,
+     "mean": 3246877,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 54.875,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.79,
+   "t_s": 195.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4941021,
+     "mean": 3563363,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4941021,
+     "mean": 3563363,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 52.0,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.73,
+   "t_s": 200.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4989480,
+     "mean": 3477104,
+     "min": 943801
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4038193,
+     "mean": 3610441,
+     "min": 943801
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 55.875,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.67,
+   "t_s": 205.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4050584,
+     "mean": 3772948,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4050584,
+     "mean": 3618810,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 53.125,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.25,
+   "t_s": 210.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5170134,
+     "mean": 2950173,
+     "min": 747051
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5170134,
+     "mean": 2950173,
+     "min": 747051
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 58.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.23,
+   "t_s": 215.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4462338,
+     "mean": 2570094,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4462338,
+     "mean": 2570094,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 53.25,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.38,
+   "t_s": 220.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4965965,
+     "mean": 3841246,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4965999,
+     "mean": 3792591,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 65.5,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.27,
+   "t_s": 225.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4354618,
+     "mean": 2306726,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 3967780,
+     "mean": 2131602,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 53.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.48,
+   "t_s": 230.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4874050,
+     "mean": 3648352,
+     "min": 544047
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4874050,
+     "mean": 2095091,
+     "min": 544047
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 58.0,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.69,
+   "t_s": 235.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4966033,
+     "mean": 4184782,
+     "min": 2338481
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4966033,
+     "mean": 4184782,
+     "min": 2338481
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 55.0,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.27,
+   "t_s": 240.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5040781,
+     "mean": 2635062,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5040781,
+     "mean": 2635062,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 52.5,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.09,
+   "t_s": 245.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4965935,
+     "mean": 3485403,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4965935,
+     "mean": 3479802,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 57.625,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.92,
+   "t_s": 250.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4989967,
+     "mean": 3636621,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4989967,
+     "mean": 3636621,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 52.5,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.77,
+   "t_s": 255.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4815201,
+     "mean": 4033964,
+     "min": 3848445
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4815201,
+     "mean": 4033964,
+     "min": 3848445
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 60.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.71,
+   "t_s": 260.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4889045,
+     "mean": 3749494,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4889045,
+     "mean": 3753352,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 70.875,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.65,
+   "t_s": 265.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4866452,
+     "mean": 2852520,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4866452,
+     "mean": 2852520,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 75.875,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.84,
+   "t_s": 270.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5040848,
+     "mean": 2606093,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5040848,
+     "mean": 2606093,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 60.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.85,
+   "t_s": 275.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5060513,
+     "mean": 4226483,
+     "min": 3343708
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5060513,
+     "mean": 4226483,
+     "min": 3343708
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 70.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.86,
+   "t_s": 280.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5090699,
+     "mean": 2798320,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5090699,
+     "mean": 2798320,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 60.125,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.95,
+   "t_s": 285.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5116721,
+     "mean": 2529372,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5116721,
+     "mean": 2529372,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 57.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.96,
+   "t_s": 290.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4990435,
+     "mean": 3331021,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4990435,
+     "mean": 3434324,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 61.25,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.04,
+   "t_s": 295.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4916507,
+     "mean": 3568525,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4916507,
+     "mean": 3568525,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 59.875,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.04,
+   "t_s": 300.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4829693,
+     "mean": 4493661,
+     "min": 3864968
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4829693,
+     "mean": 4493661,
+     "min": 3864968
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 71.125,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.2,
+   "t_s": 305.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4990992,
+     "mean": 3014418,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4990992,
+     "mean": 3014418,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 61.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.18,
+   "t_s": 310.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5190452,
+     "mean": 2638581,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5190452,
+     "mean": 2636973,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 63.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.41,
+   "t_s": 315.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5089720,
+     "mean": 2644513,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5089720,
+     "mean": 2642431,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 60.875,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.37,
+   "t_s": 320.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5138760,
+     "mean": 3183349,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5092155,
+     "mean": 3227128,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 71.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.26,
+   "t_s": 325.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5140238,
+     "mean": 2337885,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5140238,
+     "mean": 2337885,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 61.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.24,
+   "t_s": 330.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4941065,
+     "mean": 4419079,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4941065,
+     "mean": 4419079,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 70.875,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.3,
+   "t_s": 335.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5125814,
+     "mean": 2919246,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5125814,
+     "mean": 2919246,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 62.5,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.28,
+   "t_s": 340.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5092382,
+     "mean": 3177310,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5092382,
+     "mean": 3179040,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 59.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.5,
+   "t_s": 345.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4411731,
+     "mean": 2815882,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4411731,
+     "mean": 2815882,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 63.5,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.46,
+   "t_s": 350.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5165690,
+     "mean": 2518954,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4710350,
+     "mean": 2390248,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 61.625,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.42,
+   "t_s": 355.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5215562,
+     "mean": 2710439,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5215562,
+     "mean": 2710443,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 64.625,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.47,
+   "t_s": 360.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4859581,
+     "mean": 3203999,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4859581,
+     "mean": 3219029,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 59.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.43,
+   "t_s": 365.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4968787,
+     "mean": 3068818,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4968787,
+     "mean": 3068818,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 72.125,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.88,
+   "t_s": 370.4
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5156210,
+     "mean": 2992754,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5190184,
+     "mean": 2886768,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 60.25,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.81,
+   "t_s": 375.4
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5233267,
+     "mean": 3743007,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5233267,
+     "mean": 3743022,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 69.5,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.82,
+   "t_s": 380.4
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4486882,
+     "mean": 3081840,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4486882,
+     "mean": 3081840,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 60.625,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.92,
+   "t_s": 385.4
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5213980,
+     "mean": 2667907,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5213980,
+     "mean": 2667907,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 59.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.76,
+   "t_s": 390.4
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5184736,
+     "mean": 2902179,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5184736,
+     "mean": 2902179,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 62.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.7,
+   "t_s": 395.4
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5212945,
+     "mean": 3218339,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5212945,
+     "mean": 3215274,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 62.25,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.72,
+   "t_s": 400.4
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5140729,
+     "mean": 2912640,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5140729,
+     "mean": 2912640,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 66.125,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.67,
+   "t_s": 405.4
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5155189,
+     "mean": 3155775,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5124740,
+     "mean": 3222516,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 60.125,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.61,
+   "t_s": 410.4
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5190096,
+     "mean": 3064866,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5190096,
+     "mean": 3064866,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 65.25,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.8,
+   "t_s": 415.4
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5140483,
+     "mean": 2729778,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5140483,
+     "mean": 2729778,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 59.25,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.74,
+   "t_s": 420.4
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5154379,
+     "mean": 3673134,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5190550,
+     "mean": 3687214,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 71.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.68,
+   "t_s": 425.4
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4993125,
+     "mean": 1100151,
+     "min": 543934
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5050095,
+     "mean": 3573360,
+     "min": 544402
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 61.125,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.71,
+   "t_s": 430.4
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4840405,
+     "mean": 4127544,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4840405,
+     "mean": 4071165,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 59.5,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.65,
+   "t_s": 435.4
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5045332,
+     "mean": 2762673,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4965657,
+     "mean": 2757693,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 65.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.92,
+   "t_s": 440.6
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5139119,
+     "mean": 4712852,
+     "min": 3425680
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5140039,
+     "mean": 3990524,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 78.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.84,
+   "t_s": 445.6
+  }
+ ],
+ "evidence": [
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": 0.012975,
+    "p95": 0.01629,
+    "p99": 0.020238
+   },
+   "notes": "kernel-only latency",
+   "prototype": "rust",
+   "rss_mb": 2.84765625,
+   "runtime": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+   "sessions": 1,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 32844.54207246314,
+   "workload": "sha256:9ed22957e59a8d1b669a27d2c06f36e3268c8c7c3b419e551ade2096a5ac65c6",
+   "workload_name": "A"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": 0.022261,
+    "p95": 0.039995,
+    "p99": 0.0961
+   },
+   "notes": "kernel-only latency",
+   "prototype": "go",
+   "rss_mb": 12.078125,
+   "runtime": "go version go1.27.3 linux/amd64",
+   "sessions": 1,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 24111.41953250565,
+   "workload": "sha256:9ed22957e59a8d1b669a27d2c06f36e3268c8c7c3b419e551ade2096a5ac65c6",
+   "workload_name": "A"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null
+   },
+   "notes": "no per-operation latency for this workload; batch wall time only",
+   "prototype": "rust",
+   "rss_mb": 7.296875,
+   "runtime": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+   "sessions": 100,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 100.71607268219866,
+   "workload": "sha256:b450ca2b1950c9b9f02659437b1bb79a63de8560783472fda1f34e9ba24da44c",
+   "workload_name": "B"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null
+   },
+   "notes": "no per-operation latency for this workload; batch wall time only",
+   "prototype": "go",
+   "rss_mb": 21.94140625,
+   "runtime": "go version go1.27.3 linux/amd64",
+   "sessions": 100,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 101.73152594801468,
+   "workload": "sha256:b450ca2b1950c9b9f02659437b1bb79a63de8560783472fda1f34e9ba24da44c",
+   "workload_name": "B"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null
+   },
+   "notes": "no per-operation latency for this workload; batch wall time only",
+   "prototype": "rust",
+   "rss_mb": 7.109375,
+   "runtime": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+   "sessions": 100,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 104.32201838581854,
+   "workload": "sha256:b450ca2b1950c9b9f02659437b1bb79a63de8560783472fda1f34e9ba24da44c",
+   "workload_name": "B-cold"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null
+   },
+   "notes": "no per-operation latency for this workload; batch wall time only",
+   "prototype": "go",
+   "rss_mb": 23.2421875,
+   "runtime": "go version go1.27.3 linux/amd64",
+   "sessions": 100,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 102.89111615061148,
+   "workload": "sha256:b450ca2b1950c9b9f02659437b1bb79a63de8560783472fda1f34e9ba24da44c",
+   "workload_name": "B-cold"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null
+   },
+   "notes": "no per-operation latency for this workload; batch wall time only",
+   "prototype": "rust",
+   "rss_mb": 3.26171875,
+   "runtime": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+   "sessions": 100,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 9241.787259339571,
+   "workload": "sha256:b450ca2b1950c9b9f02659437b1bb79a63de8560783472fda1f34e9ba24da44c",
+   "workload_name": "B-mem"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null
+   },
+   "notes": "no per-operation latency for this workload; batch wall time only",
+   "prototype": "go",
+   "rss_mb": 12.20703125,
+   "runtime": "go version go1.27.3 linux/amd64",
+   "sessions": 100,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 10156.655733406353,
+   "workload": "sha256:b450ca2b1950c9b9f02659437b1bb79a63de8560783472fda1f34e9ba24da44c",
+   "workload_name": "B-mem"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null
+   },
+   "notes": "no per-operation latency for this workload; batch wall time only",
+   "prototype": "rust",
+   "rss_mb": 7.06640625,
+   "runtime": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+   "sessions": 1,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 2482.970343056946,
+   "workload": "sha256:fb0b0531aec649accd752af3d795ada8da81f032edb899ee245c2c9bcaf76e63",
+   "workload_name": "G"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null
+   },
+   "notes": "no per-operation latency for this workload; batch wall time only",
+   "prototype": "go",
+   "rss_mb": 17.0,
+   "runtime": "go version go1.27.3 linux/amd64",
+   "sessions": 1,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 1201.5618394872088,
+   "workload": "sha256:fb0b0531aec649accd752af3d795ada8da81f032edb899ee245c2c9bcaf76e63",
+   "workload_name": "G"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null
+   },
+   "notes": "no per-operation latency for this workload; batch wall time only",
+   "prototype": "rust",
+   "rss_mb": 4.67578125,
+   "runtime": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+   "sessions": 1,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 143.98715997150313,
+   "workload": "sha256:a5e01cf00ebb042663ae2f4489b52986b4a84bf675f499f70971f665f43af443",
+   "workload_name": "H"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null
+   },
+   "notes": "no per-operation latency for this workload; batch wall time only",
+   "prototype": "go",
+   "rss_mb": 17.0703125,
+   "runtime": "go version go1.27.3 linux/amd64",
+   "sessions": 1,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 156.11414282342906,
+   "workload": "sha256:a5e01cf00ebb042663ae2f4489b52986b4a84bf675f499f70971f665f43af443",
+   "workload_name": "H"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null
+   },
+   "notes": "no per-operation latency for this workload; batch wall time only",
+   "prototype": "rust",
+   "rss_mb": 2.95703125,
+   "runtime": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+   "sessions": 1,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 13412.91073780142,
+   "workload": "sha256:a5e01cf00ebb042663ae2f4489b52986b4a84bf675f499f70971f665f43af443",
+   "workload_name": "H-mem"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null
+   },
+   "notes": "no per-operation latency for this workload; batch wall time only",
+   "prototype": "go",
+   "rss_mb": 12.61328125,
+   "runtime": "go version go1.27.3 linux/amd64",
+   "sessions": 1,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 10071.993319030618,
+   "workload": "sha256:a5e01cf00ebb042663ae2f4489b52986b4a84bf675f499f70971f665f43af443",
+   "workload_name": "H-mem"
+  }
+ ],
+ "finished_at": "2026-11-12T13:54:14Z",
+ "format": "writ-m1-bench/1",
+ "guard": {
+  "enforced": true,
+  "max_load": 1.0,
+  "max_start_temp_c": 60.0,
+  "passed": true,
+  "reasons": []
+ },
+ "mode": "measure",
+ "not_a_benchmark": false,
+ "not_measured": {
+  "E": "chaos (ledger and broker kill) not implemented in M1-06a",
+  "G_symlinks": "M1 kernels perform no filesystem access; symlink paths exercise string handling only",
+  "broker_timing": "B, B-mem, H and H-mem report per-operation broker timing from bench-broker-scenario (validation, kernel decision, key-lock wait, each transaction's begin/body/end, parse and run per line, process and protocol overhead) in separate timed runs",
+  "ledgers": "B and H use the file-backed SQLite ledger (D-023, fresh database per process); B-mem and H-mem use the in-memory model and are not substitutes for the SQLite results"
+ },
+ "pinned_versions": {
+  "GO_VERSION": "1.27.3",
+  "RUST_VERSION": "1.99.1"
+ },
+ "profile": {
+  "a_n": 10000,
+  "a_runs": 10,
+  "a_warmup": 1000,
+  "b_runs": 10,
+  "b_sessions": 100,
+  "cold": 30,
+  "conc_levels": [
+   1,
+   10,
+   100,
+   1000
+  ],
+  "conc_total": 10000,
+  "g_n": 1000,
+  "g_runs": 5,
+  "h_n": 1000,
+  "h_runs": 5,
+  "name": "protocol"
+ },
+ "prototypes": {
+  "go": {
+   "argv_prefix": [],
+   "binary": "m1/go/proto",
+   "sha256": "sha256:15c7b885488bfbc7d1a03e2b638319f0142353bde935c99d50f770b599d041d4"
+  },
+  "rust": {
+   "argv_prefix": [],
+   "binary": "m1/rust/target/release/proto",
+   "sha256": "sha256:486a18276b0369afe964d01dc6faa988ecadf1bca8aefcf3aac4baf6c0bda387"
+  }
+ },
+ "repository": {
+  "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+  "fixture_manifest_sha256": "sha256:0aa9efe5974f85a7ed734753c7736d6fea6d5c969d90675ea139756b8100f996",
+  "m1_dirty_paths": [],
+  "m1_tree_clean": true
+ },
+ "samples_file": {
+  "path": "2026-11-12-m1-06-seed-20261121.json.samples.json.gz",
+  "sha256": "sha256:f704fccdc5839929dfe0732615a3619a4a5e08c9b06beed3caa481499775ad80"
+ },
+ "seed": 20261121,
+ "sqlite": {
+  "go": {
+   "compile_options": [
+    "ATOMIC_INTRINSICS=1",
+    "COMPILER=gcc-13.3.0",
+    "DEFAULT_AUTOVACUUM",
+    "DEFAULT_CACHE_SIZE=-2000",
+    "DEFAULT_FILE_FORMAT=4",
+    "DEFAULT_JOURNAL_SIZE_LIMIT=-1",
+    "DEFAULT_MMAP_SIZE=0",
+    "DEFAULT_PAGE_SIZE=4096",
+    "DEFAULT_PCACHE_INITSZ=20",
+    "DEFAULT_RECURSIVE_TRIGGERS",
+    "DEFAULT_SECTOR_SIZE=4096",
+    "DEFAULT_SYNCHRONOUS=2",
+    "DEFAULT_WAL_AUTOCHECKPOINT=1000",
+    "DEFAULT_WAL_SYNCHRONOUS=2",
+    "DEFAULT_WORKER_THREADS=0",
+    "DIRECT_OVERFLOW_READ",
+    "DQS=0",
+    "ENABLE_COLUMN_METADATA",
+    "MALLOC_SOFT_LIMIT=1024",
+    "MAX_ATTACHED=10",
+    "MAX_COLUMN=2000",
+    "MAX_COMPOUND_SELECT=500",
+    "MAX_DEFAULT_PAGE_SIZE=8192",
+    "MAX_EXPR_DEPTH=1000",
+    "MAX_FUNCTION_ARG=1000",
+    "MAX_LENGTH=1000000000",
+    "MAX_LIKE_PATTERN_LENGTH=50000",
+    "MAX_MMAP_SIZE=0x7fff0000",
+    "MAX_PAGE_COUNT=0xfffffffe",
+    "MAX_PAGE_SIZE=65536",
+    "MAX_SCHEMA=10000000",
+    "MAX_SQL_LENGTH=1000000000",
+    "MAX_TRIGGER_DEPTH=1000",
+    "MAX_VARIABLE_NUMBER=32766",
+    "MAX_VDBE_OP=250000000",
+    "MAX_WORKER_THREADS=8",
+    "MUTEX_PTHREADS",
+    "OMIT_LOAD_EXTENSION",
+    "SYSTEM_MALLOC",
+    "TEMP_STORE=1",
+    "THREADSAFE=1"
+   ],
+   "driver": "github.com/mattn/go-sqlite3 v1.14.52",
+   "schema_version": "1",
+   "settings": {
+    "busy_timeout": 5000,
+    "foreign_keys": 1,
+    "journal_mode": "wal",
+    "synchronous": 2,
+    "trusted_schema": 0
+   },
+   "source_id": "2026-10-16 14:45:20 555e07ef33f69a0957d24d8e555b702464a131d6f1607f4c3c1e4551e8e6ca76",
+   "sqlite_version": "3.54.1"
+  },
+  "rust": {
+   "compile_options": [
+    "ATOMIC_INTRINSICS=1",
+    "COMPILER=gcc-13.3.0",
+    "DEFAULT_AUTOVACUUM",
+    "DEFAULT_CACHE_SIZE=-2000",
+    "DEFAULT_FILE_FORMAT=4",
+    "DEFAULT_JOURNAL_SIZE_LIMIT=-1",
+    "DEFAULT_MMAP_SIZE=0",
+    "DEFAULT_PAGE_SIZE=4096",
+    "DEFAULT_PCACHE_INITSZ=20",
+    "DEFAULT_RECURSIVE_TRIGGERS",
+    "DEFAULT_SECTOR_SIZE=4096",
+    "DEFAULT_SYNCHRONOUS=2",
+    "DEFAULT_WAL_AUTOCHECKPOINT=1000",
+    "DEFAULT_WAL_SYNCHRONOUS=2",
+    "DEFAULT_WORKER_THREADS=0",
+    "DIRECT_OVERFLOW_READ",
+    "DQS=0",
+    "ENABLE_COLUMN_METADATA",
+    "MALLOC_SOFT_LIMIT=1024",
+    "MAX_ATTACHED=10",
+    "MAX_COLUMN=2000",
+    "MAX_COMPOUND_SELECT=500",
+    "MAX_DEFAULT_PAGE_SIZE=8192",
+    "MAX_EXPR_DEPTH=1000",
+    "MAX_FUNCTION_ARG=1000",
+    "MAX_LENGTH=1000000000",
+    "MAX_LIKE_PATTERN_LENGTH=50000",
+    "MAX_MMAP_SIZE=0x7fff0000",
+    "MAX_PAGE_COUNT=0xfffffffe",
+    "MAX_PAGE_SIZE=65536",
+    "MAX_SCHEMA=10000000",
+    "MAX_SQL_LENGTH=1000000000",
+    "MAX_TRIGGER_DEPTH=1000",
+    "MAX_VARIABLE_NUMBER=32766",
+    "MAX_VDBE_OP=250000000",
+    "MAX_WORKER_THREADS=8",
+    "MUTEX_PTHREADS",
+    "OMIT_LOAD_EXTENSION",
+    "SYSTEM_MALLOC",
+    "TEMP_STORE=1",
+    "THREADSAFE=1"
+   ],
+   "driver": "rusqlite 0.40.2",
+   "schema_version": "1",
+   "settings": {
+    "busy_timeout": 5000,
+    "foreign_keys": 1,
+    "journal_mode": "wal",
+    "synchronous": 2,
+    "trusted_schema": 0
+   },
+   "source_id": "2026-10-16 14:45:20 555e07ef33f69a0957d24d8e555b702464a131d6f1607f4c3c1e4551e8e6ca76",
+   "sqlite_version": "3.54.1"
+  }
+ },
+ "started_at": "2026-11-12T13:46:47Z",
+ "toolchains": {
+  "cargo_V": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "go_binary_buildinfo": "m1/go/proto: go1.27.3\n\tpath\twrit.dev/m1/proto/cmd/proto\n\tmod\twrit.dev/m1/proto\t(devel)\t\n\tdep\tgithub.com/mattn/go-sqlite3\tv1.14.52\th1:wVbm2Qnf4OXkqhBTSPuCRZDRnxfbVrrmiCEroVdog8U=\n\tbuild\t-buildmode=exe\n\tbuild\t-compiler=gc\n\tbuild\t-tags=libsqlite3,sqlite_omit_load_extension\n\tbuild\t-trimpath=true\n\tbuild\tCGO_ENABLED=1\n\tbuild\tGOARCH=amd64\n\tbuild\tGOOS=linux\n\tbuild\tGOAMD64=v1\n\tbuild\tvcs=git\n\tbuild\tvcs.revision=bbdd092e7499c1b81ff31e6d971b630d090accfe\n\tbuild\tvcs.time=2026-11-11T19:14:36Z\n\tbuild\tvcs.modified=true",
+  "go_build": "go build -trimpath -tags 'libsqlite3 sqlite_omit_load_extension' -o proto ./cmd/proto (m1/go)",
+  "go_env": "linux\namd64\nv1\n1\n\nlocal",
+  "go_version": "go version go1.27.3 linux/amd64",
+  "python": "3.12.3",
+  "rust_build": "cargo build --release --locked (m1/rust)",
+  "rust_env": {
+   "CARGO_ENCODED_RUSTFLAGS": null,
+   "CARGO_PROFILE_RELEASE_OPT_LEVEL": null,
+   "RUSTFLAGS": null
+  },
+  "rust_profile_release": "[profile.release]\ndebug = false\n",
+  "rustc_vV": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1",
+  "time_v": true
+ },
+ "valid_for_comparison": true,
+ "workloads": {
+  "A": {
+   "command": "decide-batch",
+   "decisions_per_run": 10000,
+   "digest": "sha256:9ed22957e59a8d1b669a27d2c06f36e3268c8c7c3b419e551ade2096a5ac65c6",
+   "measurements": {
+    "go": {
+     "batch_wall_s_incl_start_and_warmup": {
+      "max": 0.46588341000000355,
+      "mean": 0.45621536239997906,
+      "min": 0.4483667189999778,
+      "n": 10,
+      "p50": 0.45602186499996833,
+      "p95": 0.46588341000000355,
+      "p99": 0.46588341000000355,
+      "stdev": 0.00536820935109928
+     },
+     "kernel_decision_ns": {
+      "max": 814792,
+      "mean": 26030.69648,
+      "min": 3597,
+      "n": 100000,
+      "p50": 22261,
+      "p95": 39995,
+      "p99": 96100,
+      "stdev": 15043.049497727432
+     },
+     "kernel_p50_run_to_run": {
+      "cv": 0.011513216980594357,
+      "mean": 22227.7,
+      "n_runs": 10,
+      "values": [
+       22232,
+       21991,
+       22072,
+       22222,
+       21991,
+       22042,
+       22863,
+       22292,
+       22241,
+       22331
+      ],
+      "variance": 65491.12222222222
+     },
+     "peak_rss_kb": 12368,
+     "throughput_per_sec": 24111.41953250565
+    },
+    "rust": {
+     "batch_wall_s_incl_start_and_warmup": {
+      "max": 0.3491723810000167,
+      "mean": 0.3349110478000057,
+      "min": 0.3246661350000295,
+      "n": 10,
+      "p50": 0.3325646289999895,
+      "p95": 0.3491723810000167,
+      "p99": 0.3491723810000167,
+      "stdev": 0.007540788068268371
+     },
+     "kernel_decision_ns": {
+      "max": 339979,
+      "mean": 13193.35368,
+      "min": 2295,
+      "n": 100000,
+      "p50": 12975,
+      "p95": 16290,
+      "p99": 20238,
+      "stdev": 4555.609546020578
+     },
+     "kernel_p50_run_to_run": {
+      "cv": 0.013895291711233852,
+      "mean": 12979.6,
+      "n_runs": 10,
+      "values": [
+       13325,
+       13095,
+       12975,
+       13015,
+       12754,
+       12744,
+       12964,
+       12804,
+       12995,
+       13125
+      ],
+      "variance": 32528.044444444444
+     },
+     "peak_rss_kb": 2916,
+     "throughput_per_sec": 32844.54207246314
+    }
+   },
+   "meta": {
+    "base": "golden-decisions (26)",
+    "generator": "gen_a",
+    "varied": {
+     "resource": 4786,
+     "tenant": 1913
+    }
+   },
+   "method": "kernel_decision_ns: per-decision time inside the prototype (bench-decide), excluding JSON parsing, encoding and I/O; batch wall: process launch to exit over warm-up plus measured lines",
+   "runs": 10,
+   "seed": 20261121,
+   "warmup": 1000,
+   "warmup_seed": 20261122
+  },
+  "B": {
+   "availability": {
+    "go": [
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 0,
+      "successful": 548
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 1,
+      "successful": 549
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 2,
+      "successful": 560
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 3,
+      "successful": 555
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 4,
+      "successful": 551
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 5,
+      "successful": 561
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 6,
+      "successful": 555
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 7,
+      "successful": 557
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 8,
+      "successful": 558
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 9,
+      "successful": 561
+     }
+    ],
+    "rust": [
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 0,
+      "successful": 562
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 1,
+      "successful": 558
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 2,
+      "successful": 553
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 3,
+      "successful": 555
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 4,
+      "successful": 559
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 5,
+      "successful": 551
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 6,
+      "successful": 554
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 7,
+      "successful": 551
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 8,
+      "successful": 559
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 9,
+      "successful": 565
+     }
+    ]
+   },
+   "command": "bench-broker-scenario",
+   "digest": "sha256:b450ca2b1950c9b9f02659437b1bb79a63de8560783472fda1f34e9ba24da44c",
+   "measurements": {
+    "go": {
+     "batch_wall_s": {
+      "max": 5.662236442000051,
+      "mean": 5.460450876200002,
+      "min": 5.25757950000002,
+      "n": 10,
+      "p50": 5.460259489000009,
+      "p95": 5.662236442000051,
+      "p99": 5.662236442000051,
+      "stdev": 0.12330907802046051
+     },
+     "broker_timing_ns": {
+      "concurrent.op.execute.decide_ns": {
+       "max": 1779885,
+       "mean": 37638.0879,
+       "min": 3277,
+       "n": 10000,
+       "p50": 16010,
+       "p95": 165662,
+       "p99": 256182,
+       "stdev": 62839.29161437001
+      },
+      "concurrent.op.execute.key_lock_wait_ns": {
+       "max": 37481843,
+       "mean": 2913763.9023,
+       "min": 140,
+       "n": 10000,
+       "p50": 2233167,
+       "p95": 10494112,
+       "p99": 20497533,
+       "stdev": 4243820.433366646
+      },
+      "concurrent.op.execute.total_ns": {
+       "max": 232859988,
+       "mean": 17888931.1379,
+       "min": 542990,
+       "n": 10000,
+       "p50": 4383478,
+       "p95": 106042347,
+       "p99": 181366492,
+       "stdev": 35104440.40494026
+      },
+      "concurrent.op.execute.validate_ns": {
+       "max": 1036057,
+       "mean": 40906.8897,
+       "min": 4058,
+       "n": 10000,
+       "p50": 16300,
+       "p95": 175430,
+       "p99": 301126,
+       "stdev": 63970.842498647246
+      },
+      "concurrent.ready_ns": {
+       "max": 3138940,
+       "mean": 995515.175,
+       "min": 713050,
+       "n": 1000,
+       "p50": 915230,
+       "p95": 1496482,
+       "p99": 2431860,
+       "stdev": 274246.2999842029
+      },
+      "concurrent.start_skew_ns": {
+       "max": 1090660,
+       "mean": 67768.374,
+       "min": 7454,
+       "n": 1000,
+       "p50": 53461,
+       "p95": 116509,
+       "p99": 182202,
+       "stdev": 55560.99255405465
+      },
+      "concurrent.total_ns": {
+       "max": 234092395,
+       "mean": 48568629.07,
+       "min": 3146093,
+       "n": 1000,
+       "p50": 12312921,
+       "p95": 183787752,
+       "p99": 186097143,
+       "stdev": 68278832.69992135
+      },
+      "concurrent.tx.adapter.begin_ns": {
+       "max": 229598638,
+       "mean": 674107.9741112828,
+       "min": 6472,
+       "n": 2588,
+       "p50": 8887,
+       "p95": 14196,
+       "p99": 3129953,
+       "stdev": 10367361.277249208
+      },
+      "concurrent.tx.adapter.body_ns": {
+       "max": 432052,
+       "mean": 46652.84350850077,
+       "min": 24866,
+       "n": 2588,
+       "p50": 42691,
+       "p95": 65173,
+       "p99": 152387,
+       "stdev": 27319.925364993753
+      },
+      "concurrent.tx.adapter.end_ns": {
+       "max": 1851019,
+       "mean": 481815.98956723337,
+       "min": 404220,
+       "n": 2588,
+       "p50": 467659,
+       "p95": 564551,
+       "p99": 701699,
+       "stdev": 79545.53586740389
+      },
+      "concurrent.tx.audit.begin_ns": {
+       "max": 180068672,
+       "mean": 67774.37648738695,
+       "min": 2284,
+       "n": 4202,
+       "p50": 4067,
+       "p95": 8075,
+       "p99": 1065963,
+       "stdev": 2790722.476032055
+      },
+      "concurrent.tx.audit.body_ns": {
+       "max": 204664,
+       "mean": 14309.229414564494,
+       "min": 7053,
+       "n": 4202,
+       "p50": 11802,
+       "p95": 26280,
+       "p99": 49412,
+       "stdev": 10950.263116805276
+      },
+      "concurrent.tx.audit.end_ns": {
+       "max": 2779494,
+       "mean": 510686.6527843884,
+       "min": 397317,
+       "n": 4202,
+       "p50": 471967,
+       "p95": 718871,
+       "p99": 913256,
+       "stdev": 128827.45818068252
+      },
+      "concurrent.tx.dispatch.begin_ns": {
+       "max": 178742580,
+       "mean": 141447.7932766615,
+       "min": 6692,
+       "n": 2588,
+       "p50": 10309,
+       "p95": 15549,
+       "p99": 35085,
+       "stdev": 4336487.696832999
+      },
+      "concurrent.tx.dispatch.body_ns": {
+       "max": 758716,
+       "mean": 63708.04327666151,
+       "min": 38803,
+       "n": 2588,
+       "p50": 59732,
+       "p95": 88537,
+       "p99": 130154,
+       "stdev": 33139.13548425278
+      },
+      "concurrent.tx.dispatch.end_ns": {
+       "max": 2708631,
+       "mean": 495119.256568779,
+       "min": 408688,
+       "n": 2588,
+       "p50": 476796,
+       "p95": 606319,
+       "p99": 766951,
+       "stdev": 97676.97059495402
+      },
+      "concurrent.tx.observe.begin_ns": {
+       "max": 3142566,
+       "mean": 10139.81407249467,
+       "min": 5831,
+       "n": 2345,
+       "p50": 7644,
+       "p95": 12703,
+       "p99": 19727,
+       "stdev": 64973.75558109469
+      },
+      "concurrent.tx.observe.body_ns": {
+       "max": 480603,
+       "mean": 32580.71855010661,
+       "min": 21631,
+       "n": 2345,
+       "p50": 28183,
+       "p95": 46778,
+       "p99": 119334,
+       "stdev": 24627.167451711593
+      },
+      "concurrent.tx.observe.end_ns": {
+       "max": 2716536,
+       "mean": 468797.86396588484,
+       "min": 399801,
+       "n": 2345,
+       "p50": 456307,
+       "p95": 534855,
+       "p99": 725013,
+       "stdev": 84545.34497587832
+      },
+      "concurrent.tx.reserve.begin_ns": {
+       "max": 231114701,
+       "mean": 13785360.4977,
+       "min": 3246,
+       "n": 10000,
+       "p50": 9768,
+       "p95": 103752804,
+       "p99": 178956782,
+       "stdev": 35258503.82799162
+      },
+      "concurrent.tx.reserve.body_ns": {
+       "max": 1981825,
+       "mean": 73380.311,
+       "min": 6582,
+       "n": 10000,
+       "p50": 37801,
+       "p95": 233148,
+       "p99": 412335,
+       "stdev": 91307.19677363195
+      },
+      "concurrent.tx.reserve.end_ns": {
+       "max": 1715835,
+       "mean": 153654.4504,
+       "min": 2154,
+       "n": 10000,
+       "p50": 4629,
+       "p95": 643760,
+       "p99": 930569,
+       "stdev": 260327.61318912255
+      },
+      "concurrent.worker.release_delay_ns": {
+       "max": 1100839,
+       "mean": 37898.255,
+       "min": 751,
+       "n": 10000,
+       "p50": 29616,
+       "p95": 92634,
+       "p99": 147678,
+       "stdev": 48514.365461275345
+      },
+      "concurrent.worker.setup_ns": {
+       "max": 3080219,
+       "mean": 782746.686,
+       "min": 181080,
+       "n": 10000,
+       "p50": 756592,
+       "p95": 1067366,
+       "p99": 1718680,
+       "stdev": 227072.6572237804
+      },
+      "line.final_ns": {
+       "max": 667274,
+       "mean": 88844.713,
+       "min": 43321,
+       "n": 1000,
+       "p50": 75892,
+       "p95": 176782,
+       "p99": 234150,
+       "stdev": 53643.487279894274
+      },
+      "line.open_ns": {
+       "max": 5298799,
+       "mean": 2372559.942,
+       "min": 2078596,
+       "n": 1000,
+       "p50": 2319370,
+       "p95": 2782399,
+       "p99": 3760728,
+       "stdev": 281252.8509096956
+      },
+      "line.parse_ns": {
+       "max": 1678485,
+       "mean": 99914.332,
+       "min": 48131,
+       "n": 1000,
+       "p50": 79259,
+       "p95": 252004,
+       "p99": 355909,
+       "stdev": 79576.02298350708
+      },
+      "line.run_ns": {
+       "max": 240379911,
+       "mean": 54366898.834,
+       "min": 8013671,
+       "n": 1000,
+       "p50": 18607932,
+       "p95": 189556414,
+       "p99": 192468858,
+       "stdev": 68271225.7806708
+      },
+      "op.approve.decide_ns": {
+       "max": 251062,
+       "mean": 12899.00359116022,
+       "min": 7414,
+       "n": 3620,
+       "p50": 11272,
+       "p95": 19837,
+       "p99": 34996,
+       "stdev": 9198.623149596233
+      },
+      "op.approve.total_ns": {
+       "max": 4285194,
+       "mean": 663262.9571823204,
+       "min": 431751,
+       "n": 3620,
+       "p50": 510058,
+       "p95": 1170980,
+       "p99": 1474491,
+       "stdev": 301967.4154600284
+      },
+      "op.approve.validate_ns": {
+       "max": 6883,
+       "mean": 385.1414364640884,
+       "min": 150,
+       "n": 3620,
+       "p50": 321,
+       "p95": 661,
+       "p99": 1273,
+       "stdev": 289.63624010914475
+      },
+      "process.overhead_ns": {
+       "max": 15184578,
+       "mean": 13769559.1,
+       "min": 12029094,
+       "n": 10,
+       "p50": 13586232,
+       "p95": 15184578,
+       "p99": 15184578,
+       "stdev": 1103533.4512919497
+      },
+      "tx.approve.begin_ns": {
+       "max": 1059010,
+       "mean": 35570.67458563536,
+       "min": 6081,
+       "n": 3620,
+       "p50": 8877,
+       "p95": 120065,
+       "p99": 160762,
+       "stdev": 56287.38788970302
+      },
+      "tx.approve.body_ns": {
+       "max": 456658,
+       "mean": 24655.491712707182,
+       "min": 14187,
+       "n": 3620,
+       "p50": 21751,
+       "p95": 39244,
+       "p99": 63059,
+       "stdev": 15621.35643210524
+      },
+      "tx.approve.end_ns": {
+       "max": 4106218,
+       "mean": 580507.5408839779,
+       "min": 387879,
+       "n": 3620,
+       "p50": 458432,
+       "p95": 984060,
+       "p99": 1170551,
+       "stdev": 246222.88216522764
+      }
+     },
+     "peak_rss_kb": 22468,
+     "sessions_per_sec": 18.313506021244766,
+     "successful_operations_per_sec": 101.73152594801468
+    },
+    "rust": {
+     "batch_wall_s": {
+      "max": 5.681153107,
+      "mean": 5.527419657800015,
+      "min": 5.329645711000012,
+      "n": 10,
+      "p50": 5.508227835000014,
+      "p95": 5.681153107,
+      "p99": 5.681153107,
+      "stdev": 0.11145048331046323
+     },
+     "broker_timing_ns": {
+      "concurrent.op.execute.decide_ns": {
+       "max": 101972,
+       "mean": 10114.3699,
+       "min": 2906,
+       "n": 10000,
+       "p50": 10009,
+       "p95": 14628,
+       "p99": 20498,
+       "stdev": 4538.397270981565
+      },
+      "concurrent.op.execute.key_lock_wait_ns": {
+       "max": 36624262,
+       "mean": 2982521.3054,
+       "min": 140,
+       "n": 10000,
+       "p50": 2032049,
+       "p95": 10431555,
+       "p99": 20482856,
+       "stdev": 4418682.544527898
+      },
+      "concurrent.op.execute.total_ns": {
+       "max": 206853261,
+       "mean": 17990290.648,
+       "min": 502103,
+       "n": 10000,
+       "p50": 5278340,
+       "p95": 105553007,
+       "p99": 181111371,
+       "stdev": 34646897.50164697
+      },
+      "concurrent.op.execute.validate_ns": {
+       "max": 53300,
+       "mean": 5586.5035,
+       "min": 2034,
+       "n": 10000,
+       "p50": 5150,
+       "p95": 7043,
+       "p99": 13706,
+       "stdev": 2487.6438055232234
+      },
+      "concurrent.ready_ns": {
+       "max": 2461025,
+       "mean": 787970.381,
+       "min": 549202,
+       "n": 1000,
+       "p50": 705586,
+       "p95": 1399289,
+       "p99": 1649871,
+       "stdev": 242654.24755936675
+      },
+      "concurrent.start_skew_ns": {
+       "max": 65914,
+       "mean": 6098.528,
+       "min": 1563,
+       "n": 1000,
+       "p50": 4748,
+       "p95": 13866,
+       "p99": 32751,
+       "stdev": 5291.172634592928
+      },
+      "concurrent.total_ns": {
+       "max": 209296794,
+       "mean": 48899993.823,
+       "min": 2906603,
+       "n": 1000,
+       "p50": 12916646,
+       "p95": 183062880,
+       "p99": 184785056,
+       "stdev": 67319272.57309751
+      },
+      "concurrent.tx.adapter.begin_ns": {
+       "max": 178780531,
+       "mean": 286248.91618385474,
+       "min": 2314,
+       "n": 2589,
+       "p50": 5350,
+       "p95": 8136,
+       "p99": 1075390,
+       "stdev": 6183644.989426398
+      },
+      "concurrent.tx.adapter.body_ns": {
+       "max": 247034,
+       "mean": 31960.396292004636,
+       "min": 16842,
+       "n": 2589,
+       "p50": 30728,
+       "p95": 46157,
+       "p99": 64781,
+       "stdev": 12940.375491187971
+      },
+      "concurrent.tx.adapter.end_ns": {
+       "max": 11340604,
+       "mean": 480696.640787949,
+       "min": 388971,
+       "n": 2589,
+       "p50": 463091,
+       "p95": 568097,
+       "p99": 673465,
+       "stdev": 228499.24115186202
+      },
+      "concurrent.tx.audit.begin_ns": {
+       "max": 8204439,
+       "mean": 33020.84044082415,
+       "min": 1563,
+       "n": 4174,
+       "p50": 3075,
+       "p95": 4338,
+       "p99": 1069760,
+       "stdev": 291699.37518102874
+      },
+      "concurrent.tx.audit.body_ns": {
+       "max": 238949,
+       "mean": 13156.016530905606,
+       "min": 7234,
+       "n": 4174,
+       "p50": 11822,
+       "p95": 19837,
+       "p99": 28364,
+       "stdev": 7250.358358147374
+      },
+      "concurrent.tx.audit.end_ns": {
+       "max": 2384221,
+       "mean": 517284.6444657403,
+       "min": 410101,
+       "n": 4174,
+       "p50": 483549,
+       "p95": 704103,
+       "p99": 1060273,
+       "stdev": 122896.24929152186
+      },
+      "concurrent.tx.dispatch.begin_ns": {
+       "max": 18255800,
+       "mean": 16428.65701042874,
+       "min": 4038,
+       "n": 2589,
+       "p50": 5861,
+       "p95": 8056,
+       "p99": 14658,
+       "stdev": 393359.1166135957
+      },
+      "concurrent.tx.dispatch.body_ns": {
+       "max": 401545,
+       "mean": 44811.49130938586,
+       "min": 28013,
+       "n": 2589,
+       "p50": 42620,
+       "p95": 61004,
+       "p99": 97323,
+       "stdev": 20286.74261051745
+      },
+      "concurrent.tx.dispatch.end_ns": {
+       "max": 2711256,
+       "mean": 491544.56353804556,
+       "min": 402977,
+       "n": 2589,
+       "p50": 468551,
+       "p95": 624234,
+       "p99": 773012,
+       "stdev": 91076.29649824208
+      },
+      "concurrent.tx.observe.begin_ns": {
+       "max": 3139280,
+       "mean": 6264.029184549357,
+       "min": 3537,
+       "n": 2330,
+       "p50": 4378,
+       "p95": 7233,
+       "p99": 9338,
+       "stdev": 64987.7425138262
+      },
+      "concurrent.tx.observe.body_ns": {
+       "max": 294333,
+       "mean": 25148.661373390558,
+       "min": 16391,
+       "n": 2330,
+       "p50": 23414,
+       "p95": 36538,
+       "p99": 48270,
+       "stdev": 12959.481585972786
+      },
+      "concurrent.tx.observe.end_ns": {
+       "max": 15455477,
+       "mean": 469481.33004291845,
+       "min": 374674,
+       "n": 2330,
+       "p50": 452160,
+       "p95": 534945,
+       "p99": 661904,
+       "stdev": 321528.6529177089
+      },
+      "concurrent.tx.reserve.begin_ns": {
+       "max": 181164952,
+       "mean": 14083690.4631,
+       "min": 3136,
+       "n": 10000,
+       "p50": 1064791,
+       "p95": 103684586,
+       "p99": 178904144,
+       "stdev": 35102163.163054764
+      },
+      "concurrent.tx.reserve.body_ns": {
+       "max": 1202540,
+       "mean": 40003.0557,
+       "min": 7444,
+       "n": 10000,
+       "p50": 26019,
+       "p95": 100679,
+       "p99": 147347,
+       "stdev": 39071.63808964629
+      },
+      "concurrent.tx.reserve.end_ns": {
+       "max": 3164457,
+       "mean": 149914.804,
+       "min": 2314,
+       "n": 10000,
+       "p50": 4378,
+       "p95": 614635,
+       "p99": 926612,
+       "stdev": 259790.96130559006
+      },
+      "concurrent.worker.release_delay_ns": {
+       "max": 101722,
+       "mean": 7921.7327,
+       "min": 450,
+       "n": 10000,
+       "p50": 7404,
+       "p95": 11211,
+       "p99": 20608,
+       "stdev": 4080.5889464715406
+      },
+      "concurrent.worker.setup_ns": {
+       "max": 2353623,
+       "mean": 556854.9387,
+       "min": 107602,
+       "n": 10000,
+       "p50": 532491,
+       "p95": 736955,
+       "p99": 1421371,
+       "stdev": 169474.7082291853
+      },
+      "line.final_ns": {
+       "max": 458051,
+       "mean": 79308.956,
+       "min": 37821,
+       "n": 1000,
+       "p50": 66465,
+       "p95": 179568,
+       "p99": 219482,
+       "stdev": 40838.363083397395
+      },
+      "line.open_ns": {
+       "max": 9552804,
+       "mean": 2795019.971,
+       "min": 2317726,
+       "n": 1000,
+       "p50": 2717707,
+       "p95": 3418155,
+       "p99": 4318776,
+       "stdev": 400181.4176649317
+      },
+      "line.parse_ns": {
+       "max": 872821,
+       "mean": 115499.119,
+       "min": 60243,
+       "n": 1000,
+       "p50": 110949,
+       "p95": 160632,
+       "p99": 185709,
+       "stdev": 39259.04212271655
+      },
+      "line.run_ns": {
+       "max": 234115569,
+       "mean": 55072827.565,
+       "min": 7643706,
+       "n": 1000,
+       "p50": 19701186,
+       "p95": 189464251,
+       "p99": 191409597,
+       "stdev": 67411659.00290036
+      },
+      "op.approve.decide_ns": {
+       "max": 113273,
+       "mean": 8657.582044198894,
+       "min": 5049,
+       "n": 3620,
+       "p50": 7845,
+       "p95": 13676,
+       "p99": 18715,
+       "stdev": 5368.396781230642
+      },
+      "op.approve.total_ns": {
+       "max": 2704112,
+       "mean": 631479.0400552487,
+       "min": 413116,
+       "n": 3620,
+       "p50": 482266,
+       "p95": 1130034,
+       "p99": 1320090,
+       "stdev": 280229.60060279694
+      },
+      "op.approve.validate_ns": {
+       "max": 1623,
+       "mean": 175.58591160220993,
+       "min": 40,
+       "n": 3620,
+       "p50": 150,
+       "p95": 340,
+       "p99": 601,
+       "stdev": 122.52021987344331
+      },
+      "process.overhead_ns": {
+       "max": 9105903,
+       "mean": 8586989.3,
+       "min": 7972225,
+       "n": 10,
+       "p50": 8541942,
+       "p95": 9105903,
+       "p99": 9105903,
+       "stdev": 353048.2378945624
+      },
+      "tx.approve.begin_ns": {
+       "max": 881266,
+       "mean": 30356.60580110497,
+       "min": 3586,
+       "n": 3620,
+       "p50": 5029,
+       "p95": 116559,
+       "p99": 140685,
+       "stdev": 47360.73936802112
+      },
+      "tx.approve.body_ns": {
+       "max": 201148,
+       "mean": 17217.6091160221,
+       "min": 9027,
+       "n": 3620,
+       "p50": 14788,
+       "p95": 27992,
+       "p99": 41248,
+       "stdev": 10700.249379918967
+      },
+      "tx.approve.end_ns": {
+       "max": 2676391,
+       "mean": 568567.5958563536,
+       "min": 386707,
+       "n": 3620,
+       "p50": 448513,
+       "p95": 968871,
+       "p99": 1084107,
+       "stdev": 228118.02679441014
+      }
+     },
+     "peak_rss_kb": 7472,
+     "sessions_per_sec": 18.091624336662232,
+     "successful_operations_per_sec": 100.71607268219866
+    }
+   },
+   "meta": {
+    "concurrency_profile": "primary",
+    "concurrent_per_session": 10,
+    "generator": "c_broker.gen_concurrent",
+    "ledger": "sqlite (file-backed, D-023)",
+    "sessions": 100
+   },
+   "method": "one broker-scenario per session, each ending in one concurrent group of 10 executes (in-process threads); checked against every permitted serialization with D-026 evidence; successful throughput counts only successful operations; refusals are reported under availability, never as work",
+   "runs": 10,
+   "seed": 20261121
+  },
+  "B-cold": {
+   "availability": {
+    "go": [
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 0,
+      "successful": 544
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 1,
+      "successful": 564
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 2,
+      "successful": 559
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 3,
+      "successful": 547
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 4,
+      "successful": 544
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 5,
+      "successful": 554
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 6,
+      "successful": 542
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 7,
+      "successful": 544
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 8,
+      "successful": 559
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 9,
+      "successful": 548
+     }
+    ],
+    "rust": [
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 0,
+      "successful": 556
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 1,
+      "successful": 563
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 2,
+      "successful": 552
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 3,
+      "successful": 563
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 4,
+      "successful": 552
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 5,
+      "successful": 553
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 6,
+      "successful": 557
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 7,
+      "successful": 545
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 8,
+      "successful": 564
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 9,
+      "successful": 564
+     }
+    ]
+   },
+   "command": "bench-broker-scenario",
+   "digest": "sha256:b450ca2b1950c9b9f02659437b1bb79a63de8560783472fda1f34e9ba24da44c",
+   "measurements": {
+    "go": {
+     "batch_wall_s": {
+      "max": 5.586282346999951,
+      "mean": 5.350316145800003,
+      "min": 5.178718941,
+      "n": 10,
+      "p50": 5.292086029000018,
+      "p95": 5.586282346999951,
+      "p99": 5.586282346999951,
+      "stdev": 0.1301893851366093
+     },
+     "broker_timing_ns": {
+      "concurrent.op.execute.decide_ns": {
+       "max": 408779,
+       "mean": 24938.6675,
+       "min": 4328,
+       "n": 10000,
+       "p50": 14217,
+       "p95": 103634,
+       "p99": 181421,
+       "stdev": 34611.753727052754
+      },
+      "concurrent.op.execute.key_lock_wait_ns": {
+       "max": 35987308,
+       "mean": 2607528.1886,
+       "min": 120,
+       "n": 10000,
+       "p50": 2005768,
+       "p95": 10250254,
+       "p99": 19570942,
+       "stdev": 3667767.4070574255
+      },
+      "concurrent.op.execute.total_ns": {
+       "max": 232973662,
+       "mean": 18166672.3959,
+       "min": 910461,
+       "n": 10000,
+       "p50": 4978055,
+       "p95": 106660439,
+       "p99": 181998397,
+       "stdev": 34780282.9121316
+      },
+      "concurrent.op.execute.validate_ns": {
+       "max": 485052,
+       "mean": 26222.4328,
+       "min": 4849,
+       "n": 10000,
+       "p50": 14227,
+       "p95": 107099,
+       "p99": 195634,
+       "stdev": 36763.311760735676
+      },
+      "concurrent.ready_ns": {
+       "max": 211143,
+       "mean": 16805.208,
+       "min": 7815,
+       "n": 1000,
+       "p50": 14337,
+       "p95": 26109,
+       "p99": 83505,
+       "stdev": 13030.590905714449
+      },
+      "concurrent.start_skew_ns": {
+       "max": 945653,
+       "mean": 128249.582,
+       "min": 45194,
+       "n": 1000,
+       "p50": 113323,
+       "p95": 224637,
+       "p99": 634420,
+       "stdev": 85724.60141042508
+      },
+      "concurrent.total_ns": {
+       "max": 233430121,
+       "mean": 47497022.595,
+       "min": 2793246,
+       "n": 1000,
+       "p50": 11822620,
+       "p95": 183037192,
+       "p99": 184781829,
+       "stdev": 67646499.08020383
+      },
+      "concurrent.tx.adapter.begin_ns": {
+       "max": 178734315,
+       "mean": 664172.9969004262,
+       "min": 5119,
+       "n": 2581,
+       "p50": 8986,
+       "p95": 14748,
+       "p99": 3131315,
+       "stdev": 9697467.719781823
+      },
+      "concurrent.tx.adapter.body_ns": {
+       "max": 1012000,
+       "mean": 47317.58000774893,
+       "min": 24886,
+       "n": 2581,
+       "p50": 42710,
+       "p95": 66184,
+       "p99": 150279,
+       "stdev": 35207.616135793665
+      },
+      "concurrent.tx.adapter.end_ns": {
+       "max": 2775398,
+       "mean": 480544.4664858582,
+       "min": 399751,
+       "n": 2581,
+       "p50": 465948,
+       "p95": 565753,
+       "p99": 700016,
+       "stdev": 90697.31926693679
+      },
+      "concurrent.tx.audit.begin_ns": {
+       "max": 18246571,
+       "mean": 29017.093506493507,
+       "min": 2344,
+       "n": 4235,
+       "p50": 3887,
+       "p95": 7675,
+       "p99": 1066572,
+       "stdev": 377460.07461963873
+      },
+      "concurrent.tx.audit.body_ns": {
+       "max": 210261,
+       "mean": 13535.159858323495,
+       "min": 7173,
+       "n": 4235,
+       "p50": 11251,
+       "p95": 23594,
+       "p99": 41347,
+       "stdev": 10684.371251830757
+      },
+      "concurrent.tx.audit.end_ns": {
+       "max": 2905885,
+       "mean": 500530.0831168831,
+       "min": 395657,
+       "n": 4235,
+       "p50": 468230,
+       "p95": 691275,
+       "p99": 888030,
+       "stdev": 113127.87481964155
+      },
+      "concurrent.tx.dispatch.begin_ns": {
+       "max": 228834934,
+       "mean": 265508.8159628051,
+       "min": 5310,
+       "n": 2581,
+       "p50": 10210,
+       "p95": 15709,
+       "p99": 53950,
+       "stdev": 6789910.279118958
+      },
+      "concurrent.tx.dispatch.body_ns": {
+       "max": 611177,
+       "mean": 64591.957380860134,
+       "min": 38242,
+       "n": 2581,
+       "p50": 59962,
+       "p95": 87302,
+       "p99": 172120,
+       "stdev": 38289.8314473288
+      },
+      "concurrent.tx.dispatch.end_ns": {
+       "max": 2686018,
+       "mean": 496876.40216970164,
+       "min": 394676,
+       "n": 2581,
+       "p50": 477938,
+       "p95": 610313,
+       "p99": 772234,
+       "stdev": 97712.80932178763
+      },
+      "concurrent.tx.observe.begin_ns": {
+       "max": 3145552,
+       "mean": 11743.162860835846,
+       "min": 6032,
+       "n": 2321,
+       "p50": 7554,
+       "p95": 12354,
+       "p99": 18705,
+       "stdev": 94823.14936067518
+      },
+      "concurrent.tx.observe.body_ns": {
+       "max": 286564,
+       "mean": 30783.20465316674,
+       "min": 21701,
+       "n": 2321,
+       "p50": 27652,
+       "p95": 43741,
+       "p99": 65282,
+       "stdev": 15774.940617022907
+      },
+      "concurrent.tx.observe.end_ns": {
+       "max": 1380224,
+       "mean": 463754.2576475657,
+       "min": 392557,
+       "n": 2321,
+       "p50": 455547,
+       "p95": 530838,
+       "p99": 627639,
+       "stdev": 61650.054396045045
+      },
+      "concurrent.tx.reserve.begin_ns": {
+       "max": 230229354,
+       "mean": 13589605.3642,
+       "min": 3136,
+       "n": 10000,
+       "p50": 9017,
+       "p95": 103650639,
+       "p99": 178843200,
+       "stdev": 34844677.9235597
+      },
+      "concurrent.tx.reserve.body_ns": {
+       "max": 1421421,
+       "mean": 68618.7873,
+       "min": 6652,
+       "n": 10000,
+       "p50": 35866,
+       "p95": 207866,
+       "p99": 379363,
+       "stdev": 83885.030836911
+      },
+      "concurrent.tx.reserve.end_ns": {
+       "max": 3947256,
+       "mean": 154181.5618,
+       "min": 2164,
+       "n": 10000,
+       "p50": 4428,
+       "p95": 634140,
+       "p99": 946244,
+       "stdev": 269999.7711810633
+      },
+      "concurrent.worker.release_delay_ns": {
+       "max": 951824,
+       "mean": 61104.0905,
+       "min": 270,
+       "n": 10000,
+       "p50": 52068,
+       "p95": 157383,
+       "p99": 273768,
+       "stdev": 63995.523199313444
+      },
+      "concurrent.worker.setup_ns": {
+       "max": 3841210,
+       "mean": 806934.2122,
+       "min": 132045,
+       "n": 10000,
+       "p50": 787686,
+       "p95": 1115934,
+       "p99": 1673936,
+       "stdev": 237727.69448211108
+      },
+      "line.final_ns": {
+       "max": 570950,
+       "mean": 85353.498,
+       "min": 42619,
+       "n": 1000,
+       "p50": 74921,
+       "p95": 164467,
+       "p99": 230629,
+       "stdev": 41530.32803157719
+      },
+      "line.open_ns": {
+       "max": 8332110,
+       "mean": 2363152.166,
+       "min": 2041233,
+       "n": 1000,
+       "p50": 2310974,
+       "p95": 2699310,
+       "p99": 3493688,
+       "stdev": 305920.4851195752
+      },
+      "line.parse_ns": {
+       "max": 749163,
+       "mean": 113978.814,
+       "min": 47258,
+       "n": 1000,
+       "p50": 82594,
+       "p95": 292826,
+       "p99": 359399,
+       "stdev": 79334.38620067116
+      },
+      "line.run_ns": {
+       "max": 240743325,
+       "mean": 53242434.908,
+       "min": 7485104,
+       "n": 1000,
+       "p50": 17768945,
+       "p95": 189193934,
+       "p99": 191133400,
+       "stdev": 67698795.39979182
+      },
+      "op.approve.decide_ns": {
+       "max": 222037,
+       "mean": 12618.314917127072,
+       "min": 7103,
+       "n": 3620,
+       "p50": 11070,
+       "p95": 19647,
+       "p99": 35356,
+       "stdev": 8561.201334823516
+      },
+      "op.approve.total_ns": {
+       "max": 3342688,
+       "mean": 654640.2165745856,
+       "min": 426544,
+       "n": 3620,
+       "p50": 505381,
+       "p95": 1163305,
+       "p99": 1357480,
+       "stdev": 287675.77640998014
+      },
+      "op.approve.validate_ns": {
+       "max": 7744,
+       "mean": 370.3223756906077,
+       "min": 150,
+       "n": 3620,
+       "p50": 320,
+       "p95": 611,
+       "p99": 1002,
+       "stdev": 277.66904207963023
+      },
+      "process.overhead_ns": {
+       "max": 16534418,
+       "mean": 14674773.2,
+       "min": 12788688,
+       "n": 10,
+       "p50": 14682673,
+       "p95": 16534418,
+       "p99": 16534418,
+       "stdev": 1388840.0512725078
+      },
+      "tx.approve.begin_ns": {
+       "max": 1047611,
+       "mean": 34933.08093922652,
+       "min": 6181,
+       "n": 3620,
+       "p50": 8736,
+       "p95": 118923,
+       "p99": 153275,
+       "stdev": 51870.05250677256
+      },
+      "tx.approve.body_ns": {
+       "max": 418590,
+       "mean": 24295.91546961326,
+       "min": 13906,
+       "n": 3620,
+       "p50": 21210,
+       "p95": 38231,
+       "p99": 68599,
+       "stdev": 14771.613198976444
+      },
+      "tx.approve.end_ns": {
+       "max": 3184553,
+       "mean": 573219.579558011,
+       "min": 386728,
+       "n": 3620,
+       "p50": 454525,
+       "p95": 977637,
+       "p99": 1081973,
+       "stdev": 231754.2080087714
+      }
+     },
+     "peak_rss_kb": 23800,
+     "sessions_per_sec": 18.690484314370842,
+     "successful_operations_per_sec": 102.89111615061148
+    },
+    "rust": {
+     "batch_wall_s": {
+      "max": 5.486490152999977,
+      "mean": 5.3382786167000065,
+      "min": 5.126083178000044,
+      "n": 10,
+      "p50": 5.282806580000056,
+      "p95": 5.486490152999977,
+      "p99": 5.486490152999977,
+      "stdev": 0.12646700261139057
+     },
+     "broker_timing_ns": {
+      "concurrent.op.execute.decide_ns": {
+       "max": 62538,
+       "mean": 9552.9654,
+       "min": 2595,
+       "n": 10000,
+       "p50": 9387,
+       "p95": 14698,
+       "p99": 18234,
+       "stdev": 3408.500590880196
+      },
+      "concurrent.op.execute.key_lock_wait_ns": {
+       "max": 35767101,
+       "mean": 2797779.1662,
+       "min": 120,
+       "n": 10000,
+       "p50": 1977721,
+       "p95": 10279134,
+       "p99": 19477651,
+       "stdev": 3855755.96909514
+      },
+      "concurrent.op.execute.total_ns": {
+       "max": 232174491,
+       "mean": 17942153.0663,
+       "min": 897126,
+       "n": 10000,
+       "p50": 5836079,
+       "p95": 105506555,
+       "p99": 181112596,
+       "stdev": 33662009.800353885
+      },
+      "concurrent.op.execute.validate_ns": {
+       "max": 27702,
+       "mean": 5313.2058,
+       "min": 2194,
+       "n": 10000,
+       "p50": 5110,
+       "p95": 7043,
+       "p99": 9558,
+       "stdev": 1339.874998926256
+      },
+      "concurrent.ready_ns": {
+       "max": 1208016,
+       "mean": 176348.431,
+       "min": 119051,
+       "n": 1000,
+       "p50": 156882,
+       "p95": 272688,
+       "p99": 387718,
+       "stdev": 80599.73937897813
+      },
+      "concurrent.start_skew_ns": {
+       "max": 168383,
+       "mean": 13478.28,
+       "min": 5710,
+       "n": 1000,
+       "p50": 9288,
+       "p95": 25758,
+       "p99": 74899,
+       "stdev": 13293.454263804568
+      },
+      "concurrent.total_ns": {
+       "max": 232662447,
+       "mean": 47134133.492,
+       "min": 2863255,
+       "n": 1000,
+       "p50": 12911577,
+       "p95": 182781741,
+       "p99": 184275138,
+       "stdev": 65285221.367670976
+      },
+      "concurrent.tx.adapter.begin_ns": {
+       "max": 178990616,
+       "mean": 428239.2893106119,
+       "min": 2174,
+       "n": 2582,
+       "p50": 5401,
+       "p95": 8225,
+       "p99": 3118611,
+       "stdev": 7941951.145497349
+      },
+      "concurrent.tx.adapter.body_ns": {
+       "max": 323401,
+       "mean": 32972.05228505035,
+       "min": 17332,
+       "n": 2582,
+       "p50": 31258,
+       "p95": 47319,
+       "p99": 78085,
+       "stdev": 17049.089962157905
+      },
+      "concurrent.tx.adapter.end_ns": {
+       "max": 1376667,
+       "mean": 475347.16692486446,
+       "min": 395938,
+       "n": 2582,
+       "p50": 463354,
+       "p95": 565021,
+       "p99": 678786,
+       "stdev": 66457.59187879864
+      },
+      "concurrent.tx.audit.begin_ns": {
+       "max": 103534594,
+       "mean": 87924.67136374493,
+       "min": 1412,
+       "n": 4187,
+       "p50": 3106,
+       "p95": 4608,
+       "p99": 1076646,
+       "stdev": 1758290.6793155782
+      },
+      "concurrent.tx.audit.body_ns": {
+       "max": 147237,
+       "mean": 13231.616431812754,
+       "min": 7284,
+       "n": 4187,
+       "p50": 11962,
+       "p95": 19667,
+       "p99": 32370,
+       "stdev": 7067.484033398886
+      },
+      "concurrent.tx.audit.end_ns": {
+       "max": 3068903,
+       "mean": 507897.67399092426,
+       "min": 394471,
+       "n": 4187,
+       "p50": 481325,
+       "p95": 661162,
+       "p99": 917666,
+       "stdev": 112402.79241812996
+      },
+      "concurrent.tx.dispatch.begin_ns": {
+       "max": 179446081,
+       "mean": 196082.40007745934,
+       "min": 3707,
+       "n": 2582,
+       "p50": 5971,
+       "p95": 8135,
+       "p99": 14598,
+       "stdev": 5589195.41405567
+      },
+      "concurrent.tx.dispatch.body_ns": {
+       "max": 476567,
+       "mean": 46368.46785437645,
+       "min": 27592,
+       "n": 2582,
+       "p50": 43521,
+       "p95": 62958,
+       "p99": 105035,
+       "stdev": 23488.579781523113
+      },
+      "concurrent.tx.dispatch.end_ns": {
+       "max": 3466745,
+       "mean": 494953.2087529047,
+       "min": 400443,
+       "n": 2582,
+       "p50": 470384,
+       "p95": 615367,
+       "p99": 881977,
+       "stdev": 127810.04469610308
+      },
+      "concurrent.tx.observe.begin_ns": {
+       "max": 57017,
+       "mean": 4929.333190761335,
+       "min": 3506,
+       "n": 2338,
+       "p50": 4448,
+       "p95": 7173,
+       "p99": 9278,
+       "stdev": 2139.4030125441964
+      },
+      "concurrent.tx.observe.body_ns": {
+       "max": 327812,
+       "mean": 25301.043199315653,
+       "min": 16912,
+       "n": 2338,
+       "p50": 23444,
+       "p95": 38452,
+       "p99": 52898,
+       "stdev": 11389.123708837951
+      },
+      "concurrent.tx.observe.end_ns": {
+       "max": 3201895,
+       "mean": 462855.6112061591,
+       "min": 381049,
+       "n": 2338,
+       "p50": 452803,
+       "p95": 529064,
+       "p99": 608363,
+       "stdev": 104721.41047307006
+      },
+      "concurrent.tx.reserve.begin_ns": {
+       "max": 228961202,
+       "mean": 13496921.0119,
+       "min": 2185,
+       "n": 10000,
+       "p50": 1064781,
+       "p95": 103583090,
+       "p99": 178803246,
+       "stdev": 33901124.629851356
+      },
+      "concurrent.tx.reserve.body_ns": {
+       "max": 739354,
+       "mean": 42772.4714,
+       "min": 6543,
+       "n": 10000,
+       "p50": 27511,
+       "p95": 115956,
+       "p99": 159006,
+       "stdev": 39358.06681607129
+      },
+      "concurrent.tx.reserve.end_ns": {
+       "max": 1860059,
+       "mean": 148193.1097,
+       "min": 2064,
+       "n": 10000,
+       "p50": 4338,
+       "p95": 604046,
+       "p99": 926784,
+       "stdev": 252746.80126547965
+      },
+      "concurrent.worker.release_delay_ns": {
+       "max": 209189,
+       "mean": 11399.3436,
+       "min": 511,
+       "n": 10000,
+       "p50": 8365,
+       "p95": 27191,
+       "p99": 34645,
+       "stdev": 8849.18376168468
+      },
+      "concurrent.worker.setup_ns": {
+       "max": 2730350,
+       "mean": 622712.6105,
+       "min": 236324,
+       "n": 10000,
+       "p50": 607038,
+       "p95": 788149,
+       "p99": 1448182,
+       "stdev": 176697.63580700386
+      },
+      "line.final_ns": {
+       "max": 524305,
+       "mean": 80090.012,
+       "min": 36749,
+       "n": 1000,
+       "p50": 66505,
+       "p95": 178773,
+       "p99": 225390,
+       "stdev": 40762.99644001437
+      },
+      "line.open_ns": {
+       "max": 5649458,
+       "mean": 2715257.257,
+       "min": 2308283,
+       "n": 1000,
+       "p50": 2647085,
+       "p95": 3254867,
+       "p99": 4294233,
+       "stdev": 342513.98010013107
+      },
+      "line.parse_ns": {
+       "max": 752855,
+       "mean": 114881.37,
+       "min": 62608,
+       "n": 1000,
+       "p50": 110448,
+       "p95": 162453,
+       "p99": 192969,
+       "stdev": 32534.592358611797
+      },
+      "line.run_ns": {
+       "max": 239115836,
+       "mean": 53184833.944,
+       "min": 7688720,
+       "n": 1000,
+       "p50": 19669147,
+       "p95": 188877628,
+       "p99": 190769354,
+       "stdev": 65324359.13481263
+      },
+      "op.approve.decide_ns": {
+       "max": 106269,
+       "mean": 8629.617127071822,
+       "min": 4548,
+       "n": 3620,
+       "p50": 7845,
+       "p95": 13505,
+       "p99": 18274,
+       "stdev": 5246.498431264581
+      },
+      "op.approve.total_ns": {
+       "max": 3505306,
+       "mean": 627303.8328729281,
+       "min": 409983,
+       "n": 3620,
+       "p50": 480353,
+       "p95": 1128340,
+       "p99": 1296581,
+       "stdev": 281511.1352154801
+      },
+      "op.approve.validate_ns": {
+       "max": 14356,
+       "mean": 187.78232044198896,
+       "min": 50,
+       "n": 3620,
+       "p50": 150,
+       "p95": 360,
+       "p99": 681,
+       "stdev": 333.4823464576039
+      },
+      "process.overhead_ns": {
+       "max": 8768189,
+       "mean": 8307084.8,
+       "min": 7822304,
+       "n": 10,
+       "p50": 8213868,
+       "p95": 8768189,
+       "p99": 8768189,
+       "stdev": 311668.89382013516
+      },
+      "tx.approve.begin_ns": {
+       "max": 949305,
+       "mean": 30313.888121546963,
+       "min": 3546,
+       "n": 3620,
+       "p50": 5089,
+       "p95": 116499,
+       "p99": 141045,
+       "stdev": 49111.781851061605
+      },
+      "tx.approve.body_ns": {
+       "max": 181762,
+       "mean": 17107.10193370166,
+       "min": 8707,
+       "n": 3620,
+       "p50": 14968,
+       "p95": 28283,
+       "p99": 40976,
+       "stdev": 9450.080870475169
+      },
+      "tx.approve.end_ns": {
+       "max": 3302559,
+       "mean": 564441.5549723757,
+       "min": 378421,
+       "n": 3620,
+       "p50": 446630,
+       "p95": 966750,
+       "p99": 1078104,
+       "stdev": 230102.90908279683
+      }
+     },
+     "peak_rss_kb": 7280,
+     "sessions_per_sec": 18.732630344014822,
+     "successful_operations_per_sec": 104.32201838581854
+    }
+   },
+   "meta": {
+    "concurrency_profile": "cold (supplemental, D-027; reported separately, never combined with primary)",
+    "concurrent_per_session": 10,
+    "generator": "c_broker.gen_concurrent",
+    "ledger": "sqlite (file-backed, D-023)",
+    "sessions": 100
+   },
+   "method": "one broker-scenario per session, each ending in one concurrent group of 10 executes (in-process threads); checked against every permitted serialization with D-026 evidence; successful throughput counts only successful operations; refusals are reported under availability, never as work",
+   "runs": 10,
+   "seed": 20261121
+  },
+  "B-mem": {
+   "availability": {
+    "go": [
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 0,
+      "successful": 537
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 1,
+      "successful": 548
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 2,
+      "successful": 543
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 3,
+      "successful": 534
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 4,
+      "successful": 538
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 5,
+      "successful": 531
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 6,
+      "successful": 534
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 7,
+      "successful": 542
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 8,
+      "successful": 536
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 9,
+      "successful": 539
+     }
+    ],
+    "rust": [
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 0,
+      "successful": 560
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 1,
+      "successful": 546
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 2,
+      "successful": 554
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 3,
+      "successful": 552
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 4,
+      "successful": 557
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 5,
+      "successful": 558
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 6,
+      "successful": 556
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 7,
+      "successful": 553
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 8,
+      "successful": 561
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 9,
+      "successful": 549
+     }
+    ]
+   },
+   "command": "bench-broker-scenario",
+   "digest": "sha256:b450ca2b1950c9b9f02659437b1bb79a63de8560783472fda1f34e9ba24da44c",
+   "measurements": {
+    "go": {
+     "batch_wall_s": {
+      "max": 0.05609439099998781,
+      "mean": 0.052989883099985494,
+      "min": 0.05122987699996884,
+      "n": 10,
+      "p50": 0.05222207799999978,
+      "p95": 0.05609439099998781,
+      "p99": 0.05609439099998781,
+      "stdev": 0.0017837045300579668
+     },
+     "broker_timing_ns": {
+      "concurrent.op.execute.decide_ns": {
+       "max": 341307,
+       "mean": 6238.9403,
+       "min": 2505,
+       "n": 10000,
+       "p50": 5069,
+       "p95": 10549,
+       "p99": 25708,
+       "stdev": 7923.317162831625
+      },
+      "concurrent.op.execute.total_ns": {
+       "max": 1990533,
+       "mean": 146427.432,
+       "min": 12333,
+       "n": 10000,
+       "p50": 129722,
+       "p95": 316190,
+       "p99": 494983,
+       "stdev": 109363.41509213507
+      },
+      "concurrent.op.execute.validate_ns": {
+       "max": 578339,
+       "mean": 7124.8146,
+       "min": 3125,
+       "n": 10000,
+       "p50": 5400,
+       "p95": 13476,
+       "p99": 37490,
+       "stdev": 13190.718920157078
+      },
+      "concurrent.ready_ns": {
+       "max": 264363,
+       "mean": 11078.172,
+       "min": 4218,
+       "n": 1000,
+       "p50": 7394,
+       "p95": 24555,
+       "p99": 83365,
+       "stdev": 16935.969064348355
+      },
+      "concurrent.start_skew_ns": {
+       "max": 161081,
+       "mean": 14585.909,
+       "min": 1543,
+       "n": 1000,
+       "p50": 9147,
+       "p95": 58990,
+       "p99": 64871,
+       "stdev": 16442.113506702422
+      },
+      "concurrent.total_ns": {
+       "max": 2008026,
+       "mean": 268433.937,
+       "min": 144349,
+       "n": 1000,
+       "p50": 236681,
+       "p95": 470387,
+       "p99": 708482,
+       "stdev": 122332.21206261728
+      },
+      "concurrent.tx.adapter.body_ns": {
+       "max": 101640,
+       "mean": 6474.779326364692,
+       "min": 4148,
+       "n": 2583,
+       "p50": 5320,
+       "p95": 9828,
+       "p99": 22913,
+       "stdev": 5392.613384646879
+      },
+      "concurrent.tx.audit.body_ns": {
+       "max": 691,
+       "mean": 23.30208095129202,
+       "min": 10,
+       "n": 4373,
+       "p50": 20,
+       "p95": 40,
+       "p99": 50,
+       "stdev": 13.372162087988746
+      },
+      "concurrent.tx.dispatch.body_ns": {
+       "max": 7063,
+       "mean": 79.24893534649632,
+       "min": 30,
+       "n": 2583,
+       "p50": 70,
+       "p95": 130,
+       "p99": 160,
+       "stdev": 144.97349972131275
+      },
+      "concurrent.tx.observe.body_ns": {
+       "max": 681,
+       "mean": 69.58853721129171,
+       "min": 40,
+       "n": 2338,
+       "p50": 60,
+       "p95": 110,
+       "p99": 141,
+       "stdev": 29.19393619370904
+      },
+      "concurrent.tx.reserve.body_ns": {
+       "max": 220682,
+       "mean": 1728.2274,
+       "min": 50,
+       "n": 10000,
+       "p50": 110,
+       "p95": 6032,
+       "p99": 10771,
+       "stdev": 4659.805888186846
+      },
+      "concurrent.worker.release_delay_ns": {
+       "max": 161852,
+       "mean": 10205.4297,
+       "min": 301,
+       "n": 10000,
+       "p50": 5441,
+       "p95": 53780,
+       "p99": 62467,
+       "stdev": 15210.84604211053
+      },
+      "line.final_ns": {
+       "max": 33833,
+       "mean": 883.926,
+       "min": 280,
+       "n": 1000,
+       "p50": 652,
+       "p95": 1633,
+       "p99": 5110,
+       "stdev": 1370.1051582519747
+      },
+      "line.parse_ns": {
+       "max": 420404,
+       "mean": 82235.679,
+       "min": 41377,
+       "n": 1000,
+       "p50": 71083,
+       "p95": 155681,
+       "p99": 237994,
+       "stdev": 40460.636035464806
+      },
+      "line.run_ns": {
+       "max": 2033543,
+       "mean": 347128.542,
+       "min": 169547,
+       "n": 1000,
+       "p50": 310740,
+       "p95": 573469,
+       "p99": 800884,
+       "stdev": 135568.35011130045
+      },
+      "op.approve.decide_ns": {
+       "max": 129782,
+       "mean": 6212.196132596685,
+       "min": 4137,
+       "n": 3620,
+       "p50": 5260,
+       "p95": 9778,
+       "p99": 15890,
+       "stdev": 4506.905602905064
+      },
+      "op.approve.total_ns": {
+       "max": 195464,
+       "mean": 12217.0908839779,
+       "min": 7965,
+       "n": 3620,
+       "p50": 10480,
+       "p95": 19106,
+       "p99": 38752,
+       "stdev": 8048.846517773565
+      },
+      "op.approve.validate_ns": {
+       "max": 9337,
+       "mean": 138.88674033149172,
+       "min": 70,
+       "n": 3620,
+       "p50": 110,
+       "p95": 270,
+       "p99": 360,
+       "stdev": 179.00849821331943
+      },
+      "process.overhead_ns": {
+       "max": 10986691,
+       "mean": 10053460.3,
+       "min": 9202357,
+       "n": 10,
+       "p50": 10018599,
+       "p95": 10986691,
+       "p99": 10986691,
+       "stdev": 593994.2713698789
+      },
+      "tx.approve.body_ns": {
+       "max": 12473,
+       "mean": 83.54668508287293,
+       "min": 30,
+       "n": 3620,
+       "p50": 50,
+       "p95": 151,
+       "p99": 361,
+       "stdev": 318.78816508790965
+      }
+     },
+     "peak_rss_kb": 12500,
+     "sessions_per_sec": 1887.152681792336,
+     "successful_operations_per_sec": 10156.655733406353
+    },
+    "rust": {
+     "batch_wall_s": {
+      "max": 0.06239812100000108,
+      "mean": 0.06001003750000109,
+      "min": 0.057828477000043677,
+      "n": 10,
+      "p50": 0.05915122900000824,
+      "p95": 0.06239812100000108,
+      "p99": 0.06239812100000108,
+      "stdev": 0.001678598387335407
+     },
+     "broker_timing_ns": {
+      "concurrent.op.execute.decide_ns": {
+       "max": 76904,
+       "mean": 4778.7627,
+       "min": 1402,
+       "n": 10000,
+       "p50": 4649,
+       "p95": 7935,
+       "p99": 12152,
+       "stdev": 2668.765513926906
+      },
+      "concurrent.op.execute.total_ns": {
+       "max": 979948,
+       "mean": 111040.7256,
+       "min": 10619,
+       "n": 10000,
+       "p50": 108222,
+       "p95": 209561,
+       "p99": 257751,
+       "stdev": 65288.025459103446
+      },
+      "concurrent.op.execute.validate_ns": {
+       "max": 47799,
+       "mean": 3257.4779,
+       "min": 1913,
+       "n": 10000,
+       "p50": 3136,
+       "p95": 4689,
+       "p99": 5871,
+       "stdev": 1422.0123934186697
+      },
+      "concurrent.ready_ns": {
+       "max": 1139305,
+       "mean": 134080.787,
+       "min": 104475,
+       "n": 1000,
+       "p50": 124482,
+       "p95": 166270,
+       "p99": 326649,
+       "stdev": 49763.455250636616
+      },
+      "concurrent.start_skew_ns": {
+       "max": 64420,
+       "mean": 8430.215,
+       "min": 3517,
+       "n": 1000,
+       "p50": 7625,
+       "p95": 11342,
+       "p99": 36548,
+       "stdev": 4951.536485813807
+      },
+      "concurrent.total_ns": {
+       "max": 2030488,
+       "mean": 375388.011,
+       "min": 290422,
+       "n": 1000,
+       "p50": 363178,
+       "p95": 436714,
+       "p99": 735642,
+       "stdev": 85031.94455853803
+      },
+      "concurrent.tx.adapter.body_ns": {
+       "max": 43532,
+       "mean": 4630.517374517374,
+       "min": 2325,
+       "n": 2590,
+       "p50": 4568,
+       "p95": 6803,
+       "p99": 8275,
+       "stdev": 1919.075253749862
+      },
+      "concurrent.tx.audit.body_ns": {
+       "max": 251,
+       "mean": 29.27100790040699,
+       "min": 20,
+       "n": 4177,
+       "p50": 30,
+       "p95": 40,
+       "p99": 61,
+       "stdev": 11.142313673052055
+      },
+      "concurrent.tx.dispatch.body_ns": {
+       "max": 4068,
+       "mean": 83.8945945945946,
+       "min": 40,
+       "n": 2590,
+       "p50": 80,
+       "p95": 120,
+       "p99": 150,
+       "stdev": 83.39551999735552
+      },
+      "concurrent.tx.observe.body_ns": {
+       "max": 5751,
+       "mean": 70.18417639429313,
+       "min": 40,
+       "n": 2313,
+       "p50": 60,
+       "p95": 101,
+       "p99": 141,
+       "stdev": 120.27027223184953
+      },
+      "concurrent.tx.reserve.body_ns": {
+       "max": 26489,
+       "mean": 401.1146,
+       "min": 110,
+       "n": 10000,
+       "p50": 331,
+       "p95": 761,
+       "p99": 972,
+       "stdev": 386.2991822055248
+      },
+      "concurrent.worker.release_delay_ns": {
+       "max": 103934,
+       "mean": 8774.5397,
+       "min": 400,
+       "n": 10000,
+       "p50": 8516,
+       "p95": 13054,
+       "p99": 16160,
+       "stdev": 4143.863444594748
+      },
+      "line.final_ns": {
+       "max": 1743,
+       "mean": 825.237,
+       "min": 431,
+       "n": 1000,
+       "p50": 802,
+       "p95": 1152,
+       "p99": 1463,
+       "stdev": 174.27632388843892
+      },
+      "line.parse_ns": {
+       "max": 1016335,
+       "mean": 97585.385,
+       "min": 65833,
+       "n": 1000,
+       "p50": 93685,
+       "p95": 128099,
+       "p99": 160670,
+       "stdev": 35057.22815027388
+      },
+      "line.run_ns": {
+       "max": 2079319,
+       "mean": 434112.001,
+       "min": 324866,
+       "n": 1000,
+       "p50": 422428,
+       "p95": 506475,
+       "p99": 871426,
+       "stdev": 95160.71223836395
+      },
+      "op.approve.decide_ns": {
+       "max": 57457,
+       "mean": 4040.9182320441987,
+       "min": 2675,
+       "n": 3620,
+       "p50": 3456,
+       "p95": 5941,
+       "p99": 8897,
+       "stdev": 2063.855901337514
+      },
+      "op.approve.total_ns": {
+       "max": 93124,
+       "mean": 6585.16408839779,
+       "min": 4338,
+       "n": 3620,
+       "p50": 5551,
+       "p95": 9888,
+       "p99": 15059,
+       "stdev": 3359.121046273557
+      },
+      "op.approve.validate_ns": {
+       "max": 10069,
+       "mean": 48.79088397790055,
+       "min": 20,
+       "n": 3620,
+       "p50": 31,
+       "p95": 90,
+       "p99": 130,
+       "stdev": 187.21099026715515
+      },
+      "process.overhead_ns": {
+       "max": 7221902,
+       "mean": 6840298.5,
+       "min": 6495146,
+       "n": 10,
+       "p50": 6812920,
+       "p95": 7221902,
+       "p99": 7221902,
+       "stdev": 258955.01209337072
+      },
+      "tx.approve.body_ns": {
+       "max": 10119,
+       "mean": 138.38950276243094,
+       "min": 50,
+       "n": 3620,
+       "p50": 130,
+       "p95": 191,
+       "p99": 261,
+       "stdev": 257.0656963848639
+      }
+     },
+     "peak_rss_kb": 3340,
+     "sessions_per_sec": 1666.3878938585597,
+     "successful_operations_per_sec": 9241.787259339571
+    }
+   },
+   "meta": {
+    "concurrency_profile": "primary",
+    "concurrent_per_session": 10,
+    "generator": "c_broker.gen_concurrent",
+    "ledger": "in-memory model (simulated; not a substitute for the SQLite workload)",
+    "sessions": 100
+   },
+   "method": "one broker-scenario per session, each ending in one concurrent group of 10 executes (in-process threads); checked against every permitted serialization with D-026 evidence; successful throughput counts only successful operations; refusals are reported under availability, never as work",
+   "runs": 10,
+   "seed": 20261121
+  },
+  "G": {
+   "command": "decide-batch",
+   "digest": "sha256:fb0b0531aec649accd752af3d795ada8da81f032edb899ee245c2c9bcaf76e63",
+   "lines": 1000,
+   "measurements": {
+    "go": {
+     "batch_wall_s": {
+      "max": 0.8644520410000496,
+      "mean": 0.8322501323999859,
+      "min": 0.7751713789999712,
+      "n": 5,
+      "p50": 0.8320989629999076,
+      "p95": 0.8644520410000496,
+      "p99": 0.8644520410000496,
+      "stdev": 0.03613139915696302
+     },
+     "lines_per_sec": 1201.5618394872088,
+     "peak_rss_kb": 17408
+    },
+    "rust": {
+     "batch_wall_s": {
+      "max": 0.42197619199998826,
+      "mean": 0.4027434330000233,
+      "min": 0.39155328200001804,
+      "n": 5,
+      "p50": 0.40287320400000226,
+      "p95": 0.42197619199998826,
+      "p99": 0.42197619199998826,
+      "stdev": 0.011912003010190391
+     },
+     "lines_per_sec": 2482.970343056946,
+     "peak_rss_kb": 7236
+    }
+   },
+   "meta": {
+    "generator": "gen_g",
+    "kinds": {
+     "big_content": 136,
+     "big_resource": 132,
+     "invalid_utf8": 123,
+     "lone_surrogate": 115,
+     "shell": 120,
+     "symlink": 132,
+     "unknown_capability": 141,
+     "unknown_kind": 101
+    },
+    "note": "invalid UTF-8 lines are answered with a null id (D-021)"
+   },
+   "runs": 5
+  },
+  "H": {
+   "command": "broker-scenario",
+   "digest": "sha256:a5e01cf00ebb042663ae2f4489b52986b4a84bf675f499f70971f665f43af443",
+   "lines": 1000,
+   "measurements": {
+    "go": {
+     "batch_wall_s": {
+      "max": 6.848980293999944,
+      "mean": 6.405569552599968,
+      "min": 6.216047771000035,
+      "n": 5,
+      "p50": 6.328242230000001,
+      "p95": 6.848980293999944,
+      "p99": 6.848980293999944,
+      "stdev": 0.25314924029999925
+     },
+     "broker_timing_ns": {
+      "line.final_ns": {
+       "max": 546394,
+       "mean": 53711.4548,
+       "min": 32430,
+       "n": 5000,
+       "p50": 48490,
+       "p95": 80691,
+       "p99": 130504,
+       "stdev": 26619.785980745397
+      },
+      "line.open_ns": {
+       "max": 24633972,
+       "mean": 2740972.5848,
+       "min": 2012066,
+       "n": 5000,
+       "p50": 2245775,
+       "p95": 6763512,
+       "p99": 7935033,
+       "stdev": 1535232.4593855732
+      },
+      "line.parse_ns": {
+       "max": 433832,
+       "mean": 34224.4406,
+       "min": 19076,
+       "n": 5000,
+       "p50": 29204,
+       "p95": 55073,
+       "p99": 141655,
+       "stdev": 24096.91079341144
+      },
+      "line.run_ns": {
+       "max": 36608515,
+       "mean": 7415009.3184,
+       "min": 5120875,
+       "n": 5000,
+       "p50": 6551585,
+       "p95": 11832701,
+       "p99": 16886478,
+       "stdev": 2648914.9638599907
+      },
+      "op.approve.decide_ns": {
+       "max": 178034,
+       "mean": 16732.266666666666,
+       "min": 9899,
+       "n": 750,
+       "p50": 13375,
+       "p95": 32210,
+       "p99": 66694,
+       "stdev": 12264.599969618872
+      },
+      "op.approve.total_ns": {
+       "max": 11215077,
+       "mean": 1359039.36,
+       "min": 943628,
+       "n": 750,
+       "p50": 1080033,
+       "p95": 3493012,
+       "p99": 6057028,
+       "stdev": 1029221.0401617802
+      },
+      "op.approve.validate_ns": {
+       "max": 4028,
+       "mean": 478.92,
+       "min": 270,
+       "n": 750,
+       "p50": 351,
+       "p95": 982,
+       "p99": 2064,
+       "stdev": 358.4362551398294
+      },
+      "op.execute.decide_ns": {
+       "max": 137988,
+       "mean": 8750.462576153177,
+       "min": 4789,
+       "n": 11490,
+       "p50": 7384,
+       "p95": 14968,
+       "p99": 24386,
+       "stdev": 5638.335385612957
+      },
+      "op.execute.key_lock_wait_ns": {
+       "max": 94347,
+       "mean": 497.17771975630984,
+       "min": 70,
+       "n": 11490,
+       "p50": 341,
+       "p95": 1082,
+       "p99": 2494,
+       "stdev": 1524.6183608481185
+      },
+      "op.execute.total_ns": {
+       "max": 22577457,
+       "mean": 1459370.887554395,
+       "min": 39334,
+       "n": 11490,
+       "p50": 1065206,
+       "p95": 3600790,
+       "p99": 7492614,
+       "stdev": 1574795.3307738707
+      },
+      "op.execute.validate_ns": {
+       "max": 246922,
+       "mean": 10295.047519582246,
+       "min": 4208,
+       "n": 11490,
+       "p50": 8646,
+       "p95": 18004,
+       "p99": 31700,
+       "stdev": 8183.824157883824
+      },
+      "op.reconcile.total_ns": {
+       "max": 8204097,
+       "mean": 626843.943884892,
+       "min": 455884,
+       "n": 1390,
+       "p50": 517569,
+       "p95": 650448,
+       "p99": 4947871,
+       "stdev": 635482.3757571505
+      },
+      "op.restart_broker.total_ns": {
+       "max": 6115829,
+       "mean": 961954.0892307692,
+       "min": 728725,
+       "n": 650,
+       "p50": 825497,
+       "p95": 1217979,
+       "p99": 4754740,
+       "stdev": 616518.0576405774
+      },
+      "process.overhead_ns": {
+       "max": 30431184,
+       "mean": 29433191.8,
+       "min": 28354952,
+       "n": 5,
+       "p50": 29327093,
+       "p95": 30431184,
+       "p99": 30431184,
+       "stdev": 902436.8413527342
+      },
+      "tx.adapter.begin_ns": {
+       "max": 112731,
+       "mean": 8600.5324,
+       "min": 6091,
+       "n": 5000,
+       "p50": 7605,
+       "p95": 12674,
+       "p99": 18585,
+       "stdev": 4207.922455847913
+      },
+      "tx.adapter.body_ns": {
+       "max": 585397,
+       "mean": 39019.7296,
+       "min": 23304,
+       "n": 5000,
+       "p50": 35215,
+       "p95": 55915,
+       "p99": 85360,
+       "stdev": 21595.284069465073
+      },
+      "tx.adapter.end_ns": {
+       "max": 7278246,
+       "mean": 571361.1432,
+       "min": 382646,
+       "n": 5000,
+       "p50": 444523,
+       "p95": 590056,
+       "p99": 5000299,
+       "stdev": 671356.5621592213
+      },
+      "tx.approve.begin_ns": {
+       "max": 1299082,
+       "mean": 119805.37733333334,
+       "min": 86963,
+       "n": 750,
+       "p50": 105638,
+       "p95": 161833,
+       "p99": 193352,
+       "stdev": 74578.24210220449
+      },
+      "tx.approve.body_ns": {
+       "max": 354023,
+       "mean": 33935.70133333333,
+       "min": 21982,
+       "n": 750,
+       "p50": 27763,
+       "p95": 61275,
+       "p99": 102281,
+       "stdev": 22611.94044935799
+      },
+      "tx.approve.end_ns": {
+       "max": 10991639,
+       "mean": 1176157.792,
+       "min": 803535,
+       "n": 750,
+       "p50": 909163,
+       "p95": 3336359,
+       "p99": 5918539,
+       "stdev": 1021095.6255334633
+      },
+      "tx.audit.begin_ns": {
+       "max": 152085,
+       "mean": 3975.1274305555557,
+       "min": 2374,
+       "n": 2880,
+       "p50": 3437,
+       "p95": 5972,
+       "p99": 9959,
+       "stdev": 4656.137799596782
+      },
+      "tx.audit.body_ns": {
+       "max": 95980,
+       "mean": 9212.365625,
+       "min": 5470,
+       "n": 2880,
+       "p50": 8526,
+       "p95": 14086,
+       "p99": 21761,
+       "stdev": 4057.667784143175
+      },
+      "tx.audit.end_ns": {
+       "max": 10815006,
+       "mean": 662851.1350694444,
+       "min": 389570,
+       "n": 2880,
+       "p50": 443611,
+       "p95": 1045607,
+       "p99": 5207769,
+       "stdev": 704401.3029538413
+      },
+      "tx.dispatch.begin_ns": {
+       "max": 117349,
+       "mean": 9235.446,
+       "min": 2665,
+       "n": 5000,
+       "p50": 8456,
+       "p95": 14648,
+       "p99": 24376,
+       "stdev": 5566.99856102727
+      },
+      "tx.dispatch.body_ns": {
+       "max": 670585,
+       "mean": 52569.876,
+       "min": 32531,
+       "n": 5000,
+       "p50": 47148,
+       "p95": 76654,
+       "p99": 119654,
+       "stdev": 26990.019812214232
+      },
+      "tx.dispatch.end_ns": {
+       "max": 6989170,
+       "mean": 531124.5224,
+       "min": 400490,
+       "n": 5000,
+       "p50": 445314,
+       "p95": 523440,
+       "p99": 3774650,
+       "stdev": 525171.9311014785
+      },
+      "tx.observe.begin_ns": {
+       "max": 153738,
+       "mean": 8519.929916897507,
+       "min": 5871,
+       "n": 3610,
+       "p50": 7314,
+       "p95": 12854,
+       "p99": 19596,
+       "stdev": 5858.655697201454
+      },
+      "tx.observe.body_ns": {
+       "max": 368781,
+       "mean": 30207.498614958447,
+       "min": 21520,
+       "n": 3610,
+       "p50": 26139,
+       "p95": 45796,
+       "p99": 71133,
+       "stdev": 17578.299681671946
+      },
+      "tx.observe.end_ns": {
+       "max": 6236710,
+       "mean": 536701.296398892,
+       "min": 392746,
+       "n": 3610,
+       "p50": 434574,
+       "p95": 545963,
+       "p99": 4176252,
+       "stdev": 584448.8249541353
+      },
+      "tx.reconcile.begin_ns": {
+       "max": 129794,
+       "mean": 9109.28489208633,
+       "min": 5671,
+       "n": 1390,
+       "p50": 7895,
+       "p95": 13886,
+       "p99": 27251,
+       "stdev": 6393.582416120295
+      },
+      "tx.reconcile.body_ns": {
+       "max": 610984,
+       "mean": 61651.76762589928,
+       "min": 30657,
+       "n": 1390,
+       "p50": 56466,
+       "p95": 95900,
+       "p99": 128811,
+       "stdev": 31413.17265047072
+      },
+      "tx.reconcile.end_ns": {
+       "max": 8120710,
+       "mean": 554067.5582733813,
+       "min": 392816,
+       "n": 1390,
+       "p50": 449642,
+       "p95": 550501,
+       "p99": 4872701,
+       "stdev": 632291.6552097523
+      },
+      "tx.reserve.begin_ns": {
+       "max": 1120788,
+       "mean": 47971.20670147955,
+       "min": 2725,
+       "n": 11490,
+       "p50": 9628,
+       "p95": 137748,
+       "p99": 167884,
+       "stdev": 59082.733393767165
+      },
+      "tx.reserve.body_ns": {
+       "max": 823522,
+       "mean": 42103.09321148825,
+       "min": 12052,
+       "n": 11490,
+       "p50": 28032,
+       "p95": 103855,
+       "p99": 150271,
+       "stdev": 34705.46601975633
+      },
+      "tx.reserve.end_ns": {
+       "max": 14347683,
+       "mean": 458837.1137510879,
+       "min": 2605,
+       "n": 11490,
+       "p50": 5150,
+       "p95": 1015962,
+       "p99": 4588203,
+       "stdev": 798917.0093527118
+      }
+     },
+     "lines_per_sec": 156.11414282342906,
+     "peak_rss_kb": 17480
+    },
+    "rust": {
+     "batch_wall_s": {
+      "max": 7.971930688000043,
+      "mean": 6.945063714000002,
+      "min": 6.586984606999977,
+      "n": 5,
+      "p50": 6.657867243999931,
+      "p95": 7.971930688000043,
+      "p99": 7.971930688000043,
+      "stdev": 0.588226422847626
+     },
+     "broker_timing_ns": {
+      "line.final_ns": {
+       "max": 373780,
+       "mean": 33045.0434,
+       "min": 22162,
+       "n": 5000,
+       "p50": 29946,
+       "p95": 48811,
+       "p99": 66926,
+       "stdev": 15700.257267903991
+      },
+      "line.open_ns": {
+       "max": 22768823,
+       "mean": 3024228.2434,
+       "min": 2302419,
+       "n": 5000,
+       "p50": 2640387,
+       "p95": 6184982,
+       "p99": 7954051,
+       "stdev": 1411753.4226524597
+      },
+      "line.parse_ns": {
+       "max": 544379,
+       "mean": 37059.0988,
+       "min": 27852,
+       "n": 5000,
+       "p50": 33973,
+       "p95": 53009,
+       "p99": 64330,
+       "stdev": 16544.761993275133
+      },
+      "line.run_ns": {
+       "max": 41216085,
+       "mean": 7270515.525,
+       "min": 5314155,
+       "n": 5000,
+       "p50": 6649085,
+       "p95": 11121457,
+       "p99": 15126183,
+       "stdev": 2383452.870850642
+      },
+      "op.approve.decide_ns": {
+       "max": 78016,
+       "mean": 9935.285333333333,
+       "min": 6963,
+       "n": 750,
+       "p50": 8696,
+       "p95": 15148,
+       "p99": 22332,
+       "stdev": 5093.4144384791325
+      },
+      "op.approve.total_ns": {
+       "max": 12272742,
+       "mean": 1235794.3493333333,
+       "min": 973302,
+       "n": 750,
+       "p50": 1049816,
+       "p95": 1625243,
+       "p99": 5360847,
+       "stdev": 890707.9344279878
+      },
+      "op.approve.validate_ns": {
+       "max": 1934,
+       "mean": 169.34266666666667,
+       "min": 100,
+       "n": 750,
+       "p50": 121,
+       "p95": 370,
+       "p99": 581,
+       "stdev": 129.49303910168277
+      },
+      "op.execute.decide_ns": {
+       "max": 171832,
+       "mean": 6189.964751958225,
+       "min": 3046,
+       "n": 11490,
+       "p50": 5170,
+       "p95": 10199,
+       "p99": 15399,
+       "stdev": 4119.887996270355
+      },
+      "op.execute.key_lock_wait_ns": {
+       "max": 17021,
+       "mean": 426.08241949521323,
+       "min": 100,
+       "n": 11490,
+       "p50": 341,
+       "p95": 832,
+       "p99": 1353,
+       "stdev": 444.8794331794182
+      },
+      "op.execute.total_ns": {
+       "max": 19307502,
+       "mean": 1325411.9124456048,
+       "min": 28754,
+       "n": 11490,
+       "p50": 1036111,
+       "p95": 2787206,
+       "p99": 6205021,
+       "stdev": 1337663.6207293714
+      },
+      "op.execute.validate_ns": {
+       "max": 93054,
+       "mean": 4040.205221932115,
+       "min": 2154,
+       "n": 11490,
+       "p50": 3717,
+       "p95": 5831,
+       "p99": 9107,
+       "stdev": 2413.610012269936
+      },
+      "op.reconcile.total_ns": {
+       "max": 5986000,
+       "mean": 588428.6884892086,
+       "min": 458589,
+       "n": 1390,
+       "p50": 515546,
+       "p95": 632435,
+       "p99": 3492470,
+       "stdev": 442176.1489759021
+      },
+      "op.restart_broker.total_ns": {
+       "max": 6993973,
+       "mean": 841014.4815384615,
+       "min": 665256,
+       "n": 650,
+       "p50": 744945,
+       "p95": 963044,
+       "p99": 4221054,
+       "stdev": 505774.4030243324
+      },
+      "process.overhead_ns": {
+       "max": 24428789,
+       "mean": 23141671.2,
+       "min": 21996617,
+       "n": 5,
+       "p50": 23070382,
+       "p95": 24428789,
+       "p99": 24428789,
+       "stdev": 872758.0672530045
+      },
+      "tx.adapter.begin_ns": {
+       "max": 55304,
+       "mean": 4789.9996,
+       "min": 3627,
+       "n": 5000,
+       "p50": 4238,
+       "p95": 7144,
+       "p99": 9668,
+       "stdev": 1978.1003418917753
+      },
+      "tx.adapter.body_ns": {
+       "max": 305102,
+       "mean": 25851.116,
+       "min": 15820,
+       "n": 5000,
+       "p50": 23534,
+       "p95": 38672,
+       "p99": 50604,
+       "stdev": 9404.62506375783
+      },
+      "tx.adapter.end_ns": {
+       "max": 5968796,
+       "mean": 506812.1592,
+       "min": 384060,
+       "n": 5000,
+       "p50": 440195,
+       "p95": 517338,
+       "p99": 3080468,
+       "stdev": 443152.9365009174
+      },
+      "tx.approve.begin_ns": {
+       "max": 488435,
+       "mean": 111375.34,
+       "min": 83637,
+       "n": 750,
+       "p50": 102191,
+       "p95": 156454,
+       "p99": 183043,
+       "stdev": 26299.48026037183
+      },
+      "tx.approve.body_ns": {
+       "max": 200966,
+       "mean": 25659.321333333333,
+       "min": 17893,
+       "n": 750,
+       "p50": 22493,
+       "p95": 44143,
+       "p99": 60023,
+       "stdev": 10994.107145283522
+      },
+      "tx.approve.end_ns": {
+       "max": 12097904,
+       "mean": 1080669.724,
+       "min": 831097,
+       "n": 750,
+       "p50": 896478,
+       "p95": 1448823,
+       "p99": 5175651,
+       "stdev": 888388.110634189
+      },
+      "tx.audit.begin_ns": {
+       "max": 24867,
+       "mean": 2411.628472222222,
+       "min": 1754,
+       "n": 2880,
+       "p50": 2094,
+       "p95": 3326,
+       "p99": 4358,
+       "stdev": 1295.1359012061284
+      },
+      "tx.audit.body_ns": {
+       "max": 80200,
+       "mean": 7043.317708333333,
+       "min": 4097,
+       "n": 2880,
+       "p50": 6311,
+       "p95": 10650,
+       "p99": 15840,
+       "stdev": 3910.7227227286644
+      },
+      "tx.audit.end_ns": {
+       "max": 8956041,
+       "mean": 611938.8003472222,
+       "min": 385321,
+       "n": 2880,
+       "p50": 437699,
+       "p95": 980436,
+       "p99": 3794688,
+       "stdev": 528575.2943119721
+      },
+      "tx.dispatch.begin_ns": {
+       "max": 65212,
+       "mean": 5228.7376,
+       "min": 1883,
+       "n": 5000,
+       "p50": 4829,
+       "p95": 7955,
+       "p99": 12223,
+       "stdev": 3046.694531629328
+      },
+      "tx.dispatch.body_ns": {
+       "max": 409157,
+       "mean": 37812.1324,
+       "min": 24726,
+       "n": 5000,
+       "p50": 34255,
+       "p95": 54322,
+       "p99": 75621,
+       "stdev": 18183.37926327108
+      },
+      "tx.dispatch.end_ns": {
+       "max": 8668698,
+       "mean": 516607.8286,
+       "min": 390913,
+       "n": 5000,
+       "p50": 442458,
+       "p95": 517759,
+       "p99": 3682669,
+       "stdev": 479906.39956155955
+      },
+      "tx.observe.begin_ns": {
+       "max": 44002,
+       "mean": 4495.253739612188,
+       "min": 3366,
+       "n": 3610,
+       "p50": 3948,
+       "p95": 7074,
+       "p99": 9578,
+       "stdev": 2137.005730646606
+      },
+      "tx.observe.body_ns": {
+       "max": 284903,
+       "mean": 22393.60249307479,
+       "min": 16110,
+       "n": 3610,
+       "p50": 19536,
+       "p95": 35476,
+       "p99": 46317,
+       "stdev": 11672.687798619918
+      },
+      "tx.observe.end_ns": {
+       "max": 5748005,
+       "mean": 481276.63601108035,
+       "min": 381905,
+       "n": 3610,
+       "p50": 428893,
+       "p95": 505606,
+       "p99": 2384126,
+       "stdev": 347631.57656512724
+      },
+      "tx.reconcile.begin_ns": {
+       "max": 77525,
+       "mean": 5017.3827338129495,
+       "min": 3246,
+       "n": 1390,
+       "p50": 4448,
+       "p95": 7554,
+       "p99": 15570,
+       "stdev": 3908.072460977255
+      },
+      "tx.reconcile.body_ns": {
+       "max": 657140,
+       "mean": 67630.16402877698,
+       "min": 28483,
+       "n": 1390,
+       "p50": 61806,
+       "p95": 100709,
+       "p99": 150001,
+       "stdev": 37205.218784557204
+      },
+      "tx.reconcile.end_ns": {
+       "max": 5904528,
+       "mean": 514697.50215827336,
+       "min": 396632,
+       "n": 1390,
+       "p50": 446977,
+       "p95": 528400,
+       "p99": 3427167,
+       "stdev": 437112.63366657874
+      },
+      "tx.reserve.begin_ns": {
+       "max": 1286379,
+       "mean": 44871.78616187989,
+       "min": 1954,
+       "n": 11490,
+       "p50": 5460,
+       "p95": 135814,
+       "p99": 161923,
+       "stdev": 60271.989569429876
+      },
+      "tx.reserve.body_ns": {
+       "max": 888785,
+       "mean": 31846.972410791994,
+       "min": 7053,
+       "n": 11490,
+       "p50": 14688,
+       "p95": 80511,
+       "p99": 108333,
+       "stdev": 31761.482462782446
+      },
+      "tx.reserve.end_ns": {
+       "max": 15709068,
+       "mean": 432795.6591818973,
+       "min": 1974,
+       "n": 11490,
+       "p50": 3676,
+       "p95": 1004671,
+       "p99": 3825233,
+       "stdev": 690645.0041087448
+      }
+     },
+     "lines_per_sec": 143.98715997150313,
+     "peak_rss_kb": 4788
+    }
+   },
+   "meta": {
+    "generator": "gen_h",
+    "ledger": "sqlite (file-backed, D-023)",
+    "templates": {
+     "dup_after_effect": 159,
+     "dup_after_failure": 121,
+     "dup_after_reserve_crash": 128,
+     "dup_before_reserve_crash": 164,
+     "granted_dup_then_exhausted": 150,
+     "restart_between": 130,
+     "uncertain_receipt": 148
+    }
+   },
+   "runs": 5
+  },
+  "H-mem": {
+   "command": "broker-scenario",
+   "digest": "sha256:a5e01cf00ebb042663ae2f4489b52986b4a84bf675f499f70971f665f43af443",
+   "lines": 1000,
+   "measurements": {
+    "go": {
+     "batch_wall_s": {
+      "max": 0.10136390899992875,
+      "mean": 0.09928521279998677,
+      "min": 0.09631892700008393,
+      "n": 5,
+      "p50": 0.09980294599995432,
+      "p95": 0.10136390899992875,
+      "p99": 0.10136390899992875,
+      "stdev": 0.002008815974174074
+     },
+     "broker_timing_ns": {
+      "line.final_ns": {
+       "max": 53150,
+       "mean": 423.8564,
+       "min": 180,
+       "n": 5000,
+       "p50": 301,
+       "p95": 641,
+       "p99": 3226,
+       "stdev": 1346.3869942058536
+      },
+      "line.parse_ns": {
+       "max": 331511,
+       "mean": 22716.5942,
+       "min": 13355,
+       "n": 5000,
+       "p50": 19206,
+       "p95": 37300,
+       "p99": 94407,
+       "stdev": 15810.802763741414
+      },
+      "line.run_ns": {
+       "max": 772287,
+       "mean": 71546.7896,
+       "min": 42439,
+       "n": 5000,
+       "p50": 62046,
+       "p95": 129222,
+       "p99": 227807,
+       "stdev": 39349.643515710464
+      },
+      "op.approve.decide_ns": {
+       "max": 96612,
+       "mean": 6834.8133333333335,
+       "min": 4378,
+       "n": 750,
+       "p50": 5500,
+       "p95": 11321,
+       "p99": 23043,
+       "stdev": 6363.334942146044
+      },
+      "op.approve.total_ns": {
+       "max": 126157,
+       "mean": 13278.401333333333,
+       "min": 8255,
+       "n": 750,
+       "p50": 10861,
+       "p95": 22302,
+       "p99": 55745,
+       "stdev": 9107.636221526222
+      },
+      "op.approve.validate_ns": {
+       "max": 16791,
+       "mean": 201.296,
+       "min": 70,
+       "n": 750,
+       "p50": 160,
+       "p95": 320,
+       "p99": 391,
+       "stdev": 616.2409541746931
+      },
+      "op.execute.decide_ns": {
+       "max": 94136,
+       "mean": 3957.998694516971,
+       "min": 2405,
+       "n": 11490,
+       "p50": 3046,
+       "p95": 6843,
+       "p99": 11592,
+       "stdev": 3451.017348565133
+      },
+      "op.execute.total_ns": {
+       "max": 633727,
+       "mean": 17876.062402088774,
+       "min": 9097,
+       "n": 11490,
+       "p50": 16261,
+       "p95": 31238,
+       "p99": 63709,
+       "stdev": 13991.061830166549
+      },
+      "op.execute.validate_ns": {
+       "max": 157445,
+       "mean": 4537.819060052219,
+       "min": 3096,
+       "n": 11490,
+       "p50": 3687,
+       "p95": 7263,
+       "p99": 13796,
+       "stdev": 4034.547439674305
+      },
+      "op.reconcile.total_ns": {
+       "max": 5240,
+       "mean": 437.010071942446,
+       "min": 191,
+       "n": 1390,
+       "p50": 321,
+       "p95": 771,
+       "p99": 3115,
+       "stdev": 457.6453412390496
+      },
+      "op.restart_broker.total_ns": {
+       "max": 156794,
+       "mean": 21393.415384615386,
+       "min": 15509,
+       "n": 650,
+       "p50": 17603,
+       "p95": 31610,
+       "p99": 99136,
+       "stdev": 12830.444337995263
+      },
+      "process.overhead_ns": {
+       "max": 16975043,
+       "mean": 16480203.2,
+       "min": 15568249,
+       "n": 5,
+       "p50": 16618932,
+       "p95": 16975043,
+       "p99": 16975043,
+       "stdev": 563069.9687442938
+      },
+      "tx.adapter.body_ns": {
+       "max": 107883,
+       "mean": 5841.4972,
+       "min": 4107,
+       "n": 5000,
+       "p50": 4849,
+       "p95": 8946,
+       "p99": 16411,
+       "stdev": 4231.02063123173
+      },
+      "tx.approve.body_ns": {
+       "max": 7464,
+       "mean": 137.508,
+       "min": 40,
+       "n": 750,
+       "p50": 90,
+       "p95": 231,
+       "p99": 591,
+       "stdev": 415.0793664388266
+      },
+      "tx.audit.body_ns": {
+       "max": 6151,
+       "mean": 24.665972222222223,
+       "min": 10,
+       "n": 2880,
+       "p50": 20,
+       "p95": 40,
+       "p99": 41,
+       "stdev": 114.45845832410313
+      },
+      "tx.dispatch.body_ns": {
+       "max": 441,
+       "mean": 50.1468,
+       "min": 30,
+       "n": 5000,
+       "p50": 40,
+       "p95": 90,
+       "p99": 131,
+       "stdev": 23.313557303655532
+      },
+      "tx.observe.body_ns": {
+       "max": 551,
+       "mean": 57.104709141274235,
+       "min": 30,
+       "n": 3610,
+       "p50": 50,
+       "p95": 100,
+       "p99": 130,
+       "stdev": 25.01014712300993
+      },
+      "tx.reconcile.body_ns": {
+       "max": 3757,
+       "mean": 75.56474820143885,
+       "min": 30,
+       "n": 1390,
+       "p50": 60,
+       "p95": 130,
+       "p99": 190,
+       "stdev": 103.6704144871108
+      },
+      "tx.reserve.body_ns": {
+       "max": 313307,
+       "mean": 802.7073107049608,
+       "min": 30,
+       "n": 11490,
+       "p50": 100,
+       "p95": 4388,
+       "p99": 6943,
+       "stdev": 4472.757763605929
+      }
+     },
+     "lines_per_sec": 10071.993319030618,
+     "peak_rss_kb": 12916
+    },
+    "rust": {
+     "batch_wall_s": {
+      "max": 0.07649656499995672,
+      "mean": 0.07455503279998084,
+      "min": 0.0732643989999815,
+      "n": 5,
+      "p50": 0.0743033749999995,
+      "p95": 0.07649656499995672,
+      "p99": 0.07649656499995672,
+      "stdev": 0.0013180688902719568
+     },
+     "broker_timing_ns": {
+      "line.final_ns": {
+       "max": 3146,
+       "mean": 236.427,
+       "min": 160,
+       "n": 5000,
+       "p50": 220,
+       "p95": 311,
+       "p99": 431,
+       "stdev": 95.00293775792687
+      },
+      "line.parse_ns": {
+       "max": 353643,
+       "mean": 26088.2362,
+       "min": 20378,
+       "n": 5000,
+       "p50": 23464,
+       "p95": 35166,
+       "p99": 40005,
+       "stdev": 8917.989340786748
+      },
+      "line.run_ns": {
+       "max": 581099,
+       "mean": 41839.8636,
+       "min": 33463,
+       "n": 5000,
+       "p50": 37100,
+       "p95": 58900,
+       "p99": 68167,
+       "stdev": 13883.20629007484
+      },
+      "op.approve.decide_ns": {
+       "max": 9348,
+       "mean": 3868.4466666666667,
+       "min": 3257,
+       "n": 750,
+       "p50": 3777,
+       "p95": 4558,
+       "p99": 6602,
+       "stdev": 523.2245015232128
+      },
+      "op.approve.total_ns": {
+       "max": 12423,
+       "mean": 6500.258666666667,
+       "min": 5561,
+       "n": 750,
+       "p50": 6342,
+       "p95": 7894,
+       "p99": 10570,
+       "stdev": 803.4341875660313
+      },
+      "op.approve.validate_ns": {
+       "max": 361,
+       "mean": 44.65866666666667,
+       "min": 20,
+       "n": 750,
+       "p50": 40,
+       "p95": 70,
+       "p99": 141,
+       "stdev": 27.90089792513724
+      },
+      "op.execute.decide_ns": {
+       "max": 37811,
+       "mean": 1690.348041775457,
+       "min": 1022,
+       "n": 11490,
+       "p50": 1272,
+       "p95": 3416,
+       "p99": 3687,
+       "stdev": 1005.4158651095529
+      },
+      "op.execute.total_ns": {
+       "max": 161002,
+       "mean": 10273.897214969538,
+       "min": 6622,
+       "n": 11490,
+       "p50": 9608,
+       "p95": 14648,
+       "p99": 17153,
+       "stdev": 4030.0910545393444
+      },
+      "op.execute.validate_ns": {
+       "max": 32531,
+       "mean": 2258.5120104438643,
+       "min": 1833,
+       "n": 11490,
+       "p50": 2204,
+       "p95": 2474,
+       "p99": 3306,
+       "stdev": 796.5273572627681
+      },
+      "op.reconcile.total_ns": {
+       "max": 4218,
+       "mean": 158.76978417266187,
+       "min": 120,
+       "n": 1390,
+       "p50": 141,
+       "p95": 210,
+       "p99": 341,
+       "stdev": 126.3583939545591
+      },
+      "op.restart_broker.total_ns": {
+       "max": 681,
+       "mean": 106.02615384615385,
+       "min": 60,
+       "n": 650,
+       "p50": 100,
+       "p95": 141,
+       "p99": 350,
+       "stdev": 44.541536429098834
+      },
+      "process.overhead_ns": {
+       "max": 13424973,
+       "mean": 13157569.8,
+       "min": 12631119,
+       "n": 5,
+       "p50": 13183174,
+       "p95": 13424973,
+       "p99": 13424973,
+       "stdev": 316161.9489133694
+      },
+      "tx.adapter.body_ns": {
+       "max": 36679,
+       "mean": 2911.2044,
+       "min": 2425,
+       "n": 5000,
+       "p50": 2825,
+       "p95": 3156,
+       "p99": 4559,
+       "stdev": 938.3052703553974
+      },
+      "tx.approve.body_ns": {
+       "max": 251,
+       "mean": 42.372,
+       "min": 30,
+       "n": 750,
+       "p50": 40,
+       "p95": 60,
+       "p99": 150,
+       "stdev": 20.353327982091663
+      },
+      "tx.audit.body_ns": {
+       "max": 240,
+       "mean": 24.836458333333333,
+       "min": 20,
+       "n": 2880,
+       "p50": 20,
+       "p95": 30,
+       "p99": 31,
+       "stdev": 8.35126644434145
+      },
+      "tx.dispatch.body_ns": {
+       "max": 491,
+       "mean": 46.5944,
+       "min": 40,
+       "n": 5000,
+       "p50": 50,
+       "p95": 51,
+       "p99": 80,
+       "stdev": 16.20385144341678
+      },
+      "tx.observe.body_ns": {
+       "max": 501,
+       "mean": 50.15540166204986,
+       "min": 40,
+       "n": 3610,
+       "p50": 50,
+       "p95": 60,
+       "p99": 80,
+       "stdev": 17.832646327827057
+      },
+      "tx.reconcile.body_ns": {
+       "max": 231,
+       "mean": 24.41294964028777,
+       "min": 20,
+       "n": 1390,
+       "p50": 20,
+       "p95": 30,
+       "p99": 40,
+       "stdev": 10.549515287009095
+      },
+      "tx.reserve.body_ns": {
+       "max": 4368,
+       "mean": 127.70896431679722,
+       "min": 40,
+       "n": 11490,
+       "p50": 110,
+       "p95": 240,
+       "p99": 321,
+       "stdev": 100.35551513202708
+      }
+     },
+     "lines_per_sec": 13412.91073780142,
+     "peak_rss_kb": 3028
+    }
+   },
+   "meta": {
+    "generator": "gen_h",
+    "ledger": "in-memory model (simulated)",
+    "templates": {
+     "dup_after_effect": 159,
+     "dup_after_failure": 121,
+     "dup_after_reserve_crash": 128,
+     "dup_before_reserve_crash": 164,
+     "granted_dup_then_exhausted": 150,
+     "restart_between": 130,
+     "uncertain_receipt": 148
+    }
+   },
+   "runs": 5
+  }
+ }
+}

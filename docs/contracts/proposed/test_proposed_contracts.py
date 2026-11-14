@@ -1,0 +1,254 @@
+"""Schema-level positive and negative tests for the PROPOSED M3-06 acceptance contracts
+(D-033 item 4). JSON Schema is a structural check only. Every trusted ingestion path also
+performs the semantic checks in the broker's `contracts` module (broker/src/contracts.rs, Rust
+tests there): kernel canonical resource ids and target binding, strict calendar times, temporal
+order and no future observations. Semantic rules that need state (binding equality at use time,
+ledger-wide single consumption, registry lookup, MAC verification) are specified in
+docs/implementation/M3-ACCEPTANCE-CONTRACTS.md and are tested in code with M3-05 and M3-07.
+
+  python3 docs/contracts/proposed/test_proposed_contracts.py
+"""
+import copy
+import json
+import unittest
+from pathlib import Path
+
+import jsonschema
+
+HERE = Path(__file__).resolve().parent
+SCHEMAS = {n: json.loads((HERE / f"{n}.schema.json").read_text())
+           for n in ("evaluator-registry-entry", "runner-attestation", "evaluation-record-scope")}
+VALID = {n: json.loads((HERE / "examples" / f"{n}.valid.json").read_text()) for n in SCHEMAS}
+CONTEXT = ["tenant_id", "project_id", "task_id", "workflow_id", "transition", "artifact_snapshot_id", "artifact_digest",
+           "canonical_target", "acceptance_policy_id", "acceptance_policy_version", "acceptance_policy_bundle_sha",
+           "state_revision", "acceptance_record_id", "criterion_id"]
+EVALUATOR = ["evaluator_id", "evaluator_version", "implementation_digest", "environment_digest", "registry_revision"]
+
+
+def ok(name, doc):
+    return jsonschema.Draft202012Validator(SCHEMAS[name]).is_valid(doc)
+
+
+def mutated(name, fn):
+    d = copy.deepcopy(VALID[name])
+    fn(d)
+    return d
+
+
+class Contracts(unittest.TestCase):
+    def test_schemas_are_valid_draft_2020_12_and_examples_validate(self):
+        for n, s in SCHEMAS.items():
+            jsonschema.Draft202012Validator.check_schema(s)
+            self.assertTrue(ok(n, VALID[n]), n)
+
+    def test_closed_objects_reject_unknown_members(self):
+        for n in SCHEMAS:
+            self.assertFalse(ok(n, mutated(n, lambda d: d.__setitem__("extra", 1))), n)
+        self.assertFalse(ok("runner-attestation", mutated("runner-attestation", lambda d: d["auth"].__setitem__("sig", "x"))))
+        self.assertFalse(ok("runner-attestation", mutated("runner-attestation", lambda d: d["transition"].__setitem__("x", "y"))))
+
+    def test_every_context_and_evaluator_binding_is_required(self):
+        for n in ("runner-attestation", "evaluation-record-scope"):
+            for f in CONTEXT + EVALUATOR:
+                with self.subTest(contract=n, field=f):
+                    self.assertFalse(ok(n, mutated(n, lambda d: d.pop(f))))
+        for f in ("command_id", "command_digest", "input_digests", "output_digest", "exit_status", "purpose", "auth",
+                  "attestation_id", "fresh_until"):
+            self.assertFalse(ok("runner-attestation", mutated("runner-attestation", lambda d: d.pop(f))), f)
+
+    def test_algorithm_policy_and_tag_format(self):
+        for alg in ("hmac-sha1", "ed25519", "HMAC-SHA256", "none", ""):
+            self.assertFalse(ok("runner-attestation", mutated("runner-attestation", lambda d: d["auth"].__setitem__("alg", alg))), alg)
+            self.assertFalse(ok("evaluator-registry-entry", mutated("evaluator-registry-entry",
+                                                                    lambda d: d["attestation"].__setitem__("alg", alg))), alg)
+        for mac in ("A" * 64, "a" * 63, "a" * 65, "zz" * 32, ""):
+            self.assertFalse(ok("runner-attestation", mutated("runner-attestation", lambda d: d["auth"].__setitem__("mac", mac))), mac)
+        self.assertFalse(ok("runner-attestation", mutated("runner-attestation", lambda d: d.__setitem__("purpose", "writ.permit.v1"))))
+
+    def test_registry_scope_is_explicit_and_class_trust_coherent(self):
+        r = "evaluator-registry-entry"
+        self.assertFalse(ok(r, mutated(r, lambda d: d.pop("scope"))))
+        self.assertFalse(ok(r, mutated(r, lambda d: d.__setitem__("scope", "global"))))
+        self.assertFalse(ok(r, mutated(r, lambda d: d["scope"].pop("project_id"))))
+        self.assertFalse(ok(r, mutated(r, lambda d: d.pop("command"))), "mechanical needs a registered command")
+        self.assertFalse(ok(r, mutated(r, lambda d: d.__setitem__("trust", "MA"))), "mechanical is trust M")
+        self.assertFalse(ok(r, mutated(r, lambda d: d.__setitem__("status", "revoked"))), "revoked needs revoked_at")
+        self.assertTrue(ok(r, mutated(r, lambda d: d.update(status="revoked", revoked_at="2026-11-08T00:00:00Z"))))
+        self.assertFalse(ok(r, mutated(r, lambda d: d.__setitem__("revoked_at", "2026-11-08T00:00:00Z"))), "active with revoked_at")
+        self.assertFalse(ok(r, mutated(r, lambda d: d.__setitem__("criteria", []))))
+
+    def test_field_types_are_strict(self):
+        a = "runner-attestation"
+        for f, v in (("artifact_digest", "sha256:" + "B" * 64), ("started_at", "2026-11-07T10:58:00.5Z"),
+                     ("fresh_until", "2026-11-07T11:30:00+00:00"), ("exit_status", 256), ("state_revision", -1),
+                     ("state_revision", 2 ** 53), ("canonical_target", "workflow:T1/p1/wf-1"), ("input_digests", []),
+                     ("criterion_id", "Build")):
+            self.assertFalse(ok(a, mutated(a, lambda d: d.__setitem__(f, v))), f"{f}={v!r}")
+
+    def test_canonical_target_dot_segments_are_rejected_structurally(self):
+        for n in ("runner-attestation", "evaluation-record-scope"):
+            for t in ("workflow:t1/p1/..", "workflow:t1/p1/.", "workflow:t1/p1/../wf-1", "workflow:t1/p1/./wf-1",
+                      "workflow:t1/p1/wf-1/..", "workflow:t1/../p1/wf-1", "workflow:t1/p1//wf-1", "workflow:t1/p1/"):
+                with self.subTest(contract=n, target=t):
+                    self.assertFalse(ok(n, mutated(n, lambda d: d.__setitem__("canonical_target", t))))
+            # Dots inside a segment stay structurally valid (the semantic binding check decides).
+            for t in ("workflow:t1/p1/wf-1", "workflow:t1/p1/...", "workflow:t1/p1/a.b"):
+                with self.subTest(contract=n, target=t):
+                    self.assertTrue(ok(n, mutated(n, lambda d: d.__setitem__("canonical_target", t))))
+
+    def test_invalid_calendar_dates_pass_json_schema_alone(self):
+        # Documented limitation: the schema pattern is structural, so these impossible times are
+        # ACCEPTED by JSON Schema alone. They are rejected by the semantic validator
+        # (broker::contracts, Timestamp::parse_strict; Rust test
+        # contracts::tests::invalid_calendar_times_are_rejected), which every trusted ingestion
+        # path runs. Python cannot call it, so this test pins the structural behaviour only.
+        for t in ("2026-02-30T00:00:00Z", "2026-13-01T00:00:00Z", "2026-11-07T24:00:00Z"):
+            with self.subTest(time=t):
+                self.assertTrue(ok("runner-attestation", mutated("runner-attestation", lambda d: d.__setitem__("finished_at", t))))
+                self.assertTrue(ok("evaluation-record-scope", mutated("evaluation-record-scope", lambda d: d.__setitem__("issued_at", t))))
+                self.assertTrue(ok("evaluator-registry-entry", mutated("evaluator-registry-entry", lambda d: d.__setitem__("published_at", t))))
+
+    def test_mechanical_evaluation_needs_an_attestation(self):
+        e = "evaluation-record-scope"
+        self.assertFalse(ok(e, mutated(e, lambda d: d.pop("attestation_ref"))))
+        self.assertTrue(ok(e, mutated(e, lambda d: (d.pop("attestation_ref"), d.__setitem__("evaluator_trust", "E")))))
+        self.assertFalse(ok(e, mutated(e, lambda d: d.__setitem__("mode", "verified"))))
+
+
+AAR_SCHEMA = json.loads((HERE / "authenticated-acceptance-record-1.schema.json").read_text())
+# Produced by the code: the Rust test
+# acceptance::tests::the_schema_example_is_the_record_the_code_produces_and_verifies asserts this file
+# equals the record broker::acceptance signs and that verify_record accepts it.
+AAR_VALID = json.loads((HERE / "examples" / "authenticated-acceptance-record.valid.json").read_text())
+
+
+def aar_ok(doc):
+    return jsonschema.Draft202012Validator(AAR_SCHEMA).is_valid(doc)
+
+
+def aar(fn):
+    d = copy.deepcopy(AAR_VALID)
+    fn(d)
+    return d
+
+
+class AuthenticatedAcceptanceRecord(unittest.TestCase):
+    """authenticated-acceptance-record/1 (D-036 item 1, M3-06 item f). Structural only: MAC, projection
+    digest, unique criterion ids, one evaluation per criterion and the attestation-for-trust-M rule are
+    checked in broker::acceptance::verify_record."""
+
+    def test_schema_is_valid_draft_2020_12_and_the_code_produced_record_validates(self):
+        jsonschema.Draft202012Validator.check_schema(AAR_SCHEMA)
+        self.assertTrue(aar_ok(AAR_VALID))
+        self.assertTrue(aar_ok(aar(lambda d: d.__setitem__("mode", "advisory"))), "advisory is refused semantically")
+        self.assertTrue(aar_ok(aar(lambda d: d["auth"].__setitem__("mac", "A" * 64))), "the verifier accepts either hex case")
+
+    def test_closed_objects_reject_unknown_members(self):
+        for path in ((), ("auth",), ("record",), ("record", "transition")):
+            def add(d, path=path):
+                for k in path:
+                    d = d[k]
+                d["extra"] = 1
+            self.assertFalse(aar_ok(aar(add)), path)
+        self.assertFalse(aar_ok(aar(lambda d: d["evaluations"][0].__setitem__("extra", 1))))
+        self.assertFalse(aar_ok(aar(lambda d: d["record"]["criteria"][0].__setitem__("extra", 1))))
+
+    def test_every_member_is_required(self):
+        for f in list(AAR_VALID):
+            self.assertFalse(aar_ok(aar(lambda d: d.pop(f))), f)
+        for f in list(AAR_VALID["auth"]):
+            self.assertFalse(aar_ok(aar(lambda d: d["auth"].pop(f))), f)
+        for f in list(AAR_VALID["record"]):
+            self.assertFalse(aar_ok(aar(lambda d: d["record"].pop(f))), f)
+        for f in list(AAR_VALID["evaluations"][0]):
+            self.assertFalse(aar_ok(aar(lambda d: d["evaluations"][0].pop(f))), f)
+        for f in list(AAR_VALID["record"]["criteria"][0]):
+            self.assertFalse(aar_ok(aar(lambda d: d["record"]["criteria"][0].pop(f))), f)
+
+    def test_constants_algorithm_and_tag(self):
+        for k, v in (("contract_version", "authenticated-acceptance-record/2"), ("purpose", "writ.runner-attestation.v1"),
+                     ("mode", "verified"), ("issuer", "Acceptance")):
+            self.assertFalse(aar_ok(aar(lambda d: d.__setitem__(k, v))), k)
+        for alg in ("hmac-sha1", "ed25519", "HMAC-SHA256", "none", ""):
+            self.assertFalse(aar_ok(aar(lambda d: d["auth"].__setitem__("alg", alg))), alg)
+        for mac in ("a" * 63, "a" * 65, "zz" * 32, ""):
+            self.assertFalse(aar_ok(aar(lambda d: d["auth"].__setitem__("mac", mac))), mac)
+        self.assertFalse(aar_ok(aar(lambda d: d["record"].__setitem__("contract_version", "m1-draft-2"))))
+
+    def test_field_types_are_strict(self):
+        e = lambda k, v: (lambda d: d["evaluations"][0].__setitem__(k, v))
+        r = lambda k, v: (lambda d: d["record"].__setitem__(k, v))
+        c = lambda k, v: (lambda d: d["record"]["criteria"][0].__setitem__(k, v))
+        for fn in (e("attestation_id", ""), e("attestation_id", 1), e("registry_revision", -1), e("registry_revision", 2 ** 53),
+                   e("evaluator_version", ""), e("evaluator_version", "1 0"), e("evidence_digests", ["sha256:" + "B" * 64]),
+                   e("criterion_id", "Build"), e("evaluator_id", "1runner"),
+                   r("state_revision", -1), r("acceptance_policy_version", "v3"), r("status", "verified"),
+                   r("issued_at", "2026-11-07T10:00:00+00:00"), r("criteria", []), r("workflow_id", "1wf"),
+                   c("status", "passed"), c("evaluator_trust", "X"), c("mandatory", "true"), c("required_class", "manual")):
+            self.assertFalse(aar_ok(aar(fn)))
+        self.assertFalse(aar_ok(aar(lambda d: d.__setitem__("evaluations", []))))
+
+    def test_mandatory_model_assisted_criterion_is_refused(self):
+        self.assertFalse(aar_ok(aar(lambda d: d["record"]["criteria"][0].__setitem__("required_class", "model_assisted"))))
+        self.assertTrue(aar_ok(aar(lambda d: d["record"]["criteria"][0].update(required_class="model_assisted", mandatory=False))))
+
+
+AAR2_SCHEMA = json.loads((HERE / "authenticated-acceptance-record-2.schema.json").read_text())
+# Produced by the code: the Rust test
+# acceptance::record_v2_tests::the_v2_schema_example_is_the_record_the_code_produces_and_verifies asserts
+# this file equals the /2 record broker::acceptance signs and that verify_record accepts it.
+AAR2_VALID = json.loads((HERE / "examples" / "authenticated-acceptance-record-2.valid.json").read_text())
+
+
+def aar2_ok(doc):
+    return jsonschema.Draft202012Validator(AAR2_SCHEMA).is_valid(doc)
+
+
+def aar2(fn):
+    d = copy.deepcopy(AAR2_VALID)
+    fn(d)
+    return d
+
+
+class AuthenticatedAcceptanceRecordV2(unittest.TestCase):
+    """authenticated-acceptance-record/2 (M4-01, D-040 O-4, I-5). Structural only: signoff_id non-null
+    exactly for trust H, the MAC over the contract version and the use-time signoff checks are in code."""
+
+    def test_schema_is_valid_draft_2020_12_and_the_code_produced_record_validates(self):
+        jsonschema.Draft202012Validator.check_schema(AAR2_SCHEMA)
+        self.assertTrue(aar2_ok(AAR2_VALID))
+        self.assertEqual([e["signoff_id"] for e in AAR2_VALID["evaluations"]], [None, None, "so-1"])
+        self.assertEqual([c["evaluator_trust"] for c in AAR2_VALID["record"]["criteria"]], ["M", "E", "H"])
+
+    def test_versions_are_not_interchangeable(self):
+        self.assertFalse(aar2_ok(AAR_VALID), "a /1 record is not a /2 record")
+        self.assertFalse(aar_ok(AAR2_VALID), "a /2 record is not a /1 record")
+        self.assertFalse(aar2_ok(aar2(lambda d: d.__setitem__("contract_version", "authenticated-acceptance-record/1"))))
+        self.assertFalse(aar_ok(aar2(lambda d: d.__setitem__("contract_version", "authenticated-acceptance-record/1"))),
+                         "a /1 record cannot carry signoff_id")
+        self.assertFalse(aar2_ok(aar2(lambda d: d.__setitem__("purpose", "writ.acceptance-record.v2"))))
+
+    def test_signoff_id_is_required_typed_and_closed(self):
+        for i in range(len(AAR2_VALID["evaluations"])):
+            self.assertFalse(aar2_ok(aar2(lambda d: d["evaluations"][i].pop("signoff_id"))), i)
+        for v in ("", "So-1", 1, ["so-1"], {"id": "so-1"}, "x" * 65):
+            self.assertFalse(aar2_ok(aar2(lambda d: d["evaluations"][2].__setitem__("signoff_id", v))), repr(v))
+        self.assertFalse(aar2_ok(aar2(lambda d: d["evaluations"][2].__setitem__("signoff", "so-1"))))
+        # Null for the human criterion is structurally valid; verify_record refuses it (trust H rule in code).
+        self.assertTrue(aar2_ok(aar2(lambda d: d["evaluations"][2].__setitem__("signoff_id", None))))
+
+    def test_every_member_is_required_and_objects_are_closed(self):
+        for f in list(AAR2_VALID):
+            self.assertFalse(aar2_ok(aar2(lambda d: d.pop(f))), f)
+        for f in list(AAR2_VALID["evaluations"][0]):
+            self.assertFalse(aar2_ok(aar2(lambda d: d["evaluations"][0].pop(f))), f)
+        for path in ((), ("auth",), ("record",), ("record", "transition")):
+            def add(d, path=path):
+                for k in path:
+                    d = d[k]
+                d["extra"] = 1
+            self.assertFalse(aar2_ok(aar2(add)), path)
+
+
+if __name__ == "__main__":
+    unittest.main()

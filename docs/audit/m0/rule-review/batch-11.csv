@@ -1,0 +1,11 @@
+rule_id,proposed_disposition,reviewed_disposition,intent_survives_in_v2,v2_destination,enforcement_verified,conflicts_or_duplicates,corrections,reviewer,reviewed_at,rationale
+SCALE-CONFIG-001,advisory,,,,,,,,,
+SCALE-DB-001,advisory,,,,,,,,,
+SCALE-DB-002,advisory,,,,,,,,,
+SCALE-HEALTH-001,advisory,,,,,,,,,
+SCALE-HEALTH-002,advisory,,,,,,,,,
+SCALE-MIGRATE-001,advisory,,,,,,,,,
+SCALE-QUEUE-001,advisory,,,,,,,,,
+SCALE-QUEUE-002,advisory,,,,,,,,,
+SCALE-STATELESS-001,candidate_enforced,,,,,,,,,
+SCALE-STATELESS-002,advisory,,,,,,,,,

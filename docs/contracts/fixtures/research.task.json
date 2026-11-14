@@ -1,0 +1,26 @@
+{
+  "contract_version": "2.0",
+  "task_id": "fixture-research",
+  "tenant_id": "fixture-tenant",
+  "project_id": "fixture-project",
+  "pack_id": "org.writ.research",
+  "task_type": "research.investigate",
+  "goal": "Investigate a contested noncoding claim using dated sources",
+  "inputs": {
+    "question": "What evidence supports claim A and what contradicts it?",
+    "time_horizon": "last-12-months"
+  },
+  "required_artifacts": [
+    "research.claim-ledger"
+  ],
+  "evidence_requirements": [
+    "dated_source",
+    "counterevidence",
+    "citation_locator"
+  ],
+  "limits": {
+    "max_duration_seconds": 600,
+    "max_cost_usd": 0,
+    "max_model_calls": 3
+  }
+}

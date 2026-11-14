@@ -1,0 +1,5 @@
+# Pinned toolchain for the production workspace (same pin as M1, m1/tools/install-toolchains.sh).
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["clippy", "rustfmt"]

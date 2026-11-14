@@ -94,8 +94,10 @@ validate: check-venv
 check: test bench validate
 	@echo "All checks passed."
 
-docs: check-venv
-	$(PYTHON) scripts/render-docs.py
+# V2 branch: legacy docs renderer would recreate deleted V1 reference pages.
+# Validate the V2 source of truth instead; this target has no venv requirement.
+docs:
+	python3 scripts/check-v2-docs.py
 
-docs-check: check-venv
-	$(PYTHON) scripts/render-docs.py --check
+docs-check:
+	python3 scripts/check-v2-docs.py

@@ -1,0 +1,25 @@
+== 20261111 2026-11-12T15:15:31Z
+guard 60.375 3.77 ['1-minute load average 3.77 above 1.0', 'CPU temperature 60.375 C above start limit 60.0 C']
+guard 53.0 1.62 ['1-minute load average 1.62 above 1.0']
+guard 49.5 1.75 ['1-minute load average 1.75 above 1.0']
+guard 54.25 0.81 PASS
+bench: MEASUREMENT; correctness failures: 0; wrote m1/bench/results/2026-11-12-conc-corrected-seed-20261111.json
+exit=0
+== 20261121 2026-11-12T15:18:37Z
+guard 79.375 0.82 ['CPU temperature 79.375 C above start limit 60.0 C']
+guard 60.375 0.68 ['CPU temperature 60.375 C above start limit 60.0 C']
+guard 55.5 1.02 ['1-minute load average 1.02 above 1.0']
+guard 61.375 0.91 ['CPU temperature 61.375 C above start limit 60.0 C']
+guard 54.0 0.72 PASS
+bench: MEASUREMENT; correctness failures: 0; wrote m1/bench/results/2026-11-12-conc-corrected-seed-20261121.json
+exit=0
+== 20261131 2026-11-12T15:22:42Z
+guard 81.75 1.22 ['1-minute load average 1.22 above 1.0', 'CPU temperature 81.75 C above start limit 60.0 C']
+guard 54.0 1.02 ['1-minute load average 1.02 above 1.0']
+guard 56.0 1.36 ['1-minute load average 1.36 above 1.0']
+guard 65.375 1.04 ['1-minute load average 1.04 above 1.0', 'CPU temperature 65.375 C above start limit 60.0 C']
+guard 61.5 0.99 ['CPU temperature 61.5 C above start limit 60.0 C']
+guard 50.25 0.57 PASS
+bench: MEASUREMENT; correctness failures: 0; wrote m1/bench/results/2026-11-12-conc-corrected-seed-20261131.json
+exit=0
+ALLDONE

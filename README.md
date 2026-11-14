@@ -10,7 +10,9 @@ Built and maintained by Lucio Saldivar at [Infinri](https://infinri.com/about). 
 
 ![Writ: just-in-time retrieval, acceptance gates and persistent memory, shown as a library where a gatekeeper asks for approval first. Infinri branding.](docs/assets/writ-hero.png)
 
-[Watch demo](#watch-writ-in-action) · [Quick start](#quick-start) · [Acceptance gates](#acceptance-gates) · [Why was I blocked?](docs/install.md#why-was-i-blocked) · [Documentation](#documentation) · [Support Writ](#support-writ)
+[Watch demo](#watch-writ-in-action) · [Quick start](#quick-start) · [Acceptance gates](#acceptance-gates) · [Why was I blocked?](https://github.com/infinri/Writ/blob/main/docs/install.md#why-was-i-blocked) · [Documentation](#documentation) · [Support Writ](#support-writ)
+
+> **Writ V2 architecture (in development):** [Read the V2 overview](V2-ARCHITECTURE.md) · [Explore the HTML architecture site](https://infinri.github.io/Writ/v2/docs/architecture/index.html) · [M0 implementation checklist](docs/implementation/M0-START-HERE.md). The installation and feature details below document the existing V1 release on main; V2 is not released.
 
 ## Watch Writ in action
 
@@ -32,7 +34,7 @@ Writ moves selected requirements out of the prompt and into code that runs when 
 
 Context delivers the rules, methodology and past decisions that fit the current prompt, file and workflow phase. Enforcement checks each attempted action and blocks it, asks you, or reports a finding. Continuity records what you approved and why files changed, so the next session starts from it.
 
-Writ constrains a cooperative agent; it is not a sandbox. See [Evidence and limits](#evidence-and-limits). The longer argument is in [`docs/instructions-vs-enforcement.md`](docs/instructions-vs-enforcement.md).
+Writ constrains a cooperative agent; it is not a sandbox. See [Evidence and limits](#evidence-and-limits). The longer argument is in [`docs/instructions-vs-enforcement.md`](https://github.com/infinri/Writ/blob/main/docs/instructions-vs-enforcement.md).
 
 ## Acceptance gates
 
@@ -119,7 +121,7 @@ If you meant it, reply `approved anyway`; that waives the request check and is r
 
 ### Why the agent cannot approve itself
 
-Your reply is read by a hook on Claude Code's prompt-submit event, which mints a single-use token bound to the pending gate and the plan's fingerprint. Advancing a gate claims that token. The agent has no way to mint one, the token and session-state files are write-protected (`[ENF-GATE-STATE]`), and a tokenless attempt is refused and logged as `agent_self_approval_blocked`. `/writ-approve` sends the same token through a slash command; it cannot create one. The full contract is in [`docs/reference/session-and-gates.md`](docs/reference/session-and-gates.md).
+Your reply is read by a hook on Claude Code's prompt-submit event, which mints a single-use token bound to the pending gate and the plan's fingerprint. Advancing a gate claims that token. The agent has no way to mint one, the token and session-state files are write-protected (`[ENF-GATE-STATE]`), and a tokenless attempt is refused and logged as `agent_self_approval_blocked`. `/writ-approve` sends the same token through a slash command; it cannot create one. The full contract is in [`docs/reference/session-and-gates.md`](https://github.com/infinri/Writ/blob/main/docs/reference/session-and-gates.md).
 
 ## Quick start
 
@@ -143,7 +145,7 @@ Your reply is read by a hook on Claude Code's prompt-submit event, which mints a
    Success: `status` prints JSON with `"status": "healthy"`, `"index_state": "warm"` and a non-zero `"rule_count"`; `doctor` prints a `STATUS  NAME  DETAIL` table and exits 0 when no row is `fail`. `Service not running. Start with: writ serve` means the daemon is down. In Claude Code the status bar shows `Writ ctx <n>%`, and a prompt carries a `--- WRIT RULES (...) ---` block or a `[Writ: no matching rules found for this task. ...]` line. Inside Claude Code the plugin's `bin/` is on the Bash tool's PATH, so the agent can run `writ status` directly.
 6. Next: give it a task (auto-route sets the mode), or declare one with `writ mode set <conversation|debug|investigate|review|work> <session_id>`. Once the repository is a registered project (approving a plan there, or a captured commit, registers it), `writ docs ingest --repo <repo root>` makes its docs, ADRs and READMEs retrievable.
 
-Cloning instead, or something failed? [`docs/install.md`](docs/install.md) covers the clone install (`bash scripts/bootstrap.sh`), updates, the systemd service and troubleshooting.
+Cloning instead, or something failed? [`docs/install.md`](https://github.com/infinri/Writ/blob/main/docs/install.md) covers the clone install (`bash scripts/bootstrap.sh`), updates, the systemd service and troubleshooting.
 
 ## Your first task
 
@@ -174,11 +176,11 @@ The three end-of-turn checks for tests, quality scores and reply style exit with
 
 Each prompt gets up to five sections, within 9,500 tokens: ranked rules, the always-on floor, methodology, decision recall and project documents. Mandatory rules are never ranked; they arrive on the always-on floor. Ranked retrieval abstains, returning nothing, when the best raw cosine is under 0.30. At write time Writ adds the rules for that file, plus the decision behind the file's last change, open questions about it and files that usually change with it.
 
-Rules are context, not enforcement: a rule is text the model reads. What refuses an action is the fixed set of hooks above, which does not change when you add, edit or remove a rule. Agent proposals are stored provisional and are still injected; promoting one needs your approval token. See [`docs/reference/retrieval.md`](docs/reference/retrieval.md#8-custom-rules-and-what-enforces-them).
+Rules are context, not enforcement: a rule is text the model reads. What refuses an action is the fixed set of hooks above, which does not change when you add, edit or remove a rule. Agent proposals are stored provisional and are still injected; promoting one needs your approval token. See [`docs/reference/retrieval.md`](https://github.com/infinri/Writ/blob/main/docs/reference/retrieval.md#8-custom-rules-and-what-enforces-them).
 
 ### Enforcement
 
-Hooks run on Claude Code events (the generated list is [`docs/reference/hooks.md`](docs/reference/hooks.md)). The mode decides which checks apply:
+Hooks run on Claude Code events (the generated list is [`docs/reference/hooks.md`](https://github.com/infinri/Writ/blob/main/docs/reference/hooks.md)). The mode decides which checks apply:
 
 | Mode | Use it for | What it adds |
 |---|---|---|
@@ -188,7 +190,7 @@ Hooks run on Claude Code events (the generated list is [`docs/reference/hooks.md
 | `debug` | Diagnosing one failure | Refuses source edits until a root cause is written, and source reads until evidence is recorded |
 | `work` | Building or changing code | The plan and test-skeleton gates |
 
-If the daemon does not answer, the write hooks run the same check locally from the session file. Only when no verdict can be obtained at all does a write proceed; `WRIT_STRICT=1` refuses it instead (write path only). Credential refusals and gate-state protection need no daemon. Approvals fail visibly while the daemon is down. Details: [`docs/reference/session-and-gates.md`](docs/reference/session-and-gates.md).
+If the daemon does not answer, the write hooks run the same check locally from the session file. Only when no verdict can be obtained at all does a write proceed; `WRIT_STRICT=1` refuses it instead (write path only). Credential refusals and gate-state protection need no daemon. Approvals fail visibly while the daemon is down. Details: [`docs/reference/session-and-gates.md`](https://github.com/infinri/Writ/blob/main/docs/reference/session-and-gates.md).
 
 ### Continuity
 
@@ -198,13 +200,13 @@ If the daemon does not answer, the write hooks run the same check locally from t
 - Open questions: `writ question open`, `list`, `answer` and `close`.
 - Project documents: `writ docs ingest`.
 
-All of these are keyed by project; the shared rulebook is cross-project. See [`docs/reference/decision-memory.md`](docs/reference/decision-memory.md#continuity-at-a-glance).
+All of these are keyed by project; the shared rulebook is cross-project. See [`docs/reference/decision-memory.md`](https://github.com/infinri/Writ/blob/main/docs/reference/decision-memory.md#continuity-at-a-glance).
 
 ## Evidence and limits
 
 ### Implemented and testable
 
-The gates, the approval binding, the credential classifier, the project boundary and the compaction handoff are code in this repository. Read them in source and trigger them yourself; [`docs/reference/session-and-gates.md`](docs/reference/session-and-gates.md) names where each one lives.
+The gates, the approval binding, the credential classifier, the project boundary and the compaction handoff are code in this repository. Read them in source and trigger them yourself; [`docs/reference/session-and-gates.md`](https://github.com/infinri/Writ/blob/main/docs/reference/session-and-gates.md) names where each one lives.
 
 ### Measured
 
@@ -221,11 +223,11 @@ Twenty negatives is a small set; the interval is wide.
 
 Latency, retrieval alone, warm in-process indexes, one laptop: 1.02 ms p95 over the 193 gold queries (2026-08-05, 287-rule corpus) and 0.827 ms p95 in a synthetic 10,000-rule run (2026-08-01).
 
-These measure whether the right rule is ranked and whether nothing is injected when nothing fits. They do not measure code quality, rule compliance, or whether agents behave better. Sources: [`SCALE_BENCHMARK_RESULTS.md`](SCALE_BENCHMARK_RESULTS.md), [`benchmarks/ITEM5-PHASE234-RANKING-2026-10-07.md`](benchmarks/ITEM5-PHASE234-RANKING-2026-10-07.md), [`benchmarks/CLEAN-REWORD-2026-10-06.md`](benchmarks/CLEAN-REWORD-2026-10-06.md), [`benchmarks/THRESHOLD-SWEEP-2026-10-06.md`](benchmarks/THRESHOLD-SWEEP-2026-10-06.md).
+These measure whether the right rule is ranked and whether nothing is injected when nothing fits. They do not measure code quality, rule compliance, or whether agents behave better. Sources: [`SCALE_BENCHMARK_RESULTS.md`](https://github.com/infinri/Writ/blob/main/SCALE_BENCHMARK_RESULTS.md), [`benchmarks/ITEM5-PHASE234-RANKING-2026-10-07.md`](benchmarks/ITEM5-PHASE234-RANKING-2026-10-07.md), [`benchmarks/CLEAN-REWORD-2026-10-06.md`](benchmarks/CLEAN-REWORD-2026-10-06.md), [`benchmarks/THRESHOLD-SWEEP-2026-10-06.md`](benchmarks/THRESHOLD-SWEEP-2026-10-06.md).
 
-Retrieval-quality figures published before 2026-08-06 were single draws from a nondeterministic pipeline, and the 7,058 figure once cited from a monthly review is a cumulative line count, not a count of events in the window. Both are recorded in [`ERRATA.md`](ERRATA.md).
+Retrieval-quality figures published before 2026-08-06 were single draws from a nondeterministic pipeline, and the 7,058 figure once cited from a monthly review is a cumulative line count, not a count of events in the window. Both are recorded in [`ERRATA.md`](https://github.com/infinri/Writ/blob/main/ERRATA.md).
 
-Observational records: [`docs/pressure-runs/`](docs/pressure-runs/) holds manual adversarial runs from 2026-04-22 to 2026-05-09 (PSR-001 to PSR-008 and re-runs): single runs, graded by a model, recorded before the current approval rules. Failures are written up as failures. Most folders hold a transcript and an analysis; not every folder holds every artifact. [`docs/monthly-reviews/`](docs/monthly-reviews/) holds one operational review (2026-05).
+Observational records: [`docs/pressure-runs/`](https://github.com/infinri/Writ/tree/main/docs/pressure-runs/) holds manual adversarial runs from 2026-04-22 to 2026-05-09 (PSR-001 to PSR-008 and re-runs): single runs, graded by a model, recorded before the current approval rules. Failures are written up as failures. Most folders hold a transcript and an analysis; not every folder holds every artifact. [`docs/monthly-reviews/`](https://github.com/infinri/Writ/tree/main/docs/monthly-reviews/) holds one operational review (2026-05).
 
 ### Intended, not demonstrated
 
@@ -243,32 +245,32 @@ These are future work, not shipped features.
 
 - The gates check that a plan and tests exist in the right shape, not that they are good. Reading them is your job.
 - Writ constrains a cooperative agent, not an adversarial one.
-- Shell inspection is pattern-based (redirections, `tee`, `cp`/`mv`, `sed -i`, interpreter one-liners), not a sandbox. It misses paths built from variables, `eval`, `sh -c` bodies and `python -m MODULE`; the full list is in [`SECURITY.md`](SECURITY.md).
+- Shell inspection is pattern-based (redirections, `tee`, `cp`/`mv`, `sed -i`, interpreter one-liners), not a sandbox. It misses paths built from variables, `eval`, `sh -c` bodies and `python -m MODULE`; the full list is in [`SECURITY.md`](https://github.com/infinri/Writ/blob/main/SECURITY.md).
 - The egress guard asks; it cannot see what a payload contains.
 - Some checks report rather than refuse (see the four kinds above).
 - When no verdict can be obtained at all, a write proceeds, as described under Enforcement.
 - The daemon has no authentication and binds localhost.
-- Your rules, code and logs stay local. Optional Bitbucket Cloud PR sync is the only outbound call the Writ daemon and CLI make at runtime; the install downloads packages and the embedding model once ([`SECURITY.md`](SECURITY.md)).
+- Your rules, code and logs stay local. Optional Bitbucket Cloud PR sync is the only outbound call the Writ daemon and CLI make at runtime; the install downloads packages and the embedding model once ([`SECURITY.md`](https://github.com/infinri/Writ/blob/main/SECURITY.md)).
 
 ## Documentation
 
 | If you want to... | Read |
 |---|---|
 | Watch a real session with approval gates and specialist agents | [81-second demo](https://infinri.github.io/Writ/docs/demo.html) |
-| Install, update, troubleshoot, or find out why you were blocked | [`docs/install.md`](docs/install.md) |
-| Run it day to day: modes, gates, the CLI | [`HANDBOOK.md`](HANDBOOK.md) |
-| Know the exact gate and approval contract | [`docs/reference/session-and-gates.md`](docs/reference/session-and-gates.md) |
-| Configure it, including environment variables | [`docs/reference/configuration.md`](docs/reference/configuration.md) |
-| See how rules are selected, and add your own | [`docs/reference/retrieval.md`](docs/reference/retrieval.md) |
-| Use decision memory and continuity | [`docs/reference/decision-memory.md`](docs/reference/decision-memory.md) |
-| Read the trust model and what leaves your machine | [`SECURITY.md`](SECURITY.md) |
-| Check benchmark method and results | [`SCALE_BENCHMARK_RESULTS.md`](SCALE_BENCHMARK_RESULTS.md) |
-| Understand why enforcement differs from instructions | [`docs/instructions-vs-enforcement.md`](docs/instructions-vs-enforcement.md) |
-| Read the system design | [`docs/reference/architecture.md`](docs/reference/architecture.md) |
-| Look up generated CLI and hook tables | [`docs/reference/cli.md`](docs/reference/cli.md), [`docs/reference/hooks.md`](docs/reference/hooks.md) |
-| Follow releases and corrections | [`CHANGELOG.md`](CHANGELOG.md), [`ERRATA.md`](ERRATA.md) |
+| Install, update, troubleshoot, or find out why you were blocked | [`docs/install.md`](https://github.com/infinri/Writ/blob/main/docs/install.md) |
+| Run it day to day: modes, gates, the CLI | [`HANDBOOK.md`](https://github.com/infinri/Writ/blob/main/HANDBOOK.md) |
+| Know the exact gate and approval contract | [`docs/reference/session-and-gates.md`](https://github.com/infinri/Writ/blob/main/docs/reference/session-and-gates.md) |
+| Configure it, including environment variables | [`docs/reference/configuration.md`](https://github.com/infinri/Writ/blob/main/docs/reference/configuration.md) |
+| See how rules are selected, and add your own | [`docs/reference/retrieval.md`](https://github.com/infinri/Writ/blob/main/docs/reference/retrieval.md) |
+| Use decision memory and continuity | [`docs/reference/decision-memory.md`](https://github.com/infinri/Writ/blob/main/docs/reference/decision-memory.md) |
+| Read the trust model and what leaves your machine | [`SECURITY.md`](https://github.com/infinri/Writ/blob/main/SECURITY.md) |
+| Check benchmark method and results | [`SCALE_BENCHMARK_RESULTS.md`](https://github.com/infinri/Writ/blob/main/SCALE_BENCHMARK_RESULTS.md) |
+| Understand why enforcement differs from instructions | [`docs/instructions-vs-enforcement.md`](https://github.com/infinri/Writ/blob/main/docs/instructions-vs-enforcement.md) |
+| Read the system design | [`docs/reference/architecture.md`](https://github.com/infinri/Writ/blob/main/docs/reference/architecture.md) |
+| Look up generated CLI and hook tables | [`docs/reference/cli.md`](https://github.com/infinri/Writ/blob/main/docs/reference/cli.md), [`docs/reference/hooks.md`](https://github.com/infinri/Writ/blob/main/docs/reference/hooks.md) |
+| Follow releases and corrections | [`CHANGELOG.md`](https://github.com/infinri/Writ/blob/main/CHANGELOG.md), [`ERRATA.md`](https://github.com/infinri/Writ/blob/main/ERRATA.md) |
 
-[`docs/reference/claude-code-blackbox.md`](docs/reference/claude-code-blackbox.md) is reference material that stands on its own: an empirical map of what Claude Code hands a hook and what a hook can hand back, with an evidence tag on every field. Useful whether or not you use Writ.
+[`docs/reference/claude-code-blackbox.md`](https://github.com/infinri/Writ/blob/main/docs/reference/claude-code-blackbox.md) is reference material that stands on its own: an empirical map of what Claude Code hands a hook and what a hook can hand back, with an evidence tag on every field. Useful whether or not you use Writ.
 
 **Architecture in your browser:**
 [overview](https://infinri.github.io/Writ/docs/architecture/index.html) |
@@ -282,7 +284,7 @@ These are future work, not shipped features.
 
 Found a bypass, or a case where a rule you relied on did not hold? That is the most valuable thing you can send. Open an issue with the transcript. For anything exploitable, report privately through [GitHub Security Advisories](https://github.com/infinri/Writ/security/advisories/new) rather than in public.
 
-Rules, code and documentation: [`CONTRIBUTING.md`](CONTRIBUTING.md) covers authoring, review, docs conventions, and how agent-proposed rules are triaged.
+Rules, code and documentation: [`CONTRIBUTING.md`](https://github.com/infinri/Writ/blob/main/CONTRIBUTING.md) covers authoring, review, docs conventions, and how agent-proposed rules are triaged.
 
 ## Support Writ
 
@@ -292,7 +294,7 @@ Writ is free, MIT licensed, and independently built and maintained by Lucio Sald
 
 ## Acknowledgements
 
-**[Superpowers](https://github.com/obra/superpowers), by Jesse Vincent**, for formalizing the discipline Writ builds enforcement around. The architectural disagreement is argued in [`docs/instructions-vs-enforcement.md`](docs/instructions-vs-enforcement.md#superpowers-and-the-definition-of-mandatory).
+**[Superpowers](https://github.com/obra/superpowers), by Jesse Vincent**, for formalizing the discipline Writ builds enforcement around. The architectural disagreement is argued in [`docs/instructions-vs-enforcement.md`](https://github.com/infinri/Writ/blob/main/docs/instructions-vs-enforcement.md#superpowers-and-the-definition-of-mandatory).
 
 **[Jolli](https://www.jolli.ai/), by [JolliAI](https://github.com/jolliai/jolliai)**, for work on preserving development reasoning after a session ends. Writ's digest eviction policy is adapted from Jolli's ContextCompiler, the policy rather than the code, and `writ/session/recall.py` documents the adaptation.
 

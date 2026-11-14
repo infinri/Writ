@@ -1,0 +1,10 @@
+{
+  "fixture://policy/document-1": {
+    "published_at": "2026-10-01T00:00:00Z",
+    "content": "Section 1. Purpose. This policy governs travel reimbursement.\nSection 2. Limits. Meals are reimbursed up to 50 per day.\nSection 3. Approval. Expenses above 500 require manager approval.\n"
+  },
+  "fixture://rubric/1": {
+    "published_at": "2026-09-01T00:00:00Z",
+    "content": "{\"criteria\": [\"criterion:limits-stated\", \"criterion:approval-threshold-stated\"], \"rubric_id\": \"policy-clarity\", \"version\": \"1\"}"
+  }
+}

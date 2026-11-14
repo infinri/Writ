@@ -1,0 +1,6982 @@
+{
+ "benchmark_version": "v2-0.1",
+ "cold_start": {
+  "launches": 30,
+  "measurements": {
+   "go": {
+    "to_first_answer_s": {
+     "max": 0.0023757849999128666,
+     "mean": 0.002001914566653795,
+     "min": 0.0016676469999765686,
+     "n": 30,
+     "p50": 0.0019975570000951848,
+     "p95": 0.0022627030000421655,
+     "p99": 0.0023757849999128666,
+     "stdev": 0.00016269357627408875
+    }
+   },
+   "rust": {
+    "to_first_answer_s": {
+     "max": 0.0016695619999609335,
+     "mean": 0.0007305227999722774,
+     "min": 0.0005232519999935903,
+     "n": 30,
+     "p50": 0.0007140299999264244,
+     "p95": 0.0009876219999114255,
+     "p99": 0.0016695619999609335,
+     "stdev": 0.00020732717343277713
+    }
+   }
+  },
+  "method": "process launch (decide, one golden case) to first answered line"
+ },
+ "concurrency": {
+  "digest": "sha256:24f6dd8605ddd536c27d297a41d894372ed6932130fefc9d66f1ea11500946de",
+  "levels": {
+   "1": {
+    "decisions": 10000,
+    "measurements": {
+     "go": {
+      "decisions_per_sec": 21527.646161636894,
+      "wall_s": 0.46451896899998246
+     },
+     "rust": {
+      "decisions_per_sec": 31814.120427559938,
+      "wall_s": 0.31432583600008
+     }
+    },
+    "sessions": 1
+   },
+   "10": {
+    "decisions": 10000,
+    "measurements": {
+     "go": {
+      "decisions_per_sec": 85692.39498000852,
+      "wall_s": 0.11669646999985162
+     },
+     "rust": {
+      "decisions_per_sec": 151333.73675869216,
+      "wall_s": 0.06607911900005092
+     }
+    },
+    "sessions": 10
+   },
+   "100": {
+    "decisions": 10000,
+    "measurements": {
+     "go": {
+      "decisions_per_sec": 83684.14914174935,
+      "wall_s": 0.11949694300005831
+     },
+     "rust": {
+      "decisions_per_sec": 184389.1975071674,
+      "wall_s": 0.0542331120000199
+     }
+    },
+    "sessions": 100
+   },
+   "1000": {
+    "decisions": 10000,
+    "measurements": {
+     "go": {
+      "decisions_per_sec": 22757.42056844877,
+      "wall_s": 0.4394171110000116
+     },
+     "rust": {
+      "decisions_per_sec": 51335.478352077655,
+      "wall_s": 0.1947970549999809
+     }
+    },
+    "sessions": 1000
+   }
+  },
+  "method": "decisions split across k simultaneously started single-threaded prototype processes (one per simulated session); wall time until all exit",
+  "seed": 20261133
+ },
+ "correctness": {
+  "checks": {
+   "A.bench_decide_equals_decide": 0,
+   "A.differential": 0,
+   "B-cold.broker.effects_applied_le_consumed_permits": 0,
+   "B-cold.broker.grant_uses_never_exceed_max_uses": 0,
+   "B-cold.broker.refusals_counted_exactly": 0,
+   "B-cold.concurrent_group_equals_a_serialization": 0,
+   "B-cold.timed_output_shape": 0,
+   "B-mem.broker.effects_applied_le_consumed_permits": 0,
+   "B-mem.broker.grant_uses_never_exceed_max_uses": 0,
+   "B-mem.broker.refusals_counted_exactly": 0,
+   "B-mem.concurrent_group_equals_a_serialization": 0,
+   "B-mem.timed_output_shape": 0,
+   "B.broker.effects_applied_le_consumed_permits": 0,
+   "B.broker.grant_uses_never_exceed_max_uses": 0,
+   "B.broker.refusals_counted_exactly": 0,
+   "B.concurrent_group_equals_a_serialization": 0,
+   "B.timed_output_shape": 0,
+   "G.differential": 0,
+   "G.repeat_identical": 0,
+   "H-mem.differential": 0,
+   "H-mem.repeat_identical": 0,
+   "H-mem.timed_output_shape": 0,
+   "H-mem.timed_scenario_equals_plain": 0,
+   "H.differential": 0,
+   "H.repeat_identical": 0,
+   "H.timed_output_shape": 0,
+   "H.timed_scenario_equals_plain": 0,
+   "cold.differential": 0,
+   "concurrency.1.differential": 0,
+   "concurrency.10.differential": 0,
+   "concurrency.100.differential": 0,
+   "concurrency.1000.differential": 0,
+   "sqlite.engine_and_settings_identical": 0,
+   "sqlite.info_available": 0,
+   "sqlite.required_settings": 0
+  },
+  "examples": [],
+  "failed": 0
+ },
+ "environment": {
+  "cpufreq": {
+   "boost": "1",
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4933894,
+     "mean": 3240921,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4933894,
+     "mean": 3240921,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "drivers": [
+    "amd-pstate-epp"
+   ],
+   "energy_performance_preference": [
+    "performance"
+   ],
+   "governors": [
+    "performance"
+   ],
+   "platform_profile": "balanced",
+   "policies": 16,
+   "scaling_max_khz": [
+    "5263061"
+   ],
+   "scaling_min_khz": [
+    "1100947"
+   ]
+  },
+  "hardware": {
+   "cpu_model": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics",
+   "kernel": "6.17.0-40-generic",
+   "logical_cpus": 16,
+   "machine": "x86_64",
+   "memory_mib": 31393,
+   "os": "Ubuntu 24.04.3 LTS"
+  },
+  "load": {
+   "loadavg_1m": 0.83,
+   "loadavg_5m": 1.23
+  },
+  "power": {
+   "batteries": [
+    {
+     "capacity_percent": "85",
+     "name": "BAT1",
+     "status": "Charging"
+    }
+   ],
+   "mains": [
+    {
+     "name": "ACAD",
+     "online": true
+    }
+   ],
+   "on_mains": true,
+   "usb_sources_online": [
+    {
+     "current_max_ua": "3000000",
+     "name": "ucsi-source-psy-USBC000:004",
+     "voltage_max_uv": "5000000"
+    }
+   ]
+  },
+  "thermals": {
+   "cpu_c": 51.875,
+   "cpu_sensor": "k10temp/temp1",
+   "zones_c": {
+    "thermal_zone0:acpitz": 45.8,
+    "thermal_zone1:acpitz": 45.8,
+    "thermal_zone2:acpitz": 48.8,
+    "thermal_zone3:acpitz": 50.8
+   }
+  }
+ },
+ "environment_end": {
+  "cpufreq": {
+   "boost": "1",
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4841196,
+     "mean": 3351003,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4841196,
+     "mean": 3351003,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "drivers": [
+    "amd-pstate-epp"
+   ],
+   "energy_performance_preference": [
+    "performance"
+   ],
+   "governors": [
+    "performance"
+   ],
+   "platform_profile": "balanced",
+   "policies": 16,
+   "scaling_max_khz": [
+    "5263061"
+   ],
+   "scaling_min_khz": [
+    "1100947"
+   ]
+  },
+  "load": {
+   "loadavg_1m": 2.37,
+   "loadavg_5m": 1.79
+  },
+  "power": {
+   "batteries": [
+    {
+     "capacity_percent": "89",
+     "name": "BAT1",
+     "status": "Charging"
+    }
+   ],
+   "mains": [
+    {
+     "name": "ACAD",
+     "online": true
+    }
+   ],
+   "on_mains": true,
+   "usb_sources_online": [
+    {
+     "current_max_ua": "3000000",
+     "name": "ucsi-source-psy-USBC000:004",
+     "voltage_max_uv": "5000000"
+    }
+   ]
+  },
+  "thermals": {
+   "cpu_c": 81.875,
+   "cpu_sensor": "k10temp/temp1",
+   "zones_c": {
+    "thermal_zone0:acpitz": 48.8,
+    "thermal_zone1:acpitz": 49.8,
+    "thermal_zone2:acpitz": 53.8,
+    "thermal_zone3:acpitz": 80.8
+   }
+  }
+ },
+ "environment_samples": [
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4976678,
+     "mean": 3304995,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4976678,
+     "mean": 3304995,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 51.875,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.83,
+   "t_s": 0.0
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4866170,
+     "mean": 2552970,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4866170,
+     "mean": 2552970,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 77.0,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.84,
+   "t_s": 5.0
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4689274,
+     "mean": 3323958,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4689274,
+     "mean": 3280550,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 78.0,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.85,
+   "t_s": 10.0
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5104636,
+     "mean": 2994184,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5104636,
+     "mean": 2994184,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 76.875,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.87,
+   "t_s": 15.0
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4816493,
+     "mean": 3427926,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4816493,
+     "mean": 3427926,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 79.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.96,
+   "t_s": 20.0
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4362759,
+     "mean": 3072904,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4362759,
+     "mean": 3101913,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 58.625,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.96,
+   "t_s": 25.0
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4828448,
+     "mean": 4101775,
+     "min": 3888349
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4828448,
+     "mean": 4101775,
+     "min": 3888349
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 62.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.88,
+   "t_s": 30.0
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5163535,
+     "mean": 3420074,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4957665,
+     "mean": 3304412,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 57.125,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.81,
+   "t_s": 35.0
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5015899,
+     "mean": 3554124,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5015899,
+     "mean": 3089292,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 66.875,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.75,
+   "t_s": 40.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5094532,
+     "mean": 3650189,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5094532,
+     "mean": 3650189,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 57.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.85,
+   "t_s": 45.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4357495,
+     "mean": 3580928,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4040294,
+     "mean": 3556547,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 65.875,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.78,
+   "t_s": 50.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5206144,
+     "mean": 4001476,
+     "min": 3439980
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5206144,
+     "mean": 4001476,
+     "min": 3439980
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 57.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.8,
+   "t_s": 55.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4765451,
+     "mean": 4653408,
+     "min": 3908398
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4765451,
+     "mean": 4653408,
+     "min": 3908398
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 64.0,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.81,
+   "t_s": 60.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5065075,
+     "mean": 3678005,
+     "min": 3357756
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5090383,
+     "mean": 3684740,
+     "min": 3359896
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 56.25,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.75,
+   "t_s": 65.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4944187,
+     "mean": 4137067,
+     "min": 3282026
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4965491,
+     "mean": 4071573,
+     "min": 3282026
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 56.875,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.69,
+   "t_s": 70.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4941281,
+     "mean": 3948695,
+     "min": 3360565
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4990289,
+     "mean": 3969286,
+     "min": 3341601
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 58.25,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.11,
+   "t_s": 75.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4142436,
+     "mean": 3361022,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4519929,
+     "mean": 3445109,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 55.0,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.03,
+   "t_s": 80.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4940233,
+     "mean": 3649621,
+     "min": 3333534
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4940233,
+     "mean": 3649621,
+     "min": 3333534
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 61.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.1,
+   "t_s": 85.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5052678,
+     "mean": 3817992,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5052678,
+     "mean": 3817992,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 55.625,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.02,
+   "t_s": 90.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4941376,
+     "mean": 4113009,
+     "min": 3446077
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4941376,
+     "mean": 3910136,
+     "min": 3441714
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 63.875,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.01,
+   "t_s": 95.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5007763,
+     "mean": 3740783,
+     "min": 544470
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5007763,
+     "mean": 3740783,
+     "min": 544470
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 56.25,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.01,
+   "t_s": 100.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5176804,
+     "mean": 3685828,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5176804,
+     "mean": 3685828,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 68.875,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.65,
+   "t_s": 105.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4940800,
+     "mean": 3871695,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4940800,
+     "mean": 3871695,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 57.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.52,
+   "t_s": 110.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4850400,
+     "mean": 3602656,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4850400,
+     "mean": 3710308,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 55.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.64,
+   "t_s": 115.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4890399,
+     "mean": 4321694,
+     "min": 3891053
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4890399,
+     "mean": 4283609,
+     "min": 3891053
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 57.875,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.91,
+   "t_s": 120.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4924833,
+     "mean": 3419261,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4924833,
+     "mean": 3414216,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 54.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.83,
+   "t_s": 125.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5189768,
+     "mean": 3065742,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5189768,
+     "mean": 3065742,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 60.0,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.69,
+   "t_s": 130.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4647054,
+     "mean": 3425053,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4647054,
+     "mean": 3425053,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 54.5,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.79,
+   "t_s": 135.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4990963,
+     "mean": 3280606,
+     "min": 796077
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4990918,
+     "mean": 3280603,
+     "min": 796077
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 61.625,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.81,
+   "t_s": 140.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4221681,
+     "mean": 2711078,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4221681,
+     "mean": 2711078,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 56.625,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.66,
+   "t_s": 145.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4709602,
+     "mean": 2770347,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4709602,
+     "mean": 2770347,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 66.25,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.53,
+   "t_s": 150.1
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4388951,
+     "mean": 2366598,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4388951,
+     "mean": 2366598,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 55.875,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.57,
+   "t_s": 155.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4990951,
+     "mean": 3857783,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4990951,
+     "mean": 3857783,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 62.0,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.44,
+   "t_s": 160.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5215495,
+     "mean": 3237501,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4043444,
+     "mean": 3160459,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 57.625,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.41,
+   "t_s": 165.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4943608,
+     "mean": 3079793,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4814580,
+     "mean": 3166121,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 55.125,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.29,
+   "t_s": 170.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5215585,
+     "mean": 3068649,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5215585,
+     "mean": 3068649,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 58.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.19,
+   "t_s": 175.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4927825,
+     "mean": 3902519,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4927825,
+     "mean": 3965408,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 55.625,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.17,
+   "t_s": 180.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5128504,
+     "mean": 3957344,
+     "min": 3470356
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5128504,
+     "mean": 3957344,
+     "min": 3470356
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 61.25,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.16,
+   "t_s": 185.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4353552,
+     "mean": 3272493,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4353552,
+     "mean": 3306297,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 55.625,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.07,
+   "t_s": 190.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5182789,
+     "mean": 2714646,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4486508,
+     "mean": 2657572,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 64.5,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.98,
+   "t_s": 195.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4990226,
+     "mean": 3919763,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4990226,
+     "mean": 3919763,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 56.0,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.98,
+   "t_s": 200.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5061171,
+     "mean": 2555307,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5048184,
+     "mean": 2482746,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 67.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.9,
+   "t_s": 205.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4196219,
+     "mean": 3513139,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4196219,
+     "mean": 3513139,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 57.25,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.83,
+   "t_s": 210.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5164458,
+     "mean": 2222920,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5164458,
+     "mean": 2222920,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 54.625,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.76,
+   "t_s": 215.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4947707,
+     "mean": 3813309,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4947707,
+     "mean": 3813309,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 59.125,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.1,
+   "t_s": 220.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4628808,
+     "mean": 2718777,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 3967782,
+     "mean": 2691913,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 55.0,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.1,
+   "t_s": 225.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4738946,
+     "mean": 3084864,
+     "min": 747357
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4738946,
+     "mean": 3084864,
+     "min": 747357
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 58.625,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.09,
+   "t_s": 230.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4315550,
+     "mean": 3214098,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4315550,
+     "mean": 3214098,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 55.125,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.0,
+   "t_s": 235.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4866166,
+     "mean": 3972208,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4866166,
+     "mean": 3972208,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 73.125,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.08,
+   "t_s": 240.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4841346,
+     "mean": 4335323,
+     "min": 3858433
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4840998,
+     "mean": 4335162,
+     "min": 3858433
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 72.0,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.31,
+   "t_s": 245.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5214959,
+     "mean": 2799664,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5214959,
+     "mean": 2799664,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 74.625,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.37,
+   "t_s": 250.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5116070,
+     "mean": 3939128,
+     "min": 3380498
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5116070,
+     "mean": 3939128,
+     "min": 3380498
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 61.5,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.42,
+   "t_s": 255.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4791275,
+     "mean": 4399809,
+     "min": 3810364
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4791275,
+     "mean": 4399809,
+     "min": 3810364
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 67.125,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.79,
+   "t_s": 260.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4897908,
+     "mean": 4306228,
+     "min": 3898056
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4897908,
+     "mean": 4306228,
+     "min": 3898056
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 62.25,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.96,
+   "t_s": 265.2
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4990949,
+     "mean": 2968817,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5032733,
+     "mean": 2819608,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 61.125,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.97,
+   "t_s": 270.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5190558,
+     "mean": 3016470,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5190558,
+     "mean": 3016470,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 63.875,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.89,
+   "t_s": 275.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5166269,
+     "mean": 2960488,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5166269,
+     "mean": 2885691,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 62.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.82,
+   "t_s": 280.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5057601,
+     "mean": 2655447,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4801548,
+     "mean": 2783000,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 65.125,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.75,
+   "t_s": 285.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5200867,
+     "mean": 2092115,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5200867,
+     "mean": 2092115,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 60.0,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.69,
+   "t_s": 290.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5141758,
+     "mean": 2436579,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5141758,
+     "mean": 2436579,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 70.25,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.72,
+   "t_s": 295.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5053147,
+     "mean": 2317913,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5115428,
+     "mean": 2321859,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 64.5,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.74,
+   "t_s": 300.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4791882,
+     "mean": 4147172,
+     "min": 3785251
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4791882,
+     "mean": 4147172,
+     "min": 3785251
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 72.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.92,
+   "t_s": 305.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5212983,
+     "mean": 2933636,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5212983,
+     "mean": 2933636,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 61.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.93,
+   "t_s": 310.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4987027,
+     "mean": 2730285,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4987027,
+     "mean": 2730285,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 59.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 1.93,
+   "t_s": 315.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5044400,
+     "mean": 2715602,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5132513,
+     "mean": 2819094,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 60.5,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.18,
+   "t_s": 320.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5165622,
+     "mean": 3119671,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5165622,
+     "mean": 3119671,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 59.5,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.16,
+   "t_s": 325.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5037110,
+     "mean": 3001365,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5037110,
+     "mean": 2805784,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 63.25,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.15,
+   "t_s": 330.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5165048,
+     "mean": 2862084,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5165048,
+     "mean": 2862084,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 60.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.14,
+   "t_s": 335.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4955579,
+     "mean": 2873549,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4435226,
+     "mean": 2804189,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 67.0,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.29,
+   "t_s": 340.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5186737,
+     "mean": 2735190,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5190498,
+     "mean": 2688765,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 60.625,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.26,
+   "t_s": 345.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4965977,
+     "mean": 2951691,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4964480,
+     "mean": 2666004,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 69.25,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.24,
+   "t_s": 350.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5215538,
+     "mean": 2456355,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4685972,
+     "mean": 2425053,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 59.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.3,
+   "t_s": 355.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4791272,
+     "mean": 4278403,
+     "min": 3808310
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4791272,
+     "mean": 4278403,
+     "min": 3808310
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 61.0,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.52,
+   "t_s": 360.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4256516,
+     "mean": 2968012,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4256516,
+     "mean": 2968012,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 59.625,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.56,
+   "t_s": 365.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5068820,
+     "mean": 3201318,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5068820,
+     "mean": 3214313,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 61.625,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.43,
+   "t_s": 370.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5140995,
+     "mean": 3153014,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5140995,
+     "mean": 3153014,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 62.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.4,
+   "t_s": 375.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5136001,
+     "mean": 3133202,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5136001,
+     "mean": 3133202,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 60.5,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.29,
+   "t_s": 380.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4965486,
+     "mean": 2575206,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4966047,
+     "mean": 2542498,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 64.0,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.42,
+   "t_s": 385.3
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5176808,
+     "mean": 2658686,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5190656,
+     "mean": 2659552,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 58.625,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.39,
+   "t_s": 390.4
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4965830,
+     "mean": 3025381,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4990712,
+     "mean": 2931730,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 66.875,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.36,
+   "t_s": 395.4
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5131710,
+     "mean": 2316326,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5131710,
+     "mean": 2316326,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 62.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.33,
+   "t_s": 400.4
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5066110,
+     "mean": 2805728,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5066110,
+     "mean": 2805728,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 70.75,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.22,
+   "t_s": 405.4
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5240762,
+     "mean": 3288003,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5240762,
+     "mean": 3288003,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 61.5,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.2,
+   "t_s": 410.4
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4791381,
+     "mean": 3553576,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4791381,
+     "mean": 3553576,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 64.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.27,
+   "t_s": 415.4
+  },
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 4640910,
+     "mean": 4596161,
+     "min": 4516710
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 4636102,
+     "mean": 4615228,
+     "min": 4590935
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 82.125,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 2.41,
+   "t_s": 420.4
+  }
+ ],
+ "evidence": [
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": 0.013164,
+    "p95": 0.016461,
+    "p99": 0.018956
+   },
+   "notes": "kernel-only latency",
+   "prototype": "rust",
+   "rss_mb": 2.859375,
+   "runtime": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+   "sessions": 1,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 32642.899740525376,
+   "workload": "sha256:ecede5f90f4b9f8a06dfbf86c4a9e8b3a74aed766cd657736c7f6322ce766dbe",
+   "workload_name": "A"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": 0.022392,
+    "p95": 0.040035,
+    "p99": 0.098614
+   },
+   "notes": "kernel-only latency",
+   "prototype": "go",
+   "rss_mb": 12.0546875,
+   "runtime": "go version go1.27.3 linux/amd64",
+   "sessions": 1,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 23636.282785040916,
+   "workload": "sha256:ecede5f90f4b9f8a06dfbf86c4a9e8b3a74aed766cd657736c7f6322ce766dbe",
+   "workload_name": "A"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null
+   },
+   "notes": "no per-operation latency for this workload; batch wall time only",
+   "prototype": "rust",
+   "rss_mb": 7.25,
+   "runtime": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+   "sessions": 100,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 95.27876734279903,
+   "workload": "sha256:8c78bc203cce4755744fd9b86f1e91eb78c5cab001f0fc30ba8da6f59395e58a",
+   "workload_name": "B"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null
+   },
+   "notes": "no per-operation latency for this workload; batch wall time only",
+   "prototype": "go",
+   "rss_mb": 23.05078125,
+   "runtime": "go version go1.27.3 linux/amd64",
+   "sessions": 100,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 95.76512720831707,
+   "workload": "sha256:8c78bc203cce4755744fd9b86f1e91eb78c5cab001f0fc30ba8da6f59395e58a",
+   "workload_name": "B"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null
+   },
+   "notes": "no per-operation latency for this workload; batch wall time only",
+   "prototype": "rust",
+   "rss_mb": 6.9375,
+   "runtime": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+   "sessions": 100,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 98.91961321754509,
+   "workload": "sha256:8c78bc203cce4755744fd9b86f1e91eb78c5cab001f0fc30ba8da6f59395e58a",
+   "workload_name": "B-cold"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null
+   },
+   "notes": "no per-operation latency for this workload; batch wall time only",
+   "prototype": "go",
+   "rss_mb": 22.97265625,
+   "runtime": "go version go1.27.3 linux/amd64",
+   "sessions": 100,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 97.12650053386726,
+   "workload": "sha256:8c78bc203cce4755744fd9b86f1e91eb78c5cab001f0fc30ba8da6f59395e58a",
+   "workload_name": "B-cold"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null
+   },
+   "notes": "no per-operation latency for this workload; batch wall time only",
+   "prototype": "rust",
+   "rss_mb": 3.265625,
+   "runtime": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+   "sessions": 100,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 7299.558991159566,
+   "workload": "sha256:8c78bc203cce4755744fd9b86f1e91eb78c5cab001f0fc30ba8da6f59395e58a",
+   "workload_name": "B-mem"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null
+   },
+   "notes": "no per-operation latency for this workload; batch wall time only",
+   "prototype": "go",
+   "rss_mb": 12.49609375,
+   "runtime": "go version go1.27.3 linux/amd64",
+   "sessions": 100,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 8474.496739878443,
+   "workload": "sha256:8c78bc203cce4755744fd9b86f1e91eb78c5cab001f0fc30ba8da6f59395e58a",
+   "workload_name": "B-mem"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null
+   },
+   "notes": "no per-operation latency for this workload; batch wall time only",
+   "prototype": "rust",
+   "rss_mb": 7.27734375,
+   "runtime": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+   "sessions": 1,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 2673.212907422816,
+   "workload": "sha256:5eb597e2880aad217980d04043d7adb4c3ab96705a04a9e371a30a1f9beca1a7",
+   "workload_name": "G"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null
+   },
+   "notes": "no per-operation latency for this workload; batch wall time only",
+   "prototype": "go",
+   "rss_mb": 18.1796875,
+   "runtime": "go version go1.27.3 linux/amd64",
+   "sessions": 1,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 1294.8145817995244,
+   "workload": "sha256:5eb597e2880aad217980d04043d7adb4c3ab96705a04a9e371a30a1f9beca1a7",
+   "workload_name": "G"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null
+   },
+   "notes": "no per-operation latency for this workload; batch wall time only",
+   "prototype": "rust",
+   "rss_mb": 4.30078125,
+   "runtime": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+   "sessions": 1,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 151.5249561945752,
+   "workload": "sha256:07e9ce8387d1886532129956cd66be755b45c4a868953e00569cab49ca785443",
+   "workload_name": "H"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null
+   },
+   "notes": "no per-operation latency for this workload; batch wall time only",
+   "prototype": "go",
+   "rss_mb": 17.1640625,
+   "runtime": "go version go1.27.3 linux/amd64",
+   "sessions": 1,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 155.6325122014149,
+   "workload": "sha256:07e9ce8387d1886532129956cd66be755b45c4a868953e00569cab49ca785443",
+   "workload_name": "H"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null
+   },
+   "notes": "no per-operation latency for this workload; batch wall time only",
+   "prototype": "rust",
+   "rss_mb": 3.09375,
+   "runtime": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+   "sessions": 1,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 12960.462889685925,
+   "workload": "sha256:07e9ce8387d1886532129956cd66be755b45c4a868953e00569cab49ca785443",
+   "workload_name": "H-mem"
+  },
+  {
+   "benchmark_version": "v2-0.1",
+   "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+   "hardware": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 31393 MiB, Ubuntu 24.04.3 LTS, Linux 6.17.0-40-generic",
+   "latency_ms": {
+    "p50": null,
+    "p95": null,
+    "p99": null
+   },
+   "notes": "no per-operation latency for this workload; batch wall time only",
+   "prototype": "go",
+   "rss_mb": 11.83984375,
+   "runtime": "go version go1.27.3 linux/amd64",
+   "sessions": 1,
+   "test_results": {
+    "failed": 0,
+    "passed": 35
+   },
+   "throughput_per_sec": 9683.838646522181,
+   "workload": "sha256:07e9ce8387d1886532129956cd66be755b45c4a868953e00569cab49ca785443",
+   "workload_name": "H-mem"
+  }
+ ],
+ "finished_at": "2026-11-12T14:10:17Z",
+ "format": "writ-m1-bench/1",
+ "guard": {
+  "enforced": true,
+  "max_load": 1.0,
+  "max_start_temp_c": 60.0,
+  "passed": true,
+  "reasons": []
+ },
+ "mode": "measure",
+ "not_a_benchmark": false,
+ "not_measured": {
+  "E": "chaos (ledger and broker kill) not implemented in M1-06a",
+  "G_symlinks": "M1 kernels perform no filesystem access; symlink paths exercise string handling only",
+  "broker_timing": "B, B-mem, H and H-mem report per-operation broker timing from bench-broker-scenario (validation, kernel decision, key-lock wait, each transaction's begin/body/end, parse and run per line, process and protocol overhead) in separate timed runs",
+  "ledgers": "B and H use the file-backed SQLite ledger (D-023, fresh database per process); B-mem and H-mem use the in-memory model and are not substitutes for the SQLite results"
+ },
+ "pinned_versions": {
+  "GO_VERSION": "1.27.3",
+  "RUST_VERSION": "1.99.1"
+ },
+ "profile": {
+  "a_n": 10000,
+  "a_runs": 10,
+  "a_warmup": 1000,
+  "b_runs": 10,
+  "b_sessions": 100,
+  "cold": 30,
+  "conc_levels": [
+   1,
+   10,
+   100,
+   1000
+  ],
+  "conc_total": 10000,
+  "g_n": 1000,
+  "g_runs": 5,
+  "h_n": 1000,
+  "h_runs": 5,
+  "name": "protocol"
+ },
+ "prototypes": {
+  "go": {
+   "argv_prefix": [],
+   "binary": "m1/go/proto",
+   "sha256": "sha256:15c7b885488bfbc7d1a03e2b638319f0142353bde935c99d50f770b599d041d4"
+  },
+  "rust": {
+   "argv_prefix": [],
+   "binary": "m1/rust/target/release/proto",
+   "sha256": "sha256:486a18276b0369afe964d01dc6faa988ecadf1bca8aefcf3aac4baf6c0bda387"
+  }
+ },
+ "repository": {
+  "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+  "fixture_manifest_sha256": "sha256:0aa9efe5974f85a7ed734753c7736d6fea6d5c969d90675ea139756b8100f996",
+  "m1_dirty_paths": [],
+  "m1_tree_clean": true
+ },
+ "samples_file": {
+  "path": "2026-11-12-m1-06-seed-20261131.json.samples.json.gz",
+  "sha256": "sha256:5423d4958807b106f4d4233ea4600f9edafa9005200c048da31cb1d5828f40ff"
+ },
+ "seed": 20261131,
+ "sqlite": {
+  "go": {
+   "compile_options": [
+    "ATOMIC_INTRINSICS=1",
+    "COMPILER=gcc-13.3.0",
+    "DEFAULT_AUTOVACUUM",
+    "DEFAULT_CACHE_SIZE=-2000",
+    "DEFAULT_FILE_FORMAT=4",
+    "DEFAULT_JOURNAL_SIZE_LIMIT=-1",
+    "DEFAULT_MMAP_SIZE=0",
+    "DEFAULT_PAGE_SIZE=4096",
+    "DEFAULT_PCACHE_INITSZ=20",
+    "DEFAULT_RECURSIVE_TRIGGERS",
+    "DEFAULT_SECTOR_SIZE=4096",
+    "DEFAULT_SYNCHRONOUS=2",
+    "DEFAULT_WAL_AUTOCHECKPOINT=1000",
+    "DEFAULT_WAL_SYNCHRONOUS=2",
+    "DEFAULT_WORKER_THREADS=0",
+    "DIRECT_OVERFLOW_READ",
+    "DQS=0",
+    "ENABLE_COLUMN_METADATA",
+    "MALLOC_SOFT_LIMIT=1024",
+    "MAX_ATTACHED=10",
+    "MAX_COLUMN=2000",
+    "MAX_COMPOUND_SELECT=500",
+    "MAX_DEFAULT_PAGE_SIZE=8192",
+    "MAX_EXPR_DEPTH=1000",
+    "MAX_FUNCTION_ARG=1000",
+    "MAX_LENGTH=1000000000",
+    "MAX_LIKE_PATTERN_LENGTH=50000",
+    "MAX_MMAP_SIZE=0x7fff0000",
+    "MAX_PAGE_COUNT=0xfffffffe",
+    "MAX_PAGE_SIZE=65536",
+    "MAX_SCHEMA=10000000",
+    "MAX_SQL_LENGTH=1000000000",
+    "MAX_TRIGGER_DEPTH=1000",
+    "MAX_VARIABLE_NUMBER=32766",
+    "MAX_VDBE_OP=250000000",
+    "MAX_WORKER_THREADS=8",
+    "MUTEX_PTHREADS",
+    "OMIT_LOAD_EXTENSION",
+    "SYSTEM_MALLOC",
+    "TEMP_STORE=1",
+    "THREADSAFE=1"
+   ],
+   "driver": "github.com/mattn/go-sqlite3 v1.14.52",
+   "schema_version": "1",
+   "settings": {
+    "busy_timeout": 5000,
+    "foreign_keys": 1,
+    "journal_mode": "wal",
+    "synchronous": 2,
+    "trusted_schema": 0
+   },
+   "source_id": "2026-10-16 14:45:20 555e07ef33f69a0957d24d8e555b702464a131d6f1607f4c3c1e4551e8e6ca76",
+   "sqlite_version": "3.54.1"
+  },
+  "rust": {
+   "compile_options": [
+    "ATOMIC_INTRINSICS=1",
+    "COMPILER=gcc-13.3.0",
+    "DEFAULT_AUTOVACUUM",
+    "DEFAULT_CACHE_SIZE=-2000",
+    "DEFAULT_FILE_FORMAT=4",
+    "DEFAULT_JOURNAL_SIZE_LIMIT=-1",
+    "DEFAULT_MMAP_SIZE=0",
+    "DEFAULT_PAGE_SIZE=4096",
+    "DEFAULT_PCACHE_INITSZ=20",
+    "DEFAULT_RECURSIVE_TRIGGERS",
+    "DEFAULT_SECTOR_SIZE=4096",
+    "DEFAULT_SYNCHRONOUS=2",
+    "DEFAULT_WAL_AUTOCHECKPOINT=1000",
+    "DEFAULT_WAL_SYNCHRONOUS=2",
+    "DEFAULT_WORKER_THREADS=0",
+    "DIRECT_OVERFLOW_READ",
+    "DQS=0",
+    "ENABLE_COLUMN_METADATA",
+    "MALLOC_SOFT_LIMIT=1024",
+    "MAX_ATTACHED=10",
+    "MAX_COLUMN=2000",
+    "MAX_COMPOUND_SELECT=500",
+    "MAX_DEFAULT_PAGE_SIZE=8192",
+    "MAX_EXPR_DEPTH=1000",
+    "MAX_FUNCTION_ARG=1000",
+    "MAX_LENGTH=1000000000",
+    "MAX_LIKE_PATTERN_LENGTH=50000",
+    "MAX_MMAP_SIZE=0x7fff0000",
+    "MAX_PAGE_COUNT=0xfffffffe",
+    "MAX_PAGE_SIZE=65536",
+    "MAX_SCHEMA=10000000",
+    "MAX_SQL_LENGTH=1000000000",
+    "MAX_TRIGGER_DEPTH=1000",
+    "MAX_VARIABLE_NUMBER=32766",
+    "MAX_VDBE_OP=250000000",
+    "MAX_WORKER_THREADS=8",
+    "MUTEX_PTHREADS",
+    "OMIT_LOAD_EXTENSION",
+    "SYSTEM_MALLOC",
+    "TEMP_STORE=1",
+    "THREADSAFE=1"
+   ],
+   "driver": "rusqlite 0.40.2",
+   "schema_version": "1",
+   "settings": {
+    "busy_timeout": 5000,
+    "foreign_keys": 1,
+    "journal_mode": "wal",
+    "synchronous": 2,
+    "trusted_schema": 0
+   },
+   "source_id": "2026-10-16 14:45:20 555e07ef33f69a0957d24d8e555b702464a131d6f1607f4c3c1e4551e8e6ca76",
+   "sqlite_version": "3.54.1"
+  }
+ },
+ "started_at": "2026-11-12T14:03:15Z",
+ "toolchains": {
+  "cargo_V": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "go_binary_buildinfo": "m1/go/proto: go1.27.3\n\tpath\twrit.dev/m1/proto/cmd/proto\n\tmod\twrit.dev/m1/proto\t(devel)\t\n\tdep\tgithub.com/mattn/go-sqlite3\tv1.14.52\th1:wVbm2Qnf4OXkqhBTSPuCRZDRnxfbVrrmiCEroVdog8U=\n\tbuild\t-buildmode=exe\n\tbuild\t-compiler=gc\n\tbuild\t-tags=libsqlite3,sqlite_omit_load_extension\n\tbuild\t-trimpath=true\n\tbuild\tCGO_ENABLED=1\n\tbuild\tGOARCH=amd64\n\tbuild\tGOOS=linux\n\tbuild\tGOAMD64=v1\n\tbuild\tvcs=git\n\tbuild\tvcs.revision=bbdd092e7499c1b81ff31e6d971b630d090accfe\n\tbuild\tvcs.time=2026-11-11T19:14:36Z\n\tbuild\tvcs.modified=true",
+  "go_build": "go build -trimpath -tags 'libsqlite3 sqlite_omit_load_extension' -o proto ./cmd/proto (m1/go)",
+  "go_env": "linux\namd64\nv1\n1\n\nlocal",
+  "go_version": "go version go1.27.3 linux/amd64",
+  "python": "3.12.3",
+  "rust_build": "cargo build --release --locked (m1/rust)",
+  "rust_env": {
+   "CARGO_ENCODED_RUSTFLAGS": null,
+   "CARGO_PROFILE_RELEASE_OPT_LEVEL": null,
+   "RUSTFLAGS": null
+  },
+  "rust_profile_release": "[profile.release]\ndebug = false\n",
+  "rustc_vV": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1",
+  "time_v": true
+ },
+ "valid_for_comparison": true,
+ "workloads": {
+  "A": {
+   "command": "decide-batch",
+   "decisions_per_run": 10000,
+   "digest": "sha256:ecede5f90f4b9f8a06dfbf86c4a9e8b3a74aed766cd657736c7f6322ce766dbe",
+   "measurements": {
+    "go": {
+     "batch_wall_s_incl_start_and_warmup": {
+      "max": 0.5178459109999949,
+      "mean": 0.46538620729998004,
+      "min": 0.45240820000003623,
+      "n": 10,
+      "p50": 0.45774133300005815,
+      "p95": 0.5178459109999949,
+      "p99": 0.5178459109999949,
+      "stdev": 0.020458320411964836
+     },
+     "kernel_decision_ns": {
+      "max": 1189038,
+      "mean": 26170.42124,
+      "min": 3646,
+      "n": 100000,
+      "p50": 22392,
+      "p95": 40035,
+      "p99": 98614,
+      "stdev": 15640.339759965413
+     },
+     "kernel_p50_run_to_run": {
+      "cv": 0.01434247551994554,
+      "mean": 22402.0,
+      "n_runs": 10,
+      "values": [
+       22903,
+       23043,
+       22261,
+       22172,
+       22031,
+       22372,
+       22222,
+       22252,
+       22372,
+       22392
+      ],
+      "variance": 103233.77777777778
+     },
+     "peak_rss_kb": 12344,
+     "throughput_per_sec": 23636.282785040916
+    },
+    "rust": {
+     "batch_wall_s_incl_start_and_warmup": {
+      "max": 0.3415995450000082,
+      "mean": 0.3369798666000179,
+      "min": 0.3295187989999704,
+      "n": 10,
+      "p50": 0.3380814479999117,
+      "p95": 0.3415995450000082,
+      "p99": 0.3415995450000082,
+      "stdev": 0.004067946397940756
+     },
+     "kernel_decision_ns": {
+      "max": 190266,
+      "mean": 13347.24947,
+      "min": 2254,
+      "n": 100000,
+      "p50": 13164,
+      "p95": 16461,
+      "p99": 18956,
+      "stdev": 4256.025802850714
+     },
+     "kernel_p50_run_to_run": {
+      "cv": 0.02372937311893736,
+      "mean": 13149.6,
+      "n_runs": 10,
+      "values": [
+       13065,
+       13385,
+       13164,
+       12974,
+       12754,
+       13806,
+       12764,
+       13305,
+       13034,
+       13245
+      ],
+      "variance": 97363.82222222222
+     },
+     "peak_rss_kb": 2928,
+     "throughput_per_sec": 32642.899740525376
+    }
+   },
+   "meta": {
+    "base": "golden-decisions (26)",
+    "generator": "gen_a",
+    "varied": {
+     "resource": 4772,
+     "tenant": 1947
+    }
+   },
+   "method": "kernel_decision_ns: per-decision time inside the prototype (bench-decide), excluding JSON parsing, encoding and I/O; batch wall: process launch to exit over warm-up plus measured lines",
+   "runs": 10,
+   "seed": 20261131,
+   "warmup": 1000,
+   "warmup_seed": 20261132
+  },
+  "B": {
+   "availability": {
+    "go": [
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 0,
+      "successful": 477
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 1,
+      "successful": 480
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 2,
+      "successful": 486
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 3,
+      "successful": 471
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 4,
+      "successful": 469
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 5,
+      "successful": 475
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 6,
+      "successful": 462
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 7,
+      "successful": 467
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 8,
+      "successful": 462
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 9,
+      "successful": 474
+     }
+    ],
+    "rust": [
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 0,
+      "successful": 465
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 1,
+      "successful": 477
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 2,
+      "successful": 474
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 3,
+      "successful": 487
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 4,
+      "successful": 485
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 5,
+      "successful": 476
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 6,
+      "successful": 482
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 7,
+      "successful": 475
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 8,
+      "successful": 485
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 9,
+      "successful": 473
+     }
+    ]
+   },
+   "command": "bench-broker-scenario",
+   "digest": "sha256:8c78bc203cce4755744fd9b86f1e91eb78c5cab001f0fc30ba8da6f59395e58a",
+   "measurements": {
+    "go": {
+     "batch_wall_s": {
+      "max": 5.090366777999861,
+      "mean": 4.931857908699999,
+      "min": 4.753042411999786,
+      "n": 10,
+      "p50": 4.926818384999933,
+      "p95": 5.090366777999861,
+      "p99": 5.090366777999861,
+      "stdev": 0.10609437978072975
+     },
+     "broker_timing_ns": {
+      "concurrent.op.execute.decide_ns": {
+       "max": 976150,
+       "mean": 40123.2962,
+       "min": 2956,
+       "n": 10000,
+       "p50": 16571,
+       "p95": 174847,
+       "p99": 270908,
+       "stdev": 60033.68143969172
+      },
+      "concurrent.op.execute.key_lock_wait_ns": {
+       "max": 35839629,
+       "mean": 3046941.3883,
+       "min": 150,
+       "n": 10000,
+       "p50": 2262079,
+       "p95": 10762556,
+       "p99": 20435661,
+       "stdev": 4050660.6070703976
+      },
+      "concurrent.op.execute.total_ns": {
+       "max": 183461313,
+       "mean": 16234704.9188,
+       "min": 512190,
+       "n": 10000,
+       "p50": 4660084,
+       "p95": 104546142,
+       "p99": 179944992,
+       "stdev": 32296475.494626988
+      },
+      "concurrent.op.execute.validate_ns": {
+       "max": 700312,
+       "mean": 42724.3561,
+       "min": 3777,
+       "n": 10000,
+       "p50": 16461,
+       "p95": 182372,
+       "p99": 321983,
+       "stdev": 64804.415992746275
+      },
+      "concurrent.ready_ns": {
+       "max": 3274777,
+       "mean": 960694.55,
+       "min": 689933,
+       "n": 1000,
+       "p50": 906138,
+       "p95": 1301449,
+       "p99": 1960835,
+       "stdev": 238195.0123156645
+      },
+      "concurrent.start_skew_ns": {
+       "max": 548979,
+       "mean": 67167.89,
+       "min": 4889,
+       "n": 1000,
+       "p50": 54422,
+       "p95": 127008,
+       "p99": 172273,
+       "stdev": 36649.36544325554
+      },
+      "concurrent.total_ns": {
+       "max": 185687646,
+       "mean": 43519759.473,
+       "min": 3261671,
+       "n": 1000,
+       "p50": 12517642,
+       "p95": 182423003,
+       "p99": 184171778,
+       "stdev": 63281586.791734405
+      },
+      "concurrent.tx.adapter.begin_ns": {
+       "max": 178768761,
+       "mean": 456643.3427596294,
+       "min": 5200,
+       "n": 2051,
+       "p50": 8335,
+       "p95": 13415,
+       "p99": 3126910,
+       "stdev": 7787032.195270504
+      },
+      "concurrent.tx.adapter.body_ns": {
+       "max": 433763,
+       "mean": 44438.98976109215,
+       "min": 24225,
+       "n": 2051,
+       "p50": 39825,
+       "p95": 63389,
+       "p99": 140483,
+       "stdev": 24435.99946357418
+      },
+      "concurrent.tx.adapter.end_ns": {
+       "max": 2678850,
+       "mean": 471661.8337396392,
+       "min": 393107,
+       "n": 2051,
+       "p50": 461184,
+       "p95": 535834,
+       "p99": 633187,
+       "stdev": 81184.28325433531
+      },
+      "concurrent.tx.audit.begin_ns": {
+       "max": 18296879,
+       "mean": 31932.82700175336,
+       "min": 2254,
+       "n": 5133,
+       "p50": 3978,
+       "p95": 8486,
+       "p99": 1070767,
+       "stdev": 417239.5101591998
+      },
+      "concurrent.tx.audit.body_ns": {
+       "max": 187462,
+       "mean": 13833.924800311708,
+       "min": 6923,
+       "n": 5133,
+       "p50": 11461,
+       "p95": 25729,
+       "p99": 42840,
+       "stdev": 9420.12254878738
+      },
+      "concurrent.tx.audit.end_ns": {
+       "max": 3131439,
+       "mean": 500638.7636859536,
+       "min": 394178,
+       "n": 5133,
+       "p50": 469299,
+       "p95": 680976,
+       "p99": 830998,
+       "stdev": 116839.57918206818
+      },
+      "concurrent.tx.dispatch.begin_ns": {
+       "max": 178628135,
+       "mean": 104649.56947830327,
+       "min": 6452,
+       "n": 2051,
+       "p50": 9949,
+       "p95": 14197,
+       "p99": 22783,
+       "stdev": 3949207.271211074
+      },
+      "concurrent.tx.dispatch.body_ns": {
+       "max": 546955,
+       "mean": 60113.51048269137,
+       "min": 38623,
+       "n": 2051,
+       "p50": 57538,
+       "p95": 81272,
+       "p99": 125796,
+       "stdev": 25315.02913304832
+      },
+      "concurrent.tx.dispatch.end_ns": {
+       "max": 3501902,
+       "mean": 481877.8888347148,
+       "min": 403075,
+       "n": 2051,
+       "p50": 466985,
+       "p95": 568125,
+       "p99": 704139,
+       "stdev": 105848.8517922416
+      },
+      "concurrent.tx.observe.begin_ns": {
+       "max": 3138292,
+       "mean": 10090.566334556896,
+       "min": 6162,
+       "n": 1907,
+       "p50": 7504,
+       "p95": 11832,
+       "p99": 19597,
+       "stdev": 71804.27348811133
+      },
+      "concurrent.tx.observe.body_ns": {
+       "max": 269095,
+       "mean": 30897.1038280021,
+       "min": 22031,
+       "n": 1907,
+       "p50": 27522,
+       "p95": 45075,
+       "p99": 70312,
+       "stdev": 16907.097926015427
+      },
+      "concurrent.tx.observe.end_ns": {
+       "max": 1372212,
+       "mean": 459426.5065547981,
+       "min": 383178,
+       "n": 1907,
+       "p50": 450835,
+       "p95": 520906,
+       "p99": 594724,
+       "stdev": 58870.521557156964
+      },
+      "concurrent.tx.reserve.begin_ns": {
+       "max": 181808257,
+       "mean": 12186927.5808,
+       "min": 3156,
+       "n": 10000,
+       "p50": 9457,
+       "p95": 103556700,
+       "p99": 178781833,
+       "stdev": 32812464.394823693
+      },
+      "concurrent.tx.reserve.body_ns": {
+       "max": 1728990,
+       "mean": 70075.106,
+       "min": 6602,
+       "n": 10000,
+       "p50": 32551,
+       "p95": 233597,
+       "p99": 421249,
+       "stdev": 88827.16605973526
+      },
+      "concurrent.tx.reserve.end_ns": {
+       "max": 1594087,
+       "mean": 117127.8177,
+       "min": 2174,
+       "n": 10000,
+       "p50": 4398,
+       "p95": 569197,
+       "p99": 733224,
+       "stdev": 226941.61312215994
+      },
+      "concurrent.worker.release_delay_ns": {
+       "max": 550171,
+       "mean": 37153.8657,
+       "min": 781,
+       "n": 10000,
+       "p50": 30036,
+       "p95": 95098,
+       "p99": 136136,
+       "stdev": 35036.57347632271
+      },
+      "concurrent.worker.setup_ns": {
+       "max": 3243800,
+       "mean": 773309.8394,
+       "min": 144651,
+       "n": 10000,
+       "p50": 753271,
+       "p95": 1033667,
+       "p99": 1627491,
+       "stdev": 204632.2456154713
+      },
+      "line.final_ns": {
+       "max": 538479,
+       "mean": 82404.618,
+       "min": 41919,
+       "n": 1000,
+       "p50": 72886,
+       "p95": 151334,
+       "p99": 237244,
+       "stdev": 38243.17592806776
+      },
+      "line.open_ns": {
+       "max": 5733316,
+       "mean": 2335056.979,
+       "min": 2016458,
+       "n": 1000,
+       "p50": 2285994,
+       "p95": 2673119,
+       "p99": 3096303,
+       "stdev": 245653.76878657003
+      },
+      "line.parse_ns": {
+       "max": 599894,
+       "mean": 99800.148,
+       "min": 48601,
+       "n": 1000,
+       "p50": 79849,
+       "p95": 253585,
+       "p99": 342351,
+       "stdev": 62985.28573919264
+      },
+      "line.run_ns": {
+       "max": 191901084,
+       "mean": 49079552.824,
+       "min": 7962770,
+       "n": 1000,
+       "p50": 17668634,
+       "p95": 188416406,
+       "p99": 190157251,
+       "stdev": 63489840.25389356
+      },
+      "op.approve.decide_ns": {
+       "max": 233658,
+       "mean": 12879.370897832818,
+       "min": 7254,
+       "n": 3230,
+       "p50": 11331,
+       "p95": 20368,
+       "p99": 33884,
+       "stdev": 8156.524866605594
+      },
+      "op.approve.total_ns": {
+       "max": 2681575,
+       "mean": 677143.5204334365,
+       "min": 433893,
+       "n": 3230,
+       "p50": 509215,
+       "p95": 1161687,
+       "p99": 1309434,
+       "stdev": 291629.5382735796
+      },
+      "op.approve.validate_ns": {
+       "max": 57197,
+       "mean": 405.3798761609907,
+       "min": 170,
+       "n": 3230,
+       "p50": 321,
+       "p95": 682,
+       "p99": 1162,
+       "stdev": 1043.1557196026479
+      },
+      "process.overhead_ns": {
+       "max": 15109693,
+       "mean": 13922611.0,
+       "min": 11921510,
+       "n": 10,
+       "p50": 13947195,
+       "p95": 15109693,
+       "p99": 15109693,
+       "stdev": 922073.8096484226
+      },
+      "tx.approve.begin_ns": {
+       "max": 957244,
+       "mean": 39542.22693498452,
+       "min": 5470,
+       "n": 3230,
+       "p50": 9037,
+       "p95": 121508,
+       "p99": 156043,
+       "stdev": 56439.45387141882
+      },
+      "tx.approve.body_ns": {
+       "max": 273563,
+       "mean": 24866.500309597523,
+       "min": 14237,
+       "n": 3230,
+       "p50": 22302,
+       "p95": 39934,
+       "p99": 63369,
+       "stdev": 14556.142442731863
+      },
+      "tx.approve.end_ns": {
+       "max": 2640738,
+       "mean": 590196.1712074303,
+       "min": 391805,
+       "n": 3230,
+       "p50": 456576,
+       "p95": 975348,
+       "p99": 1062501,
+       "stdev": 232272.91949692712
+      }
+     },
+     "peak_rss_kb": 23604,
+     "sessions_per_sec": 20.276334365512824,
+     "successful_operations_per_sec": 95.76512720831707
+    },
+    "rust": {
+     "batch_wall_s": {
+      "max": 5.19377611699997,
+      "mean": 5.015807963599968,
+      "min": 4.786508371000082,
+      "n": 10,
+      "p50": 4.967161965000059,
+      "p95": 5.19377611699997,
+      "p99": 5.19377611699997,
+      "stdev": 0.13246591658646234
+     },
+     "broker_timing_ns": {
+      "concurrent.op.execute.decide_ns": {
+       "max": 53601,
+       "mean": 10279.5381,
+       "min": 1893,
+       "n": 10000,
+       "p50": 10250,
+       "p95": 14837,
+       "p99": 21470,
+       "stdev": 3531.6229434652096
+      },
+      "concurrent.op.execute.key_lock_wait_ns": {
+       "max": 35678294,
+       "mean": 3286487.524,
+       "min": 150,
+       "n": 10000,
+       "p50": 2056734,
+       "p95": 10615975,
+       "p99": 20411497,
+       "stdev": 4396380.787243211
+      },
+      "concurrent.op.execute.total_ns": {
+       "max": 210050224,
+       "mean": 16515385.5429,
+       "min": 498824,
+       "n": 10000,
+       "p50": 5434945,
+       "p95": 104321142,
+       "p99": 179658268,
+       "stdev": 31879223.217736635
+      },
+      "concurrent.op.execute.validate_ns": {
+       "max": 39304,
+       "mean": 5567.2208,
+       "min": 2505,
+       "n": 10000,
+       "p50": 5180,
+       "p95": 7184,
+       "p99": 13655,
+       "stdev": 1784.954787608566
+      },
+      "concurrent.ready_ns": {
+       "max": 3127010,
+       "mean": 768001.175,
+       "min": 576681,
+       "n": 1000,
+       "p50": 703589,
+       "p95": 1354338,
+       "p99": 1757313,
+       "stdev": 241181.55860391355
+      },
+      "concurrent.start_skew_ns": {
+       "max": 384100,
+       "mean": 7097.133,
+       "min": 1723,
+       "n": 1000,
+       "p50": 4859,
+       "p95": 15358,
+       "p99": 37320,
+       "stdev": 16860.199904750214
+      },
+      "concurrent.total_ns": {
+       "max": 211065748,
+       "mean": 44047809.192,
+       "min": 2933617,
+       "n": 1000,
+       "p50": 12961399,
+       "p95": 181982125,
+       "p99": 183697936,
+       "stdev": 62225608.522103585
+      },
+      "concurrent.tx.adapter.begin_ns": {
+       "max": 178638161,
+       "mean": 143706.0386119257,
+       "min": 2214,
+       "n": 2046,
+       "p50": 5210,
+       "p95": 7814,
+       "p99": 1074092,
+       "stdev": 4004220.4460145007
+      },
+      "concurrent.tx.adapter.body_ns": {
+       "max": 349946,
+       "mean": 30924.638318670575,
+       "min": 16812,
+       "n": 2046,
+       "p50": 29415,
+       "p95": 45335,
+       "p99": 61275,
+       "stdev": 13872.672552462675
+      },
+      "concurrent.tx.adapter.end_ns": {
+       "max": 2659485,
+       "mean": 464907.4951124145,
+       "min": 386554,
+       "n": 2046,
+       "p50": 456405,
+       "p95": 532678,
+       "p99": 634519,
+       "stdev": 70269.78769400902
+      },
+      "concurrent.tx.audit.begin_ns": {
+       "max": 18267599,
+       "mean": 33506.663319551095,
+       "min": 1463,
+       "n": 5079,
+       "p50": 3126,
+       "p95": 4509,
+       "p99": 1069484,
+       "stdev": 360640.35784669645
+      },
+      "concurrent.tx.audit.body_ns": {
+       "max": 176371,
+       "mean": 13607.547942508369,
+       "min": 7264,
+       "n": 5079,
+       "p50": 12203,
+       "p95": 20668,
+       "p99": 33694,
+       "stdev": 7469.821471447398
+      },
+      "concurrent.tx.audit.end_ns": {
+       "max": 30862329,
+       "mean": 516991.08210277616,
+       "min": 396102,
+       "n": 5079,
+       "p50": 482875,
+       "p95": 667951,
+       "p99": 932137,
+       "stdev": 442289.5181532821
+      },
+      "concurrent.tx.dispatch.begin_ns": {
+       "max": 3330112,
+       "mean": 7462.780058651027,
+       "min": 3977,
+       "n": 2046,
+       "p50": 5701,
+       "p95": 7554,
+       "p99": 10871,
+       "stdev": 73526.64786665514
+      },
+      "concurrent.tx.dispatch.body_ns": {
+       "max": 486842,
+       "mean": 42304.630009775174,
+       "min": 27491,
+       "n": 2046,
+       "p50": 40806,
+       "p95": 58399,
+       "p99": 76414,
+       "stdev": 19651.136088336134
+      },
+      "concurrent.tx.dispatch.end_ns": {
+       "max": 2718544,
+       "mean": 476786.6212121212,
+       "min": 397395,
+       "n": 2046,
+       "p50": 460934,
+       "p95": 559458,
+       "p99": 685644,
+       "stdev": 114314.46562352423
+      },
+      "concurrent.tx.observe.begin_ns": {
+       "max": 62017,
+       "mean": 4835.8497899159665,
+       "min": 3446,
+       "n": 1904,
+       "p50": 4308,
+       "p95": 6933,
+       "p99": 8887,
+       "stdev": 2452.042375739548
+      },
+      "concurrent.tx.observe.body_ns": {
+       "max": 299151,
+       "mean": 24868.683298319327,
+       "min": 17453,
+       "n": 1904,
+       "p50": 23043,
+       "p95": 36699,
+       "p99": 50635,
+       "stdev": 11306.055658301999
+      },
+      "concurrent.tx.observe.end_ns": {
+       "max": 2675613,
+       "mean": 455857.34453781514,
+       "min": 372418,
+       "n": 1904,
+       "p50": 447509,
+       "p95": 513894,
+       "p99": 612487,
+       "stdev": 73611.7348359525
+      },
+      "concurrent.tx.reserve.begin_ns": {
+       "max": 181133612,
+       "mean": 12428269.1468,
+       "min": 3025,
+       "n": 10000,
+       "p50": 1065446,
+       "p95": 103588837,
+       "p99": 178829251,
+       "stdev": 32591677.81917797
+      },
+      "concurrent.tx.reserve.body_ns": {
+       "max": 660207,
+       "mean": 38820.9515,
+       "min": 7323,
+       "n": 10000,
+       "p50": 25969,
+       "p95": 96461,
+       "p99": 144761,
+       "stdev": 33680.9099022062
+      },
+      "concurrent.tx.reserve.end_ns": {
+       "max": 2787415,
+       "mean": 112101.1083,
+       "min": 2224,
+       "n": 10000,
+       "p50": 4368,
+       "p95": 536896,
+       "p99": 698509,
+       "stdev": 218647.15531924876
+      },
+      "concurrent.worker.release_delay_ns": {
+       "max": 390853,
+       "mean": 7976.7917,
+       "min": 451,
+       "n": 10000,
+       "p50": 7464,
+       "p95": 11863,
+       "p99": 18425,
+       "stdev": 6551.008997933082
+      },
+      "concurrent.worker.setup_ns": {
+       "max": 2671226,
+       "mean": 551341.8613,
+       "min": 132528,
+       "n": 10000,
+       "p50": 528560,
+       "p95": 709369,
+       "p99": 1473011,
+       "stdev": 172775.50795638547
+      },
+      "line.final_ns": {
+       "max": 258113,
+       "mean": 75884.568,
+       "min": 39995,
+       "n": 1000,
+       "p50": 67987,
+       "p95": 137869,
+       "p99": 201999,
+       "stdev": 29877.567671102635
+      },
+      "line.open_ns": {
+       "max": 11199634,
+       "mean": 2709779.587,
+       "min": 2327992,
+       "n": 1000,
+       "p50": 2657280,
+       "p95": 3133892,
+       "p99": 3828796,
+       "stdev": 417574.0002974333
+      },
+      "line.parse_ns": {
+       "max": 1013439,
+       "mean": 113576.529,
+       "min": 72927,
+       "n": 1000,
+       "p50": 109746,
+       "p95": 157184,
+       "p99": 185538,
+       "stdev": 36251.2778925102
+      },
+      "line.run_ns": {
+       "max": 241476379,
+       "mean": 49961575.495,
+       "min": 8044606,
+       "n": 1000,
+       "p50": 19009496,
+       "p95": 188218600,
+       "p99": 189813925,
+       "stdev": 62506536.62337525
+      },
+      "op.approve.decide_ns": {
+       "max": 75682,
+       "mean": 8849.960061919504,
+       "min": 4539,
+       "n": 3230,
+       "p50": 8105,
+       "p95": 13866,
+       "p99": 18655,
+       "stdev": 4062.6687604787667
+      },
+      "op.approve.total_ns": {
+       "max": 2516195,
+       "mean": 651050.9362229102,
+       "min": 409938,
+       "n": 3230,
+       "p50": 484998,
+       "p95": 1128545,
+       "p99": 1261394,
+       "stdev": 283633.89744002593
+      },
+      "op.approve.validate_ns": {
+       "max": 3877,
+       "mean": 187.6315789473684,
+       "min": 50,
+       "n": 3230,
+       "p50": 160,
+       "p95": 361,
+       "p99": 631,
+       "stdev": 144.14107536147836
+      },
+      "process.overhead_ns": {
+       "max": 9019135,
+       "mean": 8292760.6,
+       "min": 7880748,
+       "n": 10,
+       "p50": 8213570,
+       "p95": 9019135,
+       "p99": 9019135,
+       "stdev": 325149.63508315844
+      },
+      "tx.approve.begin_ns": {
+       "max": 238457,
+       "mean": 34414.89473684211,
+       "min": 3587,
+       "n": 3230,
+       "p50": 5269,
+       "p95": 121147,
+       "p99": 143729,
+       "stdev": 46423.87911670959
+      },
+      "tx.approve.body_ns": {
+       "max": 230552,
+       "mean": 17861.793808049537,
+       "min": 8796,
+       "n": 3230,
+       "p50": 15680,
+       "p95": 29575,
+       "p99": 40486,
+       "stdev": 9096.71582048698
+      },
+      "tx.approve.end_ns": {
+       "max": 2381041,
+       "mean": 582959.7984520124,
+       "min": 381544,
+       "n": 3230,
+       "p50": 450464,
+       "p95": 967332,
+       "p99": 1054215,
+       "stdev": 231479.80358869288
+      }
+     },
+     "peak_rss_kb": 7424,
+     "sessions_per_sec": 19.93696742891798,
+     "successful_operations_per_sec": 95.27876734279903
+    }
+   },
+   "meta": {
+    "concurrency_profile": "primary",
+    "concurrent_per_session": 10,
+    "generator": "c_broker.gen_concurrent",
+    "ledger": "sqlite (file-backed, D-023)",
+    "sessions": 100
+   },
+   "method": "one broker-scenario per session, each ending in one concurrent group of 10 executes (in-process threads); checked against every permitted serialization with D-026 evidence; successful throughput counts only successful operations; refusals are reported under availability, never as work",
+   "runs": 10,
+   "seed": 20261131
+  },
+  "B-cold": {
+   "availability": {
+    "go": [
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 0,
+      "successful": 473
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 1,
+      "successful": 485
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 2,
+      "successful": 481
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 3,
+      "successful": 492
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 4,
+      "successful": 457
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 5,
+      "successful": 459
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 6,
+      "successful": 479
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 7,
+      "successful": 472
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 8,
+      "successful": 442
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 9,
+      "successful": 466
+     }
+    ],
+    "rust": [
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 0,
+      "successful": 483
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 1,
+      "successful": 476
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 2,
+      "successful": 470
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 3,
+      "successful": 481
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 4,
+      "successful": 460
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 5,
+      "successful": 478
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 6,
+      "successful": 469
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 7,
+      "successful": 487
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 8,
+      "successful": 462
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 9,
+      "successful": 474
+     }
+    ]
+   },
+   "command": "bench-broker-scenario",
+   "digest": "sha256:8c78bc203cce4755744fd9b86f1e91eb78c5cab001f0fc30ba8da6f59395e58a",
+   "measurements": {
+    "go": {
+     "batch_wall_s": {
+      "max": 5.106625736999831,
+      "mean": 4.845227588899957,
+      "min": 4.591621713999984,
+      "n": 10,
+      "p50": 4.794268587999795,
+      "p95": 5.106625736999831,
+      "p99": 5.106625736999831,
+      "stdev": 0.1555354940707916
+     },
+     "broker_timing_ns": {
+      "concurrent.op.execute.decide_ns": {
+       "max": 610795,
+       "mean": 25639.9338,
+       "min": 3917,
+       "n": 10000,
+       "p50": 14467,
+       "p95": 108073,
+       "p99": 188072,
+       "stdev": 36213.83214003517
+      },
+      "concurrent.op.execute.key_lock_wait_ns": {
+       "max": 35942809,
+       "mean": 2830113.5304,
+       "min": 120,
+       "n": 10000,
+       "p50": 2077224,
+       "p95": 10434923,
+       "p99": 20116300,
+       "stdev": 3829966.9562570658
+      },
+      "concurrent.op.execute.total_ns": {
+       "max": 230333461,
+       "mean": 16544440.6702,
+       "min": 854402,
+       "n": 10000,
+       "p50": 5167987,
+       "p95": 105277034,
+       "p99": 180682267,
+       "stdev": 32044277.70976965
+      },
+      "concurrent.op.execute.validate_ns": {
+       "max": 412383,
+       "mean": 26522.9833,
+       "min": 4539,
+       "n": 10000,
+       "p50": 14197,
+       "p95": 108663,
+       "p99": 186449,
+       "stdev": 36417.735853453196
+      },
+      "concurrent.ready_ns": {
+       "max": 151764,
+       "mean": 16233.646,
+       "min": 7083,
+       "n": 1000,
+       "p50": 13886,
+       "p95": 26339,
+       "p99": 49613,
+       "stdev": 11282.928911923336
+      },
+      "concurrent.start_skew_ns": {
+       "max": 1489292,
+       "mean": 130091.787,
+       "min": 34655,
+       "n": 1000,
+       "p50": 115577,
+       "p95": 231995,
+       "p99": 601087,
+       "stdev": 90822.40858738136
+      },
+      "concurrent.total_ns": {
+       "max": 230851903,
+       "mean": 42644933.365,
+       "min": 2959239,
+       "n": 1000,
+       "p50": 12101778,
+       "p95": 182353117,
+       "p99": 184104734,
+       "stdev": 62812199.09147178
+      },
+      "concurrent.tx.adapter.begin_ns": {
+       "max": 178738557,
+       "mean": 378783.0773751224,
+       "min": 4799,
+       "n": 2042,
+       "p50": 8206,
+       "p95": 14096,
+       "p99": 3131160,
+       "stdev": 6916635.851893228
+      },
+      "concurrent.tx.adapter.body_ns": {
+       "max": 683291,
+       "mean": 43648.74828599412,
+       "min": 24536,
+       "n": 2042,
+       "p50": 39384,
+       "p95": 59722,
+       "p99": 134963,
+       "stdev": 27995.320281875178
+      },
+      "concurrent.tx.adapter.end_ns": {
+       "max": 1337678,
+       "mean": 467881.2448579824,
+       "min": 397936,
+       "n": 2042,
+       "p50": 458520,
+       "p95": 544421,
+       "p99": 602960,
+       "stdev": 54504.45964268874
+      },
+      "concurrent.tx.audit.begin_ns": {
+       "max": 3214837,
+       "mean": 22135.09170390519,
+       "min": 2254,
+       "n": 5147,
+       "p50": 3827,
+       "p95": 7754,
+       "p99": 1069756,
+       "stdev": 184446.11070567416
+      },
+      "concurrent.tx.audit.body_ns": {
+       "max": 160200,
+       "mean": 13429.289100446862,
+       "min": 6753,
+       "n": 5147,
+       "p50": 11091,
+       "p95": 24807,
+       "p99": 38703,
+       "stdev": 8920.933918650044
+      },
+      "concurrent.tx.audit.end_ns": {
+       "max": 3159252,
+       "mean": 499846.20341946767,
+       "min": 391644,
+       "n": 5147,
+       "p50": 466224,
+       "p95": 688280,
+       "p99": 864471,
+       "stdev": 118958.24270370638
+      },
+      "concurrent.tx.dispatch.begin_ns": {
+       "max": 178767310,
+       "mean": 279020.2203721841,
+       "min": 6062,
+       "n": 2042,
+       "p50": 9918,
+       "p95": 14788,
+       "p99": 45315,
+       "stdev": 6849910.008656026
+      },
+      "concurrent.tx.dispatch.body_ns": {
+       "max": 625182,
+       "mean": 62020.15817825661,
+       "min": 38082,
+       "n": 2042,
+       "p50": 57278,
+       "p95": 84869,
+       "p99": 184175,
+       "stdev": 37757.5140338531
+      },
+      "concurrent.tx.dispatch.end_ns": {
+       "max": 1318933,
+       "mean": 480660.53770812927,
+       "min": 404298,
+       "n": 2042,
+       "p50": 467947,
+       "p95": 579556,
+       "p99": 670737,
+       "stdev": 60616.40647477818
+      },
+      "concurrent.tx.observe.begin_ns": {
+       "max": 101992,
+       "mean": 8311.076517150395,
+       "min": 6022,
+       "n": 1895,
+       "p50": 7414,
+       "p95": 11612,
+       "p99": 18605,
+       "stdev": 4573.4612477348865
+      },
+      "concurrent.tx.observe.body_ns": {
+       "max": 332163,
+       "mean": 30279.633773087073,
+       "min": 21932,
+       "n": 1895,
+       "p50": 27121,
+       "p95": 44233,
+       "p99": 63990,
+       "stdev": 16709.29212428011
+      },
+      "concurrent.tx.observe.end_ns": {
+       "max": 2637295,
+       "mean": 458337.07176781003,
+       "min": 393448,
+       "n": 1895,
+       "p50": 449473,
+       "p95": 519904,
+       "p99": 618670,
+       "stdev": 71188.39157383908
+      },
+      "concurrent.tx.reserve.begin_ns": {
+       "max": 228744391,
+       "mean": 11958609.6161,
+       "min": 3076,
+       "n": 10000,
+       "p50": 8776,
+       "p95": 103542769,
+       "p99": 178758435,
+       "stdev": 32429431.328619
+      },
+      "concurrent.tx.reserve.body_ns": {
+       "max": 3118085,
+       "mean": 66626.0975,
+       "min": 6552,
+       "n": 10000,
+       "p50": 31600,
+       "p95": 207660,
+       "p99": 377818,
+       "stdev": 85876.73247055907
+      },
+      "concurrent.tx.reserve.end_ns": {
+       "max": 1771561,
+       "mean": 116166.9828,
+       "min": 2144,
+       "n": 10000,
+       "p50": 4248,
+       "p95": 563677,
+       "p99": 749425,
+       "stdev": 226184.28037965015
+      },
+      "concurrent.worker.release_delay_ns": {
+       "max": 1490764,
+       "mean": 61545.2238,
+       "min": 421,
+       "n": 10000,
+       "p50": 52128,
+       "p95": 157686,
+       "p99": 259897,
+       "stdev": 66085.27938049588
+      },
+      "concurrent.worker.setup_ns": {
+       "max": 3591874,
+       "mean": 781843.9589,
+       "min": 184186,
+       "n": 10000,
+       "p50": 772598,
+       "p95": 1035361,
+       "p99": 1454898,
+       "stdev": 217771.3790579136
+      },
+      "line.final_ns": {
+       "max": 1171085,
+       "mean": 81301.665,
+       "min": 42449,
+       "n": 1000,
+       "p50": 69781,
+       "p95": 150362,
+       "p99": 242585,
+       "stdev": 52078.55376053144
+      },
+      "line.open_ns": {
+       "max": 5450319,
+       "mean": 2346600.847,
+       "min": 2047417,
+       "n": 1000,
+       "p50": 2308268,
+       "p95": 2630520,
+       "p99": 3652789,
+       "stdev": 266319.36030387325
+      },
+      "line.parse_ns": {
+       "max": 850003,
+       "mean": 106905.207,
+       "min": 48871,
+       "n": 1000,
+       "p50": 78467,
+       "p95": 277510,
+       "p99": 364063,
+       "stdev": 74252.35655103165
+      },
+      "line.run_ns": {
+       "max": 237791944,
+       "mean": 48204415.477,
+       "min": 7625896,
+       "n": 1000,
+       "p50": 17079215,
+       "p95": 188494211,
+       "p99": 190042501,
+       "stdev": 63041325.91889442
+      },
+      "op.approve.decide_ns": {
+       "max": 150211,
+       "mean": 12395.373374613004,
+       "min": 7344,
+       "n": 3230,
+       "p50": 11100,
+       "p95": 18986,
+       "p99": 31610,
+       "stdev": 6657.20505869157
+      },
+      "op.approve.total_ns": {
+       "max": 3359238,
+       "mean": 677964.6563467493,
+       "min": 434174,
+       "n": 3230,
+       "p50": 510126,
+       "p95": 1150135,
+       "p99": 1275241,
+       "stdev": 298311.5875483737
+      },
+      "op.approve.validate_ns": {
+       "max": 6222,
+       "mean": 357.3764705882353,
+       "min": 161,
+       "n": 3230,
+       "p50": 320,
+       "p95": 562,
+       "p99": 831,
+       "stdev": 212.29712682062217
+      },
+      "process.overhead_ns": {
+       "max": 14890967,
+       "mean": 14095519.8,
+       "min": 13243935,
+       "n": 10,
+       "p50": 13738717,
+       "p95": 14890967,
+       "p99": 14890967,
+       "stdev": 643360.8535672997
+      },
+      "tx.approve.begin_ns": {
+       "max": 978996,
+       "mean": 38563.537770897834,
+       "min": 6061,
+       "n": 3230,
+       "p50": 8937,
+       "p95": 118983,
+       "p99": 149821,
+       "stdev": 53100.4072843833
+      },
+      "tx.approve.body_ns": {
+       "max": 263785,
+       "mean": 24170.204953560373,
+       "min": 14277,
+       "n": 3230,
+       "p50": 21981,
+       "p95": 36849,
+       "p99": 56596,
+       "stdev": 12743.260146600129
+      },
+      "tx.approve.end_ns": {
+       "max": 3207974,
+       "mean": 593510.1442724458,
+       "min": 391203,
+       "n": 3230,
+       "p50": 458650,
+       "p95": 974097,
+       "p99": 1073573,
+       "stdev": 244055.38986786615
+      }
+     },
+     "peak_rss_kb": 23524,
+     "sessions_per_sec": 20.638865391811997,
+     "successful_operations_per_sec": 97.12650053386726
+    },
+    "rust": {
+     "batch_wall_s": {
+      "max": 5.040165293999962,
+      "mean": 4.79176964589999,
+      "min": 4.627056208999875,
+      "n": 10,
+      "p50": 4.745638288000009,
+      "p95": 5.040165293999962,
+      "p99": 5.040165293999962,
+      "stdev": 0.13007363057983323
+     },
+     "broker_timing_ns": {
+      "concurrent.op.execute.decide_ns": {
+       "max": 122780,
+       "mean": 9854.013,
+       "min": 2254,
+       "n": 10000,
+       "p50": 9869,
+       "p95": 14697,
+       "p99": 18235,
+       "stdev": 3890.6947478301454
+      },
+      "concurrent.op.execute.key_lock_wait_ns": {
+       "max": 35656964,
+       "mean": 3136361.9855,
+       "min": 140,
+       "n": 10000,
+       "p50": 1983599,
+       "p95": 10339552,
+       "p99": 20256924,
+       "stdev": 4125609.307690756
+      },
+      "concurrent.op.execute.total_ns": {
+       "max": 183569851,
+       "mean": 16244868.3589,
+       "min": 793818,
+       "n": 10000,
+       "p50": 5964392,
+       "p95": 81599595,
+       "p99": 180091782,
+       "stdev": 30226252.441892084
+      },
+      "concurrent.op.execute.validate_ns": {
+       "max": 57728,
+       "mean": 5387.2829,
+       "min": 2324,
+       "n": 10000,
+       "p50": 5090,
+       "p95": 7033,
+       "p99": 10009,
+       "stdev": 2015.4505087803382
+      },
+      "concurrent.ready_ns": {
+       "max": 1361392,
+       "mean": 172179.404,
+       "min": 120536,
+       "n": 1000,
+       "p50": 154660,
+       "p95": 253164,
+       "p99": 365876,
+       "stdev": 81803.3317525307
+      },
+      "concurrent.start_skew_ns": {
+       "max": 362420,
+       "mean": 12879.288,
+       "min": 4919,
+       "n": 1000,
+       "p50": 8927,
+       "p95": 24736,
+       "p99": 60594,
+       "stdev": 16028.93860990228
+      },
+      "concurrent.total_ns": {
+       "max": 184752437,
+       "mean": 41929086.521,
+       "min": 2895208,
+       "n": 1000,
+       "p50": 12982185,
+       "p95": 180980109,
+       "p99": 182922691,
+       "stdev": 58855669.35671177
+      },
+      "concurrent.tx.adapter.begin_ns": {
+       "max": 178644351,
+       "mean": 161370.56256109482,
+       "min": 2325,
+       "n": 2046,
+       "p50": 5270,
+       "p95": 8085,
+       "p99": 3115440,
+       "stdev": 4042591.2723086467
+      },
+      "concurrent.tx.adapter.body_ns": {
+       "max": 257142,
+       "mean": 30223.740469208213,
+       "min": 16831,
+       "n": 2046,
+       "p50": 29145,
+       "p95": 42891,
+       "p99": 56335,
+       "stdev": 11696.415305558045
+      },
+      "concurrent.tx.adapter.end_ns": {
+       "max": 2692627,
+       "mean": 464509.23704789835,
+       "min": 387356,
+       "n": 2046,
+       "p50": 455814,
+       "p95": 528090,
+       "p99": 613520,
+       "stdev": 75395.25188925053
+      },
+      "concurrent.tx.audit.begin_ns": {
+       "max": 18263189,
+       "mean": 48235.03401759531,
+       "min": 1393,
+       "n": 5115,
+       "p50": 3125,
+       "p95": 4548,
+       "p99": 1075706,
+       "stdev": 403412.60837685585
+      },
+      "concurrent.tx.audit.body_ns": {
+       "max": 146845,
+       "mean": 12980.764027370478,
+       "min": 7213,
+       "n": 5115,
+       "p50": 11942,
+       "p95": 19437,
+       "p99": 27832,
+       "stdev": 5956.415317925122
+      },
+      "concurrent.tx.audit.end_ns": {
+       "max": 2858909,
+       "mean": 501092.4377321603,
+       "min": 402164,
+       "n": 5115,
+       "p50": 477946,
+       "p95": 638827,
+       "p99": 865382,
+       "stdev": 100923.67609758688
+      },
+      "concurrent.tx.dispatch.begin_ns": {
+       "max": 33307827,
+       "mean": 23915.390518084067,
+       "min": 3727,
+       "n": 2046,
+       "p50": 5841,
+       "p95": 7694,
+       "p99": 12223,
+       "stdev": 739462.6479242509
+      },
+      "concurrent.tx.dispatch.body_ns": {
+       "max": 539401,
+       "mean": 43555.80889540567,
+       "min": 27722,
+       "n": 2046,
+       "p50": 41788,
+       "p95": 58650,
+       "p99": 74560,
+       "stdev": 22121.823717317864
+      },
+      "concurrent.tx.dispatch.end_ns": {
+       "max": 2744374,
+       "mean": 474755.72140762466,
+       "min": 391995,
+       "n": 2046,
+       "p50": 460844,
+       "p95": 556253,
+       "p99": 657743,
+       "stdev": 94884.4104338359
+      },
+      "concurrent.tx.observe.begin_ns": {
+       "max": 40857,
+       "mean": 4807.553392951078,
+       "min": 3446,
+       "n": 1901,
+       "p50": 4288,
+       "p95": 6723,
+       "p99": 10169,
+       "stdev": 2284.141787680143
+      },
+      "concurrent.tx.observe.body_ns": {
+       "max": 225413,
+       "mean": 24469.258811152024,
+       "min": 17022,
+       "n": 1901,
+       "p50": 22622,
+       "p95": 36147,
+       "p99": 45766,
+       "stdev": 11269.791272822293
+      },
+      "concurrent.tx.observe.end_ns": {
+       "max": 1694868,
+       "mean": 451318.078905839,
+       "min": 388969,
+       "n": 1901,
+       "p50": 445515,
+       "p95": 508533,
+       "p99": 584526,
+       "stdev": 56567.90731656843
+      },
+      "concurrent.tx.reserve.begin_ns": {
+       "max": 180190110,
+       "mean": 11693929.7574,
+       "min": 2064,
+       "n": 10000,
+       "p50": 1065177,
+       "p95": 78602216,
+       "p99": 178702299,
+       "stdev": 30893315.869672958
+      },
+      "concurrent.tx.reserve.body_ns": {
+       "max": 576631,
+       "mean": 40221.9904,
+       "min": 7374,
+       "n": 10000,
+       "p50": 25277,
+       "p95": 109586,
+       "p99": 156794,
+       "stdev": 36164.845327865936
+      },
+      "concurrent.tx.reserve.end_ns": {
+       "max": 2716162,
+       "mean": 112497.8088,
+       "min": 2134,
+       "n": 10000,
+       "p50": 4248,
+       "p95": 539341,
+       "p99": 701084,
+       "stdev": 220677.00111792004
+      },
+      "concurrent.worker.release_delay_ns": {
+       "max": 367549,
+       "mean": 11065.7895,
+       "min": 501,
+       "n": 10000,
+       "p50": 7885,
+       "p95": 26960,
+       "p99": 33102,
+       "stdev": 9112.698720060156
+      },
+      "concurrent.worker.setup_ns": {
+       "max": 3272956,
+       "mean": 606824.455,
+       "min": 237776,
+       "n": 10000,
+       "p50": 601758,
+       "p95": 742051,
+       "p99": 1150537,
+       "stdev": 132211.65485777037
+      },
+      "line.final_ns": {
+       "max": 494526,
+       "mean": 75334.573,
+       "min": 36268,
+       "n": 1000,
+       "p50": 66325,
+       "p95": 137989,
+       "p99": 209172,
+       "stdev": 34708.281195648786
+      },
+      "line.open_ns": {
+       "max": 5238771,
+       "mean": 2646519.015,
+       "min": 2300392,
+       "n": 1000,
+       "p50": 2595577,
+       "p95": 3036613,
+       "p99": 3886295,
+       "stdev": 285453.0727201481
+      },
+      "line.parse_ns": {
+       "max": 714489,
+       "mean": 112559.479,
+       "min": 71013,
+       "n": 1000,
+       "p50": 109104,
+       "p95": 157445,
+       "p99": 177272,
+       "stdev": 30288.23103581386
+      },
+      "line.run_ns": {
+       "max": 191390716,
+       "mean": 47722614.007,
+       "min": 7826593,
+       "n": 1000,
+       "p50": 19042320,
+       "p95": 187685997,
+       "p99": 189064700,
+       "stdev": 59042300.25722895
+      },
+      "op.approve.decide_ns": {
+       "max": 70453,
+       "mean": 8536.555108359133,
+       "min": 4719,
+       "n": 3230,
+       "p50": 7895,
+       "p95": 13496,
+       "p99": 18275,
+       "stdev": 3651.645552254109
+      },
+      "op.approve.total_ns": {
+       "max": 2682258,
+       "mean": 643858.126006192,
+       "min": 400641,
+       "n": 3230,
+       "p50": 481132,
+       "p95": 1120461,
+       "p99": 1231909,
+       "stdev": 280224.8612420336
+      },
+      "op.approve.validate_ns": {
+       "max": 5681,
+       "mean": 167.25139318885448,
+       "min": 50,
+       "n": 3230,
+       "p50": 141,
+       "p95": 310,
+       "p99": 491,
+       "stdev": 157.61990168197138
+      },
+      "process.overhead_ns": {
+       "max": 8595929,
+       "mean": 8252296.8,
+       "min": 7598177,
+       "n": 10,
+       "p50": 8228681,
+       "p95": 8595929,
+       "p99": 8595929,
+       "stdev": 287089.52134203713
+      },
+      "tx.approve.begin_ns": {
+       "max": 866685,
+       "mean": 34147.39814241486,
+       "min": 3547,
+       "n": 3230,
+       "p50": 5140,
+       "p95": 118101,
+       "p99": 140624,
+       "stdev": 49519.844184885944
+      },
+      "tx.approve.body_ns": {
+       "max": 192992,
+       "mean": 17245.031578947368,
+       "min": 8957,
+       "n": 3230,
+       "p50": 15328,
+       "p95": 28053,
+       "p99": 40536,
+       "stdev": 8155.716395817829
+      },
+      "tx.approve.end_ns": {
+       "max": 2386734,
+       "mean": 577329.4523219814,
+       "min": 371927,
+       "n": 3230,
+       "p50": 446547,
+       "p95": 961743,
+       "p99": 1047824,
+       "stdev": 227160.23243946358
+      }
+     },
+     "peak_rss_kb": 7104,
+     "sessions_per_sec": 20.869116712562256,
+     "successful_operations_per_sec": 98.91961321754509
+    }
+   },
+   "meta": {
+    "concurrency_profile": "cold (supplemental, D-027; reported separately, never combined with primary)",
+    "concurrent_per_session": 10,
+    "generator": "c_broker.gen_concurrent",
+    "ledger": "sqlite (file-backed, D-023)",
+    "sessions": 100
+   },
+   "method": "one broker-scenario per session, each ending in one concurrent group of 10 executes (in-process threads); checked against every permitted serialization with D-026 evidence; successful throughput counts only successful operations; refusals are reported under availability, never as work",
+   "runs": 10,
+   "seed": 20261131
+  },
+  "B-mem": {
+   "availability": {
+    "go": [
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 0,
+      "successful": 464
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 1,
+      "successful": 467
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 2,
+      "successful": 468
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 3,
+      "successful": 457
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 4,
+      "successful": 473
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 5,
+      "successful": 462
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 6,
+      "successful": 467
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 7,
+      "successful": 457
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 8,
+      "successful": 470
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 9,
+      "successful": 461
+     }
+    ],
+    "rust": [
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 0,
+      "successful": 467
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 1,
+      "successful": 474
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 2,
+      "successful": 463
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 3,
+      "successful": 462
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 4,
+      "successful": 476
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 5,
+      "successful": 472
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 6,
+      "successful": 474
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 7,
+      "successful": 483
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 8,
+      "successful": 467
+     },
+     {
+      "concurrency": "x10",
+      "groups": 100,
+      "lock_timeout_by_stage": {},
+      "lock_timeout_percent": 0.0,
+      "lock_timeout_refusals": 0,
+      "operations": 1000,
+      "other_storage_refusals": 0,
+      "run": 9,
+      "successful": 484
+     }
+    ]
+   },
+   "command": "bench-broker-scenario",
+   "digest": "sha256:8c78bc203cce4755744fd9b86f1e91eb78c5cab001f0fc30ba8da6f59395e58a",
+   "measurements": {
+    "go": {
+     "batch_wall_s": {
+      "max": 0.06554357099980734,
+      "mean": 0.05482331450004949,
+      "min": 0.05033780200005822,
+      "n": 10,
+      "p50": 0.05217071800007034,
+      "p95": 0.06554357099980734,
+      "p99": 0.06554357099980734,
+      "stdev": 0.00484556011221408
+     },
+     "broker_timing_ns": {
+      "concurrent.op.execute.decide_ns": {
+       "max": 257332,
+       "mean": 6477.6027,
+       "min": 2544,
+       "n": 10000,
+       "p50": 5350,
+       "p95": 11111,
+       "p99": 25769,
+       "stdev": 6602.72395865677
+      },
+      "concurrent.op.execute.total_ns": {
+       "max": 1570054,
+       "mean": 152361.8924,
+       "min": 12854,
+       "n": 10000,
+       "p50": 140183,
+       "p95": 310172,
+       "p99": 439995,
+       "stdev": 98810.66246399566
+      },
+      "concurrent.op.execute.validate_ns": {
+       "max": 253735,
+       "mean": 7326.6233,
+       "min": 3176,
+       "n": 10000,
+       "p50": 5891,
+       "p95": 14678,
+       "p99": 35236,
+       "stdev": 7159.104618811728
+      },
+      "concurrent.ready_ns": {
+       "max": 500588,
+       "mean": 12189.583,
+       "min": 4258,
+       "n": 1000,
+       "p50": 8586,
+       "p95": 26029,
+       "p99": 89968,
+       "stdev": 20982.653757802676
+      },
+      "concurrent.start_skew_ns": {
+       "max": 111770,
+       "mean": 13987.911,
+       "min": 1533,
+       "n": 1000,
+       "p50": 9237,
+       "p95": 58099,
+       "p99": 66194,
+       "stdev": 15359.881287244289
+      },
+      "concurrent.total_ns": {
+       "max": 1764809,
+       "mean": 277046.018,
+       "min": 153918,
+       "n": 1000,
+       "p50": 253235,
+       "p95": 454823,
+       "p99": 614582,
+       "stdev": 112436.66714304508
+      },
+      "concurrent.tx.adapter.body_ns": {
+       "max": 162104,
+       "mean": 6859.331027667984,
+       "min": 4208,
+       "n": 2024,
+       "p50": 5681,
+       "p95": 10169,
+       "p99": 22983,
+       "stdev": 7561.978850835943
+      },
+      "concurrent.tx.audit.body_ns": {
+       "max": 4368,
+       "mean": 24.502881290818287,
+       "min": 10,
+       "n": 5206,
+       "p50": 20,
+       "p95": 40,
+       "p99": 50,
+       "stdev": 62.521010427044175
+      },
+      "concurrent.tx.dispatch.body_ns": {
+       "max": 1142,
+       "mean": 81.11758893280633,
+       "min": 30,
+       "n": 2024,
+       "p50": 71,
+       "p95": 130,
+       "p99": 160,
+       "stdev": 47.68656943537743
+      },
+      "concurrent.tx.observe.body_ns": {
+       "max": 892,
+       "mean": 72.4861407249467,
+       "min": 40,
+       "n": 1876,
+       "p50": 70,
+       "p95": 110,
+       "p99": 161,
+       "stdev": 37.754947682187556
+      },
+      "concurrent.tx.reserve.body_ns": {
+       "max": 165781,
+       "mean": 2124.1571,
+       "min": 50,
+       "n": 10000,
+       "p50": 130,
+       "p95": 7244,
+       "p99": 12503,
+       "stdev": 4426.2443744043085
+      },
+      "concurrent.worker.release_delay_ns": {
+       "max": 113453,
+       "mean": 9861.5928,
+       "min": 290,
+       "n": 10000,
+       "p50": 5511,
+       "p95": 52248,
+       "p99": 63630,
+       "stdev": 14457.002226586468
+      },
+      "line.final_ns": {
+       "max": 59702,
+       "mean": 891.661,
+       "min": 291,
+       "n": 1000,
+       "p50": 651,
+       "p95": 1523,
+       "p99": 4699,
+       "stdev": 2064.211558789079
+      },
+      "line.parse_ns": {
+       "max": 523892,
+       "mean": 86956.765,
+       "min": 44113,
+       "n": 1000,
+       "p50": 72747,
+       "p95": 189465,
+       "p99": 278151,
+       "stdev": 47947.937880296246
+      },
+      "line.run_ns": {
+       "max": 2053861,
+       "mean": 357748.414,
+       "min": 182111,
+       "n": 1000,
+       "p50": 329228,
+       "p95": 577342,
+       "p99": 796684,
+       "stdev": 134814.534255952
+      },
+      "op.approve.decide_ns": {
+       "max": 202269,
+       "mean": 7047.18359133127,
+       "min": 4268,
+       "n": 3230,
+       "p50": 5711,
+       "p95": 11411,
+       "p99": 25418,
+       "stdev": 8477.976192078513
+      },
+      "op.approve.total_ns": {
+       "max": 258826,
+       "mean": 13799.703095975232,
+       "min": 8085,
+       "n": 3230,
+       "p50": 11362,
+       "p95": 22132,
+       "p99": 73368,
+       "stdev": 13213.517983006306
+      },
+      "op.approve.validate_ns": {
+       "max": 7765,
+       "mean": 152.3012383900929,
+       "min": 70,
+       "n": 3230,
+       "p50": 120,
+       "p95": 290,
+       "p99": 411,
+       "stdev": 191.92358076385432
+      },
+      "process.overhead_ns": {
+       "max": 11450881,
+       "mean": 10352796.5,
+       "min": 9120204,
+       "n": 10,
+       "p50": 10175753,
+       "p95": 11450881,
+       "p99": 11450881,
+       "stdev": 813750.6208922362
+      },
+      "tx.approve.body_ns": {
+       "max": 31940,
+       "mean": 95.37430340557276,
+       "min": 30,
+       "n": 3230,
+       "p50": 60,
+       "p95": 190,
+       "p99": 401,
+       "stdev": 587.0587241823805
+      }
+     },
+     "peak_rss_kb": 12796,
+     "sessions_per_sec": 1824.041485122351,
+     "successful_operations_per_sec": 8474.496739878443
+    },
+    "rust": {
+     "batch_wall_s": {
+      "max": 0.07151098999997885,
+      "mean": 0.06468883950001328,
+      "min": 0.060604591000128494,
+      "n": 10,
+      "p50": 0.06301021099989157,
+      "p95": 0.07151098999997885,
+      "p99": 0.07151098999997885,
+      "stdev": 0.004252228257902315
+     },
+     "broker_timing_ns": {
+      "concurrent.op.execute.decide_ns": {
+       "max": 133390,
+       "mean": 5385.2789,
+       "min": 1463,
+       "n": 10000,
+       "p50": 5040,
+       "p95": 9829,
+       "p99": 12914,
+       "stdev": 3612.914902197925
+      },
+      "concurrent.op.execute.total_ns": {
+       "max": 1520951,
+       "mean": 114312.7088,
+       "min": 11913,
+       "n": 10000,
+       "p50": 108984,
+       "p95": 214352,
+       "p99": 279223,
+       "stdev": 75424.51416390223
+      },
+      "concurrent.op.execute.validate_ns": {
+       "max": 61305,
+       "mean": 3405.4517,
+       "min": 1973,
+       "n": 10000,
+       "p50": 3126,
+       "p95": 5149,
+       "p99": 6372,
+       "stdev": 1873.0030529902403
+      },
+      "concurrent.ready_ns": {
+       "max": 2499536,
+       "mean": 151150.366,
+       "min": 112090,
+       "n": 1000,
+       "p50": 134312,
+       "p95": 193392,
+       "p99": 353663,
+       "stdev": 100613.58677346447
+      },
+      "concurrent.start_skew_ns": {
+       "max": 1038958,
+       "mean": 13018.057,
+       "min": 4939,
+       "n": 1000,
+       "p50": 8767,
+       "p95": 25097,
+       "p99": 69581,
+       "stdev": 36323.90949400518
+      },
+      "concurrent.total_ns": {
+       "max": 2777638,
+       "mean": 403004.934,
+       "min": 295153,
+       "n": 1000,
+       "p50": 378269,
+       "p95": 498645,
+       "p99": 825578,
+       "stdev": 148699.8249922722
+      },
+      "concurrent.tx.adapter.body_ns": {
+       "max": 101530,
+       "mean": 4598.485826001955,
+       "min": 2365,
+       "n": 2046,
+       "p50": 4608,
+       "p95": 6943,
+       "p99": 10470,
+       "stdev": 3350.992739457488
+      },
+      "concurrent.tx.audit.body_ns": {
+       "max": 741,
+       "mean": 28.245812232177638,
+       "min": 20,
+       "n": 5134,
+       "p50": 30,
+       "p95": 50,
+       "p99": 70,
+       "stdev": 15.844041832632001
+      },
+      "concurrent.tx.dispatch.body_ns": {
+       "max": 932,
+       "mean": 87.17008797653959,
+       "min": 40,
+       "n": 2046,
+       "p50": 80,
+       "p95": 131,
+       "p99": 250,
+       "stdev": 50.242185147573096
+      },
+      "concurrent.tx.observe.body_ns": {
+       "max": 771,
+       "mean": 74.38222923238696,
+       "min": 40,
+       "n": 1902,
+       "p50": 70,
+       "p95": 120,
+       "p99": 161,
+       "stdev": 39.08493778390638
+      },
+      "concurrent.tx.reserve.body_ns": {
+       "max": 39534,
+       "mean": 437.8478,
+       "min": 110,
+       "n": 10000,
+       "p50": 371,
+       "p95": 802,
+       "p99": 1041,
+       "stdev": 502.096153629869
+      },
+      "concurrent.worker.release_delay_ns": {
+       "max": 1044619,
+       "mean": 10055.6262,
+       "min": 380,
+       "n": 10000,
+       "p50": 9258,
+       "p95": 15539,
+       "p99": 39714,
+       "stdev": 13370.978209409408
+      },
+      "line.final_ns": {
+       "max": 7955,
+       "mean": 954.781,
+       "min": 390,
+       "n": 1000,
+       "p50": 882,
+       "p95": 1442,
+       "p99": 1903,
+       "stdev": 345.5795368005103
+      },
+      "line.parse_ns": {
+       "max": 861756,
+       "mean": 103729.628,
+       "min": 70242,
+       "n": 1000,
+       "p50": 96901,
+       "p95": 146985,
+       "p99": 167735,
+       "stdev": 32233.53961040319
+      },
+      "line.run_ns": {
+       "max": 2838181,
+       "mean": 466961.153,
+       "min": 340719,
+       "n": 1000,
+       "p50": 442460,
+       "p95": 580048,
+       "p99": 930755,
+       "stdev": 160301.25035834263
+      },
+      "op.approve.decide_ns": {
+       "max": 84288,
+       "mean": 4776.473993808049,
+       "min": 2665,
+       "n": 3230,
+       "p50": 3948,
+       "p95": 8175,
+       "p99": 11762,
+       "stdev": 3007.4497865187295
+      },
+      "op.approve.total_ns": {
+       "max": 88847,
+       "mean": 7738.3987616099075,
+       "min": 4318,
+       "n": 3230,
+       "p50": 6463,
+       "p95": 13395,
+       "p99": 19807,
+       "stdev": 4263.5430610448175
+      },
+      "op.approve.validate_ns": {
+       "max": 841,
+       "mean": 63.48575851393189,
+       "min": 20,
+       "n": 3230,
+       "p50": 50,
+       "p95": 130,
+       "p99": 221,
+       "stdev": 43.55417185172479
+      },
+      "process.overhead_ns": {
+       "max": 9862557,
+       "mean": 7619760.9,
+       "min": 6781683,
+       "n": 10,
+       "p50": 7310230,
+       "p95": 9862557,
+       "p99": 9862557,
+       "stdev": 889373.0514218616
+      },
+      "tx.approve.body_ns": {
+       "max": 9758,
+       "mean": 151.56811145510835,
+       "min": 50,
+       "n": 3230,
+       "p50": 140,
+       "p95": 241,
+       "p99": 451,
+       "stdev": 211.2955630461402
+      }
+     },
+     "peak_rss_kb": 3344,
+     "sessions_per_sec": 1545.8617092671677,
+     "successful_operations_per_sec": 7299.558991159566
+    }
+   },
+   "meta": {
+    "concurrency_profile": "primary",
+    "concurrent_per_session": 10,
+    "generator": "c_broker.gen_concurrent",
+    "ledger": "in-memory model (simulated; not a substitute for the SQLite workload)",
+    "sessions": 100
+   },
+   "method": "one broker-scenario per session, each ending in one concurrent group of 10 executes (in-process threads); checked against every permitted serialization with D-026 evidence; successful throughput counts only successful operations; refusals are reported under availability, never as work",
+   "runs": 10,
+   "seed": 20261131
+  },
+  "G": {
+   "command": "decide-batch",
+   "digest": "sha256:5eb597e2880aad217980d04043d7adb4c3ab96705a04a9e371a30a1f9beca1a7",
+   "lines": 1000,
+   "measurements": {
+    "go": {
+     "batch_wall_s": {
+      "max": 0.8223337199999605,
+      "mean": 0.7723113518000446,
+      "min": 0.7349762880000981,
+      "n": 5,
+      "p50": 0.7676184829999784,
+      "p95": 0.8223337199999605,
+      "p99": 0.8223337199999605,
+      "stdev": 0.03612454352969571
+     },
+     "lines_per_sec": 1294.8145817995244,
+     "peak_rss_kb": 18616
+    },
+    "rust": {
+     "batch_wall_s": {
+      "max": 0.37986187299998164,
+      "mean": 0.37408168920001117,
+      "min": 0.3704656510001314,
+      "n": 5,
+      "p50": 0.3735878979998688,
+      "p95": 0.37986187299998164,
+      "p99": 0.37986187299998164,
+      "stdev": 0.0038081357252148897
+     },
+     "lines_per_sec": 2673.212907422816,
+     "peak_rss_kb": 7452
+    }
+   },
+   "meta": {
+    "generator": "gen_g",
+    "kinds": {
+     "big_content": 121,
+     "big_resource": 133,
+     "invalid_utf8": 113,
+     "lone_surrogate": 116,
+     "shell": 121,
+     "symlink": 130,
+     "unknown_capability": 133,
+     "unknown_kind": 133
+    },
+    "note": "invalid UTF-8 lines are answered with a null id (D-021)"
+   },
+   "runs": 5
+  },
+  "H": {
+   "command": "broker-scenario",
+   "digest": "sha256:07e9ce8387d1886532129956cd66be755b45c4a868953e00569cab49ca785443",
+   "lines": 1000,
+   "measurements": {
+    "go": {
+     "batch_wall_s": {
+      "max": 6.917486813999858,
+      "mean": 6.425392649999958,
+      "min": 6.2558027969998875,
+      "n": 5,
+      "p50": 6.310818035000011,
+      "p95": 6.917486813999858,
+      "p99": 6.917486813999858,
+      "stdev": 0.27803502854528644
+     },
+     "broker_timing_ns": {
+      "line.final_ns": {
+       "max": 694302,
+       "mean": 50573.9754,
+       "min": 32330,
+       "n": 5000,
+       "p50": 45726,
+       "p95": 73007,
+       "p99": 111008,
+       "stdev": 30219.016023409487
+      },
+      "line.open_ns": {
+       "max": 18371943,
+       "mean": 2632407.8536,
+       "min": 2015510,
+       "n": 5000,
+       "p50": 2197741,
+       "p95": 5926474,
+       "p99": 7750065,
+       "stdev": 1385952.31574173
+      },
+      "line.parse_ns": {
+       "max": 431419,
+       "mean": 32818.271,
+       "min": 18976,
+       "n": 5000,
+       "p50": 27522,
+       "p95": 50896,
+       "p99": 152596,
+       "stdev": 25158.972207363026
+      },
+      "line.run_ns": {
+       "max": 48662450,
+       "mean": 7105618.8562,
+       "min": 5052785,
+       "n": 5000,
+       "p50": 6363234,
+       "p95": 11288331,
+       "p99": 16685862,
+       "stdev": 2565118.458204738
+      },
+      "op.approve.decide_ns": {
+       "max": 100579,
+       "mean": 13704.581818181818,
+       "min": 9789,
+       "n": 660,
+       "p50": 12063,
+       "p95": 21521,
+       "p99": 33031,
+       "stdev": 6279.27633809579
+      },
+      "op.approve.total_ns": {
+       "max": 9120354,
+       "mean": 1285964.6303030304,
+       "min": 973095,
+       "n": 660,
+       "p50": 1053045,
+       "p95": 2189786,
+       "p99": 6048844,
+       "stdev": 934651.0149564714
+      },
+      "op.approve.validate_ns": {
+       "max": 4258,
+       "mean": 400.9878787878788,
+       "min": 250,
+       "n": 660,
+       "p50": 320,
+       "p95": 721,
+       "p99": 1453,
+       "stdev": 286.75975865726866
+      },
+      "op.execute.decide_ns": {
+       "max": 265157,
+       "mean": 7993.1895338610375,
+       "min": 4789,
+       "n": 11370,
+       "p50": 6832,
+       "p95": 12363,
+       "p99": 19136,
+       "stdev": 5325.7329546070005
+      },
+      "op.execute.key_lock_wait_ns": {
+       "max": 65793,
+       "mean": 427.70967458223396,
+       "min": 80,
+       "n": 11370,
+       "p50": 331,
+       "p95": 881,
+       "p99": 1853,
+       "stdev": 999.8433343123183
+      },
+      "op.execute.total_ns": {
+       "max": 19041620,
+       "mean": 1413414.628583993,
+       "min": 38923,
+       "n": 11370,
+       "p50": 1071890,
+       "p95": 3016336,
+       "p99": 6926330,
+       "stdev": 1453756.5863334332
+      },
+      "op.execute.validate_ns": {
+       "max": 470091,
+       "mean": 9321.020580474935,
+       "min": 4148,
+       "n": 11370,
+       "p50": 8075,
+       "p95": 14928,
+       "p99": 24005,
+       "stdev": 8335.39693496562
+      },
+      "op.reconcile.total_ns": {
+       "max": 7892631,
+       "mean": 614419.8727915194,
+       "min": 443061,
+       "n": 1415,
+       "p50": 508864,
+       "p95": 640571,
+       "p99": 4576191,
+       "stdev": 606497.5961562309
+      },
+      "op.restart_broker.total_ns": {
+       "max": 8398059,
+       "mean": 959513.0056737589,
+       "min": 727153,
+       "n": 705,
+       "p50": 794931,
+       "p95": 1226601,
+       "p99": 5187479,
+       "stdev": 786969.9133508203
+      },
+      "process.overhead_ns": {
+       "max": 29228460,
+       "mean": 27243870.8,
+       "min": 25684333,
+       "n": 5,
+       "p50": 26645721,
+       "p95": 29228460,
+       "p99": 29228460,
+       "stdev": 1451707.6873672607
+      },
+      "tx.adapter.begin_ns": {
+       "max": 145743,
+       "mean": 8228.9854,
+       "min": 5771,
+       "n": 5000,
+       "p50": 7344,
+       "p95": 11712,
+       "p99": 16732,
+       "stdev": 4449.574312976488
+      },
+      "tx.adapter.body_ns": {
+       "max": 495589,
+       "mean": 37257.6544,
+       "min": 22983,
+       "n": 5000,
+       "p50": 33453,
+       "p95": 50975,
+       "p99": 79720,
+       "stdev": 22270.164209995146
+      },
+      "tx.adapter.end_ns": {
+       "max": 8047683,
+       "mean": 513709.4416,
+       "min": 387546,
+       "n": 5000,
+       "p50": 440697,
+       "p95": 511219,
+       "p99": 3380109,
+       "stdev": 473935.0712858625
+      },
+      "tx.approve.begin_ns": {
+       "max": 940103,
+       "mean": 110162.91515151515,
+       "min": 89187,
+       "n": 660,
+       "p50": 101260,
+       "p95": 146524,
+       "p99": 179907,
+       "stdev": 48691.98186371926
+      },
+      "tx.approve.body_ns": {
+       "max": 260608,
+       "mean": 29421.480303030305,
+       "min": 21962,
+       "n": 660,
+       "p50": 25698,
+       "p95": 44364,
+       "p99": 73808,
+       "stdev": 16334.901037379355
+      },
+      "tx.approve.end_ns": {
+       "max": 8945526,
+       "mean": 1121459.9045454545,
+       "min": 839464,
+       "n": 660,
+       "p50": 896953,
+       "p95": 1773876,
+       "p99": 5907599,
+       "stdev": 929275.7341265223
+      },
+      "tx.audit.begin_ns": {
+       "max": 310993,
+       "mean": 3814.800359066427,
+       "min": 2374,
+       "n": 2785,
+       "p50": 3356,
+       "p95": 5520,
+       "p99": 8796,
+       "stdev": 6346.3618248565845
+      },
+      "tx.audit.body_ns": {
+       "max": 102422,
+       "mean": 8751.671813285458,
+       "min": 5350,
+       "n": 2785,
+       "p50": 8195,
+       "p95": 12864,
+       "p99": 18695,
+       "stdev": 3459.760844317095
+      },
+      "tx.audit.end_ns": {
+       "max": 15426518,
+       "mean": 671124.942908438,
+       "min": 388929,
+       "n": 2785,
+       "p50": 439735,
+       "p95": 984076,
+       "p99": 4944783,
+       "stdev": 794966.2034479094
+      },
+      "tx.dispatch.begin_ns": {
+       "max": 127800,
+       "mean": 8679.4816,
+       "min": 2635,
+       "n": 5000,
+       "p50": 8186,
+       "p95": 13114,
+       "p99": 20088,
+       "stdev": 5101.326550121609
+      },
+      "tx.dispatch.body_ns": {
+       "max": 557656,
+       "mean": 49573.9688,
+       "min": 32682,
+       "n": 5000,
+       "p50": 45084,
+       "p95": 69691,
+       "p99": 96811,
+       "stdev": 21459.341397546894
+      },
+      "tx.dispatch.end_ns": {
+       "max": 6772310,
+       "mean": 523679.651,
+       "min": 394990,
+       "n": 5000,
+       "p50": 442340,
+       "p95": 514425,
+       "p99": 3686745,
+       "stdev": 495386.71024547314
+      },
+      "tx.observe.begin_ns": {
+       "max": 73457,
+       "mean": 7790.2984658298465,
+       "min": 5781,
+       "n": 3585,
+       "p50": 7003,
+       "p95": 11471,
+       "p99": 16881,
+       "stdev": 3331.2905446240093
+      },
+      "tx.observe.body_ns": {
+       "max": 307687,
+       "mean": 27899.232357043235,
+       "min": 21501,
+       "n": 3585,
+       "p50": 24937,
+       "p95": 40256,
+       "p99": 58890,
+       "stdev": 12824.5757931341
+      },
+      "tx.observe.end_ns": {
+       "max": 9179394,
+       "mean": 491465.3888423989,
+       "min": 387186,
+       "n": 3585,
+       "p50": 431609,
+       "p95": 492253,
+       "p99": 3069907,
+       "stdev": 448016.45832552
+      },
+      "tx.reconcile.begin_ns": {
+       "max": 104656,
+       "mean": 8636.239575971731,
+       "min": 5561,
+       "n": 1415,
+       "p50": 7644,
+       "p95": 12985,
+       "p99": 22973,
+       "stdev": 6040.955511277902
+      },
+      "tx.reconcile.body_ns": {
+       "max": 618470,
+       "mean": 59139.68339222615,
+       "min": 31579,
+       "n": 1415,
+       "p50": 54772,
+       "p95": 84969,
+       "p99": 122971,
+       "stdev": 35549.49851521511
+      },
+      "tx.reconcile.end_ns": {
+       "max": 7801360,
+       "mean": 544721.5455830388,
+       "min": 391273,
+       "n": 1415,
+       "p50": 444864,
+       "p95": 535114,
+       "p99": 4514756,
+       "stdev": 601541.3652050575
+      },
+      "tx.reserve.begin_ns": {
+       "max": 1043247,
+       "mean": 47296.25329815303,
+       "min": 2725,
+       "n": 11370,
+       "p50": 9127,
+       "p95": 129232,
+       "p99": 158888,
+       "stdev": 59754.62351470519
+      },
+      "tx.reserve.body_ns": {
+       "max": 1008692,
+       "mean": 39355.77458223395,
+       "min": 12132,
+       "n": 11370,
+       "p50": 25408,
+       "p95": 90540,
+       "p99": 129303,
+       "stdev": 35025.55592185881
+      },
+      "tx.reserve.end_ns": {
+       "max": 14879433,
+       "mean": 461131.5145998241,
+       "min": 2605,
+       "n": 11370,
+       "p50": 4889,
+       "p95": 998693,
+       "p99": 4510539,
+       "stdev": 791667.602974349
+      }
+     },
+     "lines_per_sec": 155.6325122014149,
+     "peak_rss_kb": 17576
+    },
+    "rust": {
+     "batch_wall_s": {
+      "max": 7.451477631999978,
+      "mean": 6.599572935800007,
+      "min": 6.28478396200012,
+      "n": 5,
+      "p50": 6.423862251999935,
+      "p95": 7.451477631999978,
+      "p99": 7.451477631999978,
+      "stdev": 0.4812969784578039
+     },
+     "broker_timing_ns": {
+      "line.final_ns": {
+       "max": 571982,
+       "mean": 32548.1916,
+       "min": 22112,
+       "n": 5000,
+       "p50": 29456,
+       "p95": 47920,
+       "p99": 64541,
+       "stdev": 18559.13910310872
+      },
+      "line.open_ns": {
+       "max": 554020392,
+       "mean": 3173179.5462,
+       "min": 2279354,
+       "n": 5000,
+       "p50": 2638508,
+       "p95": 6372711,
+       "p99": 8062400,
+       "stdev": 7921258.353580948
+      },
+      "line.parse_ns": {
+       "max": 490289,
+       "mean": 37054.2632,
+       "min": 27551,
+       "n": 5000,
+       "p50": 33292,
+       "p95": 53040,
+       "p99": 68508,
+       "stdev": 19106.110702776823
+      },
+      "line.run_ns": {
+       "max": 558588880,
+       "mean": 7487914.4628,
+       "min": 5243704,
+       "n": 5000,
+       "p50": 6661714,
+       "p95": 11511909,
+       "p99": 13816730,
+       "stdev": 8140948.140871381
+      },
+      "op.approve.decide_ns": {
+       "max": 106139,
+       "mean": 9891.015151515152,
+       "min": 6943,
+       "n": 660,
+       "p50": 8526,
+       "p95": 14548,
+       "p99": 33483,
+       "stdev": 6404.548572820833
+      },
+      "op.approve.total_ns": {
+       "max": 21950984,
+       "mean": 1326443.5106060605,
+       "min": 955552,
+       "n": 660,
+       "p50": 1047725,
+       "p95": 3036495,
+       "p99": 6562217,
+       "stdev": 1284467.6349581883
+      },
+      "op.approve.validate_ns": {
+       "max": 10169,
+       "mean": 188.50151515151515,
+       "min": 100,
+       "n": 660,
+       "p50": 121,
+       "p95": 351,
+       "p99": 1162,
+       "stdev": 419.20104838351057
+      },
+      "op.execute.decide_ns": {
+       "max": 223860,
+       "mean": 5980.737115215479,
+       "min": 3026,
+       "n": 11370,
+       "p50": 4999,
+       "p95": 9858,
+       "p99": 15479,
+       "stdev": 4223.12789594945
+      },
+      "op.execute.key_lock_wait_ns": {
+       "max": 27522,
+       "mean": 408.15021987686896,
+       "min": 100,
+       "n": 11370,
+       "p50": 340,
+       "p95": 751,
+       "p99": 1293,
+       "stdev": 477.6375416570029
+      },
+      "op.execute.total_ns": {
+       "max": 19586120,
+       "mean": 1367371.4504837291,
+       "min": 28794,
+       "n": 11370,
+       "p50": 1053636,
+       "p95": 2899898,
+       "p99": 6953440,
+       "stdev": 1405820.7598932646
+      },
+      "op.execute.validate_ns": {
+       "max": 125024,
+       "mean": 3994.3728232189974,
+       "min": 2164,
+       "n": 11370,
+       "p50": 3686,
+       "p95": 5671,
+       "p99": 8186,
+       "stdev": 2801.36549320029
+      },
+      "op.reconcile.total_ns": {
+       "max": 8223583,
+       "mean": 583846.6339222615,
+       "min": 458971,
+       "n": 1415,
+       "p50": 513934,
+       "p95": 624611,
+       "p99": 3011376,
+       "stdev": 458865.0696472032
+      },
+      "op.restart_broker.total_ns": {
+       "max": 7502590,
+       "mean": 834478.5177304965,
+       "min": 659637,
+       "n": 705,
+       "p50": 738134,
+       "p95": 939251,
+       "p99": 4191270,
+       "stdev": 574777.5378873424
+      },
+      "process.overhead_ns": {
+       "max": 23115386,
+       "mean": 22355923.8,
+       "min": 21915604,
+       "n": 5,
+       "p50": 22050406,
+       "p95": 23115386,
+       "p99": 23115386,
+       "stdev": 546347.4779251753
+      },
+      "tx.adapter.begin_ns": {
+       "max": 131046,
+       "mean": 4827.767,
+       "min": 3557,
+       "n": 5000,
+       "p50": 4248,
+       "p95": 6983,
+       "p99": 9738,
+       "stdev": 3061.7980937717634
+      },
+      "tx.adapter.body_ns": {
+       "max": 419477,
+       "mean": 25394.8408,
+       "min": 15800,
+       "n": 5000,
+       "p50": 22803,
+       "p95": 37050,
+       "p99": 50404,
+       "stdev": 13224.37090264068
+      },
+      "tx.adapter.end_ns": {
+       "max": 7770112,
+       "mean": 510789.0632,
+       "min": 385663,
+       "n": 5000,
+       "p50": 439905,
+       "p95": 512100,
+       "p99": 3604620,
+       "stdev": 468978.435346955
+      },
+      "tx.approve.begin_ns": {
+       "max": 989055,
+       "mean": 110870.40303030303,
+       "min": 83066,
+       "n": 660,
+       "p50": 99877,
+       "p95": 149390,
+       "p99": 199895,
+       "stdev": 45064.31210477052
+      },
+      "tx.approve.body_ns": {
+       "max": 178976,
+       "mean": 24463.086363636365,
+       "min": 17723,
+       "n": 660,
+       "p50": 21971,
+       "p95": 37721,
+       "p99": 66324,
+       "stdev": 11162.764431006803
+      },
+      "tx.approve.end_ns": {
+       "max": 21825228,
+       "mean": 1173149.5303030303,
+       "min": 828924,
+       "n": 660,
+       "p50": 897222,
+       "p95": 2909156,
+       "p99": 6434848,
+       "stdev": 1284280.3148906336
+      },
+      "tx.audit.begin_ns": {
+       "max": 24205,
+       "mean": 2386.0416517055655,
+       "min": 1743,
+       "n": 2785,
+       "p50": 2094,
+       "p95": 3307,
+       "p99": 4137,
+       "stdev": 1176.0300170465027
+      },
+      "tx.audit.body_ns": {
+       "max": 78407,
+       "mean": 6929.934649910233,
+       "min": 4098,
+       "n": 2785,
+       "p50": 6222,
+       "p95": 10510,
+       "p99": 15850,
+       "stdev": 3624.0143570884215
+      },
+      "tx.audit.end_ns": {
+       "max": 7704439,
+       "mean": 651279.2315978456,
+       "min": 388709,
+       "n": 2785,
+       "p50": 440216,
+       "p95": 993763,
+       "p99": 4470424,
+       "stdev": 633184.1830223285
+      },
+      "tx.dispatch.begin_ns": {
+       "max": 76453,
+       "mean": 5155.5446,
+       "min": 1894,
+       "n": 5000,
+       "p50": 4799,
+       "p95": 7755,
+       "p99": 12433,
+       "stdev": 3174.4106062307424
+      },
+      "tx.dispatch.body_ns": {
+       "max": 450986,
+       "mean": 37374.9628,
+       "min": 24997,
+       "n": 5000,
+       "p50": 33954,
+       "p95": 52919,
+       "p99": 70723,
+       "stdev": 18396.75375359333
+      },
+      "tx.dispatch.end_ns": {
+       "max": 7844552,
+       "mean": 517805.9858,
+       "min": 394370,
+       "n": 5000,
+       "p50": 442500,
+       "p95": 511539,
+       "p99": 3747858,
+       "stdev": 504323.1305578156
+      },
+      "tx.observe.begin_ns": {
+       "max": 62327,
+       "mean": 4503.784379358438,
+       "min": 3306,
+       "n": 3585,
+       "p50": 3938,
+       "p95": 6882,
+       "p99": 10620,
+       "stdev": 2679.2379161759186
+      },
+      "tx.observe.body_ns": {
+       "max": 286216,
+       "mean": 22064.425383542537,
+       "min": 16330,
+       "n": 3585,
+       "p50": 19456,
+       "p95": 33443,
+       "p99": 44814,
+       "stdev": 11900.206569549977
+      },
+      "tx.observe.end_ns": {
+       "max": 9730297,
+       "mean": 512339.1679218968,
+       "min": 381415,
+       "n": 3585,
+       "p50": 428563,
+       "p95": 511760,
+       "p99": 3841505,
+       "stdev": 541505.87548778
+      },
+      "tx.reconcile.begin_ns": {
+       "max": 43872,
+       "mean": 4822.486925795053,
+       "min": 3226,
+       "n": 1415,
+       "p50": 4448,
+       "p95": 7224,
+       "p99": 10660,
+       "stdev": 2392.9746358571833
+      },
+      "tx.reconcile.body_ns": {
+       "max": 643456,
+       "mean": 65698.51590106008,
+       "min": 25949,
+       "n": 1415,
+       "p50": 60534,
+       "p95": 96080,
+       "p99": 133210,
+       "stdev": 33971.499371320635
+      },
+      "tx.reconcile.end_ns": {
+       "max": 8153872,
+       "mean": 512304.04240282683,
+       "min": 400762,
+       "n": 1415,
+       "p50": 445866,
+       "p95": 528110,
+       "p99": 2950212,
+       "stdev": 454885.3140370418
+      },
+      "tx.reserve.begin_ns": {
+       "max": 1425994,
+       "mean": 44917.50782761654,
+       "min": 1943,
+       "n": 11370,
+       "p50": 5501,
+       "p95": 130495,
+       "p99": 158898,
+       "stdev": 59680.40102936141
+      },
+      "tx.reserve.body_ns": {
+       "max": 542287,
+       "mean": 31168.187071240107,
+       "min": 6963,
+       "n": 11370,
+       "p50": 14407,
+       "p95": 77665,
+       "p99": 105718,
+       "stdev": 27363.26829649324
+      },
+      "tx.reserve.end_ns": {
+       "max": 17689054,
+       "mean": 452702.94591029023,
+       "min": 1943,
+       "n": 11370,
+       "p50": 3607,
+       "p95": 1007089,
+       "p99": 4236455,
+       "stdev": 753112.5007260195
+      }
+     },
+     "lines_per_sec": 151.5249561945752,
+     "peak_rss_kb": 4404
+    }
+   },
+   "meta": {
+    "generator": "gen_h",
+    "ledger": "sqlite (file-backed, D-023)",
+    "templates": {
+     "dup_after_effect": 163,
+     "dup_after_failure": 133,
+     "dup_after_reserve_crash": 144,
+     "dup_before_reserve_crash": 145,
+     "granted_dup_then_exhausted": 132,
+     "restart_between": 141,
+     "uncertain_receipt": 142
+    }
+   },
+   "runs": 5
+  },
+  "H-mem": {
+   "command": "broker-scenario",
+   "digest": "sha256:07e9ce8387d1886532129956cd66be755b45c4a868953e00569cab49ca785443",
+   "lines": 1000,
+   "measurements": {
+    "go": {
+     "batch_wall_s": {
+      "max": 0.11069853999993029,
+      "mean": 0.10326483500002723,
+      "min": 0.10020314700000199,
+      "n": 5,
+      "p50": 0.10115271800009396,
+      "p95": 0.11069853999993029,
+      "p99": 0.11069853999993029,
+      "stdev": 0.0042957607451415605
+     },
+     "broker_timing_ns": {
+      "line.final_ns": {
+       "max": 43431,
+       "mean": 416.747,
+       "min": 170,
+       "n": 5000,
+       "p50": 300,
+       "p95": 651,
+       "p99": 3216,
+       "stdev": 1144.96863591386
+      },
+      "line.parse_ns": {
+       "max": 220684,
+       "mean": 22003.8686,
+       "min": 13234,
+       "n": 5000,
+       "p50": 18735,
+       "p95": 35838,
+       "p99": 80772,
+       "stdev": 13787.232233710552
+      },
+      "line.run_ns": {
+       "max": 784342,
+       "mean": 70989.8956,
+       "min": 42750,
+       "n": 5000,
+       "p50": 61165,
+       "p95": 126438,
+       "p99": 236584,
+       "stdev": 42359.58966577499
+      },
+      "op.approve.decide_ns": {
+       "max": 83566,
+       "mean": 6489.128787878788,
+       "min": 4278,
+       "n": 660,
+       "p50": 5521,
+       "p95": 10349,
+       "p99": 17533,
+       "stdev": 4083.7697579061455
+      },
+      "op.approve.total_ns": {
+       "max": 95068,
+       "mean": 12994.878787878788,
+       "min": 8395,
+       "n": 660,
+       "p50": 10760,
+       "p95": 22251,
+       "p99": 47890,
+       "stdev": 6781.282240546621
+      },
+      "op.approve.validate_ns": {
+       "max": 4488,
+       "mean": 188.4469696969697,
+       "min": 80,
+       "n": 660,
+       "p50": 161,
+       "p95": 330,
+       "p99": 421,
+       "stdev": 185.01839773974967
+      },
+      "op.execute.decide_ns": {
+       "max": 278933,
+       "mean": 4055.455848724714,
+       "min": 2434,
+       "n": 11370,
+       "p50": 3266,
+       "p95": 6883,
+       "p99": 12273,
+       "stdev": 4362.949727005155
+      },
+      "op.execute.total_ns": {
+       "max": 341701,
+       "mean": 17876.10510114336,
+       "min": 9057,
+       "n": 11370,
+       "p50": 16301,
+       "p95": 31128,
+       "p99": 70081,
+       "stdev": 13059.401566455419
+      },
+      "op.execute.validate_ns": {
+       "max": 109736,
+       "mean": 4516.523306948109,
+       "min": 3055,
+       "n": 11370,
+       "p50": 3667,
+       "p95": 7133,
+       "p99": 13335,
+       "stdev": 3894.7893485870973
+      },
+      "op.reconcile.total_ns": {
+       "max": 5380,
+       "mean": 410.16042402826855,
+       "min": 200,
+       "n": 1415,
+       "p50": 311,
+       "p95": 691,
+       "p99": 2665,
+       "stdev": 397.5802575998971
+      },
+      "op.restart_broker.total_ns": {
+       "max": 149560,
+       "mean": 21184.221276595745,
+       "min": 15499,
+       "n": 705,
+       "p50": 17593,
+       "p95": 32501,
+       "p99": 73428,
+       "stdev": 10373.91412906513
+      },
+      "process.overhead_ns": {
+       "max": 16434985,
+       "mean": 15710852.0,
+       "min": 14983558,
+       "n": 5,
+       "p50": 15739417,
+       "p95": 16434985,
+       "p99": 16434985,
+       "stdev": 626628.0265516377
+      },
+      "tx.adapter.body_ns": {
+       "max": 113283,
+       "mean": 5867.0878,
+       "min": 4058,
+       "n": 5000,
+       "p50": 4819,
+       "p95": 8466,
+       "p99": 20288,
+       "stdev": 4675.704882915686
+      },
+      "tx.approve.body_ns": {
+       "max": 1513,
+       "mean": 104.85606060606061,
+       "min": 40,
+       "n": 660,
+       "p50": 90,
+       "p95": 201,
+       "p99": 361,
+       "stdev": 78.3061317311962
+      },
+      "tx.audit.body_ns": {
+       "max": 181,
+       "mean": 22.726750448833034,
+       "min": 10,
+       "n": 2785,
+       "p50": 20,
+       "p95": 40,
+       "p99": 50,
+       "stdev": 9.715179812174792
+      },
+      "tx.dispatch.body_ns": {
+       "max": 18094,
+       "mean": 56.8678,
+       "min": 30,
+       "n": 5000,
+       "p50": 40,
+       "p95": 90,
+       "p99": 131,
+       "stdev": 349.5563780786314
+      },
+      "tx.observe.body_ns": {
+       "max": 8536,
+       "mean": 60.35118549511855,
+       "min": 40,
+       "n": 3585,
+       "p50": 50,
+       "p95": 90,
+       "p99": 131,
+       "stdev": 146.9221740897102
+      },
+      "tx.reconcile.body_ns": {
+       "max": 1262,
+       "mean": 73.35335689045937,
+       "min": 30,
+       "n": 1415,
+       "p50": 60,
+       "p95": 130,
+       "p99": 180,
+       "stdev": 47.864844796950806
+      },
+      "tx.reserve.body_ns": {
+       "max": 94427,
+       "mean": 685.9763412489007,
+       "min": 30,
+       "n": 11370,
+       "p50": 100,
+       "p95": 4268,
+       "p99": 6452,
+       "stdev": 2296.935284996057
+      }
+     },
+     "lines_per_sec": 9683.838646522181,
+     "peak_rss_kb": 12124
+    },
+    "rust": {
+     "batch_wall_s": {
+      "max": 0.07948086199985482,
+      "mean": 0.07715773799991439,
+      "min": 0.07400841999992736,
+      "n": 5,
+      "p50": 0.0775910689999364,
+      "p95": 0.07948086199985482,
+      "p99": 0.07948086199985482,
+      "stdev": 0.0023542721546386423
+     },
+     "broker_timing_ns": {
+      "line.final_ns": {
+       "max": 13255,
+       "mean": 255.023,
+       "min": 161,
+       "n": 5000,
+       "p50": 221,
+       "p95": 370,
+       "p99": 631,
+       "stdev": 240.22135652565575
+      },
+      "line.parse_ns": {
+       "max": 273643,
+       "mean": 26811.306,
+       "min": 20649,
+       "n": 5000,
+       "p50": 24215,
+       "p95": 36819,
+       "p99": 47059,
+       "stdev": 10216.572557023543
+      },
+      "line.run_ns": {
+       "max": 391223,
+       "mean": 42389.949,
+       "min": 33282,
+       "n": 5000,
+       "p50": 37050,
+       "p95": 60073,
+       "p99": 78557,
+       "stdev": 15261.308213769818
+      },
+      "op.approve.decide_ns": {
+       "max": 11852,
+       "mean": 4055.8378787878787,
+       "min": 3307,
+       "n": 660,
+       "p50": 3818,
+       "p95": 5881,
+       "p99": 7995,
+       "stdev": 912.9492783862443
+      },
+      "op.approve.total_ns": {
+       "max": 18385,
+       "mean": 6818.966666666666,
+       "min": 5671,
+       "n": 660,
+       "p50": 6422,
+       "p95": 9568,
+       "p99": 12344,
+       "stdev": 1359.472375596546
+      },
+      "op.approve.validate_ns": {
+       "max": 330,
+       "mean": 51.737878787878785,
+       "min": 20,
+       "n": 660,
+       "p50": 40,
+       "p95": 110,
+       "p99": 201,
+       "stdev": 34.31983046758356
+      },
+      "op.execute.decide_ns": {
+       "max": 66315,
+       "mean": 1678.0912049252418,
+       "min": 982,
+       "n": 11370,
+       "p50": 1263,
+       "p95": 3387,
+       "p99": 4739,
+       "stdev": 1154.4729397132949
+      },
+      "op.execute.total_ns": {
+       "max": 163197,
+       "mean": 10439.750395778365,
+       "min": 6312,
+       "n": 11370,
+       "p50": 9668,
+       "p95": 14798,
+       "p99": 20698,
+       "stdev": 4534.876240789129
+      },
+      "op.execute.validate_ns": {
+       "max": 69961,
+       "mean": 2306.287598944591,
+       "min": 1804,
+       "n": 11370,
+       "p50": 2194,
+       "p95": 3156,
+       "p99": 3987,
+       "stdev": 1002.4569134247431
+      },
+      "op.reconcile.total_ns": {
+       "max": 1603,
+       "mean": 160.02968197879858,
+       "min": 120,
+       "n": 1415,
+       "p50": 150,
+       "p95": 251,
+       "p99": 341,
+       "stdev": 57.48818680296964
+      },
+      "op.restart_broker.total_ns": {
+       "max": 581,
+       "mean": 114.16170212765958,
+       "min": 60,
+       "n": 705,
+       "p50": 100,
+       "p95": 230,
+       "p99": 321,
+       "stdev": 50.75178520647427
+      },
+      "process.overhead_ns": {
+       "max": 13784706,
+       "mean": 13118047.2,
+       "min": 12574878,
+       "n": 5,
+       "p50": 12988624,
+       "p95": 13784706,
+       "p99": 13784706,
+       "stdev": 498795.2227033655
+      },
+      "tx.adapter.body_ns": {
+       "max": 26439,
+       "mean": 2933.932,
+       "min": 2405,
+       "n": 5000,
+       "p50": 2815,
+       "p95": 3777,
+       "p99": 4929,
+       "stdev": 908.1687419575582
+      },
+      "tx.approve.body_ns": {
+       "max": 271,
+       "mean": 52.9,
+       "min": 30,
+       "n": 660,
+       "p50": 40,
+       "p95": 120,
+       "p99": 201,
+       "stdev": 32.480959754689145
+      },
+      "tx.audit.body_ns": {
+       "max": 240,
+       "mean": 24.855655296229802,
+       "min": 20,
+       "n": 2785,
+       "p50": 20,
+       "p95": 30,
+       "p99": 31,
+       "stdev": 7.478896877336008
+      },
+      "tx.dispatch.body_ns": {
+       "max": 3346,
+       "mean": 48.235,
+       "min": 40,
+       "n": 5000,
+       "p50": 41,
+       "p95": 60,
+       "p99": 120,
+       "stdev": 50.70753421144792
+      },
+      "tx.observe.body_ns": {
+       "max": 531,
+       "mean": 48.78326359832636,
+       "min": 40,
+       "n": 3585,
+       "p50": 50,
+       "p95": 60,
+       "p99": 90,
+       "stdev": 18.943720953516607
+      },
+      "tx.reconcile.body_ns": {
+       "max": 160,
+       "mean": 24.18374558303887,
+       "min": 20,
+       "n": 1415,
+       "p50": 20,
+       "p95": 30,
+       "p99": 50,
+       "stdev": 8.70757957835839
+      },
+      "tx.reserve.body_ns": {
+       "max": 2324,
+       "mean": 131.00158311345646,
+       "min": 40,
+       "n": 11370,
+       "p50": 110,
+       "p95": 260,
+       "p99": 410,
+       "stdev": 77.21058563119782
+      }
+     },
+     "lines_per_sec": 12960.462889685925,
+     "peak_rss_kb": 3168
+    }
+   },
+   "meta": {
+    "generator": "gen_h",
+    "ledger": "in-memory model (simulated)",
+    "templates": {
+     "dup_after_effect": 163,
+     "dup_after_failure": 133,
+     "dup_after_reserve_crash": 144,
+     "dup_before_reserve_crash": 145,
+     "granted_dup_then_exhausted": 132,
+     "restart_between": 141,
+     "uncertain_receipt": 142
+    }
+   },
+   "runs": 5
+  }
+ }
+}

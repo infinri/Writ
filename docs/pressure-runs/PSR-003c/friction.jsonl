@@ -1,2 +1,0 @@
-{"ts": "2026-04-24T23:47:31Z", "session": "ad5a7728-c147-493e-b574-c5f49e345375", "mode": null, "event": "hook_execution", "hook_name": "enforce-violations", "duration_ms": 45}
-{"ts": "2026-04-25T00:02:15Z", "session": "ad5a7728-c147-493e-b574-c5f49e345375", "mode": null, "event": "rag_query", "query_source": "broad", "tokens_injected": 600, "rules_returned_count": 5, "rule_ids": ["FW-M2-RT-005", "PY-ASYNC-001", "PERF-OPT-001", "PERF-IO-001", "DB-SQL-002"]}

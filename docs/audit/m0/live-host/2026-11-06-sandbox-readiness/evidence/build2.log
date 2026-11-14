@@ -1,0 +1,113 @@
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 3.62kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [ 1/17] FROM docker.io/library/node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d
+#4 resolve docker.io/library/node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d 0.0s done
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 366B done
+#5 DONE 0.0s
+
+#6 [ 3/17] RUN npm install -g "@anthropic-ai/claude-code@2.1.318"     && claude --version | tee /opt/claude-version.txt     && npm ls -g --depth=0 > /opt/npm-global.txt
+#6 CACHED
+
+#7 [ 4/17] RUN useradd --create-home --uid 1500 --shell /bin/bash tester
+#7 CACHED
+
+#8 [ 2/17] RUN apt-get update && apt-get install -y --no-install-recommends       bash git jq curl ca-certificates procps iproute2 python3 python3-venv python3-pip build-essential python3-dev     && rm -rf /var/lib/apt/lists/*
+#8 CACHED
+
+#9 [ 5/17] COPY writ-v1-ebdafe5.tar /opt/writ-v1-ebdafe5.tar
+#9 CACHED
+
+#10 [ 6/17] RUN mkdir -p /opt/writ-v1 && tar -xf /opt/writ-v1-ebdafe5.tar -C /opt/writ-v1     && echo "bbbdcf1f6b1dd4f525eded64f7ca77adf34afbd50ced76514aa0b4a86c2040d1  /opt/writ-v1/hooks/hooks.json" | sha256sum -c -     && tar -tf /opt/writ-v1-ebdafe5.tar | grep -v '/$' | sort > /opt/writ-v1-files.txt
+#10 CACHED
+
+#11 [ 7/17] COPY make_c2.py /opt/sr06/make_c2.py
+#11 CACHED
+
+#12 [ 8/17] RUN cp -a /opt/writ-v1 /opt/writ-v1-onfailure     && python3 /opt/sr06/make_c2.py /opt/writ-v1-onfailure/hooks/hooks.json     && cd /opt && while read -r f; do          if [ "$f" != "hooks/hooks.json" ]; then cmp -s "writ-v1/$f" "writ-v1-onfailure/$f" || { echo "DIFF $f"; exit 1; }; fi;        done < /opt/writ-v1-files.txt     && echo "C2 byte-identity: all files except hooks/hooks.json identical" > /opt/c2-identity.txt     && diff /opt/writ-v1/hooks/hooks.json /opt/writ-v1-onfailure/hooks/hooks.json > /opt/c2-hooks.diff || true
+#12 CACHED
+
+#13 [ 9/17] RUN for root in /opt/writ-v1 /opt/writ-v1-onfailure; do       python3 -m venv "$root/.venv" && "$root/.venv/bin/pip" install --quiet --upgrade pip       && "$root/.venv/bin/pip" install --quiet -e "$root"       && "$root/.venv/bin/pip" install --quiet pyyaml tokenizers       && "$root/.venv/bin/pip" freeze > "/opt/$(basename $root)-freeze.txt";     done
+#13 26.67   /tmp/pip-build-env-scf4p1nw/overlay/lib/python3.11/site-packages/setuptools/command/editable_wheel.py:354: BuildBackendWarning: Editable installation.
+#13 26.67   !!
+#13 26.67   
+#13 26.67           ********************************************************************************
+#13 26.67           Please be careful with folders in your working directory with the same
+#13 26.67           name as your package as they may take precedence during imports.
+#13 26.67           ********************************************************************************
+#13 26.67   
+#13 26.67   !!
+#13 26.67     with strategy, WheelFile(wheel_path, "w") as wheel_obj:
+#13 58.18   /tmp/pip-build-env-mej64kbt/overlay/lib/python3.11/site-packages/setuptools/command/editable_wheel.py:354: BuildBackendWarning: Editable installation.
+#13 58.18   !!
+#13 58.18   
+#13 58.18           ********************************************************************************
+#13 58.18           Please be careful with folders in your working directory with the same
+#13 58.18           name as your package as they may take precedence during imports.
+#13 58.18           ********************************************************************************
+#13 58.18   
+#13 58.18   !!
+#13 58.18     with strategy, WheelFile(wheel_path, "w") as wheel_obj:
+#13 DONE 64.0s
+
+#14 [10/17] RUN python3 -m venv /tmp/onnx-venv     && /tmp/onnx-venv/bin/pip install --quiet --upgrade pip     && /tmp/onnx-venv/bin/pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu     && /tmp/onnx-venv/bin/pip install --quiet "optimum[onnxruntime]>=2.0,<3" transformers     && cd /opt/writ-v1 && /tmp/onnx-venv/bin/python scripts/export_onnx.py     && rm -rf /tmp/onnx-venv /home/tester/.cache/huggingface /home/tester/.cache/pip
+#14 103.0 The model sentence-transformers/all-MiniLM-L6-v2 was already converted to ONNX but got `export=True`, the model will be converted to ONNX once again. Don't forget to save the resulting model with `.save_pretrained()`
+#14 103.6 `torch_dtype` is deprecated! Use `dtype` instead!
+#14 125.3 /tmp/onnx-venv/lib/python3.11/site-packages/transformers/modeling_attn_mask_utils.py:196: TracerWarning: torch.tensor results are registered as constants in the trace. You can safely ignore this warning if you use this function to create tensors out of constant variables that would be the same every time you call this function. In any other case, this might cause the trace to be incorrect.
+#14 125.3   inverted_mask = torch.tensor(1.0, dtype=dtype) - expanded_mask
+#14 127.9 Exporting sentence-transformers/all-MiniLM-L6-v2 to ONNX at /home/tester/.cache/writ/models/onnx
+#14 127.9 Using optimum with optimization level O2 (fused attention)...
+#14 127.9 Export complete. Files at /home/tester/.cache/writ/models/onnx:
+#14 127.9   config.json (0.0MB)
+#14 127.9   model.onnx (86.2MB)
+#14 127.9   special_tokens_map.json (0.0MB)
+#14 127.9   tokenizer.json (0.7MB)
+#14 127.9   tokenizer_config.json (0.0MB)
+#14 127.9   vocab.txt (0.2MB)
+#14 DONE 130.3s
+
+#15 [11/17] RUN chmod -R a-w /opt/writ-v1 /opt/writ-v1-onfailure
+#15 DONE 22.0s
+
+#16 [12/17] COPY probes/ /opt/probes/
+#16 DONE 0.2s
+
+#17 [13/17] COPY services/ /opt/sr06/services/
+#17 DONE 0.0s
+
+#18 [14/17] COPY init-ws.sh /opt/sr06/init-ws.sh
+#18 DONE 0.0s
+
+#19 [15/17] RUN chmod 0555 /opt/probes/*.sh /opt/probes/*.py /opt/sr06/services/*.py /opt/sr06/init-ws.sh
+#19 DONE 0.2s
+
+#20 [16/17] WORKDIR /home/tester
+#20 DONE 0.0s
+
+#21 [17/17] RUN /opt/sr06/init-ws.sh
+#21 DONE 0.3s
+
+#22 exporting to image
+#22 exporting layers
+#22 exporting layers 17.6s done
+#22 exporting manifest sha256:ae748d3ce87253e8a3ca599b5ede91e0622fe0c9422d491d6af608983294e8f0 done
+#22 exporting config sha256:360feb463ffb6c13f7a4e8aecbf4c412829dd32ebd0164915acf6e14c887369c done
+#22 exporting attestation manifest sha256:9fd72eb5d8d2128d545f0e32fed7d2db54de28915c606b30e4d3933a8cdd4989 done
+#22 exporting manifest list sha256:c7ab87d34c916d56441f7fc1b4bf2c8d034ea5ad1d4b40c36dabff8892d9ae43 done
+#22 naming to docker.io/library/writ-sr06-sandbox:2.1.318 done
+#22 unpacking to docker.io/library/writ-sr06-sandbox:2.1.318
+#22 unpacking to docker.io/library/writ-sr06-sandbox:2.1.318 6.4s done
+#22 DONE 24.2s

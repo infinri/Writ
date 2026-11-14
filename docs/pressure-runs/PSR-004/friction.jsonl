@@ -1,6 +1,0 @@
-{"ts": "2026-04-28T22:35:12Z", "session": "ad5a7728-c147-493e-b574-c5f49e345375", "mode": null, "event": "hook_execution", "hook_name": "enforce-violations", "duration_ms": 74}
-{"ts": "2026-04-28T17:53:12.799212", "session": "ebc24fe2-b361-4413-942e-1d7c321e6350", "event": "phase_advance", "from_phase": "planning", "to_phase": "testing", "confirmation_source": "tool"}
-{"ts": "2026-04-28T18:01:47.466770", "session": "ebc24fe2-b361-4413-942e-1d7c321e6350", "event": "phase_advance", "from_phase": "testing", "to_phase": "implementation", "confirmation_source": "tool"}
-{"ts": "2026-04-28T23:42:04Z", "session": "264883", "mode": null, "event": "pre_compaction", "rules_cleared": 0, "bytes_freed": 0}
-{"ts": "2026-04-28T23:43:22Z", "session": "264883", "mode": null, "event": "post_compaction", "rules_cleared": [], "budget_reset": true, "phase": null}
-{"ts": "2026-04-28T23:53:06Z", "session": "ad5a7728-c147-493e-b574-c5f49e345375", "mode": null, "event": "rag_query", "query_source": "broad", "tokens_injected": 600, "rules_returned_count": 5, "rule_ids": ["FW-M2-RT-005", "PY-ASYNC-001", "ARCH-EXT-001", "FW-M2-RT-001", "FW-M2-002"]}

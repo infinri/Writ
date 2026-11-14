@@ -1,0 +1,65 @@
+{
+  "contract_version": "2.0",
+  "publisher": "writ-v2-design-fixture",
+  "version": "0.1.0",
+  "signature_ref": null,
+  "supported_modes": [
+    "external_host",
+    "managed_agent"
+  ],
+  "required_model_features": [],
+  "limits": {
+    "max_tool_calls": 30,
+    "max_duration_seconds": 1800,
+    "max_model_calls": 12,
+    "max_cost_usd": 2
+  },
+  "pack_id": "org.writ.research",
+  "domain": "research",
+  "description": "Research with sources and counterevidence",
+  "task_types": [
+    "research.investigate"
+  ],
+  "tool_capabilities": [
+    "network.egress",
+    "memory.write"
+  ],
+  "workflows": [
+    {
+      "workflow_id": "research",
+      "task_type": "research.investigate",
+      "steps": [
+        "frame",
+        "discover",
+        "verify",
+        "counterevidence",
+        "synthesize"
+      ],
+      "human_gates": []
+    }
+  ],
+  "artifacts": [
+    {
+      "artifact_type": "research.claim-ledger",
+      "schema_ref": "writ://artifacts/claim-ledger/1",
+      "format": "json"
+    }
+  ],
+  "evaluators": [
+    {
+      "evaluator_id": "citation-resolution",
+      "kind": "evidence",
+      "rubric_version": "1",
+      "blocking": true
+    }
+  ],
+  "memory": {
+    "read_types": [
+      "source-evidence"
+    ],
+    "write_types": [
+      "research-observation"
+    ],
+    "retention_class": "project"
+  }
+}

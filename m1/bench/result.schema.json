@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://writ.dev/m1/bench/result.schema.json",
+  "title": "Writ M1 benchmark harness result (writ-m1-bench/1)",
+  "type": "object",
+  "required": ["format", "benchmark_version", "not_a_benchmark", "mode", "valid_for_comparison", "profile", "seed",
+               "started_at", "finished_at", "repository", "prototypes", "toolchains", "environment", "environment_end",
+               "guard", "correctness", "workloads", "cold_start", "concurrency", "not_measured", "evidence", "samples_file"],
+  "properties": {
+    "format": {"const": "writ-m1-bench/1"},
+    "benchmark_version": {"type": "string"},
+    "not_a_benchmark": {"type": "boolean"},
+    "mode": {"enum": ["dry-run", "measure"]},
+    "valid_for_comparison": {"type": "boolean"},
+    "seed": {"type": "integer"},
+    "repository": {"type": "object", "required": ["commit", "m1_tree_clean", "fixture_manifest_sha256"]},
+    "prototypes": {"type": "object", "required": ["rust", "go"],
+                   "additionalProperties": {"type": "object", "required": ["binary", "sha256", "argv_prefix"]}},
+    "environment": {"type": "object", "required": ["power", "cpufreq", "thermals", "load", "hardware"]},
+    "guard": {"type": "object", "required": ["enforced", "passed", "reasons"],
+              "properties": {"reasons": {"type": "array", "items": {"type": "string"}}}},
+    "correctness": {"type": "object", "required": ["failed", "checks", "examples"],
+                    "properties": {"failed": {"type": "integer", "minimum": 0}}},
+    "workloads": {"type": "object", "required": ["A", "B", "G", "H"],
+                  "additionalProperties": {"type": "object", "required": ["command", "digest", "measurements"]}},
+    "evidence": {"type": "array", "items": {"type": "object",
+      "required": ["commit", "benchmark_version", "hardware", "runtime", "workload", "sessions", "latency_ms", "rss_mb",
+                   "throughput_per_sec", "test_results", "notes"],
+      "properties": {"latency_ms": {"type": "object", "required": ["p50", "p95", "p99"]},
+                     "test_results": {"type": "object", "required": ["passed", "failed"]}}}},
+    "samples_file": {"type": ["object", "null"]}
+  },
+  "allOf": [
+    {"if": {"properties": {"not_a_benchmark": {"const": true}}},
+     "then": {"properties": {"mode": {"const": "dry-run"}, "valid_for_comparison": {"const": false},
+                             "samples_file": {"type": "null"}}}},
+    {"if": {"properties": {"mode": {"const": "measure"}}},
+     "then": {"properties": {"not_a_benchmark": {"const": false}, "guard": {"properties": {"passed": {"const": true}}}}}}
+  ]
+}

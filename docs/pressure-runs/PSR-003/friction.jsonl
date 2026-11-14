@@ -1,4 +1,0 @@
-{"ts": "2026-04-22T18:35:43Z", "session": "ad5a7728-c147-493e-b574-c5f49e345375", "mode": "work", "event": "hook_execution", "hook_name": "enforce-violations", "duration_ms": 69}
-{"ts": "2026-04-22T13:45:31.446971", "session": "a46c6e67-252b-4858-9f01-699a09235445", "event": "phase_advance", "from_phase": "planning", "to_phase": "testing", "confirmation_source": "tool"}
-{"ts": "2026-04-22T13:46:49.323737", "session": "a46c6e67-252b-4858-9f01-699a09235445", "event": "phase_advance", "from_phase": "testing", "to_phase": "implementation", "confirmation_source": "tool"}
-{"ts": "2026-04-22T19:20:18Z", "session": "ad5a7728-c147-493e-b574-c5f49e345375", "mode": "work", "event": "rag_query", "query_source": "broad", "tokens_injected": 600, "rules_returned_count": 5, "rule_ids": ["PY-PYDANTIC-001", "PY-ASYNC-001", "FW-M2-002", "PERF-IO-001", "ARCH-TYPE-001"]}

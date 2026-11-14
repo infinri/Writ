@@ -1,0 +1,72 @@
+{
+  "baseline_commit": "ebdafe5450b201339f81e717ed104e6bcfd3fe3e",
+  "dangling_edges": 0,
+  "duplicate_node_ids": 0,
+  "edges_by_type": {
+    "ABSTRACTS": 186,
+    "ATTACHED_TO": 4,
+    "BELONGS_TO": 401,
+    "CONTAINS": 20,
+    "COUNTERS": 24,
+    "DEMONSTRATES": 29,
+    "DEPENDS_ON": 4,
+    "DISPATCHES": 11,
+    "GATES": 15,
+    "INVOKES": 14,
+    "PRECEDES": 17,
+    "PRESSURE_TESTS": 4,
+    "RELATED_TO": 512,
+    "SUPPLEMENTS": 4,
+    "TEACHES": 23
+  },
+  "edges_total": 1268,
+  "nodes_by_label": {
+    "Abstraction": 62,
+    "AntiPattern": 14,
+    "Category": 22,
+    "ForbiddenResponse": 2,
+    "Phase": 20,
+    "Playbook": 15,
+    "PressureScenario": 3,
+    "Rationalization": 4,
+    "Rule": 288,
+    "Skill": 16,
+    "SubagentRole": 5,
+    "Technique": 14,
+    "WorkedExample": 3
+  },
+  "nodes_total": 468,
+  "rules": {
+    "always_on": 6,
+    "by_domain": {
+      "api-design": 12,
+      "architecture": 28,
+      "code-quality": 45,
+      "communication": 2,
+      "database": 2,
+      "documentation": 8,
+      "enforcement": 19,
+      "frameworks": 12,
+      "languages": 8,
+      "meta-authoring": 3,
+      "performance": 19,
+      "process": 19,
+      "research": 4,
+      "scaling": 10,
+      "security": 76,
+      "testing": 21
+    },
+    "by_severity": {
+      "critical": 54,
+      "high": 113,
+      "low": 12,
+      "medium": 109
+    },
+    "count": 288,
+    "mandatory": 32,
+    "rule_ids_sha256": "bbefcfa9a0db38b29a1565bae5572a8d9723253aa525a3485b583a9468a1e9d2",
+    "with_mechanical_enforcement_path": 33
+  },
+  "sha256": "cc34b71a9c7c1eddc06b8ba296b78a3b2c3fec151847eee088399095134d9e96",
+  "source": "writ-corpus.cypher"
+}

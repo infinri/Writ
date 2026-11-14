@@ -1,0 +1,48 @@
+{
+  "contract_version": "2.0",
+  "bundle_id": "m3c-t1p1-accept",
+  "version": "0.4.0-m3c.1",
+  "publisher": "writ-m3-closure-harness",
+  "description": "M3-08 closure harness bundle (D-037 item 2; test only, never a production policy, not signed). Derived from m1/fixtures/transition/m1-transition.bundle.json with scope t1/p1 and only the actions the scenarios listed for it in m3/closure/bundles/cases.json need; see m3/closure/bindings.md. verifying to accepted.",
+  "known_capabilities": [
+    "repository.publish",
+    "workflow.transition"
+  ],
+  "trusted_principal_issuers": [
+    "writ-host-adapter:fixture"
+  ],
+  "statements": [
+    {
+      "statement_id": "permit-accept",
+      "effect": "permit",
+      "action_kinds": [
+        "workflow.transition"
+      ],
+      "resource_prefixes": [
+        "workflow:t1/p1/"
+      ],
+      "from_states": [
+        "verifying"
+      ],
+      "to_states": [
+        "accepted"
+      ],
+      "reason_code": "PERMIT_ACCEPT"
+    }
+  ],
+  "publisher_signature": null,
+  "workflow_protection": {
+    "acceptance_policy_bundle_sha": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "protected_to_states": [
+      "accepted",
+      "deployed",
+      "released"
+    ],
+    "protected_transitions": [
+      {
+        "from_state": "draft",
+        "to_state": "verifying"
+      }
+    ]
+  }
+}

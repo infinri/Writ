@@ -1,0 +1,240 @@
+name: V2 documentation and contract integrity
+on:
+  push:
+    branches:
+      - 'v2/**'
+  pull_request:
+    branches:
+      - 'v2/**'
+jobs:
+  docs-v2:
+    name: V2 documentation and schemas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install schema validator
+        run: python3 -m pip install --disable-pip-version-check -r requirements-v2-docs.txt
+      - name: Check docs, HTML, schemas, packs and task fixtures
+        run: python3 scripts/check-v2-docs.py
+      - name: Proposed M3-06 acceptance contracts (schema-level positive and negative tests, D-033)
+        run: python3 docs/contracts/proposed/test_proposed_contracts.py
+  m2-kernel:
+    name: Production Rust workspace (writ-kernel, writ-broker, writ-ledger-sqlite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust 1.99.1 (rust-toolchain.toml) with clippy and rustfmt
+        run: rustup toolchain install 1.99.1 --profile minimal --component clippy --component rustfmt --no-self-update
+      - name: Shared pinned SQLite 3.54.1 (D-023) for writ-ledger-sqlite
+        run: |
+          WRIT_M1_TOOLCHAINS="$RUNNER_TEMP/m1" m1/tools/install-sqlite.sh "$RUNNER_TEMP/dl"
+          d="$RUNNER_TEMP/m1/sqlite-3.54.1-r2"
+          { echo "SQLITE3_INCLUDE_DIR=$d/include"; echo "SQLITE3_LIB_DIR=$d/lib"; echo "SQLITE3_STATIC=1"; echo "PKG_CONFIG_LIBDIR=$d/lib/pkgconfig"; } >> "$GITHUB_ENV"
+      - name: Toolchain is the pinned one
+        run: cargo --version && rustc --version | grep -q '^rustc 1.99.1 '
+      - name: Format, lint, build and test (locked)
+        run: |
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo build --workspace --locked
+          # The runner sandbox refuses jobs while an inherited descriptor above 2 lacks
+          # close-on-exec (E-071); the CI runner provides such descriptors, so tests start clean.
+          m3/tools/run-with-clean-fds.sh cargo test --workspace --locked
+      - name: Process-kill crash tests (M3-04), run alone and single-threaded
+        run: m3/tools/run-with-clean-fds.sh cargo test -p writ-ledger-sqlite --locked --lib kill_tests -- --ignored --test-threads=1
+      - name: M3-08 oracle-only broker property gate against the production adapter (seeded CI profile)
+        run: |
+          cargo build --release --locked -p writ-ledger-sqlite --example m3_line_adapter
+          m3/tools/run-with-clean-fds.sh python3 m3/props/run.py --profile ci --proto "$GITHUB_WORKSPACE/target/release/examples/m3_line_adapter" --out m3-props.json
+      - name: M3-08 scoped closure gate, all 127 frozen cases plus companions (D-037, D-038; scoped M3 gate, not 127/127 exact parity)
+        run: |
+          python3 -m unittest discover -s m3/closure -v
+          python3 m3/closure/check.py --proto "$GITHUB_WORKSPACE/target/release/examples/m3_line_adapter" --repeat 2 --report m3-08-closure.json
+          python3 m3/closure/check.py --proto "$GITHUB_WORKSPACE/target/release/examples/m3_line_adapter" --verify-report m3-08-closure.json
+      - name: Kernel fixture parity through the dev-only M1 line adapter (320 kernel cases; M3 sets excluded)
+        run: |
+          cargo build --release --locked --example m1_line_adapter
+          python3 m1/driver/parity.py --proto "$GITHUB_WORKSPACE/target/release/examples/m1_line_adapter" --manifest m1/fixtures/manifest.json --repeat 2 \
+            --sets canonical-vector,strict-json,golden-decisions,transition-decisions,acceptance-binding,external-refusal,protocol-decide,protocol-acceptance
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: M2 gate evidence (full Decisions against the contract schema; live M0 comparison with documented-difference probes)
+        run: |
+          python -m pip install --disable-pip-version-check -r m0/requirements.txt -r requirements-v2-docs.txt
+          python kernel/tools/decision_schema_check.py --kernel "$GITHUB_WORKSPACE/target/release/examples/m1_line_adapter"
+          python kernel/tools/m0_compare.py --kernel "$GITHUB_WORKSPACE/target/release/examples/m1_line_adapter"
+      - name: Dependency gate (allow-list, licences, OSV advisories) and SBOM
+        run: |
+          python3 -m unittest discover -s kernel/tools -v
+          python3 -m unittest discover -s m3/closure -v
+          python3 -m unittest discover -s m3/props -v
+          python3 kernel/tools/check_deps.py --osv --sbom kernel-sbom.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-sbom
+          path: kernel-sbom.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: m3-closure-and-property-reports
+          path: |
+            m3-08-closure.json
+            m3-props.json
+  m0-harness:
+    name: M0 reference harness and audit drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The audit reads V1 from pinned main commit ebdafe5 through git objects.
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install M0 dependencies
+        run: python -m pip install --disable-pip-version-check -r m0/requirements.txt
+      - name: Run M0 tests
+        working-directory: m0
+        run: python -m pytest
+      - name: Check generated audit evidence is current
+        working-directory: m0
+        run: python -m writ_m0.audit check
+      - name: M1 parity driver self-tests and fixture drift
+        env:
+          WRIT_M0_PYTHON: ${{ env.pythonLocation }}/bin/python
+        run: python -m unittest discover -s m1/driver/tests -v
+  m1-rust:
+    name: M1 Rust prototype parity (functional, no benchmarks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust 1.99.1
+        run: rustup toolchain install 1.99.1 --profile minimal --no-self-update
+      - name: Shared pinned SQLite 3.54.1 (D-023; same static library for both prototypes)
+        run: |
+          WRIT_M1_TOOLCHAINS="$RUNNER_TEMP/m1" m1/tools/install-sqlite.sh "$RUNNER_TEMP/dl"
+          d="$RUNNER_TEMP/m1/sqlite-3.54.1-r2"
+          { echo "SQLITE3_INCLUDE_DIR=$d/include"; echo "SQLITE3_LIB_DIR=$d/lib"; echo "SQLITE3_STATIC=1"; echo "PKG_CONFIG_LIBDIR=$d/lib/pkgconfig"; echo "CGO_ENABLED=1"
+            echo "CGO_CFLAGS=-I$d/include"; echo "CGO_LDFLAGS=-L$d/lib -lsqlite3 -lm"; } >> "$GITHUB_ENV"
+      - name: Build and test
+        working-directory: m1/rust
+        run: |
+          cargo +1.99.1 build --release --locked
+          cargo +1.99.1 test --release --locked
+      - name: Linked SQLite is the pinned shared engine (D-023)
+        run: |
+          "$GITHUB_WORKSPACE/m1/rust/target/release/proto" sqlite-info | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["sqlite_version"], d["source_id"]); assert d["sqlite_version"] == "3.54.1" and d["source_id"].startswith("2026-10-16 14:45:20 555e07ef"), d'
+          ! ldd "$GITHUB_WORKSPACE/m1/rust/target/release/proto" | grep -i sqlite
+      - name: Parity driver, all fixture sets
+        run: python3 m1/driver/parity.py --proto "$GITHUB_WORKSPACE/m1/rust/target/release/proto" --manifest m1/fixtures/manifest.json --repeat 2
+      - name: Parity driver, all fixture sets with the SQLite ledger
+        env:
+          WRIT_PROTO: ${{ github.workspace }}/m1/rust/target/release/proto
+        run: python3 m1/driver/parity.py --proto "$GITHUB_WORKSPACE/m1/tools/sqlite-ledger-proto.sh" --manifest m1/fixtures/manifest.json --repeat 2
+  m1-go:
+    name: M1 Go prototype parity (functional, no benchmarks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+      - name: Shared pinned SQLite 3.54.1 (D-023; same static library for both prototypes)
+        run: |
+          WRIT_M1_TOOLCHAINS="$RUNNER_TEMP/m1" m1/tools/install-sqlite.sh "$RUNNER_TEMP/dl"
+          d="$RUNNER_TEMP/m1/sqlite-3.54.1-r2"
+          { echo "SQLITE3_INCLUDE_DIR=$d/include"; echo "SQLITE3_LIB_DIR=$d/lib"; echo "SQLITE3_STATIC=1"; echo "PKG_CONFIG_LIBDIR=$d/lib/pkgconfig"; echo "CGO_ENABLED=1"
+            echo "CGO_CFLAGS=-I$d/include"; echo "CGO_LDFLAGS=-L$d/lib -lsqlite3 -lm"; } >> "$GITHUB_ENV"
+      - name: Vet, build and race tests
+        working-directory: m1/go
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          go vet -tags "libsqlite3 sqlite_omit_load_extension" ./...
+          go build -trimpath -tags "libsqlite3 sqlite_omit_load_extension" -o proto ./cmd/proto
+          go test -race -count=1 -tags "libsqlite3 sqlite_omit_load_extension" ./...
+      - name: Linked SQLite is the pinned shared engine (D-023)
+        run: |
+          "$GITHUB_WORKSPACE/m1/go/proto" sqlite-info | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["sqlite_version"], d["source_id"]); assert d["sqlite_version"] == "3.54.1" and d["source_id"].startswith("2026-10-16 14:45:20 555e07ef"), d'
+          ! ldd "$GITHUB_WORKSPACE/m1/go/proto" | grep -i sqlite
+      - name: Parity driver, all fixture sets
+        run: python3 m1/driver/parity.py --proto "$GITHUB_WORKSPACE/m1/go/proto" --manifest m1/fixtures/manifest.json --repeat 2
+      - name: Parity driver, all fixture sets with the SQLite ledger
+        env:
+          WRIT_PROTO: ${{ github.workspace }}/m1/go/proto
+        run: python3 m1/driver/parity.py --proto "$GITHUB_WORKSPACE/m1/tools/sqlite-ledger-proto.sh" --manifest m1/fixtures/manifest.json --repeat 2
+  m1-props:
+    name: M1 property and differential tests (required; seeded CI profile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust 1.99.1
+        run: rustup toolchain install 1.99.1 --profile minimal --no-self-update
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+      - name: Shared pinned SQLite 3.54.1 (D-023; same static library for both prototypes)
+        run: |
+          WRIT_M1_TOOLCHAINS="$RUNNER_TEMP/m1" m1/tools/install-sqlite.sh "$RUNNER_TEMP/dl"
+          d="$RUNNER_TEMP/m1/sqlite-3.54.1-r2"
+          { echo "SQLITE3_INCLUDE_DIR=$d/include"; echo "SQLITE3_LIB_DIR=$d/lib"; echo "SQLITE3_STATIC=1"; echo "PKG_CONFIG_LIBDIR=$d/lib/pkgconfig"; echo "CGO_ENABLED=1"
+            echo "CGO_CFLAGS=-I$d/include"; echo "CGO_LDFLAGS=-L$d/lib -lsqlite3 -lm"; } >> "$GITHUB_ENV"
+      - name: Build both prototypes independently
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          (cd m1/rust && cargo +1.99.1 build --release --locked)
+          (cd m1/go && go build -trimpath -tags "libsqlite3 sqlite_omit_load_extension" -o proto ./cmd/proto)
+      - name: Property-found regression cases
+        run: |
+          python3 m1/driver/parity.py --proto "$GITHUB_WORKSPACE/m1/rust/target/release/proto" --manifest m1/props/regressions/manifest.json
+          python3 m1/driver/parity.py --proto "$GITHUB_WORKSPACE/m1/go/proto" --manifest m1/props/regressions/manifest.json
+      - name: Seeded property, invariant and differential campaigns (seeds 20261107 and 1)
+        run: |
+          set -o pipefail
+          for seed in 20261107 1; do
+            python3 m1/props/run.py --profile ci --seed "$seed" --rust "$GITHUB_WORKSPACE/m1/rust/target/release/proto" --go "$GITHUB_WORKSPACE/m1/go/proto" --out "props-ci-$seed.json"
+          done
+      - name: M2-06 differential, writ-kernel versus the M1 Rust and Go prototypes (seeds 20261107 and 1)
+        run: |
+          cargo +1.99.1 build --release --locked --example m1_line_adapter
+          for seed in 20261107 1; do
+            for ref in m1/rust/target/release/proto m1/go/proto; do
+              python3 kernel/tools/differential.py --kernel "$GITHUB_WORKSPACE/target/release/examples/m1_line_adapter" --reference "$GITHUB_WORKSPACE/$ref" --seed "$seed" --out "m2-diff-$seed-$(basename $(dirname $ref)).json"
+            done
+          done
+      - name: Language-neutral SQLite storage-failure tests, both prototypes (D-024)
+        env:
+          WRIT_RUST: ${{ github.workspace }}/m1/rust/target/release/proto
+          WRIT_GO: ${{ github.workspace }}/m1/go/proto
+        run: python3 -m unittest discover -s m1/ledger_tests -v
+      - name: D-026 concurrency-oracle negative tests
+        run: python3 -m unittest discover -s m1/props/tests -v
+      - name: SQLite ledger broker campaign with 64-way contention, Rust SQLite versus Go SQLite (D-023, D-026)
+        run: |
+          python3 m1/props/run.py --campaign broker --ledger sqlite --seed 20261107 --cases 300 --repeats 2 \
+            --rust "$GITHUB_WORKSPACE/m1/rust/target/release/proto" --go "$GITHUB_WORKSPACE/m1/go/proto" --out props-sqlite-broker.json
+          python3 -c 'import json; r=json.load(open("props-sqlite-broker.json"))["campaigns"]["broker"]; print(json.dumps(r["availability_not_correctness"], indent=1)); assert any("x64" in v for v in r["availability_not_correctness"].values()), "no 64-way group ran"'
+      - name: Mutation smoke test (every deliberate mutant must be caught)
+        run: |
+          python3 m1/props/mutants/smoke.py --real "$GITHUB_WORKSPACE/m1/rust/target/release/proto" --seed 7 --cases 300 --out props-smoke-rust.json
+          python3 m1/props/mutants/smoke.py --real "$GITHUB_WORKSPACE/m1/go/proto" --seed 7 --cases 300 --out props-smoke-go.json
+      - name: Benchmark harness self-tests and dry run (M1-06a; no measurements)
+        env:
+          WRIT_BENCH_RUST: ${{ github.workspace }}/m1/rust/target/release/proto
+          WRIT_BENCH_GO: ${{ github.workspace }}/m1/go/proto
+        run: |
+          python3 -m unittest discover -s m1/bench/tests
+          python3 m1/bench/bench.py --dry-run --seed 20261107 --rust "$WRIT_BENCH_RUST" --go "$WRIT_BENCH_GO" --out bench-dry-run.json
+      - name: Upload property reports (reproduction evidence)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m1-props-reports
+          path: |
+            props-ci-*.json
+            props-smoke-*.json
+            props-sqlite-broker.json
+            bench-dry-run.json
+          if-no-files-found: warn

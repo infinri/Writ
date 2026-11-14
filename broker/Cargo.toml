@@ -1,0 +1,26 @@
+[package]
+name = "writ-broker"
+version = "0.1.0"
+description = "Writ V2 authorization broker: the only path to governed effects (M3)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Reviewed allow-list: broker/DEPENDENCIES.md. Dependencies are added only when code uses them.
+[dependencies]
+writ-kernel = { path = "../kernel" }
+hmac = { version = "=0.12.1", default-features = false }
+sha2 = { version = "=0.10.8", default-features = false }
+rustix = { version = "=1.1.6", default-features = false, features = ["time"] }
+
+[features]
+# Test-only: compiles `RunnerRequirements::uncontained_for_disposable_tests` (an unsupported
+# configuration; never enabled in a normal build). Enabled only by writ-ledger-sqlite's
+# dev-dependency on this crate.
+uncontained-test-runner = []
+
+[dev-dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,9 @@
+rule_id,proposed_disposition,reviewed_disposition,intent_survives_in_v2,v2_destination,enforcement_verified,conflicts_or_duplicates,corrections,reviewer,reviewed_at,rationale
+DOC-API-001,advisory,,,,,,,,,
+DOC-ARCH-001,advisory,,,,,,,,,
+DOC-CONFIG-001,advisory,,,,,,,,,
+DOC-INLINE-001,advisory,,,,,,,,,
+DOC-ONBOARD-001,advisory,,,,,,,,,
+DOC-README-001,advisory,,,,,,,,,
+DOC-TYPE-001,advisory,,,,,,,,,
+DOC-TYPE-002,advisory,,,,,,,,,

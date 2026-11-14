@@ -1,0 +1,24 @@
+{
+  "contract_version": "2.0",
+  "task_id": "fixture-code-review",
+  "tenant_id": "fixture-tenant",
+  "project_id": "fixture-project",
+  "pack_id": "org.writ.software-engineering",
+  "task_type": "pr.review",
+  "goal": "Review a software change with file-and-line evidence",
+  "inputs": {
+    "diff_ref": "fixture://repo/pr-42/diff"
+  },
+  "required_artifacts": [
+    "code-review.findings"
+  ],
+  "evidence_requirements": [
+    "file_line",
+    "test_outcome"
+  ],
+  "limits": {
+    "max_duration_seconds": 600,
+    "max_cost_usd": 0,
+    "max_model_calls": 3
+  }
+}

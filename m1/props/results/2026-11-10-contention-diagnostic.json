@@ -1,0 +1,190 @@
+{
+ "rust": {
+  "adapter.begin_ms": {
+   "p50": 0.005,
+   "p90": 0.011,
+   "max": 2330.353
+  },
+  "adapter.end_ms": {
+   "p50": 0.463,
+   "p90": 0.546,
+   "max": 1.858
+  },
+  "adapter.hold_ms (body+end)": {
+   "p50": 0.502,
+   "p90": 0.604,
+   "max": 1.918
+  },
+  "audit.begin_ms": {
+   "p50": 0.005,
+   "p90": 1.086,
+   "max": 78.436
+  },
+  "audit.end_ms": {
+   "p50": 0.537,
+   "p90": 0.948,
+   "max": 5.205
+  },
+  "audit.hold_ms (body+end)": {
+   "p50": 0.57,
+   "p90": 0.987,
+   "max": 5.24
+  },
+  "dispatch.begin_ms": {
+   "p50": 0.009,
+   "p90": 0.013,
+   "max": 0.062
+  },
+  "dispatch.end_ms": {
+   "p50": 0.501,
+   "p90": 0.592,
+   "max": 1.99
+  },
+  "dispatch.hold_ms (body+end)": {
+   "p50": 0.568,
+   "p90": 0.699,
+   "max": 2.115
+  },
+  "group_total_ms": {
+   "p50": 82.754,
+   "p90": 5078.561,
+   "max": 5094.453
+  },
+  "observe.begin_ms": {
+   "p50": 0.004,
+   "p90": 0.01,
+   "max": 1.077
+  },
+  "observe.end_ms": {
+   "p50": 0.454,
+   "p90": 0.533,
+   "max": 2.899
+  },
+  "observe.hold_ms (body+end)": {
+   "p50": 0.485,
+   "p90": 0.583,
+   "max": 2.928
+  },
+  "op_total_ms": {
+   "p50": 35.643,
+   "p90": 2835.936,
+   "max": 5080.164
+  },
+  "op_untimed_ms (conn setup, misc)": {
+   "p50": 10.907,
+   "p90": 18.129,
+   "max": 29.307
+  },
+  "reserve.begin_ms": {
+   "p50": 1.066,
+   "p90": 2832.071,
+   "max": 5007.632
+  },
+  "reserve.end_ms": {
+   "p50": 0.006,
+   "p90": 0.85,
+   "max": 3.836
+  },
+  "reserve.hold_ms (body+end)": {
+   "p50": 0.037,
+   "p90": 1.107,
+   "max": 4.103
+  },
+  "ops": 1280,
+  "LEDGER_UNAVAILABLE": 10
+ },
+ "go": {
+  "adapter.begin_ms": {
+   "p50": 0.01,
+   "p90": 0.031,
+   "max": 3330.964
+  },
+  "adapter.end_ms": {
+   "p50": 0.473,
+   "p90": 0.564,
+   "max": 5.44
+  },
+  "adapter.hold_ms (body+end)": {
+   "p50": 0.529,
+   "p90": 0.684,
+   "max": 5.516
+  },
+  "audit.begin_ms": {
+   "p50": 0.004,
+   "p90": 0.01,
+   "max": 428.813
+  },
+  "audit.end_ms": {
+   "p50": 0.487,
+   "p90": 0.776,
+   "max": 4.676
+  },
+  "audit.hold_ms (body+end)": {
+   "p50": 0.501,
+   "p90": 0.793,
+   "max": 4.713
+  },
+  "dispatch.begin_ms": {
+   "p50": 0.016,
+   "p90": 0.036,
+   "max": 103.499
+  },
+  "dispatch.end_ms": {
+   "p50": 0.501,
+   "p90": 0.621,
+   "max": 4.748
+  },
+  "dispatch.hold_ms (body+end)": {
+   "p50": 0.604,
+   "p90": 0.807,
+   "max": 4.83
+  },
+  "group_total_ms": {
+   "p50": 73.742,
+   "p90": 3076.898,
+   "max": 3786.573
+  },
+  "observe.begin_ms": {
+   "p50": 0.009,
+   "p90": 0.017,
+   "max": 2130.419
+  },
+  "observe.end_ms": {
+   "p50": 0.46,
+   "p90": 0.549,
+   "max": 18.767
+  },
+  "observe.hold_ms (body+end)": {
+   "p50": 0.494,
+   "p90": 0.621,
+   "max": 18.795
+  },
+  "op_total_ms": {
+   "p50": 13.421,
+   "p90": 833.461,
+   "max": 3737.205
+  },
+  "op_untimed_ms (conn setup, misc)": {
+   "p50": 0.195,
+   "p90": 0.783,
+   "max": 18.596
+  },
+  "reserve.begin_ms": {
+   "p50": 0.012,
+   "p90": 829.064,
+   "max": 3731.551
+  },
+  "reserve.end_ms": {
+   "p50": 0.004,
+   "p90": 0.705,
+   "max": 5.702
+  },
+  "reserve.hold_ms (body+end)": {
+   "p50": 0.031,
+   "p90": 0.942,
+   "max": 6.033
+  },
+  "ops": 1280,
+  "LEDGER_UNAVAILABLE": 0
+ }
+}

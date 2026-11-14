@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://writ.dev/contracts/v2/policy-manifest.schema.json",
+  "title": "Writ V2 PolicyManifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifest_version",
+    "policy_id",
+    "version",
+    "owner",
+    "tenant_scope",
+    "enforcement_class",
+    "action_kinds",
+    "priority",
+    "failure_posture",
+    "evaluator_binding",
+    "test_vectors"
+  ],
+  "properties": {
+    "manifest_version": {
+      "const": "2.0"
+    },
+    "policy_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "owner": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tenant_scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "enforcement_class": {
+      "enum": [
+        "authorization",
+        "validation",
+        "advisory"
+      ]
+    },
+    "action_kinds": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "priority": {
+      "type": "integer"
+    },
+    "failure_posture": {
+      "enum": [
+        "deny",
+        "unavailable",
+        "abstain_advisory"
+      ]
+    },
+    "evaluator_binding": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Verified registry ID, never a comment or stale filename"
+    },
+    "test_vectors": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "bundle_digest": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "publisher_signature": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "expires_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

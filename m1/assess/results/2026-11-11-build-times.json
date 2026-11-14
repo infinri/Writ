@@ -1,0 +1,115 @@
+{
+ "collected_at": "2026-11-11T01:44:44Z",
+ "commit": "138163d5777503a893f1263c31f45bd3a1644013",
+ "environment": {
+  "cpufreq": {
+   "boost": "1",
+   "drivers": [
+    "amd-pstate-epp"
+   ],
+   "energy_performance_preference": [
+    "performance"
+   ],
+   "governors": [
+    "performance"
+   ],
+   "platform_profile": "balanced",
+   "policies": 16,
+   "scaling_max_khz": [
+    "5263061"
+   ],
+   "scaling_min_khz": [
+    "1100947"
+   ]
+  },
+  "hardware": {
+   "cpu_model": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics",
+   "kernel": "6.17.0-40-generic",
+   "logical_cpus": 16,
+   "machine": "x86_64",
+   "memory_mib": 31393,
+   "os": "Ubuntu 24.04.3 LTS"
+  },
+  "load": {
+   "loadavg_1m": 0.67,
+   "loadavg_5m": 1.3
+  },
+  "power": {
+   "batteries": [
+    {
+     "capacity_percent": "100",
+     "name": "BAT1",
+     "status": "Not charging"
+    }
+   ],
+   "mains": [
+    {
+     "name": "ACAD",
+     "online": true
+    }
+   ],
+   "on_mains": true,
+   "usb_sources_online": [
+    {
+     "current_max_ua": "3000000",
+     "name": "ucsi-source-psy-USBC000:004",
+     "voltage_max_uv": "5000000"
+    }
+   ]
+  },
+  "thermals": {
+   "cpu_c": 55.75,
+   "cpu_sensor": "k10temp/temp1",
+   "zones_c": {
+    "thermal_zone0:acpitz": 49.8,
+    "thermal_zone1:acpitz": 51.8,
+    "thermal_zone2:acpitz": 50.8,
+    "thermal_zone3:acpitz": 55.8
+   }
+  }
+ },
+ "m1_tree_clean": true,
+ "method": "clean = fresh copy and empty target dir (Rust registry sources cached; Go build cache cleared); incremental = append a newline to the kernel source and rebuild",
+ "mode": "build-times",
+ "repository": {
+  "commit": "138163d5777503a893f1263c31f45bd3a1644013",
+  "fixture_manifest_sha256": "sha256:0aa9efe5974f85a7ed734753c7736d6fea6d5c969d90675ea139756b8100f996",
+  "m1_dirty_paths": [],
+  "m1_tree_clean": true
+ },
+ "runs": 5,
+ "samples": {
+  "go": {
+   "clean_s": [
+    3.6937234090000857,
+    3.707792203997087,
+    3.868639293999877,
+    3.6836541770026088,
+    3.6659184629970696
+   ],
+   "incremental_after_kernel_touch_s": [
+    0.07536631399852922,
+    0.0776710779973655,
+    0.07705631100543542,
+    0.07870423900021706,
+    0.0772677169952658
+   ]
+  },
+  "rust": {
+   "clean_s": [
+    2.6745123880027677,
+    2.6533161670013214,
+    2.7681763259970467,
+    2.6206420329981484,
+    2.646408615000837
+   ],
+   "incremental_after_kernel_touch_s": [
+    1.3993067379997228,
+    1.4843854630016722,
+    1.4066794129976188,
+    1.4210383059980813,
+    1.7045384299999569
+   ]
+  }
+ }
+}

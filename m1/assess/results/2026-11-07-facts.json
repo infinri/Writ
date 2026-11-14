@@ -1,0 +1,511 @@
+{
+ "collected_at": "2026-11-07T18:15:20Z",
+ "commit": "935e4e336274a45e1d8661f0af537c9a2cd8841d",
+ "cross_targets": {
+  "go:darwin/arm64 (cgo, host cc)": {
+   "error_tail": "# runtime/cgo\ncgo: C compiler \"clang\" not found: exec: \"clang\": executable file not found in $PATH\n",
+   "ok": false
+  },
+  "go:linux/arm64 (cgo, host cc)": {
+   "error_tail": "Error: no such instruction: `ldp x25,x26,[sp,'\ngcc_arm64.S:65: Error: no such instruction: `ldp x23,x24,[sp,'\ngcc_arm64.S:68: Error: no such instruction: `ldp x21,x22,[sp,'\ngcc_arm64.S:71: Error: no such instruction: `ldp x19,x20,[sp,'\ngcc_arm64.S:74: Error: no such instruction: `ldp x29,x30,[sp],'\n",
+   "ok": false
+  },
+  "go:windows/amd64 (cgo, host cc)": {
+   "error_tail": "# runtime/cgo\ngcc_libinit_windows.c:10:10: fatal error: windows.h: No such file or directory\n   10 | #include <windows.h>\n      |          ^~~~~~~~~~~\ncompilation terminated.\n",
+   "ok": false
+  },
+  "installed_rust_std_targets": [
+   "x86_64-unknown-linux-gnu"
+  ],
+  "rust:aarch64-unknown-linux-gnu (installed std only)": {
+   "error_tail": "ib) due to 1 previous error\nerror: could not compile `bitflags` (lib) due to 1 previous error\nerror: could not compile `smallvec` (lib) due to 1 previous error\nerror: could not compile `fallible-iterator` (lib) due to 1 previous error\nerror: could not compile `typenum` (lib) due to 1 previous error\n",
+   "ok": false
+  },
+  "supported_target_counts": {
+   "go_dist_list": 47,
+   "rustc_target_list": 331
+  }
+ },
+ "go_dependencies": {
+  "count": 1,
+  "modules": [
+   {
+    "license_file": {
+     "file": "LICENSE",
+     "first_line": "The MIT License (MIT)"
+    },
+    "path": "github.com/mattn/go-sqlite3",
+    "version": "v1.14.52"
+   }
+  ],
+  "non_std_packages_linked": [
+   "github.com/mattn/go-sqlite3"
+  ]
+ },
+ "m1_tree_clean": true,
+ "mode": "facts",
+ "osv_advisories": {
+  "Go/github.com/mattn/go-sqlite3@v1.14.52": [],
+  "Go/stdlib@go1.27.3": [],
+  "crates.io/bitflags@2.13.2": [],
+  "crates.io/block-buffer@0.10.4": [],
+  "crates.io/cfg-if@1.0.5": [],
+  "crates.io/cpufeatures@0.2.17": [],
+  "crates.io/crypto-common@0.1.7": [],
+  "crates.io/digest@0.10.7": [],
+  "crates.io/fallible-iterator@0.3.0": [],
+  "crates.io/fallible-streaming-iterator@0.1.9": [],
+  "crates.io/generic-array@0.14.7": [],
+  "crates.io/hmac@0.12.1": [],
+  "crates.io/libc@0.2.191": [],
+  "crates.io/libsqlite3-sys@0.38.2": [],
+  "crates.io/pkg-config@0.3.34": [],
+  "crates.io/rusqlite@0.40.2": [],
+  "crates.io/sha2@0.10.8": [],
+  "crates.io/smallvec@1.16.3": [],
+  "crates.io/subtle@2.6.1": [],
+  "crates.io/typenum@1.20.1": [],
+  "crates.io/vcpkg@0.2.15": [],
+  "crates.io/version_check@0.9.5": []
+ },
+ "pinned_versions": {
+  "GO_VERSION": "1.27.3",
+  "RUST_VERSION": "1.99.1"
+ },
+ "reproducibility": {
+  "go:default": {
+   "binary": {
+    "bytes": 5947336,
+    "dynamic_libraries": [
+     "linux-vdso.so.1",
+     "libc.so.6",
+     "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "links_libsqlite3_dynamically": false,
+    "sha256": "sha256:e2f7d37028a9d4c8c6e3f1d30b03ad3784d7024ba9750d629af3494059f7e521",
+    "stripped_bytes": 4370392
+   },
+   "errors": [],
+   "identical": false,
+   "sha256": [
+    "sha256:e2f7d37028a9d4c8c6e3f1d30b03ad3784d7024ba9750d629af3494059f7e521",
+    "sha256:60af729c07d91b09fb2ef1d68e12eaceb7137ffb3b179fdbcb9735b02e03796c"
+   ]
+  },
+  "go:trimpath": {
+   "binary": {
+    "bytes": 5920400,
+    "dynamic_libraries": [
+     "linux-vdso.so.1",
+     "libc.so.6",
+     "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "links_libsqlite3_dynamically": false,
+    "sha256": "sha256:35e29d9d740ca9a519dac0bab4ff17544bcd397edf6bf73765db654be204573b",
+    "stripped_bytes": 4345560
+   },
+   "errors": [],
+   "identical": true,
+   "sha256": [
+    "sha256:35e29d9d740ca9a519dac0bab4ff17544bcd397edf6bf73765db654be204573b",
+    "sha256:35e29d9d740ca9a519dac0bab4ff17544bcd397edf6bf73765db654be204573b"
+   ]
+  },
+  "method": "same machine, same toolchains and caches, source copied to two different absolute paths, clean target dirs",
+  "rust:default": {
+   "binary": {
+    "bytes": 2286176,
+    "dynamic_libraries": [
+     "linux-vdso.so.1",
+     "libgcc_s.so.1",
+     "libc.so.6",
+     "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "links_libsqlite3_dynamically": false,
+    "sha256": "sha256:bbb16c9d9f2c3bff1c7a08f2e7f8d861981d91b1777a81efe2dd77fec1fdd74a",
+    "stripped_bytes": 1945560
+   },
+   "errors": [],
+   "identical": true,
+   "sha256": [
+    "sha256:bbb16c9d9f2c3bff1c7a08f2e7f8d861981d91b1777a81efe2dd77fec1fdd74a",
+    "sha256:bbb16c9d9f2c3bff1c7a08f2e7f8d861981d91b1777a81efe2dd77fec1fdd74a"
+   ]
+  }
+ },
+ "rust_dependencies": {
+  "build_only": [
+   "pkg-config",
+   "vcpkg",
+   "version_check"
+  ],
+  "count": 20,
+  "crates": [
+   {
+    "direct": false,
+    "kind": "normal",
+    "license": "MIT OR Apache-2.0",
+    "links": null,
+    "name": "bitflags",
+    "version": "2.13.2"
+   },
+   {
+    "direct": false,
+    "kind": "normal",
+    "license": "MIT OR Apache-2.0",
+    "links": null,
+    "name": "block-buffer",
+    "version": "0.10.4"
+   },
+   {
+    "direct": false,
+    "kind": "normal",
+    "license": "MIT OR Apache-2.0",
+    "links": null,
+    "name": "cfg-if",
+    "version": "1.0.5"
+   },
+   {
+    "direct": false,
+    "kind": "normal",
+    "license": "MIT OR Apache-2.0",
+    "links": null,
+    "name": "cpufeatures",
+    "version": "0.2.17"
+   },
+   {
+    "direct": false,
+    "kind": "normal",
+    "license": "MIT OR Apache-2.0",
+    "links": null,
+    "name": "crypto-common",
+    "version": "0.1.7"
+   },
+   {
+    "direct": false,
+    "kind": "normal",
+    "license": "MIT OR Apache-2.0",
+    "links": null,
+    "name": "digest",
+    "version": "0.10.7"
+   },
+   {
+    "direct": false,
+    "kind": "normal",
+    "license": "MIT/Apache-2.0",
+    "links": null,
+    "name": "fallible-iterator",
+    "version": "0.3.0"
+   },
+   {
+    "direct": false,
+    "kind": "normal",
+    "license": "MIT/Apache-2.0",
+    "links": null,
+    "name": "fallible-streaming-iterator",
+    "version": "0.1.9"
+   },
+   {
+    "direct": false,
+    "kind": "normal",
+    "license": "MIT",
+    "links": null,
+    "name": "generic-array",
+    "version": "0.14.7"
+   },
+   {
+    "direct": true,
+    "kind": "normal",
+    "license": "MIT OR Apache-2.0",
+    "links": null,
+    "name": "hmac",
+    "version": "0.12.1"
+   },
+   {
+    "direct": false,
+    "kind": "normal",
+    "license": "MIT OR Apache-2.0",
+    "links": null,
+    "name": "libc",
+    "version": "0.2.191"
+   },
+   {
+    "direct": false,
+    "kind": "normal",
+    "license": "MIT",
+    "links": "sqlite3",
+    "name": "libsqlite3-sys",
+    "version": "0.38.2"
+   },
+   {
+    "direct": false,
+    "kind": "build",
+    "license": "MIT OR Apache-2.0",
+    "links": null,
+    "name": "pkg-config",
+    "version": "0.3.34"
+   },
+   {
+    "direct": true,
+    "kind": "normal",
+    "license": "MIT",
+    "links": null,
+    "name": "rusqlite",
+    "version": "0.40.2"
+   },
+   {
+    "direct": true,
+    "kind": "normal",
+    "license": "MIT OR Apache-2.0",
+    "links": null,
+    "name": "sha2",
+    "version": "0.10.8"
+   },
+   {
+    "direct": false,
+    "kind": "normal",
+    "license": "MIT OR Apache-2.0",
+    "links": null,
+    "name": "smallvec",
+    "version": "1.16.3"
+   },
+   {
+    "direct": false,
+    "kind": "normal",
+    "license": "BSD-3-Clause",
+    "links": null,
+    "name": "subtle",
+    "version": "2.6.1"
+   },
+   {
+    "direct": false,
+    "kind": "normal",
+    "license": "MIT OR Apache-2.0",
+    "links": null,
+    "name": "typenum",
+    "version": "1.20.1"
+   },
+   {
+    "direct": false,
+    "kind": "build",
+    "license": "MIT/Apache-2.0",
+    "links": null,
+    "name": "vcpkg",
+    "version": "0.2.15"
+   },
+   {
+    "direct": false,
+    "kind": "build",
+    "license": "MIT/Apache-2.0",
+    "links": null,
+    "name": "version_check",
+    "version": "0.9.5"
+   }
+  ],
+  "direct": [
+   "hmac",
+   "rusqlite",
+   "sha2"
+  ]
+ },
+ "source": {
+  "go": {
+   "files": {
+    "cmd/proto/main.go": {
+     "lines": 265,
+     "test_lines": 0
+    },
+    "cmd/proto/main_test.go": {
+     "lines": 309,
+     "test_lines": 309
+    },
+    "internal/acceptance/check.go": {
+     "lines": 343,
+     "test_lines": 0
+    },
+    "internal/broker/gopanic.go": {
+     "lines": 29,
+     "test_lines": 0
+    },
+    "internal/broker/ledger.go": {
+     "lines": 209,
+     "test_lines": 0
+    },
+    "internal/broker/race_test.go": {
+     "lines": 54,
+     "test_lines": 54
+    },
+    "internal/broker/requiretags.go": {
+     "lines": 7,
+     "test_lines": 0
+    },
+    "internal/broker/restart_test.go": {
+     "lines": 77,
+     "test_lines": 77
+    },
+    "internal/broker/scenario.go": {
+     "lines": 606,
+     "test_lines": 0
+    },
+    "internal/broker/sqlite.go": {
+     "lines": 513,
+     "test_lines": 0
+    },
+    "internal/broker/sqlite_test.go": {
+     "lines": 361,
+     "test_lines": 361
+    },
+    "internal/broker/validate.go": {
+     "lines": 82,
+     "test_lines": 0
+    },
+    "internal/broker/validate_test.go": {
+     "lines": 174,
+     "test_lines": 174
+    },
+    "internal/kernel/bundle.go": {
+     "lines": 238,
+     "test_lines": 0
+    },
+    "internal/kernel/decide.go": {
+     "lines": 405,
+     "test_lines": 0
+    },
+    "internal/kernel/schema.go": {
+     "lines": 284,
+     "test_lines": 0
+    },
+    "internal/kernel/support_test.go": {
+     "lines": 106,
+     "test_lines": 106
+    },
+    "internal/refusal/refusal.go": {
+     "lines": 32,
+     "test_lines": 0
+    },
+    "internal/refusal/refusal_test.go": {
+     "lines": 40,
+     "test_lines": 40
+    },
+    "internal/sjson/access.go": {
+     "lines": 96,
+     "test_lines": 0
+    },
+    "internal/sjson/canonical.go": {
+     "lines": 150,
+     "test_lines": 0
+    },
+    "internal/sjson/envelope.go": {
+     "lines": 84,
+     "test_lines": 0
+    },
+    "internal/sjson/parse.go": {
+     "lines": 386,
+     "test_lines": 0
+    },
+    "internal/sjson/sjson_test.go": {
+     "lines": 128,
+     "test_lines": 128
+    },
+    "internal/transition/gopanic.go": {
+     "lines": 29,
+     "test_lines": 0
+    },
+    "internal/transition/race_test.go": {
+     "lines": 54,
+     "test_lines": 54
+    },
+    "internal/transition/scenario.go": {
+     "lines": 536,
+     "test_lines": 0
+    },
+    "internal/transition/validate.go": {
+     "lines": 96,
+     "test_lines": 0
+    },
+    "internal/transition/validate_test.go": {
+     "lines": 119,
+     "test_lines": 119
+    }
+   },
+   "non_test_lines": 4390,
+   "test_lines": 1422,
+   "total_lines": 5812
+  },
+  "method": "physical lines including comments and blanks; Rust tests = lines from #[cfg(test)] to end of file plus tests/; Go tests = *_test.go",
+  "rust": {
+   "files": {
+    "src/acceptance.rs": {
+     "lines": 255,
+     "test_lines": 13
+    },
+    "src/broker.rs": {
+     "lines": 1106,
+     "test_lines": 351
+    },
+    "src/ids.rs": {
+     "lines": 40,
+     "test_lines": 0
+    },
+    "src/json.rs": {
+     "lines": 684,
+     "test_lines": 84
+    },
+    "src/kernel.rs": {
+     "lines": 787,
+     "test_lines": 77
+    },
+    "src/main.rs": {
+     "lines": 326,
+     "test_lines": 114
+    },
+    "src/promotion.rs": {
+     "lines": 549,
+     "test_lines": 49
+    },
+    "src/refusal.rs": {
+     "lines": 58,
+     "test_lines": 23
+    },
+    "src/sqlite.rs": {
+     "lines": 293,
+     "test_lines": 0
+    },
+    "src/time.rs": {
+     "lines": 149,
+     "test_lines": 15
+    },
+    "tests/ledger_persistence.rs": {
+     "lines": 110,
+     "test_lines": 110
+    }
+   },
+   "non_test_lines": 3521,
+   "test_lines": 836,
+   "total_lines": 4357
+  }
+ },
+ "sqlite_build_info": [
+  "version=3.54.1",
+  "source_id=2026-10-16 14:45:20 555e07ef33f69a0957d24d8e555b702464a131d6f1607f4c3c1e4551e8e6ca76",
+  "cflags=-O2 -fPIC -DHAVE_USLEEP=1 -DSQLITE_THREADSAFE=1 -DSQLITE_DQS=0 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_ENABLE_COLUMN_METADATA",
+  "cc=cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0"
+ ],
+ "toolchains": {
+  "cargo_V": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "go_binary_buildinfo": null,
+  "go_build": "go build -o proto ./cmd/proto (m1/go)",
+  "go_env": "linux\namd64\nv1\n1\n\nlocal",
+  "go_version": "go version go1.27.3 linux/amd64",
+  "python": "3.12.3",
+  "rust_build": "cargo build --release --locked (m1/rust)",
+  "rust_env": {
+   "CARGO_ENCODED_RUSTFLAGS": null,
+   "CARGO_PROFILE_RELEASE_OPT_LEVEL": null,
+   "RUSTFLAGS": null
+  },
+  "rust_profile_release": "[profile.release]\ndebug = false\n",
+  "rustc_vV": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1",
+  "time_v": true
+ }
+}

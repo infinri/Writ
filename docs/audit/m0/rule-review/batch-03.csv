@@ -1,0 +1,4 @@
+rule_id,proposed_disposition,reviewed_disposition,intent_survives_in_v2,v2_destination,enforcement_verified,conflicts_or_duplicates,corrections,reviewer,reviewed_at,rationale
+SOLID-SRP-001,advisory,,,,,,,,,
+SOLID-SRP-002,advisory,,,,,,,,,
+SOLID-SRP-003,advisory,,,,,,,,,

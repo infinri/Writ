@@ -1,0 +1,59 @@
+# Writ V2 security and correctness invariants
+
+**Normative.** Every invariant requires executable positive AND negative controls before a V2 release may claim it.
+
+| ID | Invariant | Required negative control |
+|---|---|---|
+| INV-01 | No privileged effect without broker-authorized, current, scoped permit | Call effect adapter directly without permit |
+| INV-02 | Agent/model text cannot mint or expand authorization | Forge transcript with 'approved' |
+| INV-03 | Hard DENY never becomes approval/allow through retries or mode | Repeat denied action and switch workflow |
+| INV-04 | Same normalized action/policy/state produces same decision | Cross-host differential fixture |
+| INV-05 | Missing identity or unverifiable policy cannot permit privileged effect | Remove identity and damage bundle signature |
+| INV-06 | Every approval binds tenant, principal, action, target, digest, policy version, nonce and expiry | Replay, swap target, change file after check |
+| INV-07 | Approval consume is atomic and replay-safe | Two concurrent execution requests using same token |
+| INV-08 | Every privileged effect attempt has durable intent and receipt/reconciliation record | Crash between dispatch and receipt |
+| INV-09 | Duplicate idempotency key cannot produce different effects | Reuse key with changed operation |
+| INV-10 | Cross-tenant and cross-project confidential memory is never returned | Shared term linking to foreign graph neighbor |
+| INV-11 | Retrieved content has no effect on permission lattice | Insert malicious instruction in document |
+| INV-12 | Policy changes are versioned, authorized and auditable | Agent attempts policy edit through ordinary file tool |
+| INV-13 | Unknown tool/capability is not silently treated as covered | New host tool routed to old allow-default hook |
+| INV-14 | Effect target is canonical at decision and use time | Symlink/path substitution or alternate separator |
+| INV-15 | Failure posture is explicit and testable | Kill graph, daemon, ledger and telemetry independently |
+| INV-16 | Advisory checks never claim to block a completed effect | Failing PostToolUse validator presented as prevention |
+| INV-17 | State transitions are revision-controlled | Concurrent phase changes on stale revision |
+| INV-18 | Local operation has bounded memory, startup, latency and input size | Oversized argument and malformed envelope |
+| INV-19 | Trust boundary never relies on a mutable ambient 'current session' guess | Interleave two sessions/projects |
+| INV-20 | All active enforced rules bind to real implementations and tests | Remove validator file and attempt policy publish |
+| INV-21 | Kernel and broker cannot depend on model/provider SDK availability | Simulate model outage while evaluating a policy request |
+| INV-22 | External-agent host mode requires no Writ-managed model calls | Run simulated host task with ModelAdapter absent |
+| INV-23 | Capability Pack cannot grant permissions or modify organizational policy | Pack requests forbidden network/tool capability |
+| INV-24 | Code, research and noncode review use same TaskSpec/evidence contract | Validate 3 task fixtures against identical schema |
+| INV-25 | Model-based evaluation is never misrepresented as independent verification | Feed fabricated citations and unsupported source claims |
+| INV-26 | Model routing/fallback respects tenant privacy and capability requirements | Force fallback to unavailable capability or forbidden region |
+| INV-27 | The management plane (Control Center, management service) is outside the decision path; its absence or failure never changes a decision or effect outcome | Kill or overload the management service during the parity and broker suites (CC-SEC-01) |
+| INV-28 | Management APIs accept only authenticated management-realm principals; agent-realm credentials are refused and UI state never widens authorization | Call every management endpoint with an adapter or agent credential (CC-SEC-02) |
+| INV-29 | No management action can disable, weaken or reorder a mandatory policy or edit a core security contract | Crafted bundle omitting a mandatory policy sent directly to the registry (CC-SEC-04, CC-SEC-13) |
+| INV-30 | Administrative mutations are audited before they take effect; knowledge and memory deletion never removes security audit records | Audit store down during a mutation; delete content referenced by decisions (CC-SEC-08, CC-SEC-09) |
+| INV-31 | No management API, export or diagnostics bundle returns a secret value | Canary secrets planted in keys, settings and logs (CC-SEC-05) |
+| INV-32 | (PROPOSED, ADR-0008) No protected workflow transition without a kernel ALLOW for `workflow.transition` and a current acceptance-service AcceptanceRecord; agents cannot write workflow state | Direct state-store write; promotion with no record (AG-ADV-12, AG-NEG-10) |
+| INV-33 | (PROPOSED) An AcceptanceRecord binds tenant, project, task, workflow, transition, artifact snapshot and digest, acceptance-policy version, evaluator identities, evidence digests and state revision, and is complete against the trusted, version-bound requirement set of the active acceptance policy (never a set supplied by the agent or the record); any mismatch or omission at use time refuses | Swap artifact after evaluation; drop a required criterion with a consistent digest (AG-NEG-01, M1 cmp-01, AG-PROP-01) |
+| INV-34 | (PROPOSED) Only registered evaluators of the exact required trust satisfy required criteria; a model-produced finding is advisory only and never establishes a mandatory pass for protected promotion; producer and agent claims never count | Model result posing as mechanical or human verification (M1 ma-02, ma-03; AG-NEG-04, AG-NEG-06) |
+| INV-35 | (PROPOSED) Mechanical results count only when executed by the Writ-controlled runner on digest-identified inputs and attested | Agent-supplied test result file (AG-NEG-03) |
+| INV-36 | (PROPOSED) Changes to artifact, evidence, acceptance policy, evaluator version or key, scope or state revision make an AcceptanceRecord unusable, enforced at use time | Promotion racing an artifact update (AG-CON-03) |
+| INV-37 | (PROPOSED) Acceptance requirements are versioned policy; agents and packs cannot create, weaken or waive them; invariant-derived criteria are never waivable | Pack or agent edits acceptance policy (AG-ADV-09) |
+| INV-38 | (PROPOSED) In Governed Execution, missing, failed, stale, unverifiable or malformed mandatory evidence, or an unavailable evaluator or acceptance service, refuses the protected transition | Evaluator timeout and malformed output (AG-FAIL-01..03) |
+| INV-40 | (PROPOSED) Evaluation, approval, promotion and downstream effects use one content-addressed immutable snapshot in agent-unwritable storage, digest verified at creation and every consumption; without it (or an ADR-justified equivalent) protected transitions fail closed | Separate process mutates the artifact during each phase; agent writes into the snapshot store (AG-NEG-11, AG-ADV-17, AG-ADV-18) |
+| INV-41 | (PROPOSED, D-017) Every input is parsed strictly: duplicate object member names (including after escape decoding), non-integer or alternate numeric spellings and integers outside plus or minus 2^53-1 are rejected before any field is read | Duplicate `to_state` keys; `7.0`, `-0`, 2^64+7 (M1 strict-json, tx-31..34, js-01..10) |
+| INV-42 | (PROPOSED, D-017) A `workflow.transition` decision covers exactly one transition (resource names the workflow; typed `from_state` and `to_state`); permission for one target state never authorizes another; promotion permits bind the complete request fingerprint and the presented acceptance record; composite promotion-plus-effect requests are refused structurally | Permit for accepted presented for deployed; unscoped transition permit in a bundle (M1 sc-18..26, tx-29, tx-07) |
+| INV-43 | (PROPOSED, D-018, D-019) Protection is classified by trusted policy (protected states from any source, protected edges, union) and enforced by both the kernel (structure: no ALLOW without the binding) and the broker (record validation); omitting attributes, alternate spellings, stale policy or an unprotected route never reaches a protected state or edge without a valid acceptance record; bypassable edge definitions are rejected at load | Protected transition without attributes; bypassable bundle; unprotected detour (M1 tx-38, tx-46..55, sc-32..34, sc-50..54) |
+| INV-44 | (PROPOSED, D-018) Agents receive sanitized refusals; detailed security reasons exist only in access-controlled audit; uncertain effects require reconciliation before any retry dispatches again | External mapping of every internal code; retry after interrupted dispatch (M1 external-refusal set, sc-41..sc-47) |
+| INV-45 | (PROPOSED, D-019) A governed publish or deploy requires the trusted promotion prerequisite and verifies the current promotion receipt, exact snapshot and digest, target, active authorization and acceptance policies at use time; it never rolls back with, and is never implied by, the promotion | Publish before acceptance; accept A publish B; artifact or policy changed after promotion (M1 sc-55..65) |
+| INV-39 | (PROPOSED) Advisory Integration never reports a transition or effect as governed or verified; the mode is recorded on every record | Advisory-mode promotion displayed in the Control Center |
+
+## Verification levels
+
+**Unit:** pure authorization and reducer tests, typed boundary tests. **Integration:** real host tool interception and broker execution. **Adversarial:** bypasses, identity forgery, race conditions, process escapes and prompt injection. **Chaos:** interrupted storage, hot reload, unavailable graph. **Performance:** p50/p95/p99 and memory on named hardware. A passing unit test for an advisory hook does not satisfy INV-01 or INV-13.
+
+## Release gate
+
+No P0 invariant violations; full threat suite green; clear scope statement of what the host adapter can actually mediate; recorded risk acceptance for external capabilities outside the broker; rollback and recovery demonstrated; V1 historical behavior not confused with V2 certification.
