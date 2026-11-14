@@ -9,14 +9,20 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, OpenFlags};
+use writ_broker::approval::ApprovalRequest;
+use writ_broker::approval_store::{
+    ApprovalLedger, CeremonyBegin, CeremonyFinish, CeremonyOutcome, IssuedChallenge,
+    RequestRecorded,
+};
 use writ_broker::clock::{ClockError, ClockEvent, Drift, EffectiveClock, Reading};
 use writ_broker::execute::{
     Broker, DispatchIntent, Dispatched, FailureRecord, Observation, PendingReceipt, Reconciled,
     Resolution,
 };
-use writ_broker::grants::{
-    ApprovalAuthority, ApprovalPresentation, ApproverRefusal, AuthenticatedApprover, GrantInsert,
-    NewGrant, PrincipalKind, ReserveOutcome, ReserveRequest,
+use writ_broker::grants::{GrantInsert, NewGrant, ReserveOutcome, ReserveRequest};
+use writ_broker::human::{
+    ActiveCredentials, CeremonyStart, CeremonyState, HumanVerifier, SubjectId, VerifiedAssertion,
+    VerifierCapability, VerifierError, WEBAUTHN_PASSKEY,
 };
 use writ_broker::keys::{MemoryKeyRing, PermitKey};
 use writ_broker::policy::{ActivePolicy, ExclusiveHold, PolicyState};
@@ -29,7 +35,7 @@ use writ_broker::workflow::{
     PromotionIntent, PromotionOutcome, SignoffRequest, StoredWorkflow, WorkflowAuthority,
     WorkflowKey, WorkflowLedger,
 };
-use writ_broker::writ_kernel::json::{self, Value};
+use writ_broker::writ_kernel::json::{self, Digest, Value};
 use writ_ledger_sqlite::{SqliteEffectStore, SqliteLedger};
 
 /// Test-only administrative channel and credential.
@@ -417,6 +423,40 @@ impl ExecuteLedger for Ledger {
         self.alive("audit")?;
         self.inner.record_failure(code, record)
     }
+
+    fn record_approval_request(
+        &self,
+        request: &ApprovalRequest,
+    ) -> Result<RequestRecorded, TxFailure> {
+        self.gate("approval_request", None)?;
+        self.inner.record_approval_request(request)
+    }
+}
+
+/// The approval channel's ceremonies on the production ledger (M4 lifecycle, D-042), gated
+/// like every other transaction of the case (crash and `ledger: down`).
+impl Ledger {
+    pub fn begin_ceremony(
+        &self,
+        begin: &CeremonyBegin<'_>,
+    ) -> Result<Result<IssuedChallenge, Refusal>, TxFailure> {
+        self.gate("challenge_issue", None)?;
+        self.inner.begin_ceremony(begin)
+    }
+
+    pub fn finish_ceremony(
+        &self,
+        finish: &CeremonyFinish<'_>,
+    ) -> Result<Result<CeremonyOutcome, Refusal>, TxFailure> {
+        self.gate("ceremony", None)?;
+        self.inner.finish_ceremony(finish)
+    }
+
+    /// The production ledger itself, for the one-time bootstrap enrollment of the case's
+    /// test administrator (an explicit operator call, never an agent or listener path).
+    pub fn production(&self) -> &SqliteLedger {
+        &self.inner
+    }
 }
 
 impl WorkflowLedger for Ledger {
@@ -485,41 +525,96 @@ impl LedgerStore for &Ledger {
 // ---------------------------------------------------------------------------
 // Test authorities
 
-/// Authenticates exactly the fixture's channel credentials; every authenticated principal
-/// is reported as a human (C3: tests the self-approval defense only, never human
-/// authentication).
-pub struct ChannelAuthority {
-    pub channels: Value,
-    pub labels: Arc<Labels>,
+/// The issuer of the case's test human subjects (one per fixture channel human).
+pub const TEST_SUBJECT_ISSUER: &str = "m3-closure-test-realm";
+/// The case's test administrator (bootstrap enrollment; enrolls the fixture humans).
+pub const TEST_ADMIN: &str = "m3-closure-admin";
+/// The approval listener's channel identity (from configuration, never a submitted field).
+pub const LISTENER_CHANNEL: &str = "m3-closure-approval-listener";
+
+/// The credential id enrolled for a test subject.
+pub fn test_credential(subject: &str) -> String {
+    format!("m3c-cred:{subject}")
 }
 
-impl ApprovalAuthority for ChannelAuthority {
-    fn authenticate(
+/// The response the test verifier accepts for the case administrator.
+pub const ADMIN_RESPONSE: &str = "m3-closure-admin-assertion";
+
+/// A NON-SHIPPING test verifier (C3, D-042: only in this Cargo example, never in a library
+/// or release build): it stands in for the WebAuthn verifier of the approval listener. A
+/// fixture approval is presented as the response `<channel> NUL <human> NUL <credential>`,
+/// accepted only when the fixture's channel table lists exactly that credential for that
+/// human on that channel and the human is the ceremony's subject; the case administrator
+/// answers [`ADMIN_RESPONSE`]. Every accepted answer is still checked by the broker against
+/// the stored challenge (`VerifiedAssertion::check`), like the real verifier's.
+pub struct ChannelVerifier {
+    pub channels: Value,
+    pub labels: Arc<Labels>,
+    pub nonce: AtomicU64,
+}
+
+impl HumanVerifier for ChannelVerifier {
+    fn begin(
         &self,
-        p: &ApprovalPresentation<'_>,
-    ) -> Result<AuthenticatedApprover, ApproverRefusal> {
-        let channel = self
-            .channels
-            .get(p.channel)
-            .ok_or(ApproverRefusal::UntrustedChannel)?;
-        let expected = channel
-            .get(p.approver)
-            .and_then(Value::as_str)
-            .ok_or(ApproverRefusal::Unauthenticated)?;
-        if expected.as_bytes() != p.credential {
-            return Err(ApproverRefusal::Unauthenticated);
-        }
-        self.labels.add(C3);
-        Ok(AuthenticatedApprover {
-            id: p.approver.to_string(),
-            kind: PrincipalKind::Human,
-            channel: p.channel.to_string(),
-            issuer: TEST_ISSUER.to_string(),
-            evidence_ref: format!(
-                "test-authentication:{}",
-                CASE_COUNTER.load(Ordering::SeqCst)
-            ),
+        _subject: &SubjectId,
+        _credentials: &ActiveCredentials,
+    ) -> Result<CeremonyStart, VerifierError> {
+        let state = format!(
+            "m3c-ceremony-{}-{}",
+            CASE_COUNTER.load(Ordering::SeqCst),
+            self.nonce.fetch_add(1, Ordering::SeqCst)
+        )
+        .into_bytes();
+        Ok(CeremonyStart {
+            client_options: Vec::new(),
+            challenge_digest: Digest::of_bytes(&state),
+            state: CeremonyState::from_bytes(state),
         })
+    }
+
+    fn finish(
+        &self,
+        state: &CeremonyState,
+        response: &[u8],
+        credentials: &ActiveCredentials,
+    ) -> Result<VerifiedAssertion, VerifierError> {
+        let subject = credentials.subject();
+        let authenticated = if subject.subject == TEST_ADMIN {
+            response == ADMIN_RESPONSE.as_bytes()
+        } else {
+            let text = std::str::from_utf8(response).map_err(|_| VerifierError::Malformed)?;
+            let mut parts = text.split('\0');
+            let (Some(channel), Some(human), Some(secret), None) =
+                (parts.next(), parts.next(), parts.next(), parts.next())
+            else {
+                return Err(VerifierError::Malformed);
+            };
+            let listed = self
+                .channels
+                .get(channel)
+                .and_then(|c| c.get(human))
+                .and_then(Value::as_str);
+            human == subject.subject && listed == Some(secret)
+        };
+        if !authenticated {
+            return Err(VerifierError::SignatureInvalid);
+        }
+        let credential = test_credential(&subject.subject);
+        if !credentials.ids().contains(&credential) {
+            return Err(VerifierError::CredentialUnknown);
+        }
+        if subject.subject != TEST_ADMIN {
+            self.labels.add(C3);
+        }
+        Ok(VerifiedAssertion::new(
+            &VerifierCapability::for_verifier_implementation(),
+            subject.clone(),
+            &credential,
+            true,
+            WEBAUTHN_PASSKEY,
+            Digest::of_bytes(state.as_bytes()),
+            None,
+        ))
     }
 }
 

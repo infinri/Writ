@@ -121,8 +121,8 @@ use writ_kernel::time::Timestamp;
 use crate::approval::{ApprovalCode, Signoff, SignoffExclusions, PROVENANCE_VERSION_2};
 use crate::contracts::{RegistryEntry, RunnerAttestation};
 use crate::human::{
-    check_human_permission, signoff_separation, EnrollmentRecord, Permission, RoleAssignment,
-    SubjectId, SubjectRecord, SubjectStatus,
+    check_human_permission, scope_contains, signoff_separation, EnrollmentRecord, Permission,
+    RoleAssignment, SubjectId, SubjectRecord, SubjectStatus,
 };
 use crate::keys::{AcceptanceKeyRing, KeyStatus, RunnerKeyRing};
 use crate::mac;
@@ -872,8 +872,7 @@ fn check_signoff(
     let in_scope = |a: &&RoleAssignment| {
         a.subject == f.subject
             && a.permission == Permission::SignoffAuthority
-            && a.tenant_id == b.tenant_id
-            && a.project_id == b.project_id
+            && scope_contains(&a.tenant_id, &a.project_id, &b.tenant_id, &b.project_id)
     };
     let role_revoked = u
         .assignments

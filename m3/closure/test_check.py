@@ -192,6 +192,33 @@ class EntryValidation(unittest.TestCase):
         other = {"steps": [{"code": "DEFAULT_DENY", "result": "refused"}], "final": {"refusals": 1}}
         self.assertTrue(self.problems(dict(DEFER_C, actual=other)))
 
+    def test_deferral_with_an_m4_observation_is_narrow(self):
+        committed = {"steps": [{"result": "committed"}], "final": {"refusals": 0}}
+        note = "measured under M4: step 0 commits; owner decision requested"
+        observed = dict(DEFER_C, decision="D-037 item 4; D-038 item 6", actual=committed, final_members=[],
+                        m4_observation=note)
+        self.assertFalse(self.problems(observed))
+        logs = dict(NONE, c=["seeded-preconditions"])
+        r = run({"a": OK_STEP, "b": REFUSED, "c": committed}, [observed], logs)
+        self.assertTrue(r["ok"])
+        self.assertEqual(cases_of(r, "deferred"), ["c"])
+        # Any other output of that case still fails.
+        r = run({"a": OK_STEP, "b": REFUSED, "c": REFUSED}, [observed], logs)
+        self.assertFalse(r["ok"])
+        self.assertEqual(cases_of(r, "exception_mismatch"), ["c"])
+        # Without the observation the human-refusal rule applies.
+        plain = dict(observed)
+        del plain["m4_observation"]
+        self.assertTrue(self.problems(plain))
+        # The observation must request the owner, cite D-038 item 6, keep the M3 human refusal,
+        # and exists only for deferrals.
+        self.assertTrue(self.problems(dict(observed, m4_observation="")))
+        self.assertTrue(self.problems(dict(observed, m4_observation="measured: commits")))
+        self.assertTrue(self.problems(dict(observed, decision="D-037 item 4")))
+        self.assertTrue(self.problems(dict(observed, observed_m3_refusal=committed["steps"][0])))
+        self.assertTrue(self.problems(dict(DIFF_B, m4_observation=note)))
+        self.assertTrue(self.problems(dict(observed, carry_to="M7")))
+
     def test_adapted_entry_needs_labels_and_no_actual(self):
         self.assertTrue(self.problems(dict(ADAPT_A, adaptations=[])))
         self.assertTrue(self.problems(dict(ADAPT_A, adaptations=["allow-all"])))

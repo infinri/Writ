@@ -707,10 +707,33 @@ pub fn check_service_permission(
     Ok(())
 }
 
+/// The wildcard of an explicitly granted role scope (X5).
+pub const SCOPE_WILDCARD: &str = "*";
+
+/// Scope containment of a role assignment (M4-INTERFACES X5): an assignment
+/// for (`*`, `*`) contains every scope; (`t`, `*`) contains every project of
+/// tenant `t` (and (`t`, `*`) itself); (`t`, `p`) contains only itself. A
+/// `*` is honoured only where explicitly granted: containment is never
+/// inferred across tenants, an assignment with tenant `*` and a concrete
+/// project contains only that exact scope, and a `*` in the target is never
+/// matched by a narrower assignment.
+pub fn scope_contains(
+    assigned_tenant: &str,
+    assigned_project: &str,
+    tenant_id: &str,
+    project_id: &str,
+) -> bool {
+    let w = SCOPE_WILDCARD;
+    (assigned_tenant == w && assigned_project == w)
+        || (assigned_tenant == tenant_id
+            && (assigned_project == project_id || (assigned_project == w && assigned_tenant != w)))
+}
+
 /// The subject holds `permission` for (tenant, project) at `now`: the
 /// service rule first (`SERVICE_NOT_PERMITTED`), then an active assignment of
-/// the same subject, kind, permission and exact scope (`PERMISSION_MISSING`).
-/// An assignment that breaks the service rule never counts.
+/// the same subject, kind and permission whose scope contains (tenant,
+/// project) ([`scope_contains`]; `PERMISSION_MISSING`). An assignment that
+/// breaks the service rule never counts.
 pub fn check_permission(
     assignments: &[RoleAssignment],
     subject: &SubjectId,
@@ -725,8 +748,7 @@ pub fn check_permission(
         &a.subject == subject
             && a.kind == kind
             && a.permission == permission
-            && a.tenant_id == tenant_id
-            && a.project_id == project_id
+            && scope_contains(&a.tenant_id, &a.project_id, tenant_id, project_id)
             && a.active_at(now)
             && check_service_permission(a.kind, a.permission).is_ok()
     });
@@ -1274,5 +1296,66 @@ mod tests {
         r.revoked_at = None;
         r.granted_at = now.plus_seconds(1);
         assert_eq!(check(&[r], Permission::Approver, "t1", "p1"), missing);
+    }
+
+    #[test]
+    fn wildcard_scopes_contain_only_what_was_explicitly_granted() {
+        // X5 (S7): (*, *) everything; (t, *) every project of t; (t, p) itself.
+        let yes = [
+            ("*", "*", "t1", "p1"),
+            ("*", "*", "*", "*"),
+            ("*", "*", "t1", "*"),
+            ("t1", "*", "t1", "p1"),
+            ("t1", "*", "t1", "*"),
+            ("t1", "p1", "t1", "p1"),
+            ("*", "p1", "*", "p1"),
+        ];
+        let no = [
+            ("t1", "*", "t2", "p1"),
+            ("t1", "*", "*", "*"),
+            ("t1", "p1", "t1", "p2"),
+            ("t1", "p1", "t1", "*"),
+            ("t1", "p1", "*", "*"),
+            ("*", "p1", "t1", "p1"),
+            ("*", "p1", "*", "*"),
+            ("*", "p1", "*", "p2"),
+        ];
+        for (at, ap, t, p) in yes {
+            assert!(
+                scope_contains(at, ap, t, p),
+                "({at},{ap}) contains ({t},{p})"
+            );
+        }
+        for (at, ap, t, p) in no {
+            assert!(
+                !scope_contains(at, ap, t, p),
+                "({at},{ap}) excludes ({t},{p})"
+            );
+        }
+        // The rule is applied to every permission check.
+        let now = t("2026-11-07T00:00:00Z");
+        let alice = sid("writ-local", "alice");
+        let mut r = role(alice.clone(), PrincipalKind::Human, Permission::Revoker);
+        r.tenant_id = "*".into();
+        r.project_id = "*".into();
+        let check = |roles: &[RoleAssignment], tenant, project| {
+            check_permission(
+                roles,
+                &alice,
+                PrincipalKind::Human,
+                Permission::Revoker,
+                tenant,
+                project,
+                now,
+            )
+        };
+        assert_eq!(check(&[r.clone()], "t9", "p9"), Ok(()));
+        r.tenant_id = "t1".into();
+        assert_eq!(check(&[r.clone()], "t1", "p9"), Ok(()));
+        assert_eq!(
+            check(&[r.clone()], "t2", "p9"),
+            Err(ApprovalCode::PermissionMissing)
+        );
+        assert_eq!(check(&[r], "*", "*"), Err(ApprovalCode::PermissionMissing));
     }
 }

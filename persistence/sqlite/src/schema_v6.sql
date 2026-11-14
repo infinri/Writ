@@ -6,12 +6,13 @@
 -- public passkey material, credential ids and references to consumed challenges.
 
 -- I-8: one ledger-wide monotonic sequence. Every promotion, administrative operation,
--- revocation, approval decision, signoff and enrollment commits exactly one row inside its
--- own transaction, so tests read the actual commit order.
+-- revocation, approval decision, signoff, enrollment, role change ('administration') and
+-- expiry step that changes anything commits exactly one row inside its own transaction, so
+-- tests read the actual commit order (D-042 X6).
 CREATE TABLE ledger_sequence (
   seq        INTEGER PRIMARY KEY AUTOINCREMENT,
   kind       TEXT NOT NULL CHECK (kind IN ('promotion', 'administration', 'revocation',
-               'decision', 'signoff', 'enrollment', 'bootstrap')),
+               'decision', 'signoff', 'enrollment', 'bootstrap', 'expiry')),
   reference  TEXT NOT NULL
 ) STRICT;
 
@@ -90,7 +91,9 @@ CREATE TABLE approval_requests (
   status              TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'denied', 'expired'))
 ) STRICT;
 
--- Server-side challenges (I-2, R2, C1): ids and digests unique ledger-wide, single use.
+-- Server-side challenges (I-2, R2, C1): ids and digests unique ledger-wide, single use. A
+-- terminal refusal of an identified ceremony burns its challenge: status 'refused' with the
+-- refusal code, in the refusing transaction (D-042 X4).
 CREATE TABLE challenges (
   challenge_id        TEXT PRIMARY KEY CHECK (challenge_id <> ''),
   challenge_digest    TEXT NOT NULL UNIQUE,
@@ -110,7 +113,10 @@ CREATE TABLE challenges (
   issued_at           TEXT NOT NULL,
   expires_at          TEXT NOT NULL,
   idempotency_key     TEXT NOT NULL,
-  status              TEXT NOT NULL CHECK (status IN ('issued', 'consumed', 'expired'))
+  status              TEXT NOT NULL CHECK (status IN ('issued', 'consumed', 'expired',
+                        'refused')),
+  refusal_code        TEXT,
+  CHECK ((status = 'refused') = (refusal_code IS NOT NULL))
 ) STRICT;
 
 -- Human decisions on approval requests (I-3; several rows possible, no quorum implied).
@@ -128,7 +134,9 @@ CREATE TABLE approval_decisions (
   grant_label        TEXT REFERENCES grants (label)
 ) STRICT;
 
--- The single grant an approved request produced (I-3; exactly one per request).
+-- The single grant an approved request produced (I-3; exactly one per request). Written only
+-- inside the ledger's own approval ceremony; on writ-ledger-6 a grant is executable only with
+-- this link to its approved request, decision and consumed challenge (D-042 X1).
 CREATE TABLE approval_grants (
   label        TEXT PRIMARY KEY REFERENCES grants (label),
   request_id   TEXT NOT NULL UNIQUE REFERENCES approval_requests (request_id),
@@ -224,7 +232,8 @@ CREATE TABLE consumed_signoffs (
 CREATE TABLE approval_events (
   seq                 INTEGER PRIMARY KEY AUTOINCREMENT,
   kind                TEXT NOT NULL CHECK (kind IN ('request_created', 'approved', 'denied',
-                        'expired', 'revoked', 'signed_off', 'enrolled', 'bootstrap')),
+                        'expired', 'revoked', 'signed_off', 'enrolled', 'bootstrap',
+                        'role_changed')),
   target_id           TEXT NOT NULL,
   tenant_id           TEXT NOT NULL,
   project_id          TEXT NOT NULL,

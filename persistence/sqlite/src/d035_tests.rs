@@ -24,8 +24,8 @@ use writ_broker::writ_kernel::json::{self, Value};
 
 use super::execute_tests::{reconciled, World};
 use super::grant_tests::{
-    alice, approve, approve_as, channels, file_write, label, now, publish, publish_forbidden,
-    reference, reference_v2, reserve, revision, set, uses, verify,
+    alice, approve, approve_as, channels, file_write, label, now, publish, publish_distinct,
+    publish_forbidden, reference, reference_v2, reserve, revision, set, uses, verify,
 };
 use super::{fault, LedgerId, SqliteEffectStore, SqliteLedger, SCHEMA_V3};
 
@@ -78,19 +78,10 @@ fn tmp(name: &str) -> PathBuf {
 // ---------------------------------------------------------------------------
 // Item 1: reservation retention, revalidation before dispatch, permit expiry.
 
-/// Reserve `k1` under grant `g1` (approved with `ttl` seconds) without dispatching.
-fn reserved(w: &World, ttl: Option<u32>) {
+/// Reserve `k1` under grant `g1` (an M4 grant, 600 s) without dispatching.
+fn reserved(w: &World) {
     let b = w.broker();
-    approve_as(
-        b.grants(),
-        &publish("k1"),
-        "g1",
-        Verdict::Approved,
-        ttl,
-        &alice(),
-        &channels(),
-    )
-    .unwrap();
+    approve(b.grants(), &publish("k1"), "g1").unwrap();
     assert_eq!(
         reserve(b.grants(), &publish("k1"), Some("g1")),
         Ok(ReserveOutcome::Reserved)
@@ -117,10 +108,10 @@ fn reservation_kept(w: &World) {
 #[test]
 fn an_expired_grant_never_dispatches_a_retained_reservation() {
     let w = World::new("d035-expired");
-    reserved(&w, Some(10));
+    reserved(&w);
     let b = w.broker();
     // The grant expires while the reservation waits; retries refuse at T-dispatch.
-    w.clock.set(now().plus_seconds(10));
+    w.clock.set(now().plus_seconds(600));
     for _ in 0..3 {
         let e = exec(&b, &publish("k1"), Some("g1"));
         assert_eq!(e.result, Err(Refusal::GrantExpired));
@@ -139,8 +130,9 @@ fn an_expired_grant_never_dispatches_a_retained_reservation() {
         assert_eq!(e.evidence.progress(), Progress::Reserved);
         reservation_kept(&w);
     }
-    // The key is never recycled and the grant never substituted or replenished.
-    approve(b.grants(), &publish("k1"), "g2").unwrap();
+    // The key is never recycled and the grant never substituted or replenished (another
+    // grant, for another action: one M4 grant per approved request).
+    approve(b.grants(), &publish_distinct("k1-other"), "g2").unwrap();
     assert_eq!(
         exec(&b, &publish("k1"), Some("g2")).result,
         Err(Refusal::IdempotencyConflict)
@@ -170,7 +162,7 @@ fn an_expired_grant_never_dispatches_a_retained_reservation() {
 #[test]
 fn a_policy_change_after_reservation_is_revalidated_before_dispatch() {
     let w = World::new("d035-policy");
-    reserved(&w, None);
+    reserved(&w);
     let b = w.broker();
     // Another bundle: the use-time binding (bundle digest) no longer matches the grant.
     w.active.activate(PolicyState::loaded(reference_v2()));
@@ -200,7 +192,7 @@ fn a_policy_change_after_reservation_is_revalidated_before_dispatch() {
 #[test]
 fn a_reservation_whose_grant_use_is_missing_is_an_integrity_failure() {
     let w = World::new("d035-use-missing");
-    reserved(&w, None);
+    reserved(&w);
     w.ledger
         .db()
         .conn
@@ -217,15 +209,17 @@ fn a_reservation_whose_grant_use_is_missing_is_an_integrity_failure() {
 
 #[test]
 fn a_grant_backed_permit_expires_no_later_than_its_grant() {
-    // (grant lifetime, request deadline offset, expected permit expiry offset)
-    for (ttl, deadline, want) in [
-        (10, None, 10),      // grant expiry
-        (600, None, 30),     // permit TTL
-        (600, Some(20), 20), // request deadline
-        (15, Some(20), 15),  // grant expiry before the deadline
-        (25, Some(12), 12),  // deadline before the grant expiry
+    // An M4 grant lives 600 s from its approval at `now()`; the execution happens `at`
+    // seconds later. (execution offset, request deadline offset, expected permit expiry)
+    for (at, deadline, want) in [
+        (590, None, 600),      // grant expiry
+        (0, None, 30),         // permit TTL
+        (0, Some(20), 20),     // request deadline
+        (585, Some(605), 600), // grant expiry before the deadline
+        (575, Some(587), 587), // deadline before the grant expiry
     ] {
-        let w = World::new(&format!("d035-cap-{ttl}"));
+        let ttl = at;
+        let w = World::new(&format!("d035-cap-{at}"));
         let b = w.broker();
         let mut req = publish("k1");
         if let Some(d) = deadline {
@@ -235,16 +229,8 @@ fn a_grant_backed_permit_expires_no_later_than_its_grant() {
                 json::s(&now().plus_seconds(d).to_string()),
             );
         }
-        approve_as(
-            b.grants(),
-            &req,
-            "g1",
-            Verdict::Approved,
-            Some(ttl),
-            &alice(),
-            &channels(),
-        )
-        .unwrap();
+        approve(b.grants(), &req, "g1").unwrap();
+        w.clock.set(now().plus_seconds(at));
         let e = exec(&b, &req, Some("g1"));
         assert_eq!(
             e.result,
@@ -568,35 +554,52 @@ fn approval_persists_provenance_and_never_the_credential() {
     let w = World::new("d035-provenance");
     let b = w.broker();
     let issued = approve(b.grants(), &publish("k1"), "g1").unwrap();
-    let row: Vec<String> = w
+    let mut row: Vec<String> = w
         .ledger
         .db()
         .conn
         .query_row(
             "SELECT version, approver_id, approver_issuer, channel, approved_at, verdict, \
              auth_evidence_ref, request_fingerprint, policy_bundle_sha \
-             FROM grant_provenance WHERE label = 'g1'",
-            [],
+             FROM grant_provenance WHERE label = ?1",
+            [issued.label.as_str()],
             |r| (0..9).map(|i| r.get::<_, String>(i)).collect(),
         )
         .unwrap();
+    // The evidence reference is the consumed challenge (D-040 provenance v2).
+    let evidence = row.remove(6);
+    assert!(evidence.starts_with("challenge:chl-"), "{evidence}");
     let fingerprint = json::digest(&publish("k1")).unwrap();
     assert_eq!(
         row,
         [
-            "writ-provenance-1",
-            "human:alice",
-            "realm:fixture",
-            "approval-ui",
+            "writ-provenance-2",
+            "support-approver",
+            "writ-local",
+            "approval-listener",
             &now().to_string(),
             "approved",
-            "authn-event:approval-ui:human:alice",
             fingerprint.as_str(),
             reference().sha.as_str(),
         ]
     );
     assert!(issued.binding.contains(reference().sha.as_str()));
-    // No byte of the presented credential reaches the ledger files.
+    // The closed M3 path stores nothing, and no byte of the credential it was presented
+    // reaches the ledger files.
+    assert_eq!(
+        approve_as(
+            b.grants(),
+            &publish_distinct("k9"),
+            "g9",
+            Verdict::Approved,
+            None,
+            &alice(),
+            &channels()
+        ),
+        Err(Refusal::HumanUnauthenticated(
+            ApproverRefusal::LegacyPathClosed
+        ))
+    );
     drop(b);
     let dir = w.dir.clone();
     drop(w);
@@ -685,8 +688,9 @@ fn a_grant_with_damaged_provenance_is_not_executable() {
 fn legacy_ledger(dir: &Path) -> PathBuf {
     let w = World::new("d035-legacy-source");
     let b = w.broker();
-    approve(b.grants(), &publish("k1"), "g1").unwrap();
-    approve(b.grants(), &publish("k2"), "g2").unwrap();
+    approve(b.grants(), &publish_distinct("k1"), "g1").unwrap();
+    approve(b.grants(), &publish_distinct("k2"), "g2").unwrap();
+    let g2 = label("g2").as_str().to_string();
     let grants: Vec<(String, String, i64, i64)> = {
         let db = w.ledger.db();
         let mut s = db
@@ -698,12 +702,12 @@ fn legacy_ledger(dir: &Path) -> PathBuf {
             .collect::<rusqlite::Result<_>>()
             .unwrap()
     };
-    let fingerprint = json::digest(&publish("k2")).unwrap();
+    let fingerprint = json::digest(&publish_distinct("k2")).unwrap();
     let path = dir.join("legacy.db");
     let c = rusqlite::Connection::open(&path).unwrap();
     c.execute_batch(SCHEMA_V3).unwrap();
     for (label, binding, s, ns) in &grants {
-        let used = i64::from(label == "g2");
+        let used = i64::from(*label == g2);
         c.execute(
             "INSERT INTO grants (label, binding, expires_s, expires_ns, max_uses, uses) \
              VALUES (?1, ?2, ?3, ?4, 1, ?5)",
@@ -712,9 +716,9 @@ fn legacy_ledger(dir: &Path) -> PathBuf {
         .unwrap();
     }
     c.execute_batch(&format!(
-        "INSERT INTO grant_uses (label, tenant_id, idempotency_key) VALUES ('g2', 'fixture-tenant', 'k2');
+        "INSERT INTO grant_uses (label, tenant_id, idempotency_key) VALUES ('{g2}', 'fixture-tenant', 'k2');
          INSERT INTO receipts (tenant_id, idempotency_key, fingerprint, grant_label, status)
-           VALUES ('fixture-tenant', 'k2', '{}', 'g2', 'reserved');
+           VALUES ('fixture-tenant', 'k2', '{}', '{g2}', 'reserved');
          INSERT INTO receipt_events (tenant_id, idempotency_key, status, cause)
            VALUES ('fixture-tenant', 'k2', 'reserved', 'reserve');
          INSERT INTO audit_refusals (code) VALUES ('LEGACY');",
@@ -770,14 +774,22 @@ fn the_explicit_upgrade_keeps_legacy_data_and_legacy_grants_stay_non_executable(
     let w = World::new("d035-upgrade-policy");
     let b = Broker::new(&w.active, &w.clock, &ledger, &effects, &w.key);
     // A legacy grant is never consumed ...
-    let e = b.execute(&verify(&publish("k1")), revision(), Some(&label("g1")));
+    let e = b.execute(
+        &verify(&publish_distinct("k1")),
+        revision(),
+        Some(&label("g1")),
+    );
     assert_eq!(
         e.result,
         Err(unavailable("transaction reserve", "provenance"))
     );
     assert_eq!(uses(&ledger, "g1"), Some(0));
     // ... and a legacy reservation is never dispatched under it; it keeps its use.
-    let e = b.execute(&verify(&publish("k2")), revision(), Some(&label("g2")));
+    let e = b.execute(
+        &verify(&publish_distinct("k2")),
+        revision(),
+        Some(&label("g2")),
+    );
     assert_eq!(
         e.result,
         Err(unavailable("transaction dispatch", "provenance"))
@@ -794,10 +806,14 @@ fn the_explicit_upgrade_keeps_legacy_data_and_legacy_grants_stay_non_executable(
         0
     );
     // A new approval in the upgraded ledger is executable.
-    approve(b.grants(), &publish("k3"), "g3").unwrap();
+    approve(b.grants(), &publish_distinct("k3"), "g3").unwrap();
     assert_eq!(
-        b.execute(&verify(&publish("k3")), revision(), Some(&label("g3")))
-            .result,
+        b.execute(
+            &verify(&publish_distinct("k3")),
+            revision(),
+            Some(&label("g3"))
+        )
+        .result,
         Ok(Executed::EffectCompleted)
     );
     let id = ledger.ledger_id().clone();

@@ -70,6 +70,10 @@ KIND_KEYS = {
                                "blocking_dependency", "observed_m3_refusal", "companions",
                                "cascade"},
 }
+# A deferred entry may carry this one optional member: the measured M4 observation of a carried
+# case whose first differing step is no longer the M3 human refusal (an owner decision pending,
+# CO-M4-01); see validate_entries.
+M4_OBSERVATION = "m4_observation"
 CASE_ID = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 ENV_LOG = "WRIT_M3_ADAPTATIONS"
 
@@ -148,7 +152,10 @@ def validate_entries(sets: dict, entries: list) -> tuple[dict, list]:
         if kind not in KIND_KEYS:
             problems.append(f"{where}: unknown kind {kind!r}")
             continue
-        if set(e) != KIND_KEYS[kind]:
+        allowed = KIND_KEYS[kind]
+        if kind == "deferred" and M4_OBSERVATION in e:
+            allowed = allowed | {M4_OBSERVATION}
+        if set(e) != allowed:
             problems.append(f"{where}: members {sorted(set(e) ^ KIND_KEYS[kind])} wrong for kind {kind}")
             continue
         if not isinstance(e["case"], str) or not CASE_ID.match(e["case"]):
@@ -192,15 +199,29 @@ def validate_entries(sets: dict, entries: list) -> tuple[dict, list]:
                 gs = actual.get("steps") if isinstance(actual, dict) else None
                 first = e["steps"][0] if e["steps"] else None
                 step = gs[first] if isinstance(gs, list) and isinstance(first, int) and 0 <= first < len(gs) else None
-                human = isinstance(step, dict) and (
-                    step.get("code") == HUMAN_CODE
-                    or (step.get("result") == "concurrent" and step.get("committed") == 0
-                        and isinstance(step.get("refused"), dict) and set(step["refused"]) == {HUMAN_CODE}))
-                if not human:
-                    problems.append(f"{where}: a deferral's first differing step must refuse {HUMAN_CODE}")
-                # D-038 item 6: the exact observed M3 refusal is the first differing step's answer.
-                if e["observed_m3_refusal"] != step:
-                    problems.append(f"{where}: observed_m3_refusal is not the first differing step's answer")
+                observation = e.get(M4_OBSERVATION)
+                if observation is not None:
+                    # Measured under M4 with signoff verified at use time, the case no longer
+                    # refuses for human signoff but contradicts its acceptance criterion: it stays
+                    # a deferred obligation pending the owner (D-038 item 6). `actual` is the
+                    # measured output (compared exactly); the recorded M3 refusal stays the human one.
+                    obs = e["observed_m3_refusal"]
+                    if not isinstance(observation, str) or "owner decision" not in observation:
+                        problems.append(f"{where}: {M4_OBSERVATION} must state the measured result and request an owner decision")
+                    if "D-038 item 6" not in e["decision"]:
+                        problems.append(f"{where}: a deferral with an M4 observation must cite D-038 item 6")
+                    if not isinstance(obs, dict) or obs.get("code") != HUMAN_CODE:
+                        problems.append(f"{where}: observed_m3_refusal must stay the M3 {HUMAN_CODE} refusal")
+                else:
+                    human = isinstance(step, dict) and (
+                        step.get("code") == HUMAN_CODE
+                        or (step.get("result") == "concurrent" and step.get("committed") == 0
+                            and isinstance(step.get("refused"), dict) and set(step["refused"]) == {HUMAN_CODE}))
+                    if not human:
+                        problems.append(f"{where}: a deferral's first differing step must refuse {HUMAN_CODE}")
+                    # D-038 item 6: the exact observed M3 refusal is the first differing step's answer.
+                    if e["observed_m3_refusal"] != step:
+                        problems.append(f"{where}: observed_m3_refusal is not the first differing step's answer")
                 # Every later differing step names why it follows from the deferred one (review
                 # L1): no non-human difference is carried silently.
                 cascade = e["cascade"]

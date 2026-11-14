@@ -17,6 +17,15 @@
 //! use-time decision with the given verdict, expiring `ttl` seconds (default
 //! 600) after the trusted time of the decision; a label already in use is
 //! `GRANT_REF_IN_USE` and the existing grant is never reset or replenished.
+//! **On `writ-ledger-6` this path is closed (D-042 X1, finding S1):** the
+//! production ledger refuses every insert ([`GrantInsert::Refused`]), so
+//! `approve` answers `HUMAN_UNAUTHENTICATED` ([`ApproverRefusal::LegacyPathClosed`])
+//! and writes nothing; executable grants come only from the ledger's own M4
+//! approval ceremony ([`crate::approval_store::ApprovalLedger::finish_ceremony`]),
+//! which links each grant to its approved request, decision and consumed
+//! challenge. Such a link also binds the approved agent: another agent of the
+//! same principal is refused (`GRANT_MISMATCH`, [`Refusal::GrantAgentMismatch`];
+//! X2).
 //!
 //! **Consumption** ([`GrantService::reserve`], or
 //! [`GrantService::reserve_authorized`] under a hold the caller keeps). Under
@@ -88,6 +97,7 @@ use writ_kernel::time::Timestamp;
 use crate::approval::{ApprovalCode, ApprovalDecision, ApprovalRequest, PROVENANCE_VERSION_2};
 use crate::authorize::{authorize, Authorized, UseTimeStatus};
 use crate::clock::{observe, EffectiveClock, ObservedTime};
+use crate::human::SubjectId;
 use crate::ingress::VerifiedRequest;
 use crate::policy::ActivePolicy;
 use crate::refusal::Refusal;
@@ -217,6 +227,10 @@ pub enum ApproverRefusal {
     /// The evidence reference contains the presented credential (it would
     /// be stored; credentials never are).
     CredentialInEvidence,
+    /// The ledger accepts no grant from this path (`writ-ledger-6`, D-042
+    /// X1): an [`ApprovalAuthority`] answer is not D-040 human
+    /// authentication, so only the M4 approval ceremony mints grants.
+    LegacyPathClosed,
 }
 
 /// Authenticates approvers on trusted approval channels (D-009: an
@@ -565,6 +579,20 @@ pub enum GrantInsert {
     Inserted,
     /// The label already names a grant; nothing changed.
     LabelInUse,
+    /// The ledger mints executable grants only inside its own M4 approval
+    /// ceremony (`writ-ledger-6`, D-042 X1): every insert from this path is
+    /// refused, whatever its provenance or label; nothing changed.
+    Refused,
+}
+
+/// The M4 approval behind a stored grant (`writ-ledger-6`, D-042 X1, X2),
+/// read by the ledger inside T-reserve and T-dispatch from the
+/// `approval_grants` link its own ceremony wrote: the approved request's
+/// agent, which must be the presenting request's agent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApprovalLink {
+    /// The approved request's agent (its ingress realm and agent id), if any.
+    pub agent: Option<SubjectId>,
 }
 
 /// Stored approver provenance as read with a grant (all columns as text).
@@ -603,14 +631,21 @@ pub struct StoredGrant {
     pub uses: i64,
     /// Stored approver provenance; `None` when the grant has none (legacy).
     pub provenance: Option<StoredProvenance>,
-    /// The grant carries the O-14 marker written by the upgrade to
-    /// `writ-ledger-6`: it existed before M4 and is never executable.
+    /// The grant is never executable on this ledger: it carries the O-14
+    /// marker written by the upgrade to `writ-ledger-6` (it existed before
+    /// M4), or, on `writ-ledger-6`, it has no `approval_grants` link written
+    /// by the ledger's own approval ceremony (D-042 X1; a provenance-shaped
+    /// row alone is never enough).
     pub legacy: bool,
     /// A committed revocation invalidates the grant (I-4, O-5): the grant
     /// itself is revoked, or, for a grant minted by an M4 decision, its
     /// approver's subject or credential is revoked or the approver no
-    /// longer holds an unrevoked approver role in the request's scope.
+    /// longer holds an unrevoked approver role whose scope contains the
+    /// request's scope.
     pub revoked: bool,
+    /// The M4 approval link of the grant, when the ledger has one (X1, X2):
+    /// its agent must equal the presenting request's agent.
+    pub approval: Option<ApprovalLink>,
 }
 
 /// Provenance integrity (D-035 item 5): a record of [`PROVENANCE_VERSION`]
@@ -759,10 +794,22 @@ pub enum ReserveOutcome {
 pub(crate) struct GrantUse {
     label: GrantLabel,
     expected: Option<String>,
+    /// The presenting request's agent under its ingress realm (X2).
+    agent: Option<SubjectId>,
     now: Timestamp,
 }
 
 impl GrantUse {
+    /// X2 (S8): a grant with an M4 approval link is usable only by the
+    /// approved request's exact agent, never another agent of the same
+    /// principal (the binding compares the principal only).
+    fn agent_matches(&self, stored: &StoredGrant) -> bool {
+        stored
+            .approval
+            .as_ref()
+            .is_none_or(|link| link.agent == self.agent)
+    }
+
     /// The grant label.
     pub(crate) fn label(&self) -> &str {
         self.label.as_str()
@@ -793,6 +840,9 @@ impl GrantUse {
         }
         if self.expected.as_deref() != Some(stored.binding.as_str()) {
             return Revalidation::Refuse(Refusal::GrantMismatch);
+        }
+        if !self.agent_matches(stored) {
+            return Revalidation::Refuse(Refusal::GrantAgentMismatch);
         }
         if self.now >= stored.expires_at {
             return Revalidation::Refuse(Refusal::GrantExpired);
@@ -874,6 +924,11 @@ impl<'a> ReserveRequest<'a> {
                 label: grant.ok_or(Refusal::ApprovalRequired)?.clone(),
                 expected: GrantBinding::for_decision(authorized, Verdict::Approved)
                     .and_then(|b| b.canonical_text()),
+                agent: authorized
+                    .request()
+                    .agent_id
+                    .as_deref()
+                    .map(|a| SubjectId::new(&authorized.request().principal.verified_by, a)),
                 now: observed.at(),
             }),
         };
@@ -1023,6 +1078,9 @@ impl<'a> ReserveRequest<'a> {
         if grant.expected.as_deref() != Some(stored.binding.as_str()) {
             return GrantCheck::Refuse(Refusal::GrantMismatch);
         }
+        if !grant.agent_matches(stored) {
+            return GrantCheck::Refuse(Refusal::GrantAgentMismatch);
+        }
         if grant.now >= stored.expires_at {
             return GrantCheck::Refuse(Refusal::GrantExpired);
         }
@@ -1158,6 +1216,16 @@ where
         &self.key_locks
     }
 
+    /// The ledger this service runs on.
+    pub fn ledger(&self) -> &'a L {
+        self.ledger
+    }
+
+    /// The active policy this service decides under.
+    pub fn active(&self) -> &'a ActivePolicy {
+        self.active
+    }
+
     /// Read trusted time and persist it as the ledger's floor in its own
     /// fenced transaction ([`observe`]); unavailable time is `TIME_UNAVAILABLE`.
     pub fn observe(&self) -> Result<ObservedTime, Refusal> {
@@ -1247,6 +1315,9 @@ where
                 binding: grant.binding,
             }),
             GrantInsert::LabelInUse => Err(Refusal::GrantRefInUse),
+            GrantInsert::Refused => Err(Refusal::HumanUnauthenticated(
+                ApproverRefusal::LegacyPathClosed,
+            )),
         }
     }
 
@@ -1418,6 +1489,7 @@ mod tests {
                 provenance: Some(provenance_for(binding)),
                 legacy: false,
                 revoked: false,
+                approval: None,
             };
             assert_eq!(
                 r.check_grant(None),
@@ -1482,6 +1554,36 @@ mod tests {
                 r.grant().unwrap().revalidate(Some(&live), true),
                 Revalidation::Provenance
             );
+            // X2 (S8): an M4 approval link binds the approved agent. This
+            // request has no agent: a grant approved for an agent of the same
+            // principal is refused after the binding check, at T-reserve and
+            // at T-dispatch; the link of an agent-less request matches.
+            let mut linked = grant(&good, 1, 0);
+            linked.approval = Some(ApprovalLink {
+                agent: Some(SubjectId::new("writ-host-adapter:fixture", "agent-a")),
+            });
+            assert_eq!(
+                r.check_grant(Some(&linked)),
+                GrantCheck::Refuse(Refusal::GrantAgentMismatch)
+            );
+            assert_eq!(Refusal::GrantAgentMismatch.code(), "GRANT_MISMATCH");
+            let mut used = linked.clone();
+            used.uses = 1;
+            assert_eq!(
+                r.grant().unwrap().revalidate(Some(&used), true),
+                Revalidation::Refuse(Refusal::GrantAgentMismatch)
+            );
+            linked.approval = Some(ApprovalLink { agent: None });
+            assert_eq!(r.check_grant(Some(&linked)), GrantCheck::Consume);
+            // A binding mismatch is still reported first.
+            let mut other_linked = grant(&other, 1, 0);
+            other_linked.approval = Some(ApprovalLink {
+                agent: Some(SubjectId::new("writ-host-adapter:fixture", "agent-a")),
+            });
+            assert_eq!(
+                r.check_grant(Some(&other_linked)),
+                GrantCheck::Refuse(Refusal::GrantMismatch)
+            );
         });
     }
 
@@ -1522,6 +1624,7 @@ mod tests {
                 provenance: Some(p),
                 legacy: false,
                 revoked: false,
+                approval: None,
             }
         };
         assert!(provenance_intact(&grant(&|_| {})));

@@ -58,6 +58,8 @@ Notes on the scoping:
 
 Broker scenarios: `apply_without_permit` (b-08) and presenting the permit of a step that issued none (p-11) have no production operation; the step answers `{"result": "production_difference", "reason": "NO_PRODUCTION_OPERATION" | "NO_PERMIT_TO_PRESENT"}`, nothing is audited, the case continues and the final state shows zero effects.
 
+**Broker `approve` on the M4 lifecycle (D-042; `writ-ledger-6` mints grants only in its own approval ceremony, the M3 approval-authority path is closed).** For an `approve` step the adapter (C2, `adapter-sealed`) seals `for_request`, records the approval request the broker records when the agent asks (production `approval_request_for` on the production use-time decision, then `record_approval_request`), and runs the human's ceremony on the production ledger (`begin_ceremony`, `finish_ceremony`, channel identity `m3-closure-approval-listener` from configuration) through a NON-SHIPPING test verifier compiled only in this example (C3, `ChannelVerifier`): it accepts exactly the fixture channel table's credential for that human on that channel, and the broker still checks every answer against the stored challenge. Test identities, once per case on first approval: a bootstrap test administrator (production `bootstrap_administrator`) enrolls every human of the channel table through the production enrollment ceremony as a test subject (issuer `m3-closure-test-realm`) holding `approver` over (`*`, `*`). Verdict `approved` is an Approve ceremony, `denied` a Deny ceremony (answer `{"result": "approval_denied"}`). The ledger-assigned grant label (`approval/<request id>`) is translated to and from the fixture `grant_ref` (execute presents the translated label; final state and `ledger_detail` key grants by the fixture reference); a reference with no issued grant is presented unchanged and names no grant. A request whose decision is not `require_approval` has no approval request: the step answers `{"result": "production_difference", "reason": "NO_APPROVAL_REQUEST"}` and is not audited. Measured changes (approved differences, exceptions.json): b-21, b-22, b-24, b-25, b-26, b-32, p-10; the other approve cases are unchanged adapted passes.
+
 ## 3. Authenticated test evidence (D-037 item 3)
 
 - **Keys:** acceptance-record key `m3c-acceptance-key-1` (type `AcceptanceRecordKey`) and runner key `runner-key-1` (type `RunnerAttestationKey`), distinct purposes and values; HMAC-SHA256 computed in the example from the kernel's SHA-256 (no new dependency). HMAC is a MAC, not a signature.
@@ -90,7 +92,7 @@ Final state is read through read-only connections only after the case closes eve
 
 ## 7. Adaptation labels added by this revision
 
-`client-permit-dropped` (a fixture step's client permit member was ignored) and `adapter-sealed` (the adapter sealed a request the fixture left unsealed: every transition promote and effect, and every broker `approve.for_request`, which also logs C2).
+`client-permit-dropped` (a fixture step's client permit member was ignored) and `adapter-sealed` (the adapter sealed a request the fixture left unsealed: every transition promote and effect, and every broker `approve.for_request`, which also logs C2). Since D-042, C3 (`C3-synthetic-human-authority`) names the non-shipping test verifier of the M4 approval ceremony (logged when it accepts a fixture human), and C2 also covers recording the approval request and translating the grant reference.
 
 ## 8. Human signoffs (M4-11; D-040 O-4; D-042)
 

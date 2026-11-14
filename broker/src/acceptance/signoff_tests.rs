@@ -235,6 +235,16 @@ fn revoked_expired_unauthorized_unseparated_or_consumed_signoffs_are_refused() {
         with_use(|u| u.assignments[0].revoked_at = Some(at("2026-11-07T12:00:00Z"))),
         revoked
     );
+    // A revoked wildcard assignment containing the scope (X5) counts as a role revocation;
+    // an active one holds the permission.
+    assert_eq!(
+        with_use(|u| {
+            u.assignments[0].project_id = "*".into();
+            u.assignments[0].revoked_at = Some(at("2026-11-07T12:00:00Z"));
+        }),
+        revoked
+    );
+    assert!(with_use(|u| u.assignments[0].project_id = "*".into()).is_ok());
     let mut expiring = signoff_binding();
     expiring.expires_at = at("2026-11-07T11:00:00Z");
     assert_eq!(

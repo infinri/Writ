@@ -38,14 +38,14 @@ The 25 carried cases run with the human criterion `signoff` unchanged: the trust
 | Classification | Before (M3) | After (M4-11, `--repeat 2`) |
 |---|---|---|
 | Exact pass | 17 | 17 |
-| Adapted coverage | 64 | 79 (+15 former deferrals; sc-28, sc-29, sc-30, sc-37 gain only the signoff label, output unchanged) |
-| Approved differences | 21 | 30 (+9 former deferrals) |
-| Deferred to M4 | 25 | 0 |
-| Unexplained | 0 | 1 (`sc-12`, not classified, below) |
+| Adapted coverage | 64 | 72 (+15 former deferrals; sc-28, sc-29, sc-30, sc-37 gain only the signoff label, output unchanged; after merging W-A's D-042 adapter changes, which reclassify 7 broker cases as differences) |
+| Approved differences | 21 | 37 (+9 former deferrals, +7 W-A broker cases) |
+| Deferred to M4 | 25 | 1 (`sc-12`, owner decision requested, below) |
+| Unexplained | 0 | 0 |
 
 - **Adapted (exact frozen output):** `sc-01`..`sc-04`, `sc-10`, `sc-15`, `sc-39`, `sc-53`, `sc-54`, `sc-56`..`sc-59`, `sc-63`, `p-16`.
 - **Differences named by their M4 acceptance criteria:** `sc-09`, `sc-19`, `sc-25`, `sc-36` commit (D-036 item 2, no client-held promotion permit); `sc-13`, `sc-38` commit at step 0 and later identical retries replay that receipt (D-036 item 2; cascade); `sc-50`, `sc-51` commit (D-037 item 1); `sc-65` final effect `dispatched`, not `unknown_reconcile` (D-037 item 5).
-- **`sc-12` not classified (lead decision required):** its acceptance criterion says "matches exactly", but step 0 reads the declared trusted `acc-1` by id (the agent's inline untrusted-evaluator record is never read, D-036 item 1, D-038 item 6), the signoff is valid, and step 0 commits; step 1 then answers `REVISION_CONFLICT`. Final state equals the frozen expectation. The gate reports it unexplained until the lead decides.
+- **`sc-12` stays a deferred obligation (CO-M4-01), owner decision requested:** its acceptance criterion says "matches exactly", but step 0 reads the declared trusted `acc-1` by id (the agent's inline untrusted-evaluator record is never read, D-036 item 1, D-038 item 6), the signoff is valid, and step 0 commits; step 1 then answers `REVISION_CONFLICT`. Final state equals the frozen expectation. The entry records the measured output as `actual` and the note in the gate's narrow optional member `m4_observation` (deferred entries only; must cite D-038 item 6, request an owner decision and keep the M3 human refusal as `observed_m3_refusal`; any other output is still an exception mismatch).
 
 ## Owner decisions applied (D-038; formerly OQ-13..OQ-17)
 
@@ -136,7 +136,7 @@ The 25 carried cases run with the human criterion `signoff` unchanged: the trust
 | transition-scenarios | `sc-09-kernel-did-not-allow` | approved difference (M4-11) | D-036 item 2; D-040 O-4 | M4-test-verifier-signoff, adapter-sealed, client-permit-dropped, harness-authorization-bundle, seeded-preconditions, test-authenticated-evidence | steps [0]; final ['consumed_record_ids', 'receipts', 'refusals', 'revision', 'state'] |
 | transition-scenarios | `sc-10-race-16` | adapted coverage (M4-11) | D-037 item 4; D-040 O-4; D-042 | M4-test-verifier-signoff, adapter-sealed, client-permit-dropped, harness-authorization-bundle, seeded-preconditions, test-authenticated-evidence |  |
 | transition-scenarios | `sc-11-expired` | adapted coverage | D-037 item 1; D-037 item 2; D-037 item 3; D-037 item 5; D-037 item 7 | adapter-sealed, client-permit-dropped, harness-authorization-bundle, seeded-preconditions, test-authenticated-evidence |  |
-| transition-scenarios | `sc-12-refusal-is-side-effect-free` | **not classified (M4-11): lead decision required** | D-038 item 6 | M4-test-verifier-signoff, adapter-sealed, client-permit-dropped, harness-authorization-bundle, seeded-preconditions, test-authenticated-evidence | measured: step 0 commits on the trusted acc-1 (frozen: ACCEPTANCE_UNTRUSTED_EVALUATOR), step 1 REVISION_CONFLICT (frozen: committed); final state equal; contradicts its M4 acceptance criterion (exact) |
+| transition-scenarios | `sc-12-refusal-is-side-effect-free` | **deferred to M4, owner decision requested (M4-11)** | D-037 item 4; D-038 item 6 | M4-test-verifier-signoff, adapter-sealed, client-permit-dropped, harness-authorization-bundle, seeded-preconditions, test-authenticated-evidence | measured: step 0 commits on the trusted acc-1 (frozen: ACCEPTANCE_UNTRUSTED_EVALUATOR), step 1 REVISION_CONFLICT (frozen: committed); final state equal; contradicts its M4 acceptance criterion (exact) |
 | transition-scenarios | `sc-13-refused-key-reusable` | approved difference (M4-11) | D-036 item 2; D-040 O-4 | M4-test-verifier-signoff, adapter-sealed, client-permit-dropped, harness-authorization-bundle, seeded-preconditions, test-authenticated-evidence | steps [0, 1]; final ['refusals'] |
 | transition-scenarios | `sc-14-malformed-record` | adapted coverage | D-037 item 1; D-037 item 2; D-037 item 3; D-037 item 5; D-037 item 7 | adapter-sealed, client-permit-dropped, harness-authorization-bundle, seeded-preconditions, test-authenticated-evidence |  |
 | transition-scenarios | `sc-15-workflow-already-moved` | adapted coverage (M4-11) | D-037 item 4; D-040 O-4; D-042 | M4-test-verifier-signoff, adapter-sealed, client-permit-dropped, harness-authorization-bundle, seeded-preconditions, test-authenticated-evidence |  |
