@@ -675,6 +675,10 @@ pub enum ChallengeOperation {
     /// Start a normal (`enroll`) registration row (D-043 Y2): an authenticated
     /// operator ceremony that creates the operator- and session-bound row.
     RegistrationStart,
+    /// Open an authenticated read session (D-044 item 3, Z1): purpose `read`,
+    /// never accepted for any mutating operation, and no mutating challenge is
+    /// accepted for it (the operation is part of every binding).
+    ReadSession,
 }
 
 impl ChallengeOperation {
@@ -688,6 +692,7 @@ impl ChallengeOperation {
             ChallengeOperation::Enroll => "enroll",
             ChallengeOperation::RoleChange => "role_change",
             ChallengeOperation::RegistrationStart => "registration_start",
+            ChallengeOperation::ReadSession => "read_session",
         }
     }
 
@@ -702,6 +707,7 @@ impl ChallengeOperation {
             Enroll,
             RoleChange,
             RegistrationStart,
+            ReadSession,
         ]
         .into_iter()
         .find(|o| o.as_str() == text)
@@ -717,6 +723,7 @@ impl ChallengeOperation {
             ChallengeOperation::Enroll => "enrolled",
             ChallengeOperation::RoleChange => "role_changed",
             ChallengeOperation::RegistrationStart => "start",
+            ChallengeOperation::ReadSession => "read",
         }
     }
 
@@ -2059,6 +2066,8 @@ mod tests {
             ChallengeOperation::Signoff,
             ChallengeOperation::Enroll,
             ChallengeOperation::RoleChange,
+            ChallengeOperation::RegistrationStart,
+            ChallengeOperation::ReadSession,
         ] {
             assert_eq!(ChallengeOperation::parse(op.as_str()), Some(op));
         }

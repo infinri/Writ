@@ -1656,15 +1656,11 @@ fn y1_the_signoff_page_displays_exactly_the_expiry_the_begin_fixes() {
         let mut l: &SqliteLedger = &w.ledger;
         writ_broker::clock::observe(&w.clock, &mut l).unwrap()
     };
-    let pending = w
-        .ledger
-        .pending_signoff("so-1", observed(&w))
-        .unwrap()
-        .unwrap();
+    let pending = w.ledger.pending_signoff_for_tests("so-1").unwrap().unwrap();
     assert_eq!(pending, binding("so-1", "acc-1", 1));
     let viewed = w
         .ledger
-        .ceremony_context(&signoff_op(pending.clone(), vec![]), observed(&w))
+        .ceremony_context_for_tests(&signoff_op(pending.clone(), vec![]), observed(&w))
         .unwrap()
         .unwrap();
     let shown = viewed
@@ -1680,7 +1676,7 @@ fn y1_the_signoff_page_displays_exactly_the_expiry_the_begin_fixes() {
     let pinned = signoff_op_until(pending, vec![], Some(shown));
     let displayed = w
         .ledger
-        .ceremony_context(&pinned, observed(&w))
+        .ceremony_context_for_tests(&pinned, observed(&w))
         .unwrap()
         .unwrap();
     assert_eq!(displayed.binding, viewed.binding);
@@ -1699,7 +1695,7 @@ fn y1_the_signoff_page_displays_exactly_the_expiry_the_begin_fixes() {
     // Unpinned, the same later begin would bind another expiry (so the page pins it).
     let later = w
         .ledger
-        .ceremony_context(
+        .ceremony_context_for_tests(
             &signoff_op(binding("so-1", "acc-1", 1), vec![]),
             observed(&w),
         )
@@ -1712,8 +1708,71 @@ fn y1_the_signoff_page_displays_exactly_the_expiry_the_begin_fixes() {
     w.finish(&human("sara"), &pinned, &c.challenge_id, "so-page")
         .unwrap();
     // Signed: no longer pending.
+    assert_eq!(w.ledger.pending_signoff_for_tests("so-1").unwrap(), None);
+}
+
+#[test]
+fn z3_the_signoff_read_needs_a_read_session_and_signoff_authority_in_scope() {
+    // D-044 Z3: the signoff page reads only through `read_record` with an authenticated
+    // read session; the read pins the ledger's effective expiry exactly as the page did
+    // (Y1), and a begin with the returned operation binds the displayed fingerprint.
+    use writ_broker::approval_store::{ReadRefused, ReadTarget, RecordRead, RecordView};
+    let w = W::new("z3-signoff-read", vec![]);
+    w.request_signoff(&accept("k1", 1, "acc-1")).unwrap();
+    let login = |who: &str, page: &str| {
+        let op = CeremonyOp::ReadSession {
+            subject: human(who),
+            page_session: page.into(),
+        };
+        match w
+            .ceremony(&human(who), &op, &format!("login-{who}"))
+            .unwrap()
+            .result
+        {
+            CeremonyResult::ReadSessionOpened { session } => session,
+            other => panic!("{other:?}"),
+        }
+    };
+    let read = |s, id: &str| {
+        w.ledger
+            .read_record(&RecordRead {
+                session: s,
+                target: &ReadTarget::Signoff {
+                    signoff_id: id.into(),
+                },
+                now: w.now(),
+            })
+            .unwrap()
+    };
+    let sara = login("sara", "page-sara");
+    let carol = login("carol", "page-carol");
+    let Ok(RecordView::Ceremony { op, context }) = read(&sara, "so-1") else {
+        panic!("sara reads the pending signoff in her scope")
+    };
     assert_eq!(
-        w.ledger.pending_signoff("so-1", observed(&w)).unwrap(),
-        None
+        context.context.get("expires_at").and_then(Value::as_str),
+        Some("2026-11-07T11:10:00Z")
     );
+    let CeremonyOp::Signoff {
+        requested_expires_at,
+        ..
+    } = &*op
+    else {
+        panic!("{op:?}")
+    };
+    assert_eq!(*requested_expires_at, Some(at("2026-11-07T11:10:00Z")));
+    // A revoker, an unknown id: the one refusal.
+    assert_eq!(read(&carol, "so-1"), Err(ReadRefused));
+    assert_eq!(read(&sara, "so-unknown"), Err(ReadRefused));
+    // The displayed context is what a later begin binds.
+    w.clock.set(at("2026-11-07T11:02:00Z"));
+    let c = w.begin(&human("sara"), &op, "so-read").unwrap();
+    assert_eq!(
+        w.text("SELECT context_fingerprint FROM challenges WHERE operation = 'signoff'"),
+        Some(context.binding.context_fingerprint.as_str().to_string())
+    );
+    w.finish(&human("sara"), &op, &c.challenge_id, "so-read")
+        .unwrap();
+    // Signed: no longer pending, so no longer readable as a pending signoff.
+    assert_eq!(read(&sara, "so-1"), Err(ReadRefused));
 }

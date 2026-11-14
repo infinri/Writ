@@ -2431,7 +2431,11 @@ fn y2_the_page_context_is_the_bound_context() {
         },
     ];
     for (n, op) in ops.iter().enumerate() {
-        let shown = m.l().ceremony_context(op, m.now()).unwrap().unwrap();
+        let shown = m
+            .l()
+            .ceremony_context_for_tests(op, m.now())
+            .unwrap()
+            .unwrap();
         assert_eq!(
             writ_broker::approval::context_fingerprint(&shown.context).unwrap(),
             shown.binding.context_fingerprint,
@@ -2451,9 +2455,13 @@ fn y2_the_page_context_is_the_bound_context() {
         target: RevocationTarget::Credential("cred-none".into()),
         reason: "x".into(),
     };
-    assert!(m.l().ceremony_context(&unknown, m.now()).unwrap().is_err());
+    assert!(m
+        .l()
+        .ceremony_context_for_tests(&unknown, m.now())
+        .unwrap()
+        .is_err());
     // No stored promotion context names this signoff id.
-    assert_eq!(m.l().pending_signoff("so-none", m.now()).unwrap(), None);
+    assert_eq!(m.l().pending_signoff_for_tests("so-none").unwrap(), None);
 }
 
 #[test]
@@ -2530,7 +2538,11 @@ fn y2_a_registration_row_is_created_only_by_an_authenticated_operator_start_cere
     // The displayed context names the operator, the subject, the operation, the relying
     // party and the row lifetime; it is what the challenge binds.
     let op = start_op(&human("una"), &root(), "s1");
-    let shown = m.l().ceremony_context(&op, m.now()).unwrap().unwrap();
+    let shown = m
+        .l()
+        .ceremony_context_for_tests(&op, m.now())
+        .unwrap()
+        .unwrap();
     for member in [
         "operator",
         "subject",

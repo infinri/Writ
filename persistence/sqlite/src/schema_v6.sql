@@ -8,11 +8,14 @@
 -- I-8: one ledger-wide monotonic sequence. Every promotion, administrative operation,
 -- revocation, approval decision, signoff, enrollment, role change ('administration') and
 -- expiry step that changes anything commits exactly one row inside its own transaction, so
--- tests read the actual commit order (D-042 X6).
+-- tests read the actual commit order (D-042 X6). A read-session login (D-044 Z1) commits
+-- its own row ('read_session') with its consumed challenge and approval event; the read
+-- session itself is that consumed challenge and event, never a separate grant of authority.
 CREATE TABLE ledger_sequence (
   seq        INTEGER PRIMARY KEY AUTOINCREMENT,
   kind       TEXT NOT NULL CHECK (kind IN ('promotion', 'administration', 'revocation',
-               'decision', 'signoff', 'enrollment', 'bootstrap', 'expiry', 'registration')),
+               'decision', 'signoff', 'enrollment', 'bootstrap', 'expiry', 'registration',
+               'read_session')),
   reference  TEXT NOT NULL
 ) STRICT;
 
@@ -138,7 +141,7 @@ CREATE TABLE challenges (
   allowed_credentials TEXT NOT NULL,          -- canonical JSON array of credential ids
   operation           TEXT NOT NULL CHECK (operation IN
                         ('approve', 'deny', 'revoke', 'signoff', 'enroll', 'role_change',
-                         'registration_start')),
+                         'registration_start', 'read_session')),
   verdict             TEXT NOT NULL,
   tenant_id           TEXT NOT NULL,
   project_id          TEXT NOT NULL,
@@ -279,7 +282,7 @@ CREATE TABLE approval_events (
   seq                 INTEGER PRIMARY KEY AUTOINCREMENT,
   kind                TEXT NOT NULL CHECK (kind IN ('request_created', 'approved', 'denied',
                         'expired', 'revoked', 'signed_off', 'enrolled', 'bootstrap',
-                        'role_changed', 'registration_started')),
+                        'role_changed', 'registration_started', 'read_session')),
   target_id           TEXT NOT NULL,
   tenant_id           TEXT NOT NULL,
   project_id          TEXT NOT NULL,

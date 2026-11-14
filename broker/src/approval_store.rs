@@ -48,6 +48,15 @@
 //! one assignment; the binding scope is the assignment's scope and the actor
 //! needs `operator` over a scope containing it.
 //!
+//! **Read sessions (D-044 item 3, Z1..Z4).** A login is one more ceremony,
+//! [`CeremonyOp::ReadSession`] (purpose `read`, its own operation in every
+//! binding, so no login challenge is accepted for a mutation and no mutating
+//! challenge for a login); it produces a [`ReadSession`] of at most
+//! [`READ_SESSION_MAX_SECONDS`]. Every protected read of stored record context
+//! for the approval page is [`ApprovalLedger::read_record`], which rechecks the
+//! session, the subject, the credential and the scoped permission inside its
+//! read transaction and answers one [`ReadRefused`] for every failure.
+//!
 //! **Approval requests.** [`approval_request_for`] builds the immutable
 //! request from the guard-bound use-time decision when it is
 //! `require_approval` and no grant is presented ([`crate::execute::Broker::execute`]);
@@ -65,7 +74,9 @@ use crate::approval::{
 use crate::authorize::{Authorized, UseTimeStatus};
 use crate::clock::ObservedTime;
 use crate::grants::GrantLabel;
-use crate::human::{Permission, PrincipalKind, RelyingParty, SubjectId, VerifiedRegistration};
+use crate::human::{
+    LedgerCapability, Permission, PrincipalKind, RelyingParty, SubjectId, VerifiedRegistration,
+};
 use crate::refusal::Refusal;
 use crate::store::{ExecuteLedger, StoreError, TxFailure};
 
@@ -88,6 +99,13 @@ pub const ROLE_CHANGE_CONTEXT: &str = "writ.role-change-context.v1";
 /// Context member naming a registration-start context (domain separation,
 /// D-043 Y2).
 pub const REGISTRATION_START_CONTEXT: &str = "writ.registration-start-context.v1";
+/// Context member naming a read-session context (domain separation, D-044
+/// item 3, Z1).
+pub const READ_SESSION_CONTEXT: &str = "writ.read-session-context.v1";
+/// The lifetime of an authenticated read session (D-040 O-3: at most 15
+/// minutes; D-044 Z1, Z2): absolute from the login ceremony's commit, never
+/// extended.
+pub const READ_SESSION_MAX_SECONDS: i64 = 900;
 /// The enrolling administrator recorded for the bootstrap enrollment.
 pub const BOOTSTRAP_ISSUER: &str = "writ-local";
 /// See [`BOOTSTRAP_ISSUER`].
@@ -413,6 +431,184 @@ pub fn registration_start_binding(
     })
 }
 
+/// The challenge target of a read-session login (D-044 Z1): the subject's
+/// revocation target id, length-prefixed, plus the page-session id the
+/// session will be bound to.
+pub fn read_session_target(subject: &SubjectId, page_session: &str) -> String {
+    let subject = RevocationTarget::Subject(subject.clone()).target_id();
+    format!("read-session:{}:{subject}:{page_session}", subject.len())
+}
+
+/// The displayed and fingerprinted context of a read-session login (D-044
+/// Z1): the subject, the page session it binds, the RP id and origin of the
+/// configured channel, the purpose `read` and the session lifetime
+/// ([`READ_SESSION_MAX_SECONDS`]).
+pub fn read_session_context(subject: &SubjectId, page_session: &str, rp: &RelyingParty) -> Value {
+    json::obj([
+        ("context", json::s(READ_SESSION_CONTEXT)),
+        ("origin", json::s(&rp.origin)),
+        ("page_session", json::s(page_session)),
+        ("purpose", json::s("read")),
+        ("rp_id", json::s(&rp.rp_id)),
+        (
+            "session_lifetime_seconds",
+            Value::Int(READ_SESSION_MAX_SECONDS),
+        ),
+        ("subject", subject_value(subject)),
+    ])
+}
+
+/// What a read-session challenge binds ([`read_session_context`]) in the
+/// global scope; policy [`NO_POLICY`], revision 0. Its operation
+/// ([`ChallengeOperation::ReadSession`]) separates it from every mutating
+/// ceremony (purpose separation).
+pub fn read_session_binding(
+    subject: &SubjectId,
+    page_session: &str,
+    rp: &RelyingParty,
+) -> Result<ChallengeBinding, CanonicalError> {
+    let context = read_session_context(subject, page_session, rp);
+    Ok(ChallengeBinding {
+        operation: ChallengeOperation::ReadSession,
+        tenant_id: GLOBAL_SCOPE.to_string(),
+        project_id: GLOBAL_SCOPE.to_string(),
+        target_id: read_session_target(subject, page_session),
+        context_fingerprint: context_fingerprint(&context)?,
+        policy_bundle_sha: NO_POLICY.to_string(),
+        revision: 0,
+    })
+}
+
+/// An authenticated read session (D-044 item 3, Z1, Z2): the result of a
+/// consumed [`CeremonyOp::ReadSession`] ceremony. It is a reference, not
+/// authority: every protected read ([`ApprovalLedger::read_record`]) looks up
+/// the consumed login challenge and its event by `session_id` inside the read
+/// transaction, requires every field to equal what the ledger recorded, and
+/// rechecks the subject, the credential and the scoped permission of the
+/// target. It never authorizes a state change. Built only by the ledger
+/// implementation ([`LedgerCapability`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadSession {
+    session_id: String,
+    subject: SubjectId,
+    credential_id: String,
+    page_session: String,
+    issued_at: Timestamp,
+    expires_at: Timestamp,
+}
+
+impl ReadSession {
+    /// The read session of the consumed login challenge `session_id`, issued
+    /// at `issued_at`; it expires [`READ_SESSION_MAX_SECONDS`] later.
+    pub fn from_ledger(
+        _capability: &LedgerCapability,
+        session_id: &str,
+        subject: SubjectId,
+        credential_id: &str,
+        page_session: &str,
+        issued_at: Timestamp,
+    ) -> ReadSession {
+        ReadSession {
+            session_id: session_id.to_string(),
+            subject,
+            credential_id: credential_id.to_string(),
+            page_session: page_session.to_string(),
+            issued_at,
+            expires_at: issued_at.plus_seconds(READ_SESSION_MAX_SECONDS),
+        }
+    }
+
+    /// The id (the consumed login challenge's id).
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    /// The authenticated subject.
+    pub fn subject(&self) -> &SubjectId {
+        &self.subject
+    }
+
+    /// The credential that authenticated it.
+    pub fn credential_id(&self) -> &str {
+        &self.credential_id
+    }
+
+    /// The approval page session it is bound to.
+    pub fn page_session(&self) -> &str {
+        &self.page_session
+    }
+
+    /// When the login committed (trusted time).
+    pub fn issued_at(&self) -> Timestamp {
+        self.issued_at
+    }
+
+    /// Absolute expiry (trusted time).
+    pub fn expires_at(&self) -> Timestamp {
+        self.expires_at
+    }
+}
+
+/// What a protected read asks for (D-044 Z3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReadTarget {
+    /// A stored approval request (needs `approver` over a scope containing
+    /// the request's).
+    ApprovalRequest {
+        /// The request id.
+        request_id: String,
+    },
+    /// The pending signoff of a stored promotion context, with the context a
+    /// signoff ceremony binds and its effective expiry pinned (D-043 Y1; needs
+    /// `signoff_authority` over a scope containing the signoff's).
+    Signoff {
+        /// The signoff id.
+        signoff_id: String,
+    },
+    /// The context a ceremony for this operation would bind (R6): the
+    /// permission the operation needs over a scope containing its binding's
+    /// (`approver` for approve and deny, `signoff_authority` for a signoff,
+    /// `revoker` for a revocation, `operator` for enrollment, registration
+    /// start and role changes). A read-session operation is never readable.
+    Ceremony(Box<CeremonyOp>),
+}
+
+/// The result of a protected read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecordView {
+    /// A stored approval request and its status.
+    ApprovalRequest {
+        /// The request.
+        request: Box<ApprovalRequest>,
+        /// Its status.
+        status: ApprovalStatus,
+    },
+    /// The operation (for a signoff: with the effective expiry pinned as its
+    /// requested expiry) and the context and binding a begin would compute.
+    Ceremony {
+        /// The operation the page displays and later begins.
+        op: Box<CeremonyOp>,
+        /// Its context and binding.
+        context: CeremonyContext,
+    },
+}
+
+/// The one refusal of every protected read (D-044 Z3): an unknown, expired
+/// or mismatched read session, a revoked subject or credential, a missing or
+/// out-of-scope permission and an unknown target are indistinguishable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReadRefused;
+
+/// One protected read.
+pub struct RecordRead<'a> {
+    /// The authenticated read session.
+    pub session: &'a ReadSession,
+    /// What to read.
+    pub target: &'a ReadTarget,
+    /// Trusted time (persisted floor).
+    pub now: ObservedTime,
+}
+
 /// One permission to assign at enrollment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewRole {
@@ -618,6 +814,17 @@ pub enum CeremonyOp {
         /// displayed or fingerprinted).
         operator_session: String,
     },
+    /// Open an authenticated read session (D-044 item 3, Z1): a fresh
+    /// user-verified assertion by `subject` over a challenge bound to the
+    /// subject, its active credentials, the page session, the configured
+    /// channel's RP id and origin and the purpose `read`. It authorizes reads
+    /// only ([`ApprovalLedger::read_record`]), never a state change.
+    ReadSession {
+        /// The subject logging in (must be the acting subject).
+        subject: SubjectId,
+        /// The approval page session the read session is bound to.
+        page_session: String,
+    },
 }
 
 impl CeremonyOp {
@@ -631,6 +838,7 @@ impl CeremonyOp {
             CeremonyOp::Enroll { .. } => ChallengeOperation::Enroll,
             CeremonyOp::RoleChange { .. } => ChallengeOperation::RoleChange,
             CeremonyOp::RegistrationStart { .. } => ChallengeOperation::RegistrationStart,
+            CeremonyOp::ReadSession { .. } => ChallengeOperation::ReadSession,
         }
     }
 }
@@ -748,6 +956,11 @@ pub enum CeremonyResult {
         /// The row, with the verifier's creation options for the page.
         registration: IssuedRegistration,
     },
+    /// An authenticated read session was opened (D-044 Z1).
+    ReadSessionOpened {
+        /// The session.
+        session: ReadSession,
+    },
 }
 
 /// A committed ceremony.
@@ -842,36 +1055,26 @@ pub trait ApprovalLedger: ExecuteLedger {
     /// A stored signoff with its revocation and consumption status (a read).
     fn signoff(&self, signoff_id: &str) -> Result<Option<SignoffState>, StoreError>;
 
-    /// The context a ceremony for `op` would bind, recomputed from stored
-    /// state exactly as [`ApprovalLedger::begin_ceremony`] computes it (a
-    /// read, R6): what the approval page displays. Refusals: an unknown or
-    /// malformed target (as at begin). Nothing is issued or written; the
-    /// begin recomputes the binding and the page compares fingerprints
-    /// (stale display).
-    fn ceremony_context(
+    /// The one protected read of stored record context (D-044 item 3, Z3):
+    /// every lookup or display of a stored approval request, a pending
+    /// signoff or the context a ceremony would bind for the approval page
+    /// goes through it. Inside one read transaction it requires
+    /// `read.session` to equal a consumed read-session login under the
+    /// configured channel (subject, credential, page session and issue time
+    /// as recorded), unexpired at trusted time; rechecks that the subject is
+    /// an active human and the credential active; then that the subject
+    /// holds the target's permission over a scope containing the target's
+    /// ([`ReadTarget`]). Only then is the context returned, exactly as a
+    /// begin at the same trusted time computes it (R6; for a signoff the
+    /// effective expiry is computed by the ledger and pinned, D-043 Y1).
+    /// Every refusal is the one [`ReadRefused`]. Nothing is written.
+    fn read_record(
         &self,
-        op: &CeremonyOp,
-        now: ObservedTime,
-    ) -> Result<Result<CeremonyContext, Refusal>, StoreError>;
-
-    /// The signoff binding the page offers for `signoff_id` (a read), built
-    /// from stored state only: the stored promotion context
-    /// (`signoff_requests`), the workflow's current task, artifact and
-    /// revision and the project's active acceptance policy; `None` when no
-    /// stored promotion context names it or it is already signed. It carries
-    /// no expiry: the effective expiry is the ledger's (D-043 Y1), computed
-    /// by [`ApprovalLedger::ceremony_context`] exactly as a begin at the same
-    /// trusted time computes it; the page displays that context, never
-    /// computes an expiry, and pins it as the requested expiry so the begin
-    /// fixes the displayed value (or refuses as a stale display).
-    fn pending_signoff(
-        &self,
-        signoff_id: &str,
-        now: ObservedTime,
-    ) -> Result<Option<NewSignoff>, StoreError>;
+        read: &RecordRead<'_>,
+    ) -> Result<Result<RecordView, ReadRefused>, StoreError>;
 }
 
-/// What a ceremony would bind and display ([`ApprovalLedger::ceremony_context`]).
+/// What a ceremony would bind and display ([`ApprovalLedger::read_record`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CeremonyContext {
     /// The complete displayed context (its canonical digest is

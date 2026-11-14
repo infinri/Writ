@@ -94,20 +94,33 @@ pub struct Displayed<'a> {
     pub context: &'a Value,
     /// The page session's CSRF token.
     pub csrf: &'a str,
+    /// The signed-in subject (the read session's; the only actor of a ceremony begun here).
+    pub subject: &'a str,
     /// Whether approve and deny are offered (only for a pending request).
     pub decidable: bool,
+}
+
+/// The decision or confirmation form of a page: the signed-in subject (read-only; the
+/// server uses the read session's subject and refuses any other) and the buttons.
+fn decide_form(subject: &str, buttons: &str) -> String {
+    format!(
+        "<form id=\"decide\">\
+         <label>Signed in as <input name=\"subject\" value=\"{subject}\" readonly></label>\
+         {buttons}</form><p id=\"result\" role=\"status\"></p>",
+        subject = escape(subject),
+    )
 }
 
 /// The request page.
 pub fn request_page(d: &Displayed<'_>) -> String {
     let controls = if d.decidable {
-        "<form id=\"decide\">\
-         <label>Subject <input name=\"subject\" autocomplete=\"username webauthn\" required></label>\
-         <button type=\"submit\" name=\"verdict\" value=\"approve\">Approve</button>\
-         <button type=\"submit\" name=\"verdict\" value=\"deny\">Deny</button>\
-         </form><p id=\"result\" role=\"status\"></p>"
+        decide_form(
+            d.subject,
+            "<button type=\"submit\" name=\"verdict\" value=\"approve\">Approve</button>\
+             <button type=\"submit\" name=\"verdict\" value=\"deny\">Deny</button>",
+        )
     } else {
-        "<p>This request is closed; nothing can be decided here.</p>"
+        "<p>This request is closed; nothing can be decided here.</p>".to_string()
     };
     format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
@@ -154,6 +167,21 @@ fn head(title: &str) -> String {
     )
 }
 
+/// The landing page (D-044 Z4): the login form only. It shows no record, no record
+/// existence and no session data; signing in opens an authenticated read session.
+pub fn landing_page() -> String {
+    format!(
+        "{head}<main id=\"page\"><h1>Writ approval</h1>\
+         <p>Sign in with your passkey. After signing in, open the link of the request, \
+         signoff or operator page you were sent; you see only the records your roles allow.</p>\
+         <form id=\"login\">\
+         <label>Subject <input name=\"subject\" autocomplete=\"username webauthn\" required></label>\
+         <button type=\"submit\">Sign in with passkey</button></form>\
+         <p id=\"result\" role=\"status\"></p></main></body></html>",
+        head = head("Writ approval"),
+    )
+}
+
 /// What a signoff, revocation, enrollment or role-change page shows: only the ledger's
 /// context for the ceremony (the context whose fingerprint a begin binds, R6) and that
 /// fingerprint. The title is the route's fixed text, never request input.
@@ -166,6 +194,8 @@ pub struct Target<'a> {
     pub context: &'a Value,
     /// The page session's CSRF token.
     pub csrf: &'a str,
+    /// The signed-in subject (the read session's; the only actor of a ceremony begun here).
+    pub subject: &'a str,
     /// A registration start (D-043 Y2): after the operator's ceremony the page registers
     /// the new person's passkey and offers the enrollment form (`form#prepare`, hidden
     /// until the registration is finished).
@@ -182,10 +212,11 @@ pub fn target_page(d: &Target<'_>) -> String {
          descriptive text in it is untrusted.</p>\
          <table><tr><th>Context fingerprint</th><td><code>{fp}</code></td></tr></table>\
          <h2>Context</h2><section class=\"context\">{context}</section>\
-         <form id=\"decide\">\
-         <label>Subject <input name=\"subject\" autocomplete=\"username webauthn\" required></label>\
-         <button type=\"submit\" name=\"verdict\" value=\"confirm\">Confirm with passkey</button>\
-         </form><p id=\"result\" role=\"status\"></p>{after}</main></body></html>",
+         {decide}{after}</main></body></html>",
+        decide = decide_form(
+            d.subject,
+            "<button type=\"submit\" name=\"verdict\" value=\"confirm\">Confirm with passkey</button>"
+        ),
         after = if d.then_enroll { ENROLL_AFTER_START } else { "" },
         head = head(d.title),
         title = escape(d.title),
@@ -232,9 +263,9 @@ const ROLE_FORM: &str = "<form id=\"prepare\">\
 <label>Project (grant) <input name=\"project_id\"></label>\
 <button type=\"submit\">Show the change</button></form>";
 
+/// The registration start: the operator is the signed-in subject (D-044 Z3).
 const ENROLL_FORM: &str = "<form id=\"prepare\">\
 <input type=\"hidden\" name=\"operation\" value=\"registration-start\">\
-<label>Operator (you) <input name=\"operator\" autocomplete=\"username\" required></label>\
 <label>New subject <input name=\"subject\" required></label>\
 <button type=\"submit\">Show the registration start</button></form>";
 
@@ -250,22 +281,24 @@ Register the new person's passkey</button><form id=\"prepare\" hidden>\
 <textarea name=\"roles\"></textarea></label>\
 <button type=\"submit\">Show the enrollment</button></form>";
 
-/// An operator form page (`/revoke`, `/role`, `/enroll`). Its fields go to `/prepare`
-/// (for enrollment: the operator's registration start, then the new person's
-/// registration on that page and `/registration/finish`); the prepared context is
+/// An operator form page (`/revoke`, `/role`, `/enroll`) of the signed-in `subject`. Its
+/// fields go to `/prepare` (for enrollment: the operator's registration start, then the new
+/// person's registration on that page and `/registration/finish`); the prepared context is
 /// displayed by `/view` before any ceremony.
-pub fn form_page(kind: FormKind, csrf: &str) -> String {
+pub fn form_page(kind: FormKind, csrf: &str, subject: &str) -> String {
     let (title, body) = match kind {
         FormKind::Revoke => ("Revoke", REVOKE_FORM),
         FormKind::Role => ("Role change", ROLE_FORM),
         FormKind::Enroll => ("Enrollment", ENROLL_FORM),
     };
     format!(
-        "{head}<main id=\"page\" data-csrf=\"{csrf}\"><h1>{t}</h1>{body}\
+        "{head}<main id=\"page\" data-csrf=\"{csrf}\"><h1>{t}</h1>\
+         <p>Signed in as <span class=\"str\">{subject}</span>.</p>{body}\
          <p id=\"result\" role=\"status\"></p></main></body></html>",
         head = head(title),
         t = escape(title),
         csrf = escape(csrf),
+        subject = escape(subject),
     )
 }
 
@@ -323,7 +356,8 @@ padding:0 1rem}table{border-collapse:collapse}th,td{border:1px solid #888;paddin
 text-align:left;vertical-align:top}dl{margin:0 0 0 1rem}dt{font-weight:bold}code,.str{\
 white-space:pre-wrap;word-break:break-all}.null{color:#666}";
 
-/// The page script: asks the broker for a challenge, runs the WebAuthn assertion with the
+/// The page script: on the landing page it signs in (`/login/begin`, the WebAuthn
+/// assertion, `/login/finish`: an authenticated read session, D-044 Z1); elsewhere it asks the broker for a challenge, runs the WebAuthn assertion with the
 /// verifier's options (user verification required by the verifier) and posts the response;
 /// on the operator form pages it posts the form to `/prepare` and opens `/view`, and after
 /// the operator's registration-start ceremony it runs the WebAuthn registration of the new
@@ -349,6 +383,41 @@ pub const SCRIPT: &str = r#""use strict";
     }
     return fields;
   };
+  const assertion = async (options) => {
+    const pk = options.publicKey;
+    pk.challenge = unb64(pk.challenge);
+    (pk.allowCredentials || []).forEach((c) => { c.id = unb64(c.id); });
+    const cred = await navigator.credentials.get({ publicKey: pk });
+    const r = cred.response;
+    return JSON.stringify({
+      id: cred.id, rawId: b64(cred.rawId), type: cred.type, extensions: {},
+      response: {
+        authenticatorData: b64(r.authenticatorData), clientDataJSON: b64(r.clientDataJSON),
+        signature: b64(r.signature), userHandle: r.userHandle ? b64(r.userHandle) : null,
+      },
+    });
+  };
+  // D-044 Z1: the landing page's login opens an authenticated read session (purpose
+  // `read`; it never authorizes a change). The server rotates the session token.
+  const login = document.getElementById("login");
+  if (login) {
+    login.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      out.textContent = "";
+      try {
+        const begun = await post("/login/begin", { subject: login.elements.subject.value });
+        if (!begun.challenge_id) { out.textContent = begun.error || "refused"; return; }
+        const response = await assertion(begun.options);
+        const done = await post("/login/finish", {
+          csrf: begun.csrf, challenge_id: begun.challenge_id, response: response,
+        });
+        if (done.csrf) { page.dataset.csrf = done.csrf; }
+        out.textContent = done.result || done.error || "refused";
+      } catch (e) {
+        out.textContent = "The authenticator did not complete the sign-in.";
+      }
+    });
+  }
   const prepare = document.getElementById("prepare");
   if (prepare) {
     prepare.addEventListener("submit", async (event) => {
@@ -408,18 +477,7 @@ pub const SCRIPT: &str = r#""use strict";
       if (page.dataset.request) { fields.request_id = page.dataset.request; }
       const begun = await post("/ceremony/begin", fields);
       if (!begun.challenge_id) { out.textContent = begun.error || "refused"; return; }
-      const pk = begun.options.publicKey;
-      pk.challenge = unb64(pk.challenge);
-      (pk.allowCredentials || []).forEach((c) => { c.id = unb64(c.id); });
-      const cred = await navigator.credentials.get({ publicKey: pk });
-      const r = cred.response;
-      const response = JSON.stringify({
-        id: cred.id, rawId: b64(cred.rawId), type: cred.type, extensions: {},
-        response: {
-          authenticatorData: b64(r.authenticatorData), clientDataJSON: b64(r.clientDataJSON),
-          signature: b64(r.signature), userHandle: r.userHandle ? b64(r.userHandle) : null,
-        },
-      });
+      const response = await assertion(begun.options);
       const done = await post("/ceremony/finish", {
         csrf: page.dataset.csrf, challenge_id: begun.challenge_id, response: response,
       });
@@ -482,6 +540,7 @@ mod tests {
             fingerprint: "sha256:abc",
             context: &context,
             csrf: "t",
+            subject: "s",
             decidable: false,
         });
         for text in [

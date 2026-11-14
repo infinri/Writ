@@ -20,14 +20,14 @@ use writ_broker::approval::{
 };
 use writ_broker::approval_store::{
     revocation_context, role_change_context, CeremonyContext, CeremonyOp, CeremonyOutcome,
-    CeremonyResult, IssuedChallenge, IssuedRegistration, NewRole, OperatorSession, RoleChange,
-    SignoffParties,
+    CeremonyResult, IssuedChallenge, IssuedRegistration, NewRole, OperatorSession, ReadRefused,
+    ReadSession, ReadTarget, RecordView, RoleChange, SignoffParties,
 };
 use writ_broker::human::{
-    ActiveCredentials, ApprovalChannel, CeremonyStart, CeremonyState, HumanVerifier, Permission,
-    PrincipalKind, RegistrationBinding, RegistrationOperation, RegistrationStart,
-    RegistrationVerifier, RelyingParty, SubjectId, VerifiedAssertion, VerifiedRegistration,
-    VerifierCapability, VerifierError, ES256,
+    ActiveCredentials, ApprovalChannel, CeremonyStart, CeremonyState, HumanVerifier,
+    LedgerCapability, Permission, PrincipalKind, RegistrationBinding, RegistrationOperation,
+    RegistrationStart, RegistrationVerifier, RelyingParty, SubjectId, VerifiedAssertion,
+    VerifiedRegistration, VerifierCapability, VerifierError, ES256,
 };
 use writ_broker::refusal::Refusal;
 use writ_broker::writ_kernel::json::{self, Value};
@@ -149,6 +149,12 @@ struct Fake {
     /// Registration rows the fake issued: id to subject.
     rows: Mutex<Vec<(String, SubjectId)>>,
     channel: ApprovalChannel,
+    /// Read sessions the fake's logins opened (D-044 Z1).
+    sessions: Mutex<Vec<ReadSession>>,
+    /// Subjects whose sessions the fake's ledger now refuses (revoked).
+    revoked: Mutex<Vec<String>>,
+    /// The login operations begun (kept apart from `calls`).
+    logins: Mutex<Vec<CeremonyOp>>,
 }
 
 fn request(action_note: &str) -> ApprovalRequest {
@@ -191,6 +197,9 @@ impl Fake {
                 "approval-listener",
             )
             .unwrap(),
+            sessions: Mutex::new(Vec::new()),
+            revoked: Mutex::new(Vec::new()),
+            logins: Mutex::new(Vec::new()),
         }
     }
 
@@ -199,7 +208,7 @@ impl Fake {
     }
 }
 
-impl Backend for Fake {
+impl Fake {
     fn request(
         &self,
         request_id: &str,
@@ -208,7 +217,7 @@ impl Backend for Fake {
         Ok((request_id == r.request_id()).then_some((r, ApprovalStatus::Pending)))
     }
 
-    fn begin(
+    fn begin_op(
         &self,
         op: &CeremonyOp,
         subject: &SubjectId,
@@ -231,7 +240,7 @@ impl Backend for Fake {
         }))
     }
 
-    fn finish(
+    fn finish_op(
         &self,
         op: &CeremonyOp,
         challenge_id: &str,
@@ -268,6 +277,7 @@ impl Backend for Fake {
             CeremonyOp::RoleChange { .. } => CeremonyResult::RoleChanged {
                 assignment_id: "role-1".into(),
             },
+            CeremonyOp::ReadSession { .. } => panic!("a login is the trait's"),
             CeremonyOp::RegistrationStart { subject, .. } => {
                 let mut rows = self.rows.lock().unwrap();
                 let id = format!("reg-{}", rows.len() + 1);
@@ -299,7 +309,9 @@ impl Backend for Fake {
             ("revision", Value::Int(revision)),
         ]);
         let (context, operation, target_id) = match op {
-            CeremonyOp::Approve { .. } | CeremonyOp::Deny { .. } => {
+            CeremonyOp::Approve { .. }
+            | CeremonyOp::Deny { .. }
+            | CeremonyOp::ReadSession { .. } => {
                 return Ok(Err(Refusal::Approval(ApprovalCode::RequestUnknown)))
             }
             CeremonyOp::Revoke { target, reason } => (
@@ -367,11 +379,7 @@ impl Backend for Fake {
         }))
     }
 
-    fn pending_signoff(&self, signoff_id: &str) -> Result<Option<NewSignoff>, Unavailable> {
-        Ok((signoff_id == "so-1").then(signoff_binding))
-    }
-
-    fn finish_registration(
+    fn finish_registration_op(
         &self,
         registration_id: &str,
         response: &[u8],
@@ -410,6 +418,139 @@ impl Backend for Fake {
                 response,
             )
             .map_err(|e| Refusal::Approval(ApprovalCode::AssertionInvalid(e))))
+    }
+
+    /// Revoke `subject` (its subject, credential or role): its open sessions stop reading.
+    fn revoke(&self, subject: &str) {
+        self.revoked.lock().unwrap().push(subject.into());
+    }
+}
+
+/// Subjects the fake's ledger refuses every target to (no role anywhere).
+const NO_ROLES: &str = "mallory";
+/// A subject whose login the fake's ledger refuses (unknown).
+const UNKNOWN: &str = "nobody";
+
+/// The fake ledger's read sessions and protected read (D-044 Z1, Z3): a session counts only
+/// if this fake's login issued it and its subject is not revoked; `mallory` holds no role;
+/// unknown targets and a set `context_refusal` are the one refusal.
+impl Backend for Fake {
+    fn read(
+        &self,
+        session: &ReadSession,
+        target: &ReadTarget,
+    ) -> Result<Result<RecordView, ReadRefused>, Unavailable> {
+        let subject = &session.subject().subject;
+        if !self.sessions.lock().unwrap().contains(session)
+            || self.revoked.lock().unwrap().contains(subject)
+            || subject == NO_ROLES
+        {
+            return Ok(Err(ReadRefused));
+        }
+        Ok(match target {
+            ReadTarget::ApprovalRequest { request_id } => match self.request(request_id)? {
+                Some((request, status)) => Ok(RecordView::ApprovalRequest {
+                    request: Box::new(request),
+                    status,
+                }),
+                None => Err(ReadRefused),
+            },
+            ReadTarget::Signoff { signoff_id } if signoff_id == "so-1" => {
+                // The ledger pins its effective expiry (Y1) as the requested one.
+                let op = CeremonyOp::Signoff {
+                    binding: Box::new(signoff_binding()),
+                    parties: SignoffParties::default(),
+                    requested_expires_at: Some(
+                        Timestamp::parse_strict("2026-11-14T10:10:00Z").unwrap(),
+                    ),
+                };
+                match self.context(&op)? {
+                    Ok(context) => Ok(RecordView::Ceremony {
+                        op: Box::new(op),
+                        context,
+                    }),
+                    Err(_) => Err(ReadRefused),
+                }
+            }
+            ReadTarget::Signoff { .. } => Err(ReadRefused),
+            ReadTarget::Ceremony(op) => match self.context(op)? {
+                Ok(context) => Ok(RecordView::Ceremony {
+                    op: op.clone(),
+                    context,
+                }),
+                Err(_) => Err(ReadRefused),
+            },
+        })
+    }
+
+    fn begin(
+        &self,
+        op: &CeremonyOp,
+        subject: &SubjectId,
+        idempotency_key: &str,
+    ) -> Result<Result<IssuedChallenge, Refusal>, Unavailable> {
+        let CeremonyOp::ReadSession { .. } = op else {
+            return self.begin_op(op, subject, idempotency_key);
+        };
+        self.logins.lock().unwrap().push(op.clone());
+        if subject.subject == UNKNOWN {
+            return Ok(Err(Refusal::Approval(ApprovalCode::PermissionMissing)));
+        }
+        let n = self.logins.lock().unwrap().len();
+        Ok(Ok(IssuedChallenge {
+            challenge_id: format!("login-{n}"),
+            client_options: br#"{"publicKey":{"challenge":"AAAA","rpId":"localhost"}}"#.to_vec(),
+            expires_at: Timestamp::parse_strict("2026-11-14T10:02:00Z").unwrap(),
+        }))
+    }
+
+    fn finish(
+        &self,
+        op: &CeremonyOp,
+        challenge_id: &str,
+        response: &[u8],
+        idempotency_key: &str,
+    ) -> Result<Result<CeremonyOutcome, Refusal>, Unavailable> {
+        let CeremonyOp::ReadSession {
+            subject,
+            page_session,
+        } = op
+        else {
+            return self.finish_op(op, challenge_id, response, idempotency_key);
+        };
+        if response == b"verifier-down" {
+            return Ok(Err(Refusal::Approval(ApprovalCode::AssertionInvalid(
+                VerifierError::Unavailable,
+            ))));
+        }
+        if response != b"valid-assertion" {
+            return Ok(Err(Refusal::Approval(ApprovalCode::AssertionInvalid(
+                VerifierError::SignatureInvalid,
+            ))));
+        }
+        let session = ReadSession::from_ledger(
+            &LedgerCapability::for_ledger_implementation(),
+            challenge_id,
+            subject.clone(),
+            &format!("cred-{}", subject.subject),
+            page_session,
+            Timestamp::parse_strict("2026-11-14T10:01:00Z").unwrap(),
+        );
+        self.sessions.lock().unwrap().push(session.clone());
+        Ok(Ok(CeremonyOutcome {
+            result: CeremonyResult::ReadSessionOpened { session },
+            ledger_seq: 1,
+            replayed: false,
+        }))
+    }
+
+    fn finish_registration(
+        &self,
+        registration_id: &str,
+        response: &[u8],
+        operator: &OperatorSession,
+    ) -> Result<Result<VerifiedRegistration, Refusal>, Unavailable> {
+        self.finish_registration_op(registration_id, response, operator)
     }
 }
 
@@ -497,11 +638,36 @@ impl Server {
         )
     }
 
-    /// View the request: (session cookie, CSRF token, fingerprint).
+    /// Sign in as `subject` (D-044 Z1): the login begin, then its finish; the rotated,
+    /// authenticated session's (cookie, CSRF token).
+    fn login(&self, subject: &str) -> (String, String) {
+        let begun = self.post("/login/begin", "", &format!("subject={subject}"), "");
+        assert_eq!(status(&begun), 200, "{begun}");
+        let pre = between(&begun, "writ_session=", ";");
+        let csrf = between(&begun, "\"csrf\":\"", "\"");
+        let challenge = between(&begun, "\"challenge_id\":\"", "\"");
+        let done = self.post(
+            "/login/finish",
+            &pre,
+            &format!("csrf={csrf}&challenge_id={challenge}&response=valid-assertion"),
+            "",
+        );
+        assert_eq!(status(&done), 200, "{done}");
+        let cookie = between(&done, "writ_session=", ";");
+        assert_ne!(cookie, pre, "a login rotates the session token");
+        (cookie, between(&done, "\"csrf\":\"", "\""))
+    }
+
+    /// A GET in the session `cookie` (a direct navigation).
+    fn get_as(&self, path: &str, cookie: &str) -> String {
+        self.get(path, &format!("Cookie: writ_session={cookie}\r\n"))
+    }
+
+    /// Sign in as `bob` and view the request: (session cookie, CSRF token, fingerprint).
     fn view(&self) -> (String, String, String) {
-        let page = self.get("/request/req-1", "");
+        let (cookie, _) = self.login("bob");
+        let page = self.get_as("/request/req-1", &cookie);
         assert_eq!(status(&page), 200, "{page}");
-        let cookie = between(&page, "writ_session=", ";");
         let csrf = between(&page, "data-csrf=\"", "\"");
         let fp = between(&page, "data-fingerprint=\"", "\"");
         (cookie, csrf, fp)
@@ -553,16 +719,16 @@ fn header_of<'a>(response: &'a str, name: &str) -> Option<&'a str> {
 #[test]
 fn the_page_renders_only_the_stored_context_escaped_with_a_strict_policy() {
     let s = Server::start(Limits::default());
-    let page = s.get("/request/req-1", "");
+    let (cookie, _) = s.login("bob");
+    let page = s.get_as("/request/req-1", &cookie);
     assert_eq!(status(&page), 200);
     let csp = header_of(&page, "content-security-policy").unwrap();
     assert!(csp.contains("default-src 'none'") && csp.contains("script-src 'self'"));
     assert!(csp.contains("frame-ancestors 'none'"));
     assert_eq!(header_of(&page, "x-content-type-options"), Some("nosniff"));
     assert_eq!(header_of(&page, "cache-control"), Some("no-store"));
-    let cookie = header_of(&page, "set-cookie").unwrap();
-    assert!(cookie.contains("HttpOnly") && cookie.contains("SameSite=Strict"));
-    assert!(cookie.contains(&format!("Max-Age={MAX_SESSION_SECONDS}")));
+    // A view creates no session: the session is the login's (Z2).
+    assert!(header_of(&page, "set-cookie").is_none());
     // The untrusted note is shown, escaped; no inline script exists at all.
     assert!(!page.contains("<script>alert"));
     assert!(!page.contains("<img"));
@@ -582,7 +748,7 @@ fn the_page_renders_only_the_stored_context_escaped_with_a_strict_policy() {
     }
     // A view never starts or finishes anything.
     assert!(s.fake.calls().is_empty());
-    let unknown = s.get("/request/nope", "");
+    let unknown = s.get_as("/request/nope", &cookie);
     assert_eq!(status(&unknown), 404);
     assert_eq!(status(&s.get("/static/approval.js", "")), 200);
 }
@@ -855,7 +1021,7 @@ fn bodies_headers_connections_and_time_are_bounded() {
     assert_eq!(over, "", "over the connection bound");
     drop(hold);
     thread::sleep(Duration::from_millis(500));
-    assert_eq!(status(&s.get("/request/req-1", "")), 200);
+    assert_eq!(status(&s.get("/", "")), 200);
 }
 
 #[test]
@@ -870,7 +1036,8 @@ fn only_the_listed_methods_and_paths_exist() {
     );
     assert_eq!(status(&r), 405);
     assert_eq!(status(&s.get("/request/req-1?x=1", "")), 400);
-    assert_eq!(status(&s.get("/", "")), 404);
+    assert_eq!(status(&s.get("/nope", "")), 404);
+    assert_eq!(status(&s.get("/", "")), 200);
     let (cookie, csrf, _) = s.view();
     let r = s.raw(
         format!(
@@ -950,7 +1117,7 @@ fn outstanding_challenges_are_capped_across_sessions() {
         max_outstanding: 3,
         ..Limits::default()
     });
-    let (a, b) = (s.view(), s.view());
+    let (a, b, third) = (s.view(), s.view(), s.view());
     let first = begin_in(&s, &a);
     assert_eq!(status(&first), 200);
     assert_eq!(status(&begin_in(&s, &a)), 200);
@@ -958,8 +1125,10 @@ fn outstanding_challenges_are_capped_across_sessions() {
     // Each session is under its own bound (4), the listener is at its global bound (3).
     let over = begin_in(&s, &b);
     assert_eq!(status(&over), 429, "{over}");
-    let third = s.view();
     assert_eq!(status(&begin_in(&s, &third)), 429);
+    // A login challenge counts too: no login while the bound is reached.
+    let login = s.post("/login/begin", "", "subject=bob", "");
+    assert_eq!(status(&login), 429, "{login}");
     // A decided ceremony frees one slot.
     let challenge = between(&first, "\"challenge_id\":\"", "\"");
     assert_eq!(
@@ -984,8 +1153,9 @@ fn a_session_with_a_pending_ceremony_is_never_evicted() {
     let b = s.view();
     let b_begin = begin_in(&s, &b);
     assert_eq!(status(&b_begin), 200);
-    // Both sessions are pending: a third view is refused, and nothing was evicted.
-    let refused = s.get("/request/req-1", "");
+    // Both sessions are pending: a third session (a login) is refused, and nothing was
+    // evicted.
+    let refused = s.post("/login/begin", "", "subject=carol", "");
     assert_eq!(status(&refused), 503, "{refused}");
     assert!(header_of(&refused, "set-cookie").is_none());
     let a_challenge = between(&a_begin, "\"challenge_id\":\"", "\"");
@@ -1025,11 +1195,12 @@ fn a_verifier_outage_keeps_the_pending_ceremony() {
 // ---------------------------------------------------------------------------
 // Signoff, revocation, role-change and enrollment pages (W-F, D-043).
 
-/// A GET that opens a page session: (cookie, CSRF token, the response).
-fn open(s: &Server, path: &str) -> (String, String, String) {
-    let page = s.get(path, "");
+/// Sign in as `subject`, then GET `path` in that session: (cookie, CSRF token, the
+/// response).
+fn open(s: &Server, subject: &str, path: &str) -> (String, String, String) {
+    let (cookie, _) = s.login(subject);
+    let page = s.get_as(path, &cookie);
     assert_eq!(status(&page), 200, "{page}");
-    let cookie = between(&page, "writ_session=", ";");
     let csrf = between(&page, "data-csrf=\"", "\"");
     (cookie, csrf, page)
 }
@@ -1052,10 +1223,15 @@ fn view_of(s: &Server, cookie: &str) -> String {
     )
 }
 
-/// Prepare `fields` in a session of form page `path`, then display it: (cookie, csrf,
-/// fingerprint, the displayed page).
-fn prepared(s: &Server, path: &str, fields: &[(&str, &str)]) -> (String, String, String, String) {
-    let (cookie, csrf, _) = open(s, path);
+/// Prepare `fields` in a session of `subject` on form page `path`, then display it:
+/// (cookie, csrf, fingerprint, the displayed page).
+fn prepared(
+    s: &Server,
+    subject: &str,
+    path: &str,
+    fields: &[(&str, &str)],
+) -> (String, String, String, String) {
+    let (cookie, csrf, _) = open(s, subject, path);
     let r = s.post("/prepare", &cookie, &body(&csrf, fields), "");
     assert_eq!(status(&r), 200, "{r}");
     assert!(r.ends_with("{\"view\":\"/view\"}"), "{r}");
@@ -1136,7 +1312,7 @@ fn assert_displays(page: &str, context: &Value) {
 #[test]
 fn the_signoff_page_displays_the_complete_stored_context_and_confirms_it() {
     let s = Server::start(Limits::default());
-    let (cookie, csrf, page) = open(&s, "/signoff/so-1");
+    let (cookie, csrf, page) = open(&s, "rita", "/signoff/so-1");
     let op = CeremonyOp::Signoff {
         binding: Box::new(signoff_binding()),
         parties: SignoffParties::default(),
@@ -1164,9 +1340,9 @@ fn the_signoff_page_displays_the_complete_stored_context_and_confirms_it() {
     assert!(s.fake.calls().is_empty(), "a view never begins anything");
     assert_eq!(confirm(&s, &cookie, &csrf, &fp, "rita"), op);
     // An id the ledger does not offer: one generic page.
-    assert_eq!(status(&s.get("/signoff/so-unknown", "")), 404);
+    assert_eq!(status(&s.get_as("/signoff/so-unknown", &cookie)), 404);
     // The verdict of a request page is not accepted on a confirmation page.
-    let (cookie, csrf, page) = open(&s, "/signoff/so-1");
+    let (cookie, csrf, page) = open(&s, "rita", "/signoff/so-1");
     let fp = between(&page, "data-fingerprint=\"", "\"");
     for (extra, code) in [
         (vec![("verdict", "approve")], 400),
@@ -1223,6 +1399,7 @@ fn the_revoke_page_covers_every_target_kind() {
     for (kind, issuer, target, expected) in cases {
         let (cookie, csrf, fp, page) = prepared(
             &s,
+            "carol",
             "/revoke",
             &[
                 ("operation", "revoke"),
@@ -1248,6 +1425,7 @@ fn the_role_page_grants_or_revokes_one_assignment() {
     let s = Server::start(Limits::default());
     let (cookie, csrf, fp, page) = prepared(
         &s,
+        "root",
         "/role",
         &[
             ("operation", "role-grant"),
@@ -1269,6 +1447,7 @@ fn the_role_page_grants_or_revokes_one_assignment() {
     assert_eq!(confirm(&s, &cookie, &csrf, &fp, "root"), grant);
     let (cookie, csrf, fp, _) = prepared(
         &s,
+        "root",
         "/role",
         &[("operation", "role-revoke"), ("target", "role:7")],
     );
@@ -1279,7 +1458,7 @@ fn the_role_page_grants_or_revokes_one_assignment() {
     };
     assert_eq!(confirm(&s, &cookie, &csrf, &fp, "root"), revoke);
     // Malformed forms never reach the ledger.
-    let (cookie, csrf, _) = open(&s, "/role");
+    let (cookie, csrf, _) = open(&s, "root", "/role");
     for fields in [
         vec![
             ("operation", "role-grant"),
@@ -1305,6 +1484,7 @@ fn enrollment_registers_in_the_operator_session_then_enrolls_through_that_operat
     // 1. The operator's registration start: displayed, then the operator's own ceremony.
     let (cookie, csrf, fp, page) = prepared(
         &s,
+        "root",
         "/enroll",
         &[
             ("operation", "registration-start"),
@@ -1377,7 +1557,7 @@ fn enrollment_registers_in_the_operator_session_then_enrolls_through_that_operat
     };
     // 2. The new person's registration: another page session can neither finish nor
     // enroll this row.
-    let (other_cookie, other_csrf, _) = open(&s, "/enroll");
+    let (other_cookie, other_csrf, _) = open(&s, "root", "/enroll");
     let r = s.post(
         "/registration/finish",
         &other_cookie,
@@ -1502,12 +1682,9 @@ fn enrollment_registers_in_the_operator_session_then_enrolls_through_that_operat
     // A refused registration finish forgets the row; an outage keeps it (L6).
     let (cookie, csrf, fp, _) = prepared(
         &s,
+        "root",
         "/enroll",
-        &[
-            ("operation", "registration-start"),
-            ("operator", "root"),
-            ("subject", "y"),
-        ],
+        &[("operation", "registration-start"), ("subject", "y")],
     );
     let begun = s.post(
         "/ceremony/begin",
@@ -1558,7 +1735,7 @@ fn prepared_pages_are_read_only_protected_and_never_stale() {
         ("target", "cred-x"),
         ("reason", "lost"),
     ];
-    let (cookie, csrf, _) = open(&s, "/revoke");
+    let (cookie, csrf, _) = open(&s, "carol", "/revoke");
     // CSRF, session and origin are required; nothing prepared means nothing to view.
     assert_eq!(
         status(&s.post("/prepare", &cookie, &body("bad", &fields), "")),
@@ -1590,7 +1767,7 @@ fn prepared_pages_are_read_only_protected_and_never_stale() {
     assert!(r.ends_with("{\"error\":\"refused\"}"), "{r}");
     *s.fake.context_refusal.lock().unwrap() = false;
     // Preparing and viewing never begin anything.
-    let (cookie, csrf, fp, _) = prepared(&s, "/revoke", &fields);
+    let (cookie, csrf, fp, _) = prepared(&s, "carol", "/revoke", &fields);
     assert!(s.fake.calls().is_empty());
     // The stored context changed after the display: stale, nothing begun.
     *s.fake.revision.lock().unwrap() += 1;
@@ -1716,4 +1893,292 @@ fn a_cookie_planted_from_another_port_is_refused() {
         status(&s.get("/static/approval.js", "Sec-Fetch-Site: same-origin\r\n")),
         200
     );
+}
+
+// ---------------------------------------------------------------------------
+// D-044 item 3 (M4-INTERFACES Z1..Z4): authenticated, scoped record reads.
+
+/// The body of a response (after the header).
+fn body_of(response: &str) -> &str {
+    response.split_once("\r\n\r\n").map_or("", |(_, b)| b)
+}
+
+#[test]
+fn z4_the_landing_page_offers_login_only() {
+    let s = Server::start(Limits::default());
+    let page = s.get("/", "");
+    assert_eq!(status(&page), 200, "{page}");
+    assert!(page.contains("<form id=\"login\">"));
+    assert!(page.contains("<script src=\"/static/approval.js\" defer></script>"));
+    assert_eq!(page.matches("<script").count(), 1);
+    // No session, no CSRF token, no record and no record existence.
+    assert!(header_of(&page, "set-cookie").is_none());
+    for absent in [
+        "data-csrf",
+        "data-fingerprint",
+        "req-1",
+        "so-1",
+        "&lt;script",
+    ] {
+        assert!(!page.contains(absent), "{absent}");
+    }
+    let csp = header_of(&page, "content-security-policy").unwrap();
+    assert!(csp.contains("default-src 'none'") && csp.contains("frame-ancestors 'none'"));
+    assert!(s.fake.calls().is_empty() && s.fake.logins.lock().unwrap().is_empty());
+}
+
+#[test]
+fn z1_z2_a_login_binds_subject_and_credential_to_the_page_session_and_rotates_the_token() {
+    let s = Server::start(Limits::default());
+    // The login begin needs no session and creates a pre-authentication one.
+    let begun = s.post("/login/begin", "", "subject=root", "");
+    assert_eq!(status(&begun), 200, "{begun}");
+    let pre = between(&begun, "writ_session=", ";");
+    let cookie_attrs = header_of(&begun, "set-cookie").unwrap();
+    assert!(cookie_attrs.contains("HttpOnly") && cookie_attrs.contains("SameSite=Strict"));
+    let pre_csrf = between(&begun, "\"csrf\":\"", "\"");
+    let challenge = between(&begun, "\"challenge_id\":\"", "\"");
+    assert!(begun.contains("\"options\":{\"publicKey\""));
+    let CeremonyOp::ReadSession {
+        subject,
+        page_session,
+    } = s.fake.logins.lock().unwrap()[0].clone()
+    else {
+        panic!("a login begins a ReadSession ceremony")
+    };
+    assert_eq!(subject, SubjectId::new("writ-local", "root"));
+    assert!(!page_session.is_empty() && !page_session.contains(&pre));
+    // The pre-authentication session reads and changes nothing.
+    assert_eq!(status(&s.get_as("/request/req-1", &pre)), 404);
+    assert_eq!(status(&s.get_as("/revoke", &pre)), 404);
+    let r = s.post(
+        "/prepare",
+        &pre,
+        &body(&pre_csrf, &[("operation", "role-revoke"), ("target", "r")]),
+        "",
+    );
+    assert_eq!((status(&r), body_of(&r)), (403, "{\"error\":\"refused\"}"));
+    // A forged assertion: the internal code, still unauthenticated.
+    let forged = s.post(
+        "/login/finish",
+        &pre,
+        &format!("csrf={pre_csrf}&challenge_id={challenge}&response=forged"),
+        "",
+    );
+    assert_eq!(status(&forged), 403);
+    assert!(forged.contains("ASSERTION_INVALID"));
+    assert_eq!(status(&s.get_as("/request/req-1", &pre)), 404);
+    // A new login: success rotates the token and the CSRF token; the old ones are gone.
+    let begun = s.post("/login/begin", &pre, "subject=root", "");
+    let pre2 = between(&begun, "writ_session=", ";");
+    let pre2_csrf = between(&begun, "\"csrf\":\"", "\"");
+    let challenge = between(&begun, "\"challenge_id\":\"", "\"");
+    assert_ne!(pre2, pre);
+    let finish = format!("csrf={pre2_csrf}&challenge_id={challenge}&response=valid-assertion");
+    let done = s.post("/login/finish", &pre2, &finish, "");
+    assert_eq!(status(&done), 200, "{done}");
+    assert!(done.contains("\"result\":\"signed in\"") && done.contains("\"subject\":\"root\""));
+    let cookie = between(&done, "writ_session=", ";");
+    let csrf = between(&done, "\"csrf\":\"", "\"");
+    assert!(cookie != pre2 && csrf != pre2_csrf);
+    assert!(header_of(&done, "set-cookie")
+        .unwrap()
+        .contains(&format!("Max-Age={MAX_SESSION_SECONDS}")));
+    assert_eq!(status(&s.get_as("/revoke", &pre2)), 404, "old token");
+    assert_eq!(status(&s.get_as("/revoke", &cookie)), 200);
+    // A replayed login finish: with the old token or the new one, refused.
+    assert_eq!(status(&s.post("/login/finish", &pre2, &finish, "")), 403);
+    let replay = format!("csrf={csrf}&challenge_id={challenge}&response=valid-assertion");
+    assert_eq!(status(&s.post("/login/finish", &cookie, &replay, "")), 403);
+    // The page session the login bound is the one a registration start binds (D-043 Y2).
+    let page_session = match s.fake.logins.lock().unwrap().last().cloned() {
+        Some(CeremonyOp::ReadSession { page_session, .. }) => page_session,
+        other => panic!("{other:?}"),
+    };
+    let r = s.post(
+        "/prepare",
+        &cookie,
+        &body(
+            &csrf,
+            &[("operation", "registration-start"), ("subject", "newbie")],
+        ),
+        "",
+    );
+    assert_eq!(status(&r), 200, "{r}");
+    let view = view_of(&s, &cookie);
+    let fp = between(&view, "data-fingerprint=\"", "\"");
+    let op = confirm(&s, &cookie, &csrf, &fp, "root");
+    let CeremonyOp::RegistrationStart {
+        operator,
+        operator_session,
+        ..
+    } = op
+    else {
+        panic!("{op:?}")
+    };
+    assert_eq!(operator, SubjectId::new("writ-local", "root"));
+    assert_eq!(operator_session, page_session);
+    // A login the ledger refuses (unknown subject) is the generic refusal; no session.
+    let r = s.post("/login/begin", "", &format!("subject={UNKNOWN}"), "");
+    assert_eq!((status(&r), body_of(&r)), (403, "{\"error\":\"refused\"}"));
+    assert!(header_of(&r, "set-cookie").is_none());
+}
+
+#[test]
+fn z3_anonymous_guessed_out_of_scope_revoked_and_expired_reads_are_refused_identically() {
+    let s = Server::start(Limits::default());
+    let reference = s.get("/request/req-1", "");
+    assert_eq!(status(&reference), 404);
+    let refused = body_of(&reference).to_string();
+    let same = |r: &str, what: &str| {
+        assert_eq!(status(r), 404, "{what}: {r}");
+        assert_eq!(body_of(r), refused, "{what}");
+        assert!(header_of(r, "set-cookie").is_none(), "{what}");
+    };
+    // Anonymous: every page and direct URL, no session created.
+    for path in [
+        "/request/req-1",
+        "/request/nope",
+        "/signoff/so-1",
+        "/signoff/so-x",
+        "/revoke",
+        "/role",
+        "/enroll",
+        "/nope",
+    ] {
+        same(&s.get(path, ""), path);
+    }
+    same(
+        &s.get("/view", "Sec-Fetch-Site: same-origin\r\n"),
+        "anonymous /view",
+    );
+    same(
+        &s.get_as("/request/req-1", "guessed-token"),
+        "guessed token",
+    );
+    // Signed in: guessed or unknown ids.
+    let (bob, _) = s.login("bob");
+    assert_eq!(status(&s.get_as("/request/req-1", &bob)), 200);
+    for path in ["/request/nope", "/request/req-2", "/signoff/so-x"] {
+        same(&s.get_as(path, &bob), path);
+    }
+    // Signed in without a role for the target (out of scope).
+    let (mallory, mallory_csrf) = s.login(NO_ROLES);
+    for path in ["/request/req-1", "/signoff/so-1"] {
+        same(&s.get_as(path, &mallory), path);
+    }
+    // A session whose subject, credential or role was revoked after it opened.
+    let (dave, _) = s.login("dave");
+    let page = s.get_as("/request/req-1", &dave);
+    assert_eq!(status(&page), 200);
+    let dave_csrf = between(&page, "data-csrf=\"", "\"");
+    let fp = between(&page, "data-fingerprint=\"", "\"");
+    s.fake.revoke("dave");
+    same(&s.get_as("/request/req-1", &dave), "revoked");
+    // Its begin is refused too (the stale-display check is a protected read).
+    let r = s.post(
+        "/ceremony/begin",
+        &dave,
+        &format!(
+            "csrf={dave_csrf}&request_id=req-1&fingerprint={}&verdict=approve",
+            enc(&fp)
+        ),
+        "",
+    );
+    assert_eq!((status(&r), body_of(&r)), (403, "{\"error\":\"refused\"}"));
+    // `/prepare` (a read) answers one refusal: anonymous, a wrong CSRF token, out of scope,
+    // revoked.
+    let fields = [("operation", "role-revoke"), ("target", "role:1")];
+    for (cookie, csrf) in [
+        ("", "x"),
+        (mallory.as_str(), "wrong"),
+        (mallory.as_str(), mallory_csrf.as_str()),
+        (dave.as_str(), dave_csrf.as_str()),
+    ] {
+        let r = s.post("/prepare", cookie, &body(csrf, &fields), "");
+        assert_eq!((status(&r), body_of(&r)), (403, "{\"error\":\"refused\"}"));
+    }
+    assert!(s.fake.calls().is_empty(), "nothing begun");
+    // An expired session.
+    let short = Server::start(Limits {
+        session_ttl: Duration::from_secs(1),
+        ..Limits::default()
+    });
+    let (cookie, _) = short.login("bob");
+    assert_eq!(status(&short.get_as("/request/req-1", &cookie)), 200);
+    thread::sleep(Duration::from_millis(1100));
+    same(&short.get_as("/request/req-1", &cookie), "expired");
+}
+
+#[test]
+fn z3_every_mutation_is_begun_for_the_signed_in_subject_and_never_by_the_login() {
+    let s = Server::start(Limits::default());
+    let (cookie, csrf, fp) = s.view();
+    // Another subject than the signed-in one: refused before the ledger.
+    let r = s.post(
+        "/ceremony/begin",
+        &cookie,
+        &format!(
+            "csrf={csrf}&request_id=req-1&fingerprint={}&verdict=approve&subject=alice",
+            enc(&fp)
+        ),
+        "",
+    );
+    assert_eq!((status(&r), body_of(&r)), (403, "{\"error\":\"refused\"}"));
+    assert!(s.fake.calls().is_empty());
+    // Without a subject field: the read session's subject.
+    let begun = s.post(
+        "/ceremony/begin",
+        &cookie,
+        &format!(
+            "csrf={csrf}&request_id=req-1&fingerprint={}&verdict=approve",
+            enc(&fp)
+        ),
+        "",
+    );
+    assert_eq!(status(&begun), 200, "{begun}");
+    let Call::Begin { subject, op, .. } = &s.fake.calls()[0] else {
+        panic!()
+    };
+    assert_eq!(subject, &SubjectId::new("writ-local", "bob"));
+    assert!(matches!(op, CeremonyOp::Approve { .. }));
+    let challenge = between(&begun, "\"challenge_id\":\"", "\"");
+    // A mutation's challenge is never finished as a login, and the login's challenge is
+    // never finished as a mutation (purpose separation; the ledger checks it again).
+    let r = s.post(
+        "/login/finish",
+        &cookie,
+        &format!("csrf={csrf}&challenge_id={challenge}&response=valid-assertion"),
+        "",
+    );
+    assert_eq!(status(&r), 403, "{r}");
+    let login_challenge = format!("login-{}", s.fake.logins.lock().unwrap().len());
+    let r = s.post(
+        "/ceremony/finish",
+        &cookie,
+        &format!("csrf={csrf}&challenge_id={login_challenge}&response=valid-assertion"),
+        "",
+    );
+    assert_eq!(status(&r), 403, "{r}");
+    // A pre-authentication session cannot finish a login challenge as a mutation either.
+    let begun_login = s.post("/login/begin", "", "subject=bob", "");
+    let pre = between(&begun_login, "writ_session=", ";");
+    let pre_csrf = between(&begun_login, "\"csrf\":\"", "\"");
+    let login_challenge = between(&begun_login, "\"challenge_id\":\"", "\"");
+    let r = s.post(
+        "/ceremony/finish",
+        &pre,
+        &format!("csrf={pre_csrf}&challenge_id={login_challenge}&response=valid-assertion"),
+        "",
+    );
+    assert_eq!(status(&r), 403, "{r}");
+    // Only the real finish of the mutation reaches the ledger.
+    let done = s.post(
+        "/ceremony/finish",
+        &cookie,
+        &format!("csrf={csrf}&challenge_id={challenge}&response=valid-assertion"),
+        "",
+    );
+    assert_eq!(status(&done), 200, "{done}");
+    assert_eq!(s.fake.calls().len(), 2);
 }

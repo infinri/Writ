@@ -289,6 +289,30 @@ impl ActiveCredentials {
         })
     }
 
+    /// The active credentials of `subject` among `stored` for a read-session
+    /// login (D-044 item 3, Z1): the subject is human (`SERVICE_NOT_PERMITTED`)
+    /// and active at `now` (`SUBJECT_REVOKED`); no permission is needed to
+    /// authenticate, because every protected read checks the scoped
+    /// permission of its target. The result may be empty.
+    pub fn select_for_read_session(
+        subject: &SubjectRecord,
+        stored: impl IntoIterator<Item = StoredCredential>,
+        now: Timestamp,
+    ) -> Result<ActiveCredentials, ApprovalCode> {
+        if subject.kind != PrincipalKind::Human {
+            return Err(ApprovalCode::ServiceNotPermitted);
+        }
+        subject.check_active(now)?;
+        let credentials = stored
+            .into_iter()
+            .filter(|c| c.status == CredentialStatus::Active && c.subject == subject.subject)
+            .collect();
+        Ok(ActiveCredentials {
+            subject: subject.subject.clone(),
+            credentials,
+        })
+    }
+
     /// The subject.
     pub fn subject(&self) -> &SubjectId {
         &self.subject

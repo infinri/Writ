@@ -4,23 +4,28 @@
 //
 // A flow is { name, requests: [ids the fixture records as pending], expect: {id: final
 // ledger status}, run: async (t) => detail string }. It throws on failure.
+//
+// D-044 item 3 (Z1..Z4): every page needs an authenticated read session, so every flow
+// signs in first (flows/login.mjs); the read-session flows (flows/read-sessions.mjs) are
+// appended to this module's list.
 
 import { PAGE_GET } from "../lib/harness.mjs";
+import { assert, httpView, signIn } from "./login.mjs";
+import { flows as readSessionFlows } from "./read-sessions.mjs";
 
-const assert = (cond, msg) => { if (!cond) throw new Error(msg); };
-
-export const flows = [
+const baseFlows = [
   {
     name: "approve via page",
     requests: ["req-approve"],
     expect: { "req-approve": "approved" },
     async run(t) {
+      await signIn(t, t.subjects.approver);
       const shown = await t.openRequest("req-approve");
       assert(shown.fingerprint === t.fingerprints["req-approve"], "page fingerprint differs from the stored one");
       assert(shown.escaped, "untrusted requester text was not escaped");
       const result = await t.decide("approve", t.subjects.approver);
       assert(result === "approved", `result ${JSON.stringify(result)}`);
-      return "page shows the stored context; approve ceremony answered approved";
+      return "signed in; page shows the stored context; approve ceremony answered approved";
     },
   },
   {
@@ -28,10 +33,23 @@ export const flows = [
     requests: ["req-deny"],
     expect: { "req-deny": "denied" },
     async run(t) {
+      await signIn(t, t.subjects.approver);
       await t.openRequest("req-deny");
       const result = await t.decide("deny", t.subjects.approver);
       assert(result === "denied", `result ${JSON.stringify(result)}`);
-      return "deny ceremony answered denied";
+      return "signed in; deny ceremony answered denied";
+    },
+  },
+  {
+    name: "the actor is the signed-in subject (another subject named on the page is refused)",
+    requests: ["req-actor"],
+    expect: { "req-actor": "pending" },
+    async run(t) {
+      await signIn(t, t.subjects.approver);
+      await t.openRequest("req-actor");
+      const result = await t.decide("approve", t.subjects.target);
+      assert(result === "refused", `result ${JSON.stringify(result)}`);
+      return `signed in as ${t.subjects.approver}; a begin naming ${t.subjects.target} answered refused`;
     },
   },
   {
@@ -39,6 +57,7 @@ export const flows = [
     requests: ["req-nouv"],
     expect: { "req-nouv": "pending" },
     async run(t) {
+      await signIn(t, t.subjects.approver);
       await t.page.setUserVerified(false);
       try {
         await t.openRequest("req-nouv");
@@ -57,6 +76,7 @@ export const flows = [
     async run(t) {
       // A hostile client lowers userVerification so the authenticator signs with UV=0; the
       // server-held ceremony state still requires UV, so the verifier must refuse.
+      await signIn(t, t.subjects.approver);
       await t.page.setUserVerified(false);
       const stopTamper = await t.tamperBegin((body) => {
         body.options.publicKey.userVerification = "discouraged";
@@ -78,7 +98,7 @@ export const flows = [
     requests: ["req-origin-header"],
     expect: { "req-origin-header": "pending" },
     async run(t) {
-      const s = await t.view("req-origin-header");
+      const s = await httpView(t, t.subjects.approver, "req-origin-header");
       const fields = { csrf: s.csrf, request_id: "req-origin-header", fingerprint: s.fingerprint, verdict: "approve", subject: t.subjects.approver };
       const wrong = await t.post("/ceremony/begin", fields, { cookie: s.cookie, origin: t.wrongOrigin });
       assert(wrong.status === 403 && JSON.parse(wrong.body).error === "origin", `wrong origin: ${wrong.status} ${wrong.body}`);
@@ -94,7 +114,7 @@ export const flows = [
     async run(t) {
       // A relay: the challenge is begun on the real origin, the browser signs it on a page
       // served from http://localhost:<other port> (same RP id, different origin).
-      const s = await t.view("req-origin-relay");
+      const s = await httpView(t, t.subjects.approver, "req-origin-relay");
       const begun = await t.post("/ceremony/begin", {
         csrf: s.csrf, request_id: "req-origin-relay", fingerprint: s.fingerprint, verdict: "approve", subject: t.subjects.approver,
       }, { cookie: s.cookie });
@@ -114,6 +134,7 @@ export const flows = [
     requests: ["req-stale"],
     expect: { "req-stale": "pending" },
     async run(t) {
+      await signIn(t, t.subjects.approver);
       await t.openRequest("req-stale");
       await t.page.evaluate(`document.getElementById("page").dataset.fingerprint = "sha256:${"0".repeat(64)}"`);
       const result = await t.decide("approve", t.subjects.approver);
@@ -126,6 +147,7 @@ export const flows = [
     requests: ["req-closed"],
     expect: { "req-closed": "denied" },
     async run(t) {
+      await signIn(t, t.subjects.approver);
       await t.openRequest("req-closed");
       const denied = await t.decide("deny", t.subjects.approver);
       assert(denied === "denied", `deny ${JSON.stringify(denied)}`);
@@ -136,3 +158,5 @@ export const flows = [
     },
   },
 ];
+
+export const flows = [...baseFlows, ...readSessionFlows];

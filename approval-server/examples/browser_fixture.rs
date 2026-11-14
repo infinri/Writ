@@ -14,15 +14,20 @@
 //!    `approver` in `t-browser`/`p-browser`), each through the administrator's
 //!    user-verified registration-start ceremony (D-043 Y2), the new credential created in
 //!    the browser, and the administrator's `Enroll` ceremony, all performed in the browser;
-//! 4. records one pending approval request per id (expiry 600 s) and exits, releasing the
-//!    ledger for `writ-approval-server`.
+//! 4. records one pending approval request per distinct id (expiry 600 s; in
+//!    `t-browser`/`p-browser`, or in `t-other`/`p-browser` for an id beginning `req-other`,
+//!    the cross-scope reads of D-044 Z3) and exits, releasing the ledger for
+//!    `writ-approval-server`.
 //!
 //! The protocol is JSON lines: the fixture writes `{"step":"create"|"get","subject":..,
 //! "options":..}` and reads `{"credential":"<JSON of the PublicKeyCredential>"}`; it ends
 //! with `{"step":"done","requests":{id: fingerprint}}`.
 //!
 //! `status --ledger <path> --requests <id,...>` prints `{"status":{id: status}}` (reads only;
-//! no approval channel is configured, so no ceremony can run).
+//! no approval channel is configured, so no ceremony can run). It is a trusted in-process
+//! read of the disposable ledger file after the server released it (inside the trust
+//! boundary of code that opens the ledger), not an HTTP route; the listener has no
+//! unauthenticated read (D-044 Z3).
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
@@ -338,10 +343,21 @@ fn setup(a: &BTreeMap<String, String>) -> Fallible<()> {
 
     let created = now()?.at();
     let mut fingerprints = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
     for (n, id) in need(a, "requests")?.split(',').enumerate() {
+        // Several flows may name one request: it is recorded once.
+        if !seen.insert(id) {
+            continue;
+        }
+        // D-044 Z3: a `req-other` request is stored in another tenant (a cross-scope read).
+        let tenant = if id.starts_with("req-other") {
+            "t-other"
+        } else {
+            "t-browser"
+        };
         let request = ApprovalRequest::new(NewApprovalRequest {
             request_id: id.into(),
-            tenant_id: "t-browser".into(),
+            tenant_id: tenant.into(),
             project_id: "p-browser".into(),
             requester: SubjectId::new("adapter", "agent:browser-suite"),
             agent: None,
