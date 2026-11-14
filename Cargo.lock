@@ -2516,6 +2516,8 @@ version = "0.1.0"
 dependencies = [
  "hyper",
  "hyper-util",
+ "p256",
+ "serde_json",
  "tokio",
  "webauthn-authenticator-rs",
  "webauthn-rs",

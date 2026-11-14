@@ -32,6 +32,10 @@ const TRUSTED: &[&str] = &["Capability", "VerifiedAssertion", "VerifiedRegistrat
 /// and the ledger's registration finish, which returns only a result its own registration
 /// row recorded (X8).
 const ALLOWED: &[(&str, &str)] = &[
+    // The production verifier's trait methods (their output is untrusted until the
+    // broker's `VerifiedAssertion::check` or the ledger's registration row accepts it).
+    ("approval/src/verifier.rs", "finish"),
+    ("approval/src/verifier.rs", "finish_registration"),
     ("persistence/sqlite/src/approval_store.rs", "cap"),
     (
         "persistence/sqlite/src/approval_store.rs",
@@ -261,7 +265,7 @@ fn the_scanner_flags_synthetic_violations() {
         violations("persistence/sqlite/src/lib.rs", reg, None).len(),
         1
     );
-    assert_eq!(violations("approval/src/verifier.rs", reg, None).len(), 1);
+    assert_eq!(violations("approval/src/listener.rs", reg, None).len(), 1);
     // A trailing cfg(test) module is test code.
     let module = format!("pub fn ok() {{}}\n#[cfg(test)]\n#[allow(x)]\nmod tests {{\n{bad}}}\n");
     let lines: Vec<&str> = module.lines().collect();
