@@ -83,3 +83,12 @@ Independent review of M4-01 (`c412f6f`, fixes `d86513f`, `36d05d5`): all medium 
 - **C2** `SubjectRecord`, `RoleAssignment`, `SignoffExclusions` (artifact and policy changers from durable admin events) and `OwnUnusedGrant` passed to `decide`/`sign`/`record` are read from the ledger inside the deciding transaction, never assembled from request input.
 - **C3** Extend `broker/tests/trusted_constructors.rs` when `writ-approval` and the ledger land: flag any `pub` item in `approval/` or `persistence/sqlite/src/` returning a `*Capability` or a `VerifiedAssertion`; treat a file as test code only if its declaring `mod` line is `#[cfg(test)]` (not by name).
 - **C4** No `build.rs` code generation or `include!` of non-Rust files in these crates without a scanner update.
+
+## Open integration items after W2 (`193296d`, `7dfc296`)
+
+- **G1 (must fix before M4 closes):** the M3 `GrantService::approve` path still mints `writ-provenance-1` grants that stay executable on `writ-ledger-6`, without the D-040 verifier, challenge or enrollment. On `writ-ledger-6` only grants created by an M4 approval decision (`approval_grants`) may be executable; the M3 path must be removed from production or refuse; the closure adapter's broker approvals move to the M4 path with a test verifier (M4-11), and resulting output changes are measured, not assumed.
+- **G2** the agent-facing grant label for an approved request (`approval/<request id>`) and how the agent presents it: lead to specify with W3.
+- **G3** one approval request per kernel request id: an expired request blocks the same action until policy changes; acceptable fail-closed for M4, documented.
+- **G4** delegation chain stored empty (sealed requests carry no trusted chain); separation therefore covers requester and agent only until a trusted chain exists.
+- **G5** stored digests compared as text; verifier `finish` runs inside the store transaction.
+- **C3** scanner extension still open.
