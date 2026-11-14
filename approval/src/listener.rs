@@ -19,20 +19,37 @@
 //!   a fresh user-verified ceremony through the ledger (`begin_ceremony` then
 //!   `finish_ceremony`); the session only carries the server-side operation, target and
 //!   idempotency key between the two, so the client never chooses them.
+//! - **Routes** (W-F, D-043; documented in M4-INTERFACES "Pages and registration binding"):
+//!   `GET /request/<id>` (approve or deny), `GET /signoff/<id>` (a pending signoff of a
+//!   stored promotion context), the operator forms `GET /revoke`, `GET /role` and
+//!   `GET /enroll`, `POST /prepare` (a form's operation becomes the session's displayed
+//!   target with the ledger's context for it; a read) and `GET /view` (that context),
+//!   `POST /registration/begin` and `POST /registration/finish` (the new person's passkey
+//!   registration, bound to the operator and this page session, D-043 Y2), and
+//!   `POST /ceremony/begin` and `POST /ceremony/finish` for every operation. Every page
+//!   displays only the ledger's context for the ceremony, which is what its fingerprint
+//!   covers (R6); the operation, target, idempotency key, registration result and
+//!   page-session id are server-side session state, never request fields once displayed.
 //! - **Stale display:** a ceremony starts only if the fingerprint the page displayed is
-//!   the stored request's current fingerprint (and the ledger binds the challenge to it).
+//!   the current fingerprint of the stored request or of the ledger's recomputed context
+//!   (and the ledger binds the challenge to it).
 //! - **Channel identity**, verifier and relying party are the ledger's configured
 //!   approval channel (`writ_broker::human::ApprovalChannel`, M1), never a request field.
 //! - **Outstanding ceremonies** (L2): at most `max_pending` per session and
-//!   `max_outstanding` issued, unexpired challenges across all sessions (each counted for
-//!   at most the 120 s challenge lifetime); further begins are refused. When
-//!   `max_sessions` is reached, only a session without a pending ceremony is evicted;
-//!   if every session has one, the new session is refused (fail closed).
+//!   `max_outstanding` issued, unexpired challenges and registration rows across all
+//!   sessions (a challenge counted for at most the 120 s challenge lifetime, a registration
+//!   row for its 600 s lifetime); further begins are refused. When `max_sessions` is
+//!   reached, only a session without a pending ceremony or registration is evicted; if
+//!   every session has one, the new session is refused (fail closed). Repeated hostile
+//!   loopback requests can sustain this denial of service: 120 s bounds one challenge, not
+//!   the overall outage (N2).
 //! - **Responses** carry a strict Content-Security-Policy (no inline script or style),
 //!   `nosniff`, `frame-ancestors 'none'`, `no-referrer` and `no-store`. A refused `begin`
 //!   answers one generic `refused` (L1: the page session is not an authentication, so it
 //!   never learns whether the subject is unknown, a service, revoked, without permission
-//!   or without a credential; the specific code stays in the ledger's refusal audit).
+//!   or without a credential; the specific code stays in the ledger's refusal audit);
+//!   `/prepare` and `/registration/begin` answer the same generic `refused`, and a
+//!   signoff id the ledger does not offer is one generic not-found page.
 //!   After a begin, the page receives the verifier's options including the subject's
 //!   allowed credential ids (WebAuthn `allowCredentials`; documented exposure). A refused
 //!   `finish` returns the internal refusal code (O-6); a verifier that reports itself
@@ -54,11 +71,14 @@ use hyper::header::{HeaderMap, HeaderValue};
 use hyper::server::conn::http1;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
-use writ_broker::approval::ApprovalCode;
-use writ_broker::approval_store::{CeremonyOp, CeremonyResult};
-use writ_broker::human::{SubjectId, VerifierError};
+use writ_broker::approval::{ApprovalCode, RevocationTarget};
+use writ_broker::approval_store::{
+    parse_permission, CeremonyOp, CeremonyResult, NewEnrollment, NewRole, OperatorSession,
+    RoleChange, SignoffParties, REGISTRATION_TTL_SECONDS,
+};
+use writ_broker::human::{PrincipalKind, SubjectId, VerifiedRegistration, VerifierError};
 use writ_broker::refusal::Refusal;
-use writ_broker::writ_kernel::json;
+use writ_broker::writ_kernel::json::{self, Value};
 
 use crate::backend::{Backend, Unavailable};
 use crate::page;
@@ -118,6 +138,10 @@ impl Default for Limits {
 /// challenge lifetime is at most this, I-2).
 const OUTSTANDING_SECONDS: u64 = 120;
 
+/// The lifetime for which a begun registration row is counted as outstanding (the
+/// ledger's row lifetime, D-043 Y2).
+const REGISTRATION_SECONDS: u64 = REGISTRATION_TTL_SECONDS as u64;
+
 /// The listener's trusted configuration. The channel identity recorded on decisions is the
 /// ledger's configured approval channel (O-2, M1).
 #[derive(Clone, Debug)]
@@ -143,12 +167,56 @@ struct Pending {
     expires: Instant,
 }
 
+/// What a page session displayed: its server-held ceremony target (the client never
+/// chooses or changes it after the display).
+enum Shown {
+    /// A stored approval request: approve or deny (the verdict chooses the operation).
+    Request {
+        request_id: String,
+        fingerprint: String,
+    },
+    /// A signoff, revocation, enrollment or role change: one fixed operation with the
+    /// ledger's context for it as displayed (R6).
+    Op {
+        title: &'static str,
+        op: Box<CeremonyOp>,
+        context: Value,
+        fingerprint: String,
+        /// For an enrollment: the operator who began the registration row (D-043 Y2); the
+        /// ceremony is begun only for that subject.
+        actor: Option<SubjectId>,
+    },
+}
+
+/// A registration row this page session began (D-043 Y2).
+struct Registration {
+    subject: SubjectId,
+    operator: SubjectId,
+    /// Counted as outstanding until then (the row's lifetime).
+    expires: Instant,
+    /// The verified registration once finished (held server-side for the enrollment).
+    verified: Option<VerifiedRegistration>,
+}
+
 struct Session {
     csrf: String,
-    request_id: String,
-    fingerprint: String,
+    /// The page-session id (random, not secret, distinct from the cookie token) that
+    /// registration rows and enrollments of this session are bound to (D-043 Y2).
+    id: String,
+    shown: Option<Shown>,
     expires: Instant,
     pending: HashMap<String, Pending>,
+    registrations: HashMap<String, Registration>,
+}
+
+impl Session {
+    fn busy(&self) -> bool {
+        !self.pending.is_empty() || !self.registrations.is_empty()
+    }
+
+    fn outstanding(&self) -> usize {
+        self.pending.len() + self.registrations.len()
+    }
 }
 
 struct State {
@@ -431,13 +499,19 @@ async fn handle(state: &State, req: Request<Incoming>) -> Response<Full> {
                 "text/css; charset=utf-8",
                 page::STYLE.into(),
             ),
-            _ => match path.strip_prefix("/request/") {
-                Some(id) => view(state, id),
-                None => html(
-                    StatusCode::NOT_FOUND,
-                    page::message_page("Not found", "No such page."),
-                ),
-            },
+            "/revoke" => form(state, page::FormKind::Revoke),
+            "/role" => form(state, page::FormKind::Role),
+            "/enroll" => form(state, page::FormKind::Enroll),
+            "/view" => shown_view(state, cookie_token(&parts.headers).as_deref()),
+            _ => {
+                if let Some(id) = path.strip_prefix("/request/") {
+                    view(state, id)
+                } else if let Some(id) = path.strip_prefix("/signoff/") {
+                    signoff_view(state, id)
+                } else {
+                    not_found()
+                }
+            }
         };
     }
     if parts.method != Method::POST {
@@ -472,8 +546,18 @@ async fn handle(state: &State, req: Request<Incoming>) -> Response<Full> {
     match path {
         "/ceremony/begin" => begin(state, &token, &field),
         "/ceremony/finish" => finish(state, &token, &field),
+        "/prepare" => prepare(state, &token, &field),
+        "/registration/begin" => registration_begin(state, &token, &field),
+        "/registration/finish" => registration_finish(state, &token, &field),
         _ => refused(StatusCode::NOT_FOUND, "path"),
     }
+}
+
+fn not_found() -> Response<Full> {
+    html(
+        StatusCode::NOT_FOUND,
+        page::message_page("Not found", "No such page."),
+    )
 }
 
 fn sessions(state: &State) -> std::sync::MutexGuard<'_, HashMap<String, Session>> {
@@ -484,17 +568,74 @@ fn sessions(state: &State) -> std::sync::MutexGuard<'_, HashMap<String, Session>
 }
 
 /// Drop expired sessions and, in the others, pending ceremonies past their challenge
-/// lifetime.
+/// lifetime and registration rows past theirs.
 fn prune(sessions: &mut HashMap<String, Session>, now: Instant) {
     sessions.retain(|_, s| s.expires > now);
     for s in sessions.values_mut() {
         s.pending.retain(|_, p| p.expires > now);
+        s.registrations.retain(|_, r| r.expires > now);
     }
 }
 
-/// Issued, unexpired challenges begun through this listener (after [`prune`]).
+/// Issued, unexpired challenges and registration rows begun through this listener (after
+/// [`prune`]).
 fn outstanding(sessions: &HashMap<String, Session>) -> usize {
-    sessions.values().map(|s| s.pending.len()).sum()
+    sessions.values().map(Session::outstanding).sum()
+}
+
+/// A new page session displaying `shown`: (cookie token, CSRF token). L2: the oldest
+/// session without a pending ceremony or registration is evicted at the bound; when every
+/// session has one, the new session is refused (fail closed).
+fn new_session(
+    state: &State,
+    shown: Option<Shown>,
+) -> Result<(String, String), Box<Response<Full>>> {
+    let (Some(token), Some(csrf), Some(id)) = (random_token(), random_token(), random_token())
+    else {
+        return Err(Box::new(unavailable()));
+    };
+    let limits = &state.config.limits;
+    let mut sessions = sessions(state);
+    let now = Instant::now();
+    prune(&mut sessions, now);
+    while sessions.len() >= limits.max_sessions {
+        let Some(oldest) = sessions
+            .iter()
+            .filter(|(_, s)| !s.busy())
+            .min_by_key(|(_, s)| s.expires)
+            .map(|(k, _)| k.clone())
+        else {
+            return Err(Box::new(refused(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "sessions",
+            )));
+        };
+        sessions.remove(&oldest);
+    }
+    sessions.insert(
+        token.clone(),
+        Session {
+            csrf: csrf.clone(),
+            id: format!("page-session-{id}"),
+            shown,
+            expires: now + limits.session_ttl,
+            pending: HashMap::new(),
+            registrations: HashMap::new(),
+        },
+    );
+    Ok((token, csrf))
+}
+
+/// `body` with the new session's cookie.
+fn with_cookie(state: &State, mut response: Response<Full>, token: &str) -> Response<Full> {
+    let cookie = format!(
+        "{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}",
+        state.config.limits.session_ttl.as_secs()
+    );
+    if let Ok(v) = HeaderValue::from_str(&cookie) {
+        response.headers_mut().insert("set-cookie", v);
+    }
+    response
 }
 
 /// GET `/request/<id>`: the stored, fingerprint-covered context and a new page session.
@@ -512,39 +653,15 @@ fn view(state: &State, raw_id: &str) -> Response<Full> {
         }
         Err(Unavailable) => return unavailable(),
     };
-    let (Some(token), Some(csrf)) = (random_token(), random_token()) else {
-        return unavailable();
-    };
     let fingerprint = request.fingerprint().as_str().to_string();
-    let limits = &state.config.limits;
-    {
-        let mut sessions = sessions(state);
-        let now = Instant::now();
-        prune(&mut sessions, now);
-        // L2: evict the oldest session without a pending ceremony; when every session has
-        // one, refuse the new session instead (fail closed).
-        while sessions.len() >= limits.max_sessions {
-            let Some(oldest) = sessions
-                .iter()
-                .filter(|(_, s)| s.pending.is_empty())
-                .min_by_key(|(_, s)| s.expires)
-                .map(|(k, _)| k.clone())
-            else {
-                return refused(StatusCode::SERVICE_UNAVAILABLE, "sessions");
-            };
-            sessions.remove(&oldest);
-        }
-        sessions.insert(
-            token.clone(),
-            Session {
-                csrf: csrf.clone(),
-                request_id: id.clone(),
-                fingerprint: fingerprint.clone(),
-                expires: now + limits.session_ttl,
-                pending: HashMap::new(),
-            },
-        );
-    }
+    let shown = Shown::Request {
+        request_id: id.clone(),
+        fingerprint: fingerprint.clone(),
+    };
+    let (token, csrf) = match new_session(state, Some(shown)) {
+        Ok(t) => t,
+        Err(response) => return *response,
+    };
     let expires = request.expires_at().to_string();
     let body = page::request_page(&page::Displayed {
         request_id: &id,
@@ -555,15 +672,112 @@ fn view(state: &State, raw_id: &str) -> Response<Full> {
         csrf: &csrf,
         decidable: status == writ_broker::approval::ApprovalStatus::Pending,
     });
-    let mut response = html(StatusCode::OK, body);
-    let cookie = format!(
-        "{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}",
-        limits.session_ttl.as_secs()
-    );
-    if let Ok(v) = HeaderValue::from_str(&cookie) {
-        response.headers_mut().insert("set-cookie", v);
+    with_cookie(state, html(StatusCode::OK, body), &token)
+}
+
+/// The fixed page title of a ceremony operation.
+fn title(op: &CeremonyOp) -> &'static str {
+    match op {
+        CeremonyOp::Approve { .. } | CeremonyOp::Deny { .. } => "Approval request",
+        CeremonyOp::Revoke { .. } => "Revocation",
+        CeremonyOp::Signoff { .. } => "Signoff",
+        CeremonyOp::Enroll { .. } => "Enrollment",
+        CeremonyOp::RoleChange { .. } => "Role change",
     }
-    response
+}
+
+/// GET `/signoff/<id>`: the ledger's pending signoff binding of a stored promotion context
+/// and the complete context a signoff ceremony binds (its reviewed parties and exclusions,
+/// `delegation_chain: unavailable` and the expiry the ledger set), with a new page session.
+fn signoff_view(state: &State, raw_id: &str) -> Response<Full> {
+    let Some(id) = page::path_segment(raw_id) else {
+        return refused(StatusCode::BAD_REQUEST, "signoff id");
+    };
+    let none = || {
+        html(
+            StatusCode::NOT_FOUND,
+            page::message_page("No pending signoff", "No pending signoff has this id."),
+        )
+    };
+    let binding = match state.backend.pending_signoff(&id) {
+        Ok(Some(b)) => b,
+        Ok(None) => return none(),
+        Err(Unavailable) => return unavailable(),
+    };
+    let op = CeremonyOp::Signoff {
+        binding: Box::new(binding),
+        parties: SignoffParties::default(),
+    };
+    let context = match state.backend.context(&op) {
+        Ok(Ok(c)) => c,
+        Ok(Err(_)) => return none(),
+        Err(Unavailable) => return unavailable(),
+    };
+    let fingerprint = context.binding.context_fingerprint.as_str().to_string();
+    let shown = Shown::Op {
+        title: title(&op),
+        fingerprint: fingerprint.clone(),
+        context: context.context.clone(),
+        op: Box::new(op),
+        actor: None,
+    };
+    let (token, csrf) = match new_session(state, Some(shown)) {
+        Ok(t) => t,
+        Err(response) => return *response,
+    };
+    let body = page::target_page(&page::Target {
+        title: "Signoff",
+        fingerprint: &fingerprint,
+        context: &context.context,
+        csrf: &csrf,
+    });
+    with_cookie(state, html(StatusCode::OK, body), &token)
+}
+
+/// GET `/revoke`, `/role`, `/enroll`: an operator form with a new page session (nothing
+/// displayed yet; the form goes to `/prepare`).
+fn form(state: &State, kind: page::FormKind) -> Response<Full> {
+    let (token, csrf) = match new_session(state, None) {
+        Ok(t) => t,
+        Err(response) => return *response,
+    };
+    with_cookie(
+        state,
+        html(StatusCode::OK, page::form_page(kind, &csrf)),
+        &token,
+    )
+}
+
+/// GET `/view`: the context this session prepared (as the ledger returned it, R6).
+fn shown_view(state: &State, token: Option<&str>) -> Response<Full> {
+    let Some(token) = token else {
+        return not_found();
+    };
+    let mut sessions = sessions(state);
+    let Some(session) = sessions.get(token) else {
+        return not_found();
+    };
+    if session.expires <= Instant::now() {
+        sessions.remove(token);
+        return not_found();
+    }
+    match &session.shown {
+        Some(Shown::Op {
+            title,
+            context,
+            fingerprint,
+            ..
+        }) => html(
+            StatusCode::OK,
+            page::target_page(&page::Target {
+                title,
+                fingerprint,
+                context,
+                csrf: &session.csrf,
+            }),
+        ),
+        _ => not_found(),
+    }
 }
 
 fn unavailable() -> Response<Full> {
@@ -584,7 +798,30 @@ fn checked<'a>(
     (csrf.is_some_and(|c| same_token(c, &session.csrf))).then_some(session)
 }
 
-/// POST `/ceremony/begin`: a challenge for approving or denying the session's request.
+/// The verifier's options as JSON (anything else is sent as a string).
+fn options_json(options: &[u8]) -> String {
+    std::str::from_utf8(options)
+        .ok()
+        .filter(|t| json::parse(t.as_bytes()).is_ok())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            format!(
+                "\"{}\"",
+                page::json_string(&String::from_utf8_lossy(options))
+            )
+        })
+}
+
+/// A subject of this page's realm named by a form field.
+fn subject_field(state: &State, value: Option<&str>) -> Option<SubjectId> {
+    match value {
+        Some(s) if !s.is_empty() => Some(SubjectId::new(&state.config.subject_issuer, s)),
+        _ => None,
+    }
+}
+
+/// POST `/ceremony/begin`: a challenge for the session's displayed target (approve or deny
+/// a request; confirm a signoff, revocation, enrollment or role change).
 ///
 /// A slot is reserved (per session and across all sessions, L2) under the session lock
 /// before the ledger is asked, so concurrent begins never exceed the bounds; the
@@ -595,7 +832,7 @@ fn begin<'a>(
     field: &dyn Fn(&str) -> Option<&'a str>,
 ) -> Response<Full> {
     let limits = &state.config.limits;
-    let (request_id, op, idempotency_key, reservation) = {
+    let (op, actor, idempotency_key, reservation) = {
         let mut sessions = sessions(state);
         let now = Instant::now();
         prune(&mut sessions, now);
@@ -603,25 +840,47 @@ fn begin<'a>(
         let Some(session) = checked(&mut sessions, token, field("csrf")) else {
             return refused(StatusCode::FORBIDDEN, "session");
         };
-        if field("request_id") != Some(session.request_id.as_str()) {
-            return refused(StatusCode::FORBIDDEN, "target");
-        }
-        if field("fingerprint") != Some(session.fingerprint.as_str()) {
-            return refused(StatusCode::CONFLICT, "stale display");
-        }
-        if session.pending.len() >= limits.max_pending || total >= limits.max_outstanding {
+        let (op, actor) = match &session.shown {
+            Some(Shown::Request {
+                request_id,
+                fingerprint,
+            }) => {
+                if field("request_id") != Some(request_id.as_str()) {
+                    return refused(StatusCode::FORBIDDEN, "target");
+                }
+                if field("fingerprint") != Some(fingerprint.as_str()) {
+                    return refused(StatusCode::CONFLICT, "stale display");
+                }
+                let request_id = request_id.clone();
+                let op = match field("verdict") {
+                    Some("approve") => CeremonyOp::Approve { request_id },
+                    Some("deny") => CeremonyOp::Deny { request_id },
+                    _ => return refused(StatusCode::BAD_REQUEST, "verdict"),
+                };
+                (op, None)
+            }
+            Some(Shown::Op {
+                op,
+                fingerprint,
+                actor,
+                ..
+            }) => {
+                if field("request_id").is_some() {
+                    return refused(StatusCode::FORBIDDEN, "target");
+                }
+                if field("fingerprint") != Some(fingerprint.as_str()) {
+                    return refused(StatusCode::CONFLICT, "stale display");
+                }
+                if field("verdict") != Some("confirm") {
+                    return refused(StatusCode::BAD_REQUEST, "verdict");
+                }
+                ((**op).clone(), actor.clone())
+            }
+            None => return refused(StatusCode::FORBIDDEN, "target"),
+        };
+        if session.outstanding() >= limits.max_pending || total >= limits.max_outstanding {
             return refused(StatusCode::TOO_MANY_REQUESTS, "pending");
         }
-        let request_id = session.request_id.clone();
-        let op = match field("verdict") {
-            Some("approve") => CeremonyOp::Approve {
-                request_id: request_id.clone(),
-            },
-            Some("deny") => CeremonyOp::Deny {
-                request_id: request_id.clone(),
-            },
-            _ => return refused(StatusCode::BAD_REQUEST, "verdict"),
-        };
         let (Some(key), Some(slot)) = (random_token(), random_token()) else {
             return unavailable();
         };
@@ -635,7 +894,7 @@ fn begin<'a>(
                 expires: now + Duration::from_secs(OUTSTANDING_SECONDS),
             },
         );
-        (request_id, op, idempotency_key, reservation)
+        (op, actor, idempotency_key, reservation)
     };
     let release = |response: Response<Full>| {
         if let Some(session) = sessions(state).get_mut(token) {
@@ -644,19 +903,34 @@ fn begin<'a>(
         response
     };
     // The displayed context must still be the stored one (stale display).
-    match state.backend.request(&request_id) {
-        Ok(Some((request, _))) => {
-            if field("fingerprint") != Some(request.fingerprint().as_str()) {
-                return release(refused(StatusCode::CONFLICT, "stale display"));
+    let current = match &op {
+        CeremonyOp::Approve { request_id } | CeremonyOp::Deny { request_id } => {
+            match state.backend.request(request_id) {
+                Ok(Some((request, _))) => request.fingerprint().as_str().to_string(),
+                Ok(None) => {
+                    return release(refused(StatusCode::NOT_FOUND, "APPROVAL_REQUEST_UNKNOWN"))
+                }
+                Err(Unavailable) => return release(unavailable()),
             }
         }
-        Ok(None) => return release(refused(StatusCode::NOT_FOUND, "APPROVAL_REQUEST_UNKNOWN")),
-        Err(Unavailable) => return release(unavailable()),
-    }
-    let subject = match field("subject") {
-        Some(s) if !s.is_empty() => SubjectId::new(&state.config.subject_issuer, s),
-        _ => return release(refused(StatusCode::BAD_REQUEST, "subject")),
+        _ => match state.backend.context(&op) {
+            Ok(Ok(c)) => c.binding.context_fingerprint.as_str().to_string(),
+            // L1: one generic refusal.
+            Ok(Err(_)) => return release(refused(StatusCode::FORBIDDEN, "refused")),
+            Err(Unavailable) => return release(unavailable()),
+        },
     };
+    if field("fingerprint") != Some(current.as_str()) {
+        return release(refused(StatusCode::CONFLICT, "stale display"));
+    }
+    let Some(subject) = subject_field(state, field("subject")) else {
+        return release(refused(StatusCode::BAD_REQUEST, "subject"));
+    };
+    // D-043 Y2: an enrollment is begun only by the operator who registered the credential
+    // in this session (the ledger checks it again).
+    if actor.as_ref().is_some_and(|a| a != &subject) {
+        return release(refused(StatusCode::FORBIDDEN, "refused"));
+    }
     let issued = match state.backend.begin(&op, &subject, &idempotency_key) {
         Ok(Ok(issued)) => issued,
         // L1: one generic refusal; the specific code is in the ledger's refusal audit.
@@ -673,24 +947,14 @@ fn begin<'a>(
         };
         session.pending.insert(issued.challenge_id.clone(), pending);
     }
-    // The verifier's options are JSON; anything else is sent as a string.
-    let options = std::str::from_utf8(&issued.client_options)
-        .ok()
-        .filter(|t| json::parse(t.as_bytes()).is_ok())
-        .map(str::to_string)
-        .unwrap_or_else(|| {
-            format!(
-                "\"{}\"",
-                page::json_string(&String::from_utf8_lossy(&issued.client_options))
-            )
-        });
     respond(
         StatusCode::OK,
         "application/json",
         format!(
-            "{{\"challenge_id\":\"{}\",\"expires_at\":\"{}\",\"options\":{options}}}",
+            "{{\"challenge_id\":\"{}\",\"expires_at\":\"{}\",\"options\":{}}}",
             page::json_string(&issued.challenge_id),
             page::json_string(&issued.expires_at.to_string()),
+            options_json(&issued.client_options),
         ),
     )
 }
@@ -734,6 +998,19 @@ fn finish<'a>(
     };
     if let Some(session) = sessions(state).get_mut(token) {
         session.pending.remove(challenge_id);
+        // An enrollment consumed its registration row (or burnt the challenge); either way
+        // the row is no longer this session's to use.
+        if let CeremonyOp::Enroll {
+            enrollment:
+                NewEnrollment {
+                    credential: Some(c),
+                    ..
+                },
+            ..
+        } = &op
+        {
+            session.registrations.remove(c.registration_id());
+        }
     }
     match answer {
         Ok(outcome) => {
@@ -755,5 +1032,330 @@ fn finish<'a>(
             )
         }
         Err(refusal) => refused(StatusCode::FORBIDDEN, refusal.code()),
+    }
+}
+
+/// Bound on linked identities and roles in one enrollment form.
+const MAX_FORM_LINES: usize = 32;
+
+/// `issuer subject` per line.
+fn linked_lines(text: &str) -> Option<Vec<SubjectId>> {
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.len() > MAX_FORM_LINES {
+        return None;
+    }
+    lines
+        .into_iter()
+        .map(|l| {
+            let (issuer, subject) = l.split_once(char::is_whitespace)?;
+            let subject = subject.trim();
+            (!issuer.is_empty() && !subject.is_empty()).then(|| SubjectId::new(issuer, subject))
+        })
+        .collect()
+}
+
+/// `permission tenant project` per line.
+fn role_lines(text: &str) -> Option<Vec<NewRole>> {
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.len() > MAX_FORM_LINES {
+        return None;
+    }
+    lines
+        .into_iter()
+        .map(|l| {
+            let words: Vec<&str> = l.split_whitespace().collect();
+            let [permission, tenant, project] = words.as_slice() else {
+                return None;
+            };
+            Some(NewRole {
+                permission: parse_permission(permission)?,
+                tenant_id: tenant.to_string(),
+                project_id: project.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// A non-empty field.
+fn nonempty(value: Option<&str>) -> Option<&str> {
+    value.filter(|v| !v.is_empty())
+}
+
+/// The operation an operator form names (never an approval: those come only from a stored
+/// request's page). `Err` names the malformed field.
+fn form_op<'a>(
+    state: &State,
+    session: &Session,
+    field: &dyn Fn(&str) -> Option<&'a str>,
+) -> Result<(CeremonyOp, Option<SubjectId>), &'static str> {
+    let target = || nonempty(field("target")).ok_or("target");
+    let issuer = || nonempty(field("target_issuer")).unwrap_or(&state.config.subject_issuer);
+    match field("operation") {
+        Some("revoke") => {
+            let target = match field("target_kind") {
+                Some("grant") => RevocationTarget::Grant(target()?.to_string()),
+                Some("signoff") => RevocationTarget::Signoff(target()?.to_string()),
+                Some("credential") => RevocationTarget::Credential(target()?.to_string()),
+                Some("subject") => RevocationTarget::Subject(SubjectId::new(issuer(), target()?)),
+                Some("role") => RevocationTarget::Role(target()?.to_string()),
+                _ => return Err("target kind"),
+            };
+            let reason = nonempty(field("reason")).ok_or("reason")?;
+            Ok((
+                CeremonyOp::Revoke {
+                    target,
+                    reason: reason.to_string(),
+                },
+                None,
+            ))
+        }
+        Some("role-grant") => {
+            let permission = field("permission")
+                .and_then(parse_permission)
+                .ok_or("permission")?;
+            Ok((
+                CeremonyOp::RoleChange {
+                    change: RoleChange::Grant {
+                        subject: SubjectId::new(issuer(), target()?),
+                        permission,
+                        tenant_id: nonempty(field("tenant_id")).ok_or("tenant")?.to_string(),
+                        project_id: nonempty(field("project_id")).ok_or("project")?.to_string(),
+                    },
+                },
+                None,
+            ))
+        }
+        Some("role-revoke") => Ok((
+            CeremonyOp::RoleChange {
+                change: RoleChange::Revoke {
+                    assignment_id: target()?.to_string(),
+                },
+            },
+            None,
+        )),
+        Some("enroll") => {
+            let id = nonempty(field("registration_id")).ok_or("registration")?;
+            let registration = session.registrations.get(id).ok_or("registration")?;
+            let credential = registration.verified.clone().ok_or("registration")?;
+            let linked = linked_lines(field("linked").unwrap_or("")).ok_or("linked")?;
+            let roles = role_lines(field("roles").unwrap_or("")).ok_or("roles")?;
+            Ok((
+                CeremonyOp::Enroll {
+                    enrollment: NewEnrollment {
+                        subject: registration.subject.clone(),
+                        kind: PrincipalKind::Human,
+                        credential: Some(credential),
+                        linked_identities: linked,
+                        roles,
+                    },
+                    operator_session: session.id.clone(),
+                },
+                Some(registration.operator.clone()),
+            ))
+        }
+        _ => Err("operation"),
+    }
+}
+
+/// POST `/prepare`: an operator form's operation becomes this session's displayed target
+/// with the ledger's context for it (a read; nothing is begun). Answers `{"view":"/view"}`;
+/// a ledger refusal is one generic `refused` (L1).
+fn prepare<'a>(
+    state: &State,
+    token: &str,
+    field: &dyn Fn(&str) -> Option<&'a str>,
+) -> Response<Full> {
+    let (op, actor) = {
+        let mut sessions = sessions(state);
+        let Some(session) = checked(&mut sessions, token, field("csrf")) else {
+            return refused(StatusCode::FORBIDDEN, "session");
+        };
+        // A displayed target never changes under a pending ceremony.
+        if !session.pending.is_empty() {
+            return refused(StatusCode::CONFLICT, "pending");
+        }
+        match form_op(state, session, field) {
+            Ok(found) => found,
+            Err(what) => return refused(StatusCode::BAD_REQUEST, what),
+        }
+    };
+    let context = match state.backend.context(&op) {
+        Ok(Ok(c)) => c,
+        Ok(Err(_)) => return refused(StatusCode::FORBIDDEN, "refused"),
+        Err(Unavailable) => return unavailable(),
+    };
+    let mut sessions = sessions(state);
+    let Some(session) = checked(&mut sessions, token, field("csrf")) else {
+        return refused(StatusCode::FORBIDDEN, "session");
+    };
+    if !session.pending.is_empty() {
+        return refused(StatusCode::CONFLICT, "pending");
+    }
+    session.shown = Some(Shown::Op {
+        title: title(&op),
+        fingerprint: context.binding.context_fingerprint.as_str().to_string(),
+        context: context.context,
+        op: Box::new(op),
+        actor,
+    });
+    respond(
+        StatusCode::OK,
+        "application/json",
+        "{\"view\":\"/view\"}".into(),
+    )
+}
+
+/// POST `/registration/begin`: an `enroll` registration row for a new subject, begun by
+/// the named operator in this page session (D-043 Y2). Counted against the same bounds as
+/// ceremonies (L2) for the row's lifetime; a ledger refusal is one generic `refused` (L1).
+fn registration_begin<'a>(
+    state: &State,
+    token: &str,
+    field: &dyn Fn(&str) -> Option<&'a str>,
+) -> Response<Full> {
+    let limits = &state.config.limits;
+    let (Some(operator), Some(subject)) = (
+        subject_field(state, field("operator")),
+        subject_field(state, field("subject")),
+    ) else {
+        return refused(StatusCode::BAD_REQUEST, "subject");
+    };
+    let (session_id, reservation) = {
+        let mut sessions = sessions(state);
+        let now = Instant::now();
+        prune(&mut sessions, now);
+        let total = outstanding(&sessions);
+        let Some(session) = checked(&mut sessions, token, field("csrf")) else {
+            return refused(StatusCode::FORBIDDEN, "session");
+        };
+        if session.outstanding() >= limits.max_pending || total >= limits.max_outstanding {
+            return refused(StatusCode::TOO_MANY_REQUESTS, "pending");
+        }
+        let Some(slot) = random_token() else {
+            return unavailable();
+        };
+        let reservation = format!("reservation:{slot}");
+        session.registrations.insert(
+            reservation.clone(),
+            Registration {
+                subject: subject.clone(),
+                operator: operator.clone(),
+                expires: now + Duration::from_secs(REGISTRATION_SECONDS),
+                verified: None,
+            },
+        );
+        (session.id.clone(), reservation)
+    };
+    let release = |response: Response<Full>| {
+        if let Some(session) = sessions(state).get_mut(token) {
+            session.registrations.remove(&reservation);
+        }
+        response
+    };
+    let operator_session = OperatorSession {
+        operator,
+        session_id,
+    };
+    let issued = match state
+        .backend
+        .begin_registration(&subject, &operator_session)
+    {
+        Ok(Ok(issued)) => issued,
+        Ok(Err(_)) => return release(refused(StatusCode::FORBIDDEN, "refused")),
+        Err(Unavailable) => return release(unavailable()),
+    };
+    {
+        let mut sessions = sessions(state);
+        let Some(session) = sessions.get_mut(token) else {
+            return refused(StatusCode::FORBIDDEN, "session");
+        };
+        let Some(row) = session.registrations.remove(&reservation) else {
+            return refused(StatusCode::FORBIDDEN, "session");
+        };
+        session
+            .registrations
+            .insert(issued.registration_id.clone(), row);
+    }
+    respond(
+        StatusCode::OK,
+        "application/json",
+        format!(
+            "{{\"registration_id\":\"{}\",\"expires_at\":\"{}\",\"options\":{}}}",
+            page::json_string(&issued.registration_id),
+            page::json_string(&issued.expires_at.to_string()),
+            options_json(&issued.client_options),
+        ),
+    )
+}
+
+/// POST `/registration/finish`: the new person's registration response for a row this
+/// session began, finished in this operator session (D-043 Y2). The verified result stays
+/// in the session for `/prepare` (`operation=enroll`); it is never sent to the client.
+fn registration_finish<'a>(
+    state: &State,
+    token: &str,
+    field: &dyn Fn(&str) -> Option<&'a str>,
+) -> Response<Full> {
+    let Some(registration_id) = field("registration_id") else {
+        return refused(StatusCode::BAD_REQUEST, "registration");
+    };
+    let Some(response) = field("response") else {
+        return refused(StatusCode::BAD_REQUEST, "response");
+    };
+    let operator_session = {
+        let mut sessions = sessions(state);
+        let Some(session) = checked(&mut sessions, token, field("csrf")) else {
+            return refused(StatusCode::FORBIDDEN, "session");
+        };
+        match session.registrations.get(registration_id) {
+            Some(r) if r.verified.is_none() => OperatorSession {
+                operator: r.operator.clone(),
+                session_id: session.id.clone(),
+            },
+            _ => return refused(StatusCode::FORBIDDEN, "registration"),
+        }
+    };
+    let answer = match state.backend.finish_registration(
+        registration_id,
+        response.as_bytes(),
+        &operator_session,
+    ) {
+        Err(Unavailable) => return unavailable(),
+        Ok(Err(Refusal::Approval(ApprovalCode::AssertionInvalid(VerifierError::Unavailable)))) => {
+            return unavailable()
+        }
+        Ok(answer) => answer,
+    };
+    let mut sessions = sessions(state);
+    let Some(session) = sessions.get_mut(token) else {
+        return refused(StatusCode::FORBIDDEN, "session");
+    };
+    match answer {
+        Ok(verified) => {
+            let credential_id = verified.credential_id().to_string();
+            if let Some(r) = session.registrations.get_mut(registration_id) {
+                r.verified = Some(verified);
+            }
+            respond(
+                StatusCode::OK,
+                "application/json",
+                format!(
+                    "{{\"result\":\"registered\",\"credential_id\":\"{}\"}}",
+                    page::json_string(&credential_id)
+                ),
+            )
+        }
+        Err(refusal) => {
+            session.registrations.remove(registration_id);
+            refused(StatusCode::FORBIDDEN, refusal.code())
+        }
     }
 }

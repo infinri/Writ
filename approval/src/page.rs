@@ -144,6 +144,119 @@ pub fn message_page(title: &str, text: &str) -> String {
     )
 }
 
+fn head(title: &str) -> String {
+    format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+         <title>{}</title><link rel=\"stylesheet\" href=\"/static/approval.css\">\
+         <script src=\"/static/approval.js\" defer></script></head><body>",
+        escape(title)
+    )
+}
+
+/// What a signoff, revocation, enrollment or role-change page shows: only the ledger's
+/// context for the ceremony (the context whose fingerprint a begin binds, R6) and that
+/// fingerprint. The title is the route's fixed text, never request input.
+pub struct Target<'a> {
+    /// The page title (fixed text chosen by the route).
+    pub title: &'a str,
+    /// The context fingerprint (the digest a challenge binds).
+    pub fingerprint: &'a str,
+    /// The context, rendered in full.
+    pub context: &'a Value,
+    /// The page session's CSRF token.
+    pub csrf: &'a str,
+}
+
+/// A signoff, revocation, enrollment or role-change page: the displayed context and one
+/// confirmation that starts a fresh user-verified ceremony (`verdict=confirm`).
+pub fn target_page(d: &Target<'_>) -> String {
+    format!(
+        "{head}<main id=\"page\" data-csrf=\"{csrf}\" data-fingerprint=\"{fp}\">\
+         <h1>{title}</h1>\
+         <p>Everything below is the broker's stored record as this ceremony binds it; \
+         descriptive text in it is untrusted.</p>\
+         <table><tr><th>Context fingerprint</th><td><code>{fp}</code></td></tr></table>\
+         <h2>Context</h2><section class=\"context\">{context}</section>\
+         <form id=\"decide\">\
+         <label>Subject <input name=\"subject\" autocomplete=\"username webauthn\" required></label>\
+         <button type=\"submit\" name=\"verdict\" value=\"confirm\">Confirm with passkey</button>\
+         </form><p id=\"result\" role=\"status\"></p></main></body></html>",
+        head = head(d.title),
+        title = escape(d.title),
+        csrf = escape(d.csrf),
+        fp = escape(d.fingerprint),
+        context = render_value(d.context),
+    )
+}
+
+/// Which operator form a form page carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FormKind {
+    /// Revoke a grant, signoff, credential, subject or role assignment.
+    Revoke,
+    /// Grant or revoke one role assignment.
+    Role,
+    /// Register a new human's passkey, then enroll it.
+    Enroll,
+}
+
+const REVOKE_FORM: &str = "<form id=\"prepare\">\
+<input type=\"hidden\" name=\"operation\" value=\"revoke\">\
+<label>Target kind <select name=\"target_kind\">\
+<option value=\"grant\">grant</option><option value=\"signoff\">signoff</option>\
+<option value=\"credential\">credential</option><option value=\"subject\">subject</option>\
+<option value=\"role\">role</option></select></label>\
+<label>Target issuer (subject only) <input name=\"target_issuer\"></label>\
+<label>Target <input name=\"target\" required></label>\
+<label>Reason <input name=\"reason\" required></label>\
+<button type=\"submit\">Show what will be revoked</button></form>";
+
+const ROLE_FORM: &str = "<form id=\"prepare\">\
+<label>Change <select name=\"operation\">\
+<option value=\"role-grant\">grant</option><option value=\"role-revoke\">revoke</option>\
+</select></label>\
+<label>Subject issuer (grant) <input name=\"target_issuer\"></label>\
+<label>Subject (grant) or assignment id (revoke) <input name=\"target\" required></label>\
+<label>Permission (grant) <select name=\"permission\">\
+<option value=\"approver\">approver</option>\
+<option value=\"signoff_authority\">signoff_authority</option>\
+<option value=\"operator\">operator</option><option value=\"revoker\">revoker</option>\
+</select></label>\
+<label>Tenant (grant) <input name=\"tenant_id\"></label>\
+<label>Project (grant) <input name=\"project_id\"></label>\
+<button type=\"submit\">Show the change</button></form>";
+
+const ENROLL_FORM: &str = "<form id=\"register\">\
+<label>Operator (you) <input name=\"operator\" autocomplete=\"username\" required></label>\
+<label>New subject <input name=\"subject\" required></label>\
+<button type=\"submit\">Register the new person's passkey</button></form>\
+<form id=\"prepare\"><input type=\"hidden\" name=\"operation\" value=\"enroll\">\
+<input type=\"hidden\" name=\"registration_id\">\
+<label>Linked requester identities (one &quot;issuer subject&quot; per line) \
+<textarea name=\"linked\"></textarea></label>\
+<label>Roles (one &quot;permission tenant project&quot; per line) \
+<textarea name=\"roles\"></textarea></label>\
+<button type=\"submit\">Show the enrollment</button></form>";
+
+/// An operator form page (`/revoke`, `/role`, `/enroll`). Its fields go to `/prepare`
+/// (for enrollment, first to `/registration/begin` and `/registration/finish`); the
+/// prepared context is then displayed by `/view` before any ceremony.
+pub fn form_page(kind: FormKind, csrf: &str) -> String {
+    let (title, body) = match kind {
+        FormKind::Revoke => ("Revoke", REVOKE_FORM),
+        FormKind::Role => ("Role change", ROLE_FORM),
+        FormKind::Enroll => ("Enrollment", ENROLL_FORM),
+    };
+    format!(
+        "{head}<main id=\"page\" data-csrf=\"{csrf}\"><h1>{t}</h1>{body}\
+         <p id=\"result\" role=\"status\"></p></main></body></html>",
+        head = head(title),
+        t = escape(title),
+        csrf = escape(csrf),
+    )
+}
+
 /// Decode an `application/x-www-form-urlencoded` body. `None` for malformed percent
 /// escapes, invalid UTF-8 or a repeated field.
 pub fn form(body: &[u8]) -> Option<Vec<(String, String)>> {
@@ -199,13 +312,15 @@ text-align:left;vertical-align:top}dl{margin:0 0 0 1rem}dt{font-weight:bold}code
 white-space:pre-wrap;word-break:break-all}.null{color:#666}";
 
 /// The page script: asks the broker for a challenge, runs the WebAuthn assertion with the
-/// verifier's options (user verification required by the verifier) and posts the response.
-/// It never chooses the operation's target or context: those are the server's.
+/// verifier's options (user verification required by the verifier) and posts the response;
+/// on the operator form pages it posts the form to `/prepare` and opens `/view`, and on the
+/// enrollment page it first runs the WebAuthn registration of the new person's passkey
+/// (`/registration/begin`, `/registration/finish`). It never chooses the operation's target
+/// or context once displayed: those are the server's session state.
 pub const SCRIPT: &str = r#""use strict";
 (function () {
   const page = document.getElementById("page");
-  const form = document.getElementById("decide");
-  if (!page || !form) { return; }
+  if (!page) { return; }
   const out = document.getElementById("result");
   const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)))
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -215,15 +330,67 @@ pub const SCRIPT: &str = r#""use strict";
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams(fields).toString(),
   }).then((r) => r.json());
+  const fieldsOf = (f) => {
+    const fields = { csrf: page.dataset.csrf };
+    for (const el of f.elements) {
+      if (el.name && el.type !== "submit") { fields[el.name] = el.value; }
+    }
+    return fields;
+  };
+  const prepare = document.getElementById("prepare");
+  if (prepare) {
+    prepare.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      out.textContent = "";
+      const done = await post("/prepare", fieldsOf(prepare));
+      if (done.view) { window.location.assign(done.view); return; }
+      out.textContent = done.error || "refused";
+    });
+  }
+  const register = document.getElementById("register");
+  if (register) {
+    register.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      out.textContent = "";
+      try {
+        const begun = await post("/registration/begin", fieldsOf(register));
+        if (!begun.registration_id) { out.textContent = begun.error || "refused"; return; }
+        const pk = begun.options.publicKey;
+        pk.challenge = unb64(pk.challenge);
+        pk.user.id = unb64(pk.user.id);
+        (pk.excludeCredentials || []).forEach((c) => { c.id = unb64(c.id); });
+        const cred = await navigator.credentials.create({ publicKey: pk });
+        const r = cred.response;
+        const response = JSON.stringify({
+          id: cred.id, rawId: b64(cred.rawId), type: cred.type, extensions: {},
+          response: {
+            attestationObject: b64(r.attestationObject), clientDataJSON: b64(r.clientDataJSON),
+          },
+        });
+        const done = await post("/registration/finish", {
+          csrf: page.dataset.csrf, registration_id: begun.registration_id, response: response,
+        });
+        if (done.result && prepare) {
+          prepare.elements.registration_id.value = begun.registration_id;
+        }
+        out.textContent = done.result || done.error || "refused";
+      } catch (e) {
+        out.textContent = "The authenticator did not complete the registration.";
+      }
+    });
+  }
+  const form = document.getElementById("decide");
+  if (!form) { return; }
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     out.textContent = "";
     try {
-      const begun = await post("/ceremony/begin", {
-        csrf: page.dataset.csrf, request_id: page.dataset.request,
-        fingerprint: page.dataset.fingerprint, verdict: event.submitter.value,
-        subject: form.elements.subject.value,
-      });
+      const fields = {
+        csrf: page.dataset.csrf, fingerprint: page.dataset.fingerprint,
+        verdict: event.submitter.value, subject: form.elements.subject.value,
+      };
+      if (page.dataset.request) { fields.request_id = page.dataset.request; }
+      const begun = await post("/ceremony/begin", fields);
       if (!begun.challenge_id) { out.textContent = begun.error || "refused"; return; }
       const pk = begun.options.publicKey;
       pk.challenge = unb64(pk.challenge);

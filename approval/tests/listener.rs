@@ -14,11 +14,23 @@ use std::time::{Duration, Instant};
 
 use writ_approval::backend::{Backend, Unavailable};
 use writ_approval::listener::{ApprovalListener, Limits, ListenerConfig, MAX_SESSION_SECONDS};
-use writ_broker::approval::{ApprovalCode, ApprovalRequest, ApprovalStatus, NewApprovalRequest};
-use writ_broker::approval_store::{CeremonyOp, CeremonyOutcome, CeremonyResult, IssuedChallenge};
-use writ_broker::human::{SubjectId, VerifierError};
+use writ_broker::approval::{
+    context_fingerprint, ApprovalCode, ApprovalRequest, ApprovalStatus, ChallengeBinding,
+    ChallengeOperation, NewApprovalRequest, NewSignoff, RevocationTarget, SignoffExclusions,
+};
+use writ_broker::approval_store::{
+    revocation_context, role_change_context, CeremonyContext, CeremonyOp, CeremonyOutcome,
+    CeremonyResult, IssuedChallenge, IssuedRegistration, NewRole, OperatorSession, RoleChange,
+    SignoffParties,
+};
+use writ_broker::human::{
+    ActiveCredentials, ApprovalChannel, CeremonyStart, CeremonyState, HumanVerifier, Permission,
+    PrincipalKind, RegistrationBinding, RegistrationOperation, RegistrationStart,
+    RegistrationVerifier, RelyingParty, SubjectId, VerifiedAssertion, VerifiedRegistration,
+    VerifierCapability, VerifierError, ES256,
+};
 use writ_broker::refusal::Refusal;
-use writ_broker::writ_kernel::json;
+use writ_broker::writ_kernel::json::{self, Value};
 use writ_broker::writ_kernel::time::Timestamp;
 
 const HOSTILE: &str = "</td><script>alert(1)</script><img src=x onerror=alert(2)>";
@@ -36,6 +48,95 @@ enum Call {
         response: Vec<u8>,
         key: String,
     },
+    BeginRegistration {
+        subject: SubjectId,
+        operator: OperatorSession,
+    },
+    FinishRegistration {
+        registration_id: String,
+        response: Vec<u8>,
+        operator: OperatorSession,
+    },
+}
+
+/// A stub registration verifier: the only way a test outside the broker obtains a
+/// [`VerifiedRegistration`] is through an [`ApprovalChannel`] (it lends the capability).
+struct StubVerifier;
+
+impl HumanVerifier for StubVerifier {
+    fn relying_party(&self) -> RelyingParty {
+        RegistrationVerifier::relying_party(self)
+    }
+
+    fn begin(
+        &self,
+        _subject: &SubjectId,
+        _credentials: &ActiveCredentials,
+    ) -> Result<CeremonyStart, VerifierError> {
+        Err(VerifierError::Unavailable)
+    }
+
+    fn finish(
+        &self,
+        _capability: &VerifierCapability,
+        _state: &CeremonyState,
+        _response: &[u8],
+        _credentials: &ActiveCredentials,
+    ) -> Result<VerifiedAssertion, VerifierError> {
+        Err(VerifierError::Unavailable)
+    }
+}
+
+impl RegistrationVerifier for StubVerifier {
+    fn relying_party(&self) -> RelyingParty {
+        RelyingParty {
+            rp_id: "localhost".into(),
+            origin: "http://localhost:1".into(),
+        }
+    }
+
+    fn begin_registration(&self, _subject: &SubjectId) -> Result<RegistrationStart, VerifierError> {
+        Err(VerifierError::Unavailable)
+    }
+
+    fn finish_registration(
+        &self,
+        capability: &VerifierCapability,
+        binding: &RegistrationBinding,
+        _state: &CeremonyState,
+        _response: &[u8],
+    ) -> Result<VerifiedRegistration, VerifierError> {
+        Ok(VerifiedRegistration::new(
+            capability,
+            binding,
+            &format!("cred-{}", binding.subject.subject),
+            b"public-material".to_vec(),
+            ES256,
+            true,
+        ))
+    }
+}
+
+/// The pending signoff the fake offers.
+fn signoff_binding() -> NewSignoff {
+    NewSignoff {
+        signoff_id: "so-1".into(),
+        tenant_id: "t1".into(),
+        project_id: "p1".into(),
+        task_id: "task-1".into(),
+        workflow_id: "wf-1".into(),
+        from_state: "review".into(),
+        to_state: "done".into(),
+        acceptance_record_id: "rec-1".into(),
+        criterion_id: "crit-1".into(),
+        artifact_snapshot_id: "snap-1".into(),
+        artifact_digest: format!("sha256:{:064x}", 9),
+        acceptance_policy_id: "policy-1".into(),
+        acceptance_policy_version: "1".into(),
+        acceptance_policy_bundle_sha: "sha256:acceptance".into(),
+        state_revision: 3,
+        expires_at: Timestamp::parse_strict("2026-11-14T10:10:00Z").unwrap(),
+    }
 }
 
 /// One stored request whose context can change (stale display); a finish succeeds only for
@@ -46,6 +147,13 @@ struct Fake {
     next: Mutex<u32>,
     /// When set, `begin` refuses with it (the ledger's specific code).
     begin_refusal: Mutex<Option<Refusal>>,
+    /// Bumped to change every displayed ceremony context (stale display).
+    revision: Mutex<i64>,
+    /// When set, `context` refuses (an unknown target, for instance).
+    context_refusal: Mutex<bool>,
+    /// Registration rows the fake issued: id to subject.
+    rows: Mutex<Vec<(String, SubjectId)>>,
+    channel: ApprovalChannel,
 }
 
 fn request(action_note: &str) -> ApprovalRequest {
@@ -79,6 +187,15 @@ impl Fake {
             calls: Mutex::new(Vec::new()),
             next: Mutex::new(0),
             begin_refusal: Mutex::new(None),
+            revision: Mutex::new(0),
+            context_refusal: Mutex::new(false),
+            rows: Mutex::new(Vec::new()),
+            channel: ApprovalChannel::new(
+                Arc::new(StubVerifier),
+                Arc::new(StubVerifier),
+                "approval-listener",
+            )
+            .unwrap(),
         }
     }
 
@@ -142,11 +259,151 @@ impl Backend for Fake {
                 VerifierError::SignatureInvalid,
             ))));
         }
+        let result = match op {
+            CeremonyOp::Approve { .. } | CeremonyOp::Deny { .. } => CeremonyResult::Denied,
+            CeremonyOp::Revoke { .. } => CeremonyResult::Revoked {
+                use_state: writ_broker::approval_store::UseState::Unused,
+            },
+            CeremonyOp::Signoff { binding, .. } => CeremonyResult::SignedOff {
+                signoff_id: binding.signoff_id.clone(),
+            },
+            CeremonyOp::Enroll { enrollment, .. } => CeremonyResult::Enrolled {
+                subject: enrollment.subject.clone(),
+            },
+            CeremonyOp::RoleChange { .. } => CeremonyResult::RoleChanged {
+                assignment_id: "role-1".into(),
+            },
+        };
         Ok(Ok(CeremonyOutcome {
-            result: CeremonyResult::Denied,
+            result,
             ledger_seq: 7,
             replayed: false,
         }))
+    }
+
+    fn context(&self, op: &CeremonyOp) -> Result<Result<CeremonyContext, Refusal>, Unavailable> {
+        if *self.context_refusal.lock().unwrap() {
+            return Ok(Err(Refusal::Approval(ApprovalCode::EnrollmentUnsupported)));
+        }
+        let revision = *self.revision.lock().unwrap();
+        let record = json::obj([
+            ("note", json::s(HOSTILE)),
+            ("revision", Value::Int(revision)),
+        ]);
+        let (context, operation, target_id) = match op {
+            CeremonyOp::Approve { .. } | CeremonyOp::Deny { .. } => {
+                return Ok(Err(Refusal::Approval(ApprovalCode::RequestUnknown)))
+            }
+            CeremonyOp::Revoke { target, reason } => (
+                revocation_context(target, reason, "*", "*", record),
+                ChallengeOperation::Revoke,
+                target.target_id(),
+            ),
+            CeremonyOp::RoleChange { change } => (
+                role_change_context(change, "t1", "p1", record),
+                ChallengeOperation::RoleChange,
+                change.target_id(),
+            ),
+            CeremonyOp::Enroll { enrollment, .. } => (
+                json::obj([("enrollment", enrollment.context()), ("record", record)]),
+                ChallengeOperation::Enroll,
+                enrollment.target_id(),
+            ),
+            CeremonyOp::Signoff { binding, parties } => {
+                let excluded = SignoffExclusions {
+                    requesters: vec![SubjectId::new("adapter", HOSTILE)],
+                    agents: vec![SubjectId::new("adapter", "agent-7")],
+                    added: parties.added.clone(),
+                    ..SignoffExclusions::default()
+                };
+                let mut b = (**binding).clone();
+                b.state_revision += revision;
+                (
+                    b.context_with(&excluded),
+                    ChallengeOperation::Signoff,
+                    b.signoff_id.clone(),
+                )
+            }
+        };
+        Ok(Ok(CeremonyContext {
+            binding: ChallengeBinding {
+                operation,
+                tenant_id: "t1".into(),
+                project_id: "p1".into(),
+                target_id,
+                context_fingerprint: context_fingerprint(&context).unwrap(),
+                policy_bundle_sha: "none".into(),
+                revision: 0,
+            },
+            context,
+        }))
+    }
+
+    fn pending_signoff(&self, signoff_id: &str) -> Result<Option<NewSignoff>, Unavailable> {
+        Ok((signoff_id == "so-1").then(signoff_binding))
+    }
+
+    fn begin_registration(
+        &self,
+        subject: &SubjectId,
+        operator: &OperatorSession,
+    ) -> Result<Result<IssuedRegistration, Refusal>, Unavailable> {
+        self.calls.lock().unwrap().push(Call::BeginRegistration {
+            subject: subject.clone(),
+            operator: operator.clone(),
+        });
+        if operator.operator.subject == "mallory" {
+            return Ok(Err(Refusal::Approval(ApprovalCode::PermissionMissing)));
+        }
+        let mut rows = self.rows.lock().unwrap();
+        let id = format!("reg-{}", rows.len() + 1);
+        rows.push((id.clone(), subject.clone()));
+        Ok(Ok(IssuedRegistration {
+            registration_id: id,
+            client_options: br#"{"publicKey":{"challenge":"AAAA","user":{"id":"AAAA"}}}"#.to_vec(),
+            expires_at: Timestamp::parse_strict("2026-11-14T10:10:00Z").unwrap(),
+        }))
+    }
+
+    fn finish_registration(
+        &self,
+        registration_id: &str,
+        response: &[u8],
+        operator: &OperatorSession,
+    ) -> Result<Result<VerifiedRegistration, Refusal>, Unavailable> {
+        self.calls.lock().unwrap().push(Call::FinishRegistration {
+            registration_id: registration_id.into(),
+            response: response.to_vec(),
+            operator: operator.clone(),
+        });
+        if response == b"registration-down" {
+            return Ok(Err(Refusal::Approval(ApprovalCode::AssertionInvalid(
+                VerifierError::Unavailable,
+            ))));
+        }
+        if response != b"valid-registration" {
+            return Ok(Err(Refusal::Approval(ApprovalCode::AssertionInvalid(
+                VerifierError::SignatureInvalid,
+            ))));
+        }
+        let rows = self.rows.lock().unwrap();
+        let Some((_, subject)) = rows.iter().find(|(id, _)| id == registration_id) else {
+            return Ok(Err(Refusal::Approval(ApprovalCode::EnrollmentUnsupported)));
+        };
+        let binding = RegistrationBinding {
+            registration_id: registration_id.into(),
+            operation: RegistrationOperation::Enroll,
+            subject: subject.clone(),
+            relying_party: self.channel.relying_party().clone(),
+        };
+        Ok(self
+            .channel
+            .finish_registration(
+                &binding,
+                &CeremonyState::from_bytes(b"s".to_vec()),
+                response,
+            )
+            .map_err(|e| Refusal::Approval(ApprovalCode::AssertionInvalid(e))))
     }
 }
 
@@ -743,4 +1000,523 @@ fn a_verifier_outage_keeps_the_pending_ceremony() {
         status(&finish_in(&s, &a, &challenge, "valid-assertion")),
         403
     );
+}
+
+// ---------------------------------------------------------------------------
+// Signoff, revocation, role-change and enrollment pages (W-F, D-043).
+
+/// A GET that opens a page session: (cookie, CSRF token, the response).
+fn open(s: &Server, path: &str) -> (String, String, String) {
+    let page = s.get(path, "");
+    assert_eq!(status(&page), 200, "{page}");
+    let cookie = between(&page, "writ_session=", ";");
+    let csrf = between(&page, "data-csrf=\"", "\"");
+    (cookie, csrf, page)
+}
+
+/// A form body: `csrf` plus `fields`, every value percent-encoded.
+fn body(csrf: &str, fields: &[(&str, &str)]) -> String {
+    let mut out = format!("csrf={csrf}");
+    for (k, v) in fields {
+        out.push_str(&format!("&{k}={}", enc(v)));
+    }
+    out
+}
+
+/// GET `/view` in the session.
+fn view_of(s: &Server, cookie: &str) -> String {
+    s.get("/view", &format!("Cookie: writ_session={cookie}\r\n"))
+}
+
+/// Prepare `fields` in a session of form page `path`, then display it: (cookie, csrf,
+/// fingerprint, the displayed page).
+fn prepared(s: &Server, path: &str, fields: &[(&str, &str)]) -> (String, String, String, String) {
+    let (cookie, csrf, _) = open(s, path);
+    let r = s.post("/prepare", &cookie, &body(&csrf, fields), "");
+    assert_eq!(status(&r), 200, "{r}");
+    assert!(r.ends_with("{\"view\":\"/view\"}"), "{r}");
+    let page = view_of(s, &cookie);
+    assert_eq!(status(&page), 200, "{page}");
+    let fp = between(&page, "data-fingerprint=\"", "\"");
+    (cookie, csrf, fp, page)
+}
+
+/// Confirm the displayed target as `subject`, then finish it with a valid assertion;
+/// returns the operation the backend saw at begin and at finish.
+fn confirm(s: &Server, cookie: &str, csrf: &str, fp: &str, subject: &str) -> CeremonyOp {
+    let begun = s.post(
+        "/ceremony/begin",
+        cookie,
+        &body(
+            csrf,
+            &[
+                ("fingerprint", fp),
+                ("verdict", "confirm"),
+                ("subject", subject),
+            ],
+        ),
+        "",
+    );
+    assert_eq!(status(&begun), 200, "{begun}");
+    let challenge = between(&begun, "\"challenge_id\":\"", "\"");
+    let done = s.post(
+        "/ceremony/finish",
+        cookie,
+        &body(
+            csrf,
+            &[
+                ("challenge_id", &challenge),
+                ("response", "valid-assertion"),
+            ],
+        ),
+        "",
+    );
+    assert_eq!(status(&done), 200, "{done}");
+    let calls = s.fake.calls();
+    let n = calls.len();
+    let (
+        Call::Begin {
+            op: begun_op,
+            key: k1,
+            ..
+        },
+        Call::Finish { op, key: k2, .. },
+    ) = (&calls[n - 2], &calls[n - 1])
+    else {
+        panic!("{calls:?}");
+    };
+    assert_eq!(begun_op, op, "the server-held operation");
+    assert_eq!(k1, k2, "the server-held idempotency key");
+    op.clone()
+}
+
+/// Every displayed member of `context` is on `page`, escaped (R6).
+fn assert_displays(page: &str, context: &Value) {
+    match context {
+        Value::Obj(members) => {
+            for (k, v) in members {
+                assert!(page.contains(&writ_approval::page::escape(k)), "{k}");
+                assert_displays(page, v);
+            }
+        }
+        Value::Arr(items) => items.iter().for_each(|v| assert_displays(page, v)),
+        Value::Str(text) => {
+            assert!(page.contains(&writ_approval::page::escape(text)), "{text}")
+        }
+        _ => {}
+    }
+    assert!(!page.contains("<script>alert"));
+    assert_eq!(page.matches("<script").count(), 1);
+}
+
+#[test]
+fn the_signoff_page_displays_the_complete_stored_context_and_confirms_it() {
+    let s = Server::start(Limits::default());
+    let (cookie, csrf, page) = open(&s, "/signoff/so-1");
+    let op = CeremonyOp::Signoff {
+        binding: Box::new(signoff_binding()),
+        parties: SignoffParties::default(),
+    };
+    let shown = s.fake.context(&op).unwrap().unwrap();
+    assert_displays(&page, &shown.context);
+    // Reviewed parties and exclusions, the unavailable delegation chain and the ledger's
+    // expiry are part of what is displayed.
+    for text in [
+        "excluded",
+        "requesters",
+        "agent-7",
+        "delegation_chain",
+        "unavailable",
+        "expires_at",
+        "2026-11-14T10:10:00Z",
+    ] {
+        assert!(page.contains(text), "{text}");
+    }
+    let fp = between(&page, "data-fingerprint=\"", "\"");
+    assert_eq!(fp, shown.binding.context_fingerprint.as_str());
+    assert!(s.fake.calls().is_empty(), "a view never begins anything");
+    assert_eq!(confirm(&s, &cookie, &csrf, &fp, "rita"), op);
+    // An id the ledger does not offer: one generic page.
+    assert_eq!(status(&s.get("/signoff/so-unknown", "")), 404);
+    // The verdict of a request page is not accepted on a confirmation page.
+    let (cookie, csrf, page) = open(&s, "/signoff/so-1");
+    let fp = between(&page, "data-fingerprint=\"", "\"");
+    for (extra, code) in [
+        (vec![("verdict", "approve")], 400),
+        (vec![("verdict", "confirm"), ("request_id", "req-1")], 403),
+    ] {
+        let mut fields = vec![("fingerprint", fp.as_str()), ("subject", "rita")];
+        fields.extend(extra);
+        let r = s.post("/ceremony/begin", &cookie, &body(&csrf, &fields), "");
+        assert_eq!(status(&r), code, "{r}");
+    }
+}
+
+#[test]
+fn the_revoke_page_covers_every_target_kind() {
+    let s = Server::start(Limits::default());
+    let cases = [
+        (
+            "grant",
+            "",
+            "approval/req-1",
+            RevocationTarget::Grant("approval/req-1".into()),
+        ),
+        (
+            "signoff",
+            "",
+            "so-1",
+            RevocationTarget::Signoff("so-1".into()),
+        ),
+        (
+            "credential",
+            "",
+            "cred-x",
+            RevocationTarget::Credential("cred-x".into()),
+        ),
+        (
+            "subject",
+            "",
+            "dave",
+            RevocationTarget::Subject(SubjectId::new("writ-local", "dave")),
+        ),
+        (
+            "subject",
+            "adapter",
+            "svc",
+            RevocationTarget::Subject(SubjectId::new("adapter", "svc")),
+        ),
+        (
+            "role",
+            "",
+            "role:1",
+            RevocationTarget::Role("role:1".into()),
+        ),
+    ];
+    for (kind, issuer, target, expected) in cases {
+        let (cookie, csrf, fp, page) = prepared(
+            &s,
+            "/revoke",
+            &[
+                ("operation", "revoke"),
+                ("target_kind", kind),
+                ("target_issuer", issuer),
+                ("target", target),
+                ("reason", HOSTILE),
+            ],
+        );
+        let op = CeremonyOp::Revoke {
+            target: expected,
+            reason: HOSTILE.into(),
+        };
+        let shown = s.fake.context(&op).unwrap().unwrap();
+        assert_eq!(fp, shown.binding.context_fingerprint.as_str());
+        assert_displays(&page, &shown.context);
+        assert_eq!(confirm(&s, &cookie, &csrf, &fp, "carol"), op, "{kind}");
+    }
+}
+
+#[test]
+fn the_role_page_grants_or_revokes_one_assignment() {
+    let s = Server::start(Limits::default());
+    let (cookie, csrf, fp, page) = prepared(
+        &s,
+        "/role",
+        &[
+            ("operation", "role-grant"),
+            ("target", "erin"),
+            ("permission", "signoff_authority"),
+            ("tenant_id", "t1"),
+            ("project_id", "*"),
+        ],
+    );
+    let grant = CeremonyOp::RoleChange {
+        change: RoleChange::Grant {
+            subject: SubjectId::new("writ-local", "erin"),
+            permission: Permission::SignoffAuthority,
+            tenant_id: "t1".into(),
+            project_id: "*".into(),
+        },
+    };
+    assert_displays(&page, &s.fake.context(&grant).unwrap().unwrap().context);
+    assert_eq!(confirm(&s, &cookie, &csrf, &fp, "root"), grant);
+    let (cookie, csrf, fp, _) = prepared(
+        &s,
+        "/role",
+        &[("operation", "role-revoke"), ("target", "role:7")],
+    );
+    let revoke = CeremonyOp::RoleChange {
+        change: RoleChange::Revoke {
+            assignment_id: "role:7".into(),
+        },
+    };
+    assert_eq!(confirm(&s, &cookie, &csrf, &fp, "root"), revoke);
+    // Malformed forms never reach the ledger.
+    let (cookie, csrf, _) = open(&s, "/role");
+    for fields in [
+        vec![
+            ("operation", "role-grant"),
+            ("target", "erin"),
+            ("permission", "god"),
+        ],
+        vec![
+            ("operation", "role-grant"),
+            ("target", "erin"),
+            ("permission", "approver"),
+        ],
+        vec![("operation", "role-revoke")],
+        vec![("operation", "approve"), ("target", "req-1")],
+    ] {
+        let r = s.post("/prepare", &cookie, &body(&csrf, &fields), "");
+        assert_eq!(status(&r), 400, "{r}");
+    }
+}
+
+#[test]
+fn enrollment_registers_in_the_operator_session_then_enrolls_through_that_operator() {
+    let s = Server::start(Limits::default());
+    let (cookie, csrf, page) = open(&s, "/enroll");
+    assert!(page.contains("id=\"register\"") && page.contains("id=\"prepare\""));
+    let begun = s.post(
+        "/registration/begin",
+        &cookie,
+        &body(&csrf, &[("operator", "root"), ("subject", "newbie")]),
+        "",
+    );
+    assert_eq!(status(&begun), 200, "{begun}");
+    let id = between(&begun, "\"registration_id\":\"", "\"");
+    let Some(Call::BeginRegistration { subject, operator }) = s.fake.calls().last().cloned() else {
+        panic!("registration begin");
+    };
+    assert_eq!(subject, SubjectId::new("writ-local", "newbie"));
+    assert_eq!(operator.operator, SubjectId::new("writ-local", "root"));
+    // The page-session id is server-held and is not the session cookie.
+    assert!(!operator.session_id.is_empty());
+    assert!(!operator.session_id.contains(&cookie) && !begun.contains(&operator.session_id));
+    // Another page session can neither finish nor enroll this row.
+    let (other_cookie, other_csrf, _) = open(&s, "/enroll");
+    let r = s.post(
+        "/registration/finish",
+        &other_cookie,
+        &body(
+            &other_csrf,
+            &[("registration_id", &id), ("response", "valid-registration")],
+        ),
+        "",
+    );
+    assert_eq!(status(&r), 403, "{r}");
+    let finished = s.post(
+        "/registration/finish",
+        &cookie,
+        &body(
+            &csrf,
+            &[("registration_id", &id), ("response", "valid-registration")],
+        ),
+        "",
+    );
+    assert_eq!(status(&finished), 200, "{finished}");
+    assert!(finished.contains("\"result\":\"registered\""));
+    let Some(Call::FinishRegistration {
+        operator: finish_operator,
+        ..
+    }) = s.fake.calls().last().cloned()
+    else {
+        panic!("registration finish");
+    };
+    assert_eq!(
+        finish_operator, operator,
+        "the same operator session finishes it"
+    );
+    let enroll_fields = [
+        ("operation", "enroll"),
+        ("registration_id", id.as_str()),
+        ("linked", "adapter agent:session-9\n"),
+        ("roles", "approver t1 p1\nrevoker t1 *"),
+    ];
+    let r = s.post(
+        "/prepare",
+        &other_cookie,
+        &body(&other_csrf, &enroll_fields),
+        "",
+    );
+    assert_eq!(status(&r), 400, "{r}");
+    // In its own session: displayed, then begun only by the registering operator.
+    let r = s.post("/prepare", &cookie, &body(&csrf, &enroll_fields), "");
+    assert_eq!(status(&r), 200, "{r}");
+    let page = view_of(&s, &cookie);
+    let fp = between(&page, "data-fingerprint=\"", "\"");
+    for text in [
+        "newbie",
+        "agent:session-9",
+        "approver",
+        "revoker",
+        "cred-newbie",
+    ] {
+        assert!(page.contains(text), "{text}");
+    }
+    let calls = s.fake.calls().len();
+    let r = s.post(
+        "/ceremony/begin",
+        &cookie,
+        &body(
+            &csrf,
+            &[
+                ("fingerprint", &fp),
+                ("verdict", "confirm"),
+                ("subject", "olga"),
+            ],
+        ),
+        "",
+    );
+    assert_eq!(status(&r), 403, "{r}");
+    assert!(r.ends_with("{\"error\":\"refused\"}"));
+    assert_eq!(s.fake.calls().len(), calls, "never reached the ledger");
+    let op = confirm(&s, &cookie, &csrf, &fp, "root");
+    let CeremonyOp::Enroll {
+        enrollment,
+        operator_session,
+    } = op
+    else {
+        panic!("enroll");
+    };
+    assert_eq!(operator_session, operator.session_id);
+    assert_eq!(enrollment.subject, SubjectId::new("writ-local", "newbie"));
+    assert_eq!(enrollment.kind, PrincipalKind::Human);
+    assert_eq!(
+        enrollment.credential.as_ref().map(|c| c.registration_id()),
+        Some(id.as_str())
+    );
+    assert_eq!(
+        enrollment.linked_identities,
+        [SubjectId::new("adapter", "agent:session-9")]
+    );
+    assert_eq!(
+        enrollment.roles,
+        [
+            NewRole {
+                permission: Permission::Approver,
+                tenant_id: "t1".into(),
+                project_id: "p1".into()
+            },
+            NewRole {
+                permission: Permission::Revoker,
+                tenant_id: "t1".into(),
+                project_id: "*".into()
+            }
+        ]
+    );
+    // The row is used: it cannot be prepared again in this session.
+    let r = s.post("/prepare", &cookie, &body(&csrf, &enroll_fields), "");
+    assert_eq!(status(&r), 400, "{r}");
+    // A refused registration begin is one generic refusal; a refused finish forgets the row.
+    let r = s.post(
+        "/registration/begin",
+        &cookie,
+        &body(&csrf, &[("operator", "mallory"), ("subject", "x")]),
+        "",
+    );
+    assert_eq!(status(&r), 403);
+    assert!(r.ends_with("{\"error\":\"refused\"}"), "{r}");
+    let begun = s.post(
+        "/registration/begin",
+        &cookie,
+        &body(&csrf, &[("operator", "root"), ("subject", "y")]),
+        "",
+    );
+    let id = between(&begun, "\"registration_id\":\"", "\"");
+    let fin = |response: &str| {
+        s.post(
+            "/registration/finish",
+            &cookie,
+            &body(&csrf, &[("registration_id", &id), ("response", response)]),
+            "",
+        )
+    };
+    assert_eq!(status(&fin("registration-down")), 503, "L6: kept");
+    assert_eq!(status(&fin("forged")), 403);
+    assert_eq!(status(&fin("valid-registration")), 403, "forgotten");
+}
+
+#[test]
+fn prepared_pages_are_read_only_protected_and_never_stale() {
+    let s = Server::start(Limits::default());
+    let fields = [
+        ("operation", "revoke"),
+        ("target_kind", "credential"),
+        ("target", "cred-x"),
+        ("reason", "lost"),
+    ];
+    let (cookie, csrf, _) = open(&s, "/revoke");
+    // CSRF, session and origin are required; nothing prepared means nothing to view.
+    assert_eq!(
+        status(&s.post("/prepare", &cookie, &body("bad", &fields), "")),
+        403
+    );
+    assert_eq!(
+        status(&s.post("/prepare", "no-session", &body(&csrf, &fields), "")),
+        403
+    );
+    assert_eq!(status(&view_of(&s, &cookie)), 404);
+    assert_eq!(status(&s.get("/view", "")), 404);
+    let r = s.raw(
+        format!(
+            "POST /prepare HTTP/1.1\r\nHost: localhost:{}\r\nOrigin: http://evil.example\r\n\
+             Content-Type: application/x-www-form-urlencoded\r\nCookie: writ_session={cookie}\r\n\
+             Content-Length: 0\r\n\r\n",
+            s.port
+        )
+        .as_bytes(),
+    );
+    assert_eq!(status(&r), 403);
+    // A ledger refusal of the target is one generic refusal.
+    *s.fake.context_refusal.lock().unwrap() = true;
+    let r = s.post("/prepare", &cookie, &body(&csrf, &fields), "");
+    assert_eq!(status(&r), 403);
+    assert!(r.ends_with("{\"error\":\"refused\"}"), "{r}");
+    *s.fake.context_refusal.lock().unwrap() = false;
+    // Preparing and viewing never begin anything.
+    let (cookie, csrf, fp, _) = prepared(&s, "/revoke", &fields);
+    assert!(s.fake.calls().is_empty());
+    // The stored context changed after the display: stale, nothing begun.
+    *s.fake.revision.lock().unwrap() += 1;
+    let r = s.post(
+        "/ceremony/begin",
+        &cookie,
+        &body(
+            &csrf,
+            &[
+                ("fingerprint", &fp),
+                ("verdict", "confirm"),
+                ("subject", "carol"),
+            ],
+        ),
+        "",
+    );
+    assert_eq!(status(&r), 409, "{r}");
+    assert!(s.fake.calls().is_empty());
+    // Re-displayed, it can be confirmed; while its ceremony is pending, the session's
+    // target cannot be replaced.
+    let r = s.post("/prepare", &cookie, &body(&csrf, &fields), "");
+    assert_eq!(status(&r), 200);
+    let fp = between(&view_of(&s, &cookie), "data-fingerprint=\"", "\"");
+    let begun = s.post(
+        "/ceremony/begin",
+        &cookie,
+        &body(
+            &csrf,
+            &[
+                ("fingerprint", &fp),
+                ("verdict", "confirm"),
+                ("subject", "carol"),
+            ],
+        ),
+        "",
+    );
+    assert_eq!(status(&begun), 200, "{begun}");
+    let r = s.post("/prepare", &cookie, &body(&csrf, &fields), "");
+    assert_eq!(status(&r), 409, "{r}");
+    // The target page has the strict policy too.
+    let page = view_of(&s, &cookie);
+    let csp = header_of(&page, "content-security-policy").unwrap();
+    assert!(csp.contains("default-src 'none'") && csp.contains("form-action 'none'"));
 }
