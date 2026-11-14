@@ -26,8 +26,8 @@ use writ_broker::store::{
 };
 use writ_broker::workflow::{
     AdminChange, AdminOperation, AdminPresentation, AdminRefusal, AuthorizedOperator,
-    PromotionIntent, PromotionOutcome, StoredWorkflow, WorkflowAuthority, WorkflowKey,
-    WorkflowLedger,
+    PromotionIntent, PromotionOutcome, SignoffRequest, StoredWorkflow, WorkflowAuthority,
+    WorkflowKey, WorkflowLedger,
 };
 use writ_broker::writ_kernel::json::{self, Value};
 use writ_ledger_sqlite::{SqliteEffectStore, SqliteLedger};
@@ -298,6 +298,13 @@ impl Ledger {
         self.dead.load(Ordering::SeqCst)
     }
 
+    /// The production ledger itself, for the approval-channel ceremonies of the harness
+    /// (M4-11 signoffs through a test verifier, `transition.rs`); never for state writes
+    /// that bypass production code.
+    pub fn sqlite(&self) -> &SqliteLedger {
+        &self.inner
+    }
+
     /// Gate a lifecycle transaction `name` at `point`.
     fn gate(&self, name: &str, point: Option<Point>) -> Result<(), TxFailure> {
         let fail = || TxFailure::new(TxStage::Begin, store_down(name));
@@ -438,6 +445,11 @@ impl WorkflowLedger for Ledger {
     ) -> Result<Result<PromotionOutcome, Refusal>, TxFailure> {
         self.gate("promote", Some(Point::Promote))?;
         self.inner.promote(intent)
+    }
+
+    fn record_signoff_requests(&self, requests: &[SignoffRequest]) -> Result<(), TxFailure> {
+        self.gate("signoff_request", None)?;
+        self.inner.record_signoff_requests(requests)
     }
 }
 
