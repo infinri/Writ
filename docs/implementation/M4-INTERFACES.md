@@ -63,3 +63,14 @@ Every promotion, administrative operation and revocation commits a row in one le
 5. A malformed approval request is `RequestInvalid::Malformed` (internal construction error, never stored).
 6. Expiry is a separate `expire` step on trusted time, never early.
 7. `approved` is also terminal (`APPROVAL_REQUEST_CLOSED`); exactly one grant per approved request.
+
+## Review fixes required before consumers (independent review of `c412f6f`, lead decisions 2026-11-14)
+
+- **R1 identity links (replaces clarification 1's text-match as the separation basis):** a human subject's enrollment record (written only by the M4-08 administrative ceremony) declares the set of requester identities (ingress realm and principal or agent id) that subject controls, possibly empty but always explicit. Approval and signoff refuse (`SEPARATION_VIOLATED`) when the approver has no enrollment record, or when any linked identity equals the requester principal, agent or any delegation-chain member; the cross-issuer text match stays as an additional fail-closed check with case-insensitive comparison.
+- **R2 challenge completeness:** `Challenge` carries `ceremony_state` and `idempotency_key`; `VerifiedAssertion` carries the `challenge_digest` its ceremony produced; `Challenge::check` compares all of them with the binding.
+- **R3 trusted values are not constructible from public fields:** `Challenge`, `VerifiedAssertion`, `Signoff`, `ApprovalDecision` (and similar) get private fields with validating constructors; an accepted assertion is a distinct type obtainable only through `VerifiedAssertion::check` against a challenge; `HumanVerifier` implementations stay possible (writ-approval and tests) but their output is never trusted without that check.
+- **R4** `ActiveCredentials` newtype (filtered by status) is the only credential input to `begin`/`finish`.
+- **R5** the state-machine verdict is derived from the checked challenge (closed `Verdict` per operation), never passed separately.
+- **R6** the approval page renders only fields covered by the context fingerprint; the fingerprint covers the complete displayed context (including the stored action body).
+- **R7** subject status model (`active | revoked` with time) and non-empty subjects for requester, agent and every chain member.
+- **R8** `signoff_ids()` is a reference only; nothing treats it as authority before the I-5 use-time checks.
