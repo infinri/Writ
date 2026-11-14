@@ -22,8 +22,8 @@ use std::sync::Arc;
 
 use writ_approval::backend::LedgerBackend;
 use writ_approval::listener::{ApprovalListener, Limits, ListenerConfig};
-use writ_approval_server::{ServerConfig, USAGE};
 use writ_approval::verifier::PasskeyVerifier;
+use writ_approval_server::{ServerConfig, USAGE};
 use writ_broker::clock::{Boottime, HostClock, SystemWall};
 use writ_broker::human::ApprovalChannel;
 use writ_ledger_sqlite::SqliteLedger;

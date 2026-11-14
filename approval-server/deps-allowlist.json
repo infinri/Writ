@@ -1,6 +1,7 @@
 {
-  "comment": "Reviewed dependency allow-list for writ-approval-server (M4 Y3, D-043). Only workspace path dependencies (writ-approval, writ-broker, writ-ledger-sqlite), which are gated by their own allow-lists; no direct or transitive registry package of its own. Path dependencies on workspace members are not listed.",
+  "comment": "Reviewed dependency allow-list for writ-approval-server (M4 Y3, D-043). Only workspace path dependencies (writ-approval, writ-broker, writ-ledger-sqlite), which are gated by their own allow-lists; no direct or transitive registry package of its own. Path dependencies on workspace members are not listed. forbidden_anywhere applies to the complete closure including those members.",
   "approved_licenses": ["MIT", "MIT OR Apache-2.0", "MIT/Apache-2.0", "Apache-2.0 OR MIT"],
   "forbidden": ["openssl", "native-tls", "ring", "rustls", "aws-lc-rs", "reqwest", "h2", "webauthn-authenticator-rs"],
+  "forbidden_anywhere": ["openssl", "openssl-sys", "native-tls", "ring", "rustls", "aws-lc-rs", "aws-lc-sys", "reqwest", "h2", "webauthn-authenticator-rs"],
   "packages": {}
 }
