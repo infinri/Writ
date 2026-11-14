@@ -39,14 +39,22 @@
 //! - [`process`]: the process lifecycle gate between child spawning and ownership-lock
 //!   changes ([`process::spawn`], [`process::OwnerLock`]) and the uncontained
 //!   [`process::LocalProcessSandbox`].
+//!
+//! Authenticated approval and signoff contracts (M4-01, storage-independent):
+//! - [`human`]: subjects, roles, the verifier boundary ([`human::HumanVerifier`]),
+//!   separation and the service-permission rule.
+//! - [`approval`]: approval requests and their state machine, decisions,
+//!   challenges, revocations, signoffs, context fingerprints and I-6 codes.
 
 pub mod acceptance;
+pub mod approval;
 pub mod authorize;
 pub mod clock;
 pub mod contracts;
 pub mod effects;
 pub mod execute;
 pub mod grants;
+pub mod human;
 pub mod ingress;
 pub mod keys;
 mod mac;

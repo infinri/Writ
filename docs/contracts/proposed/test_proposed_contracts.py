@@ -193,5 +193,62 @@ class AuthenticatedAcceptanceRecord(unittest.TestCase):
         self.assertTrue(aar_ok(aar(lambda d: d["record"]["criteria"][0].update(required_class="model_assisted", mandatory=False))))
 
 
+AAR2_SCHEMA = json.loads((HERE / "authenticated-acceptance-record-2.schema.json").read_text())
+# Produced by the code: the Rust test
+# acceptance::record_v2_tests::the_v2_schema_example_is_the_record_the_code_produces_and_verifies asserts
+# this file equals the /2 record broker::acceptance signs and that verify_record accepts it.
+AAR2_VALID = json.loads((HERE / "examples" / "authenticated-acceptance-record-2.valid.json").read_text())
+
+
+def aar2_ok(doc):
+    return jsonschema.Draft202012Validator(AAR2_SCHEMA).is_valid(doc)
+
+
+def aar2(fn):
+    d = copy.deepcopy(AAR2_VALID)
+    fn(d)
+    return d
+
+
+class AuthenticatedAcceptanceRecordV2(unittest.TestCase):
+    """authenticated-acceptance-record/2 (M4-01, D-040 O-4, I-5). Structural only: signoff_id non-null
+    exactly for trust H, the MAC over the contract version and the use-time signoff checks are in code."""
+
+    def test_schema_is_valid_draft_2020_12_and_the_code_produced_record_validates(self):
+        jsonschema.Draft202012Validator.check_schema(AAR2_SCHEMA)
+        self.assertTrue(aar2_ok(AAR2_VALID))
+        self.assertEqual([e["signoff_id"] for e in AAR2_VALID["evaluations"]], [None, None, "so-1"])
+        self.assertEqual([c["evaluator_trust"] for c in AAR2_VALID["record"]["criteria"]], ["M", "E", "H"])
+
+    def test_versions_are_not_interchangeable(self):
+        self.assertFalse(aar2_ok(AAR_VALID), "a /1 record is not a /2 record")
+        self.assertFalse(aar_ok(AAR2_VALID), "a /2 record is not a /1 record")
+        self.assertFalse(aar2_ok(aar2(lambda d: d.__setitem__("contract_version", "authenticated-acceptance-record/1"))))
+        self.assertFalse(aar_ok(aar2(lambda d: d.__setitem__("contract_version", "authenticated-acceptance-record/1"))),
+                         "a /1 record cannot carry signoff_id")
+        self.assertFalse(aar2_ok(aar2(lambda d: d.__setitem__("purpose", "writ.acceptance-record.v2"))))
+
+    def test_signoff_id_is_required_typed_and_closed(self):
+        for i in range(len(AAR2_VALID["evaluations"])):
+            self.assertFalse(aar2_ok(aar2(lambda d: d["evaluations"][i].pop("signoff_id"))), i)
+        for v in ("", "So-1", 1, ["so-1"], {"id": "so-1"}, "x" * 65):
+            self.assertFalse(aar2_ok(aar2(lambda d: d["evaluations"][2].__setitem__("signoff_id", v))), repr(v))
+        self.assertFalse(aar2_ok(aar2(lambda d: d["evaluations"][2].__setitem__("signoff", "so-1"))))
+        # Null for the human criterion is structurally valid; verify_record refuses it (trust H rule in code).
+        self.assertTrue(aar2_ok(aar2(lambda d: d["evaluations"][2].__setitem__("signoff_id", None))))
+
+    def test_every_member_is_required_and_objects_are_closed(self):
+        for f in list(AAR2_VALID):
+            self.assertFalse(aar2_ok(aar2(lambda d: d.pop(f))), f)
+        for f in list(AAR2_VALID["evaluations"][0]):
+            self.assertFalse(aar2_ok(aar2(lambda d: d["evaluations"][0].pop(f))), f)
+        for path in ((), ("auth",), ("record",), ("record", "transition")):
+            def add(d, path=path):
+                for k in path:
+                    d = d[k]
+                d["extra"] = 1
+            self.assertFalse(aar2_ok(aar2(add)), path)
+
+
 if __name__ == "__main__":
     unittest.main()

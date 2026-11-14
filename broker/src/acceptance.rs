@@ -37,6 +37,19 @@
 //! name exactly the record's criteria, each with the criterion's evaluator;
 //! a criterion with trust `M` must name an attestation, any other must not.
 //!
+//! **Amended contract** `authenticated-acceptance-record/2` (M4-01; D-040
+//! O-4; M4-INTERFACES I-5): identical to `/1` (same purpose, MAC rule and
+//! projection) except that every evaluation has one more member,
+//! `"signoff_id": <id> | null`, non-null exactly when the criterion's trust
+//! is `H` (and `attestation_id` exactly when it is `M`). The contract
+//! version is inside the MAC bytes, so a `/1` record can never be presented
+//! as `/2`. A `/1` record never names a signoff: its human criteria keep
+//! being refused at use time (`ACCEPTANCE_HUMAN_UNAVAILABLE`), never
+//! reinterpreted; mechanical-only `/1` records stay valid.
+//! [`VerifiedRecord::signoff_ids`] exposes the parsed references; their
+//! use-time verification is a later task, so [`check_use`] still refuses
+//! every required human criterion.
+//!
 //! **Verification order** ([`verify_record`]): envelope shape
 //! (`ACCEPTANCE_RECORD_MALFORMED`); key lookup (unavailable ring:
 //! `ACCEPTANCE_KEY_UNAVAILABLE`; unknown or revoked key:
@@ -87,7 +100,10 @@ use crate::mac;
 
 /// `contract_version` of an authenticated acceptance record.
 pub const RECORD_CONTRACT: &str = "authenticated-acceptance-record/1";
-/// `purpose` of an authenticated acceptance record (domain separation).
+/// `contract_version` of the amended record with signoff references (M4).
+pub const RECORD_CONTRACT_V2: &str = "authenticated-acceptance-record/2";
+/// `purpose` of an authenticated acceptance record (domain separation; the
+/// same for `/1` and `/2`, whose contract version is authenticated).
 pub const RECORD_PURPOSE: &str = "writ.acceptance-record.v1";
 /// `purpose` of a runner attestation.
 pub const ATTESTATION_PURPOSE: &str = "writ.runner-attestation.v1";
@@ -113,6 +129,18 @@ const EVALUATION: [&str; 9] = [
     "evidence_digests",
     "implementation_digest",
     "registry_revision",
+];
+const EVALUATION_V2: [&str; 10] = [
+    "attestation_id",
+    "criterion_id",
+    "environment_digest",
+    "evaluation_id",
+    "evaluator_id",
+    "evaluator_version",
+    "evidence_digests",
+    "implementation_digest",
+    "registry_revision",
+    "signoff_id",
 ];
 const AUTH: [&str; 3] = ["alg", "key_id", "mac"];
 
@@ -232,6 +260,17 @@ pub struct EvaluationBinding {
     pub attestation_id: Option<String>,
     /// Evidence digests (bound, not resolved: M7).
     pub evidence_digests: Vec<String>,
+    /// The human signoff (`/2` records, trust `H` only; always `None` for `/1`).
+    pub signoff_id: Option<String>,
+}
+
+/// The verified record contract version.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordVersion {
+    /// `authenticated-acceptance-record/1`: no signoff references.
+    V1,
+    /// `authenticated-acceptance-record/2`: `signoff_id` exactly for trust `H`.
+    V2,
 }
 
 /// A record whose envelope, MAC, projection and bindings verified. Only
@@ -240,6 +279,7 @@ pub struct EvaluationBinding {
 pub struct VerifiedRecord {
     record: AcceptanceRecord,
     evaluations: Vec<EvaluationBinding>,
+    version: RecordVersion,
     issuer: String,
     key_id: String,
 }
@@ -253,6 +293,19 @@ impl VerifiedRecord {
     /// The evaluation bindings, one per record criterion.
     pub fn evaluations(&self) -> &[EvaluationBinding] {
         &self.evaluations
+    }
+
+    /// The verified contract version.
+    pub fn version(&self) -> RecordVersion {
+        self.version
+    }
+
+    /// Signoff ids the record names (its trust `H` criteria; empty for `/1`).
+    pub fn signoff_ids(&self) -> Vec<&str> {
+        self.evaluations
+            .iter()
+            .filter_map(|e| e.signoff_id.as_deref())
+            .collect()
     }
 
     /// The authenticated issuer.
@@ -311,7 +364,12 @@ pub fn verify_record(
     use AcceptanceCode::*;
     let m = closed(doc, &ENVELOPE).ok_or(RecordMalformed)?;
     let constant = |k: &str, want: &str| m.get(k).and_then(Value::as_str) == Some(want);
-    if !constant("contract_version", RECORD_CONTRACT) || !constant("purpose", RECORD_PURPOSE) {
+    let version = match m.get("contract_version").and_then(Value::as_str) {
+        Some(RECORD_CONTRACT) => RecordVersion::V1,
+        Some(RECORD_CONTRACT_V2) => RecordVersion::V2,
+        _ => return Err(RecordMalformed),
+    };
+    if !constant("purpose", RECORD_PURPOSE) {
         return Err(RecordMalformed);
     }
     let issuer = text(m, "issuer", is_id).ok_or(RecordMalformed)?;
@@ -340,21 +398,26 @@ pub fn verify_record(
         .get("record")
         .and_then(|r| AcceptanceRecord::from_value(r).ok())
         .ok_or(RecordMalformed)?;
-    let evaluations = evaluations(m.get("evaluations"), &record).ok_or(RecordMalformed)?;
+    let evaluations = evaluations(m.get("evaluations"), &record, version).ok_or(RecordMalformed)?;
     if mode == Some("advisory") {
         return Err(Advisory);
     }
     Ok(VerifiedRecord {
         record,
         evaluations,
+        version,
         issuer: issuer.to_string(),
         key_id: key_id.to_string(),
     })
 }
 
 /// The evaluation bindings: exactly one per record criterion, same evaluator,
-/// an attestation exactly for trust `M`.
-fn evaluations(v: Option<&Value>, record: &AcceptanceRecord) -> Option<Vec<EvaluationBinding>> {
+/// an attestation exactly for trust `M`; for `/2` a signoff exactly for trust `H`.
+fn evaluations(
+    v: Option<&Value>,
+    record: &AcceptanceRecord,
+    version: RecordVersion,
+) -> Option<Vec<EvaluationBinding>> {
     let items = v?.as_arr()?;
     if items.len() != record.criteria.len() {
         return None;
@@ -362,7 +425,10 @@ fn evaluations(v: Option<&Value>, record: &AcceptanceRecord) -> Option<Vec<Evalu
     let mut seen = BTreeSet::new();
     let mut out = Vec::with_capacity(items.len());
     for item in items {
-        let e = closed(item, &EVALUATION)?;
+        let e = match version {
+            RecordVersion::V1 => closed(item, &EVALUATION)?,
+            RecordVersion::V2 => closed(item, &EVALUATION_V2)?,
+        };
         let criterion_id = text(e, "criterion_id", is_name)?;
         let criterion = record
             .criteria
@@ -383,6 +449,16 @@ fn evaluations(v: Option<&Value>, record: &AcceptanceRecord) -> Option<Vec<Evalu
         if attestation_id.is_some() != (criterion.evaluator_trust == EvaluatorTrust::Mechanical) {
             return None;
         }
+        let signoff_id = match (version, e.get("signoff_id")) {
+            (RecordVersion::V1, None) | (RecordVersion::V2, Some(Value::Null)) => None,
+            (RecordVersion::V2, Some(Value::Str(s))) if is_id(s) => Some(s.clone()),
+            _ => return None,
+        };
+        if version == RecordVersion::V2
+            && signoff_id.is_some() != (criterion.evaluator_trust == EvaluatorTrust::Human)
+        {
+            return None;
+        }
         let evidence_digests = e
             .get("evidence_digests")?
             .as_arr()?
@@ -400,6 +476,7 @@ fn evaluations(v: Option<&Value>, record: &AcceptanceRecord) -> Option<Vec<Evalu
             registry_revision,
             attestation_id,
             evidence_digests,
+            signoff_id,
         });
     }
     Some(out)
@@ -648,3 +725,242 @@ pub fn check_use(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests;
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod record_v2_tests {
+    //! `authenticated-acceptance-record/2` (M4-01, I-5). Test keys only.
+
+    use super::tests::{good_record, sign, RECORD_KEY};
+    use super::*;
+    use crate::keys::{AcceptanceRecordKey, MemoryKeys};
+    use writ_kernel::json::parse;
+
+    fn keys() -> MemoryKeys<AcceptanceRecordKey> {
+        let mut k = MemoryKeys::new();
+        k.register(
+            "acc-key-1",
+            AcceptanceRecordKey::from_bytes(RECORD_KEY.to_vec()).unwrap(),
+        );
+        k
+    }
+
+    fn obj(v: &mut Value) -> &mut Map {
+        match v {
+            Value::Obj(m) => m,
+            _ => panic!("not an object"),
+        }
+    }
+
+    fn reseal(record: &mut Value) {
+        let d = json::digest(&record.without("record_digest")).unwrap();
+        obj(record).insert("record_digest".into(), json::s(d.as_str()));
+    }
+
+    /// The `/1` good record (unsigned is fine: it is re-signed) with the
+    /// frozen-fixture human criterion `signoff` (`approval-service`, trust
+    /// `H`) added.
+    fn with_human(v1: &Value) -> Value {
+        let mut doc = v1.clone();
+        let record = obj(&mut doc).get_mut("record").unwrap();
+        let human = parse(br#"{"criterion_id":"signoff","mandatory":true,"required_class":"human","status":"pass","evaluator_id":"approval-service","evaluator_trust":"H","fresh_until":"2026-11-07T11:30:00Z"}"#).unwrap();
+        if let Some(Value::Arr(c)) = obj(record).get_mut("criteria") {
+            c.push(human);
+        }
+        reseal(record);
+        let mut eval = obj(&mut doc).get("evaluations").unwrap().as_arr().unwrap()[1].clone();
+        let e = obj(&mut eval);
+        e.insert("criterion_id".into(), json::s("signoff"));
+        e.insert("evaluation_id".into(), json::s("eval-signoff"));
+        e.insert("evaluator_id".into(), json::s("approval-service"));
+        if let Some(Value::Arr(evals)) = obj(&mut doc).get_mut("evaluations") {
+            evals.push(eval);
+        }
+        doc
+    }
+
+    /// Upgrade a `/1` document to `/2`: `signoff_id` on every evaluation,
+    /// `so-1` for the human criterion (the MAC is not recomputed).
+    fn to_v2(v1: &Value) -> Value {
+        let mut doc = v1.clone();
+        let m = obj(&mut doc);
+        m.insert("contract_version".into(), json::s(RECORD_CONTRACT_V2));
+        if let Some(Value::Arr(evals)) = m.get_mut("evaluations") {
+            for e in evals {
+                let human = e.get("criterion_id").and_then(Value::as_str) == Some("signoff");
+                let id = if human { json::s("so-1") } else { Value::Null };
+                obj(e).insert("signoff_id".into(), id);
+            }
+        }
+        doc
+    }
+
+    fn set_eval(doc: &Value, index: usize, key: &str, v: Option<Value>) -> Value {
+        let mut out = doc.clone();
+        if let Some(Value::Arr(evals)) = obj(&mut out).get_mut("evaluations") {
+            let e = obj(&mut evals[index]);
+            match v {
+                Some(v) => e.insert(key.into(), v),
+                None => e.remove(key),
+            };
+        }
+        out
+    }
+
+    fn signed(doc: &Value) -> Value {
+        sign(doc, &RECORD_KEY)
+    }
+
+    fn v2_record() -> Value {
+        signed(&to_v2(&with_human(&good_record())))
+    }
+
+    fn sha(c: char) -> String {
+        format!("sha256:{}", c.to_string().repeat(64))
+    }
+
+    fn current() -> CurrentState {
+        let text = format!(
+            r#"{{"tenant_id":"t1","project_id":"p1","task_id":"task-1","workflow_id":"wf-1","transition":{{"from_state":"verifying","to_state":"accepted"}},"artifact_snapshot_id":"snap-1","artifact_digest":"{}","acceptance_policy_id":"accept-code-review","acceptance_policy_version":"3","acceptance_policy_bundle_sha":"{}","state_revision":7,"now":"2026-11-07T11:00:00Z","consumed_record_ids":[],"revoked_evaluator_ids":[]}}"#,
+            sha('b'),
+            sha('c')
+        );
+        CurrentState::from_value(&parse(text.as_bytes()).unwrap()).unwrap()
+    }
+
+    fn human_requirements() -> AcceptanceRequirements {
+        let text = format!(
+            r#"{{"acceptance_policy_id":"accept-code-review","acceptance_policy_version":"3","acceptance_policy_bundle_sha":"{}","criteria":[{{"criterion_id":"build","required_class":"mechanical"}},{{"criterion_id":"docs","required_class":"evidence"}},{{"criterion_id":"signoff","required_class":"human"}}]}}"#,
+            sha('c')
+        );
+        AcceptanceRequirements::from_value(&parse(text.as_bytes()).unwrap()).unwrap()
+    }
+
+    fn use_check(verified: &VerifiedRecord) -> Result<Vec<String>, AcceptanceCode> {
+        let current = current();
+        let requirements = human_requirements();
+        let registry = |_: &str| None;
+        check_use(
+            verified,
+            &UseContext {
+                current: &current,
+                requirements: &requirements,
+                registry: &registry,
+                attestations: &[],
+                consumed_attestations: &BTreeSet::new(),
+            },
+        )
+    }
+
+    #[test]
+    fn a_v2_record_names_its_signoff_exactly_for_trust_h() {
+        let v = verify_record(&v2_record(), &keys()).unwrap();
+        assert_eq!(v.version(), RecordVersion::V2);
+        assert_eq!(v.signoff_ids(), ["so-1"]);
+        assert_eq!(v.attestation_ids(), ["att-1"]);
+        assert!(mac_bytes(&v2_record())
+            .unwrap()
+            .contains(r#""contract_version":"authenticated-acceptance-record/2""#));
+        // A mechanical-only /2 record is valid with no signoff.
+        let mech = verify_record(&signed(&to_v2(&good_record())), &keys()).unwrap();
+        assert_eq!(mech.version(), RecordVersion::V2);
+        assert!(mech.signoff_ids().is_empty());
+    }
+
+    #[test]
+    fn v2_field_rules_are_enforced() {
+        let doc = to_v2(&with_human(&good_record()));
+        assert!(verify_record(&signed(&doc), &keys()).is_ok());
+        let malformed = Err(AcceptanceCode::RecordMalformed);
+        let bad = [
+            // Trust H without a signoff.
+            set_eval(&doc, 2, "signoff_id", Some(Value::Null)),
+            // Trust M or E with a signoff.
+            set_eval(&doc, 0, "signoff_id", Some(json::s("so-2"))),
+            set_eval(&doc, 1, "signoff_id", Some(json::s("so-2"))),
+            // The member is required and the object closed.
+            set_eval(&doc, 0, "signoff_id", None),
+            set_eval(&doc, 2, "signoff_id", None),
+            set_eval(&doc, 0, "extra", Some(Value::Null)),
+            // Malformed ids.
+            set_eval(&doc, 2, "signoff_id", Some(json::s(""))),
+            set_eval(&doc, 2, "signoff_id", Some(json::s("So-1"))),
+            set_eval(&doc, 2, "signoff_id", Some(Value::Int(1))),
+            // The trust M rule still holds.
+            set_eval(&doc, 0, "attestation_id", Some(Value::Null)),
+            set_eval(&doc, 2, "attestation_id", Some(json::s("att-9"))),
+        ];
+        for (i, d) in bad.iter().enumerate() {
+            assert_eq!(
+                verify_record(&signed(d), &keys()).map(|_| ()),
+                malformed,
+                "case {i}"
+            );
+        }
+        let mut other = doc.clone();
+        obj(&mut other).insert(
+            "contract_version".into(),
+            json::s("authenticated-acceptance-record/3"),
+        );
+        assert_eq!(
+            verify_record(&signed(&other), &keys()).map(|_| ()),
+            malformed
+        );
+    }
+
+    #[test]
+    fn v1_records_never_gain_human_authority() {
+        // A /1 record with a human criterion still verifies, names no signoff,
+        // and is refused at use time.
+        let v1 = signed(&with_human(&good_record()));
+        let v = verify_record(&v1, &keys()).unwrap();
+        assert_eq!(v.version(), RecordVersion::V1);
+        assert!(v.signoff_ids().is_empty());
+        assert!(v.evaluations().iter().all(|e| e.signoff_id.is_none()));
+        assert_eq!(use_check(&v), Err(AcceptanceCode::HumanUnavailable));
+        // A /1 record cannot carry a signoff reference.
+        let with_ref = set_eval(
+            &with_human(&good_record()),
+            2,
+            "signoff_id",
+            Some(json::s("so-1")),
+        );
+        assert_eq!(
+            verify_record(&signed(&with_ref), &keys()).map(|_| ()),
+            Err(AcceptanceCode::RecordMalformed)
+        );
+        // A signed /1 record relabelled as /2 fails the MAC: no reinterpretation.
+        assert_eq!(
+            verify_record(&to_v2(&v1), &keys()).map(|_| ()),
+            Err(AcceptanceCode::RecordUnauthenticated)
+        );
+        // Mechanical-only /1 records stay valid.
+        let mech = verify_record(&good_record(), &keys()).unwrap();
+        assert_eq!(mech.version(), RecordVersion::V1);
+        assert!(mech.signoff_ids().is_empty());
+    }
+
+    #[test]
+    fn signoff_use_time_checks_are_not_enabled_yet() {
+        // Until the signoff use-time checks land, a /2 human record is still refused.
+        let v = verify_record(&v2_record(), &keys()).unwrap();
+        assert_eq!(use_check(&v), Err(AcceptanceCode::HumanUnavailable));
+    }
+
+    /// The checked-in example of
+    /// `docs/contracts/proposed/authenticated-acceptance-record-2.schema.json`
+    /// (validated by `test_proposed_contracts.py`) is exactly the record this
+    /// code produces, and the verifier accepts it.
+    #[test]
+    fn the_v2_schema_example_is_the_record_the_code_produces_and_verifies() {
+        let text = include_str!(
+            "../../docs/contracts/proposed/examples/authenticated-acceptance-record-2.valid.json"
+        );
+        let example = parse(text.as_bytes()).unwrap();
+        let produced = json::canonical(&v2_record()).unwrap();
+        assert_eq!(json::canonical(&example).unwrap(), produced, "{produced}");
+        assert_eq!(
+            verify_record(&example, &keys()).unwrap().signoff_ids(),
+            ["so-1"]
+        );
+    }
+}

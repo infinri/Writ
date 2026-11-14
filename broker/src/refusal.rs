@@ -1,5 +1,6 @@
 //! Broker refusals of the decision-free core (M3-02), of approvals and grant
-//! consumption (M3-03) and of the execute lifecycle (M3-04).
+//! consumption (M3-03), of the execute lifecycle (M3-04) and of authenticated
+//! approval and signoff (M4, I-6: [`Refusal::Approval`]).
 //!
 //! A refusal carries the internal code that goes to the access-controlled
 //! audit record. Agents and hosts receive only [`Refusal::external_code`], the
@@ -10,6 +11,7 @@ use writ_kernel::contracts::{DecisionStatus, ReasonCode};
 use writ_kernel::refusal::external_code;
 
 use crate::acceptance::AcceptanceCode;
+use crate::approval::ApprovalCode;
 use crate::grants::ApproverRefusal;
 use crate::store::StoreError;
 
@@ -126,6 +128,10 @@ pub enum Refusal {
     /// Effect prerequisite: the promotion's artifact or policies are no
     /// longer current.
     PromotionStale,
+    /// An M4 approval, challenge, revocation or signoff refusal (I-6). The
+    /// [`ApprovalCode`] is the internal code; externally always the kernel's
+    /// generic refusal.
+    Approval(ApprovalCode),
 }
 
 impl Refusal {
@@ -169,6 +175,7 @@ impl Refusal {
             Refusal::EffectPrerequisiteUnmet => "EFFECT_PREREQUISITE_UNMET",
             Refusal::EffectArtifactMismatch => "EFFECT_ARTIFACT_MISMATCH",
             Refusal::PromotionStale => "PROMOTION_STALE",
+            Refusal::Approval(code) => code.code(),
         }
     }
 
@@ -185,6 +192,7 @@ impl Refusal {
             Refusal::RevisionConflict(ConflictStage::StoredRevision) => {
                 Some("revision conflict: stored revision not representable")
             }
+            Refusal::Approval(code) => code.diagnostic(),
             _ => None,
         }
     }
@@ -378,6 +386,77 @@ mod tests {
         assert_eq!(
             Refusal::TimeUnavailable.external_code(),
             writ_kernel::refusal::PROMOTION_REFUSED
+        );
+    }
+
+    #[test]
+    fn every_i6_approval_code_maps_to_the_kernel_generic_refusal() {
+        use crate::approval::ChallengeRefusal;
+        use crate::human::VerifierError;
+        let cases = [
+            (ApprovalCode::RequestUnknown, "APPROVAL_REQUEST_UNKNOWN"),
+            (ApprovalCode::RequestClosed, "APPROVAL_REQUEST_CLOSED"),
+            (ApprovalCode::RequestExpired, "APPROVAL_REQUEST_EXPIRED"),
+            (
+                ApprovalCode::QuorumUnsupported,
+                "APPROVAL_QUORUM_UNSUPPORTED",
+            ),
+            (
+                ApprovalCode::ChallengeInvalid(ChallengeRefusal::Unknown),
+                "CHALLENGE_INVALID",
+            ),
+            (
+                ApprovalCode::AssertionInvalid(VerifierError::SignatureInvalid),
+                "ASSERTION_INVALID",
+            ),
+            (ApprovalCode::CredentialRevoked, "CREDENTIAL_REVOKED"),
+            (ApprovalCode::SubjectRevoked, "SUBJECT_REVOKED"),
+            (ApprovalCode::PermissionMissing, "PERMISSION_MISSING"),
+            (ApprovalCode::SeparationViolated, "SEPARATION_VIOLATED"),
+            (ApprovalCode::ServiceNotPermitted, "SERVICE_NOT_PERMITTED"),
+            (
+                ApprovalCode::EnrollmentUnsupported,
+                "ENROLLMENT_UNSUPPORTED",
+            ),
+            (ApprovalCode::GrantRevoked, "GRANT_REVOKED"),
+            (ApprovalCode::SignoffUnknown, "SIGNOFF_UNKNOWN"),
+            (ApprovalCode::SignoffRevoked, "SIGNOFF_REVOKED"),
+            (ApprovalCode::SignoffMismatch, "SIGNOFF_MISMATCH"),
+            (ApprovalCode::SignoffExpired, "SIGNOFF_EXPIRED"),
+            (ApprovalCode::SignoffConsumed, "SIGNOFF_CONSUMED"),
+        ];
+        let mut seen = Vec::new();
+        for (code, internal) in cases {
+            let refusal = Refusal::Approval(code);
+            assert_eq!(refusal.code(), internal);
+            assert_eq!(refusal.to_string(), internal);
+            assert!(!writ_kernel::refusal::PASS_THROUGH.contains(&internal));
+            assert_eq!(
+                refusal.external_code(),
+                writ_kernel::refusal::PROMOTION_REFUSED,
+                "{internal}"
+            );
+            assert!(!seen.contains(&internal), "{internal} repeated");
+            seen.push(internal);
+        }
+        assert_eq!(seen.len(), 18);
+        // Diagnostics stay internal: challenge and assertion only.
+        let challenge = Refusal::Approval(ApprovalCode::ChallengeInvalid(
+            ChallengeRefusal::ContextMismatch,
+        ));
+        assert_eq!(challenge.diagnostic(), Some("challenge: context mismatch"));
+        assert_eq!(
+            challenge.external_code(),
+            writ_kernel::refusal::PROMOTION_REFUSED
+        );
+        assert_eq!(
+            Refusal::Approval(ApprovalCode::AssertionInvalid(VerifierError::Unavailable))
+                .diagnostic(),
+            Some("assertion: verifier unavailable")
+        );
+        assert_eq!(
+            Refusal::Approval(ApprovalCode::GrantRevoked).diagnostic(),
+            None
         );
     }
 }
