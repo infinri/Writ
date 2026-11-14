@@ -184,7 +184,33 @@ CREATE TABLE signoffs (
   subject                      TEXT NOT NULL,
   credential_id                TEXT NOT NULL,
   challenge_id                 TEXT NOT NULL UNIQUE REFERENCES challenges (challenge_id),
-  provenance_version           TEXT NOT NULL
+  provenance_version           TEXT NOT NULL,
+  -- X7: the exclusions read from the ledger at signing (canonical JSON), displayed and
+  -- fingerprinted with the binding.
+  exclusions                   TEXT NOT NULL
+) STRICT;
+
+-- X7: stored promotion contexts. Who asked for the promotion a signoff is for: one row per
+-- signoff id and sealed request fingerprint (Broker::request_signoff). Every row of a
+-- signoff id excludes its requester and agent from signing and using it. Authorizes nothing.
+CREATE TABLE signoff_requests (
+  signoff_id           TEXT NOT NULL CHECK (signoff_id <> ''),
+  request_fingerprint  TEXT NOT NULL,
+  tenant_id            TEXT NOT NULL,
+  project_id           TEXT NOT NULL,
+  workflow_id          TEXT NOT NULL,
+  acceptance_record_id TEXT NOT NULL,
+  criterion_id         TEXT NOT NULL,
+  from_state           TEXT NOT NULL,
+  to_state             TEXT NOT NULL,
+  state_revision       INTEGER NOT NULL,
+  requester_issuer     TEXT NOT NULL CHECK (requester_issuer <> ''),
+  requester_subject    TEXT NOT NULL CHECK (requester_subject <> ''),
+  agent_issuer         TEXT,
+  agent_subject        TEXT,
+  created_at           TEXT NOT NULL,
+  CHECK ((agent_issuer IS NULL) = (agent_subject IS NULL)),
+  PRIMARY KEY (signoff_id, request_fingerprint)
 ) STRICT;
 
 -- Single consumption ledger-wide (I-5), atomic with the promotion that consumes it.
