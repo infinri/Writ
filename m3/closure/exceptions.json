@@ -881,9 +881,9 @@
     {
       "set": "transition-scenarios",
       "case": "sc-12-refusal-is-side-effect-free",
-      "kind": "deferred",
-      "decision": "D-037 item 4; D-038 item 6",
-      "reason": "carried M4 obligation (CO-M4-01) pending an owner decision: with M4 signoff verified at use time the human refusal is gone, but the measured output contradicts the case's acceptance criterion (matches exactly)",
+      "kind": "difference",
+      "decision": "D-043 item 1; D-036 item 1; D-038 item 6; D-040 O-4",
+      "reason": "approved production difference (D-043 item 1): production reads the authenticated trusted record acc-1 by id (declared in m3/closure/bundles/trusted-records.json, D-038 item 6), never the agent's inline record (D-036 item 1), so step 0 (frozen ACCEPTANCE_UNTRUSTED_EVALUATOR, from the inline record's untrusted evaluator) commits on the valid trusted record at revision 8; step 1 (expected revision 7) is then REVISION_CONFLICT, a cascade of step 0 (frozen: committed); the final state equals the frozen expectation (accepted, revision 8, acc-1 consumed, one receipt, one refusal); the required human criterion signoff is signed on the production approval-ledger ceremony by a reviewer enrolled through the production bootstrap and enrollment ceremony, user verification answered by the non-shipping test verifier (m3_line_adapter/signoff.rs), and verified and consumed at use time by production check_use (M4-06, M4-11); the case's intended invariant (a refused attempt consumes neither record id nor key) is covered by the companion m3c-12-refusal-is-side-effect-free and by the production regression m4_signoff_tests::sc12_refused_invalid_binding_consumes_nothing_then_the_same_key_succeeds",
       "adaptations": [
         "M4-test-verifier-signoff",
         "adapter-sealed",
@@ -897,9 +897,6 @@
         1
       ],
       "final_members": [],
-      "carry_to": "M4",
-      "intended_assertion": "a refused attempt consumes neither the record id nor the key: the frozen expectation, unchanged.",
-      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly. Mechanical-only companion m3c-12-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
       "actual": {
         "final": {
           "consumed_record_ids": [
@@ -921,19 +918,7 @@
             "result": "refused"
           }
         ]
-      },
-      "blocking_dependency": "M4 authenticated human signoff: the frozen requirement set includes the required human criterion signoff, which production refuses fail-closed (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff is verified at use time (M4); the trusted acc-1 record is declared by hand in m3/closure/bundles/trusted-records.json (what the acceptance service would issue); no inline agent record of this case, step 0 or step 1, is ever issued or trusted (D-038 item 6)",
-      "observed_m3_refusal": {
-        "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
-        "result": "refused"
-      },
-      "companions": [
-        "m3c-12-refusal-is-side-effect-free"
-      ],
-      "cascade": {
-        "1": "step 0 committed on the declared trusted acc-1, so the workflow is no longer in verifying at revision 7: the step-1 promotion (expected revision 7) is REVISION_CONFLICT; a consequence of step 0, not a separate difference"
-      },
-      "m4_observation": "measured under M4: step 0 commits through the declared trusted acc-1 (inline agent record never read, D-036 item 1, D-038 item 6); step 1 REVISION_CONFLICT; final state equals frozen; contradicts criterion 'Matches exactly'; owner decision requested"
+      }
     },
     {
       "set": "transition-scenarios",

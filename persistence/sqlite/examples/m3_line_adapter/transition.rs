@@ -1081,7 +1081,6 @@ impl TransitionCase {
                 acceptance_policy_version: r.policy.acceptance_policy_version.clone(),
                 acceptance_policy_bundle_sha: r.policy.acceptance_policy_bundle_sha.clone(),
                 state_revision: r.state_revision.get(),
-                expires_at: r.expires_at,
             };
             signoff::sign(ledger, now, binding)?;
         }

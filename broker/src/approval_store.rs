@@ -241,19 +241,23 @@ pub fn revocation_binding(
 }
 
 /// What a signoff challenge binds: the signoff's scope, its id, the
-/// fingerprint of its complete displayed context (the binding and the
-/// exclusions the ledger read, X7), its acceptance policy bundle digest and
-/// the state revision.
+/// fingerprint of its complete displayed context (the binding, the
+/// exclusions the ledger read, X7, and the effective expiry the ledger fixed
+/// at begin, Y1), its acceptance policy bundle digest and the state revision.
 pub fn signoff_binding(
     binding: &NewSignoff,
     excluded: &SignoffExclusions,
+    expires_at: Timestamp,
 ) -> Result<ChallengeBinding, CanonicalError> {
     Ok(ChallengeBinding {
         operation: ChallengeOperation::Signoff,
         tenant_id: binding.tenant_id.clone(),
         project_id: binding.project_id.clone(),
         target_id: binding.signoff_id.clone(),
-        context_fingerprint: binding.displayed(excluded)?.fingerprint().clone(),
+        context_fingerprint: binding
+            .displayed(excluded, expires_at)?
+            .fingerprint()
+            .clone(),
         policy_bundle_sha: binding.acceptance_policy_bundle_sha.clone(),
         revision: binding.state_revision,
     })
@@ -576,6 +580,13 @@ pub enum CeremonyOp {
         binding: Box<NewSignoff>,
         /// Additional excluded subjects (they only add, X7).
         parties: SignoffParties,
+        /// An earlier expiry the caller asks for (D-043 item 2, Y1); it only
+        /// shortens. The ledger computes the effective expiry at begin on
+        /// trusted time ([`crate::approval::signoff_expiry`]: at most 600 s,
+        /// bounded by the stored promotion contexts' trusted deadline), stores
+        /// it with the challenge, displays and fingerprints it; finish takes
+        /// exactly that stored value and never reads this field.
+        requested_expires_at: Option<Timestamp>,
     },
     /// Enroll a subject (administrative ceremony).
     Enroll {
@@ -847,9 +858,12 @@ pub trait ApprovalLedger: ExecuteLedger {
     /// from stored state only: the stored promotion context
     /// (`signoff_requests`), the workflow's current task, artifact and
     /// revision and the project's active acceptance policy; `None` when no
-    /// stored promotion context names it or it is already signed. Its
-    /// expiry is the ledger's (D-043 Y1); the page displays
-    /// [`ApprovalLedger::ceremony_context`] of it and never computes one.
+    /// stored promotion context names it or it is already signed. It carries
+    /// no expiry: the effective expiry is the ledger's (D-043 Y1), computed
+    /// by [`ApprovalLedger::ceremony_context`] exactly as a begin at the same
+    /// trusted time computes it; the page displays that context, never
+    /// computes an expiry, and pins it as the requested expiry so the begin
+    /// fixes the displayed value (or refuses as a stale display).
     fn pending_signoff(
         &self,
         signoff_id: &str,

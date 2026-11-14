@@ -197,6 +197,9 @@ pub fn sign(ledger: &SqliteLedger, now: ObservedTime, binding: NewSignoff) -> Re
     let op = CeremonyOp::Signoff {
         binding: Box::new(binding),
         parties: SignoffParties::default(),
+        // D-043 Y1: the ledger computes the expiry (at most 600 s, bounded by the stored
+        // promotion context's trusted deadline); the harness asks for nothing earlier.
+        requested_expires_at: None,
     };
     ceremony(ledger, now, REVIEWER, &op, &key)
 }

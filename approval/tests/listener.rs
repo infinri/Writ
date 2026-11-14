@@ -131,7 +131,6 @@ fn signoff_binding() -> NewSignoff {
         acceptance_policy_version: "1".into(),
         acceptance_policy_bundle_sha: "sha256:acceptance".into(),
         state_revision: 3,
-        expires_at: Timestamp::parse_strict("2026-11-14T10:10:00Z").unwrap(),
     }
 }
 
@@ -329,7 +328,11 @@ impl Backend for Fake {
                 ChallengeOperation::RegistrationStart,
                 subject.subject.clone(),
             ),
-            CeremonyOp::Signoff { binding, parties } => {
+            CeremonyOp::Signoff {
+                binding,
+                parties,
+                requested_expires_at,
+            } => {
                 let excluded = SignoffExclusions {
                     requesters: vec![SubjectId::new("adapter", HOSTILE)],
                     agents: vec![SubjectId::new("adapter", "agent-7")],
@@ -339,7 +342,12 @@ impl Backend for Fake {
                 let mut b = (**binding).clone();
                 b.state_revision += revision;
                 (
-                    b.context_with(&excluded),
+                    b.context_with(&excluded, {
+                        // The ledger's effective expiry (Y1): its own bound, lowered by
+                        // a request.
+                        let bound = Timestamp::parse_strict("2026-11-14T10:10:00Z").unwrap();
+                        requested_expires_at.map_or(bound, |r| r.min(bound))
+                    }),
                     ChallengeOperation::Signoff,
                     b.signoff_id.clone(),
                 )
@@ -1114,6 +1122,9 @@ fn the_signoff_page_displays_the_complete_stored_context_and_confirms_it() {
     let op = CeremonyOp::Signoff {
         binding: Box::new(signoff_binding()),
         parties: SignoffParties::default(),
+        // Y1: the page pins the ledger's effective expiry as the requested one, so the
+        // begin fixes exactly the displayed value.
+        requested_expires_at: Some(Timestamp::parse_strict("2026-11-14T10:10:00Z").unwrap()),
     };
     let shown = s.fake.context(&op).unwrap().unwrap();
     assert_displays(&page, &shown.context);

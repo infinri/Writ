@@ -26,10 +26,10 @@ use rusqlite::{Connection, OptionalExtension, Transaction};
 use writ_broker::acceptance::SignoffUse;
 use writ_broker::approval::context_fingerprint;
 use writ_broker::approval::{
-    decide, ApprovalCode, ApprovalRequest, ApprovalStatus, Challenge, ChallengeBinding,
-    ChallengeOperation, ChallengeRefusal, ChallengeStatus, NewApprovalRequest, NewChallenge,
-    NewSignoff, OwnUnusedGrant, RevocationTarget, Signoff, SignoffExclusions, SignoffFields,
-    StoredChallenge, CHALLENGE_TTL_SECONDS, PROVENANCE_VERSION_2,
+    decide, signoff_expiry, ApprovalCode, ApprovalRequest, ApprovalStatus, Challenge,
+    ChallengeBinding, ChallengeOperation, ChallengeRefusal, ChallengeStatus, NewApprovalRequest,
+    NewChallenge, NewSignoff, OwnUnusedGrant, RevocationTarget, Signoff, SignoffExclusions,
+    SignoffFields, StoredChallenge, CHALLENGE_TTL_SECONDS, PROVENANCE_VERSION_2,
 };
 use writ_broker::approval_store::{
     approval_binding, kind_text, parse_kind, parse_permission, permission_text,
@@ -696,12 +696,12 @@ fn read_signoff(conn: &Connection, signoff_id: &str) -> Result<Option<Signoff>, 
         acceptance_policy_version: version,
         acceptance_policy_bundle_sha: sha,
         state_revision: revision,
-        expires_at: ts(&expires)?,
     };
     Signoff::from_stored(
         &cap(),
         SignoffFields {
             binding,
+            expires_at: ts(&expires)?,
             exclusions,
             issued_at: ts(&issued)?,
             subject: SubjectId::new(&issuer, &subject),
@@ -729,6 +729,8 @@ enum TargetKind {
     Signoff {
         /// The exclusions read in this transaction (X7).
         excluded: Box<SignoffExclusions>,
+        /// The effective expiry (Y1): computed at begin, the stored value at finish.
+        expires_at: Timestamp,
     },
     Enroll,
     /// A role change: the subject whose assignment changes.
@@ -1205,7 +1207,45 @@ fn role_change_target(conn: &Connection, change: &RoleChange) -> Outcome<Target>
     }))
 }
 
-fn target(conn: &Connection, op: &CeremonyOp, rp: Option<&RelyingParty>) -> Outcome<Target> {
+/// Where a signoff ceremony's effective expiry comes from (D-043 item 2, Y1).
+#[derive(Clone, Copy)]
+enum SignoffExpiry {
+    /// Ceremony begin: computed now on this trusted time ([`signoff_expiry`]).
+    Compute(Timestamp),
+    /// Ceremony finish: exactly the value stored with the challenge (`None`: none stored,
+    /// refused).
+    Stored(Option<Timestamp>),
+}
+
+/// The trusted deadline of the stored promotion contexts of the signoff (Y1): the earliest
+/// `deadline_at` of every `signoff_requests` row of the signoff id in its scope. `None`
+/// when no row exists (the exclusions read refuses that case). A row without a deadline
+/// bounds nothing: `SIGNOFF_MISMATCH` (fail closed).
+fn context_deadline(conn: &Connection, b: &NewSignoff) -> Outcome<Option<Timestamp>> {
+    let rows: Vec<Option<String>> = conn
+        .prepare(
+            "SELECT deadline_at FROM signoff_requests \
+             WHERE signoff_id = ?1 AND tenant_id = ?2 AND project_id = ?3",
+        )?
+        .query_map((&b.signoff_id, &b.tenant_id, &b.project_id), |r| r.get(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut deadline: Option<Timestamp> = None;
+    for row in rows {
+        let Some(text) = row else {
+            return Ok(Err(ap(ApprovalCode::SignoffMismatch)));
+        };
+        let d = ts(&text)?;
+        deadline = Some(deadline.map_or(d, |e| e.min(d)));
+    }
+    Ok(Ok(deadline))
+}
+
+fn target(
+    conn: &Connection,
+    op: &CeremonyOp,
+    expiry: SignoffExpiry,
+    rp: Option<&RelyingParty>,
+) -> Outcome<Target> {
     match op {
         CeremonyOp::Approve { request_id } | CeremonyOp::Deny { request_id } => {
             let Some((request, status)) = load_request(conn, request_id)? else {
@@ -1224,7 +1264,11 @@ fn target(conn: &Connection, op: &CeremonyOp, rp: Option<&RelyingParty>) -> Outc
             }))
         }
         CeremonyOp::Revoke { target, reason } => revoke_target(conn, target, reason),
-        CeremonyOp::Signoff { binding, parties } => {
+        CeremonyOp::Signoff {
+            binding,
+            parties,
+            requested_expires_at,
+        } => {
             // X7: the exclusions come from the ledger; the caller's list only adds.
             let (excluded, context_blocked) = match signoff_exclusions(conn, binding)? {
                 None => (
@@ -1245,7 +1289,25 @@ fn target(conn: &Connection, op: &CeremonyOp, rp: Option<&RelyingParty>) -> Outc
             if !excluded.well_formed() {
                 return Ok(Err(challenge_refused(ChallengeRefusal::Malformed)));
             }
-            let Ok(challenge_binding) = signoff_binding(binding, &excluded) else {
+            // Y1: the effective expiry. At begin the ledger computes it on trusted time from
+            // the 600 s maximum, the stored contexts' trusted deadline and the caller's
+            // earlier request (which never extends it); at finish it is exactly the value
+            // stored with the challenge (never recomputed, never moved).
+            let (expires_at, expiry_blocked) = match expiry {
+                SignoffExpiry::Compute(now) => {
+                    match context_deadline(conn, binding)?
+                        .and_then(|d| signoff_expiry(now, d, *requested_expires_at).map_err(ap))
+                    {
+                        Ok(e) => (e, None),
+                        Err(refusal) => (now, Some(refusal)),
+                    }
+                }
+                SignoffExpiry::Stored(Some(e)) => (e, None),
+                SignoffExpiry::Stored(None) => {
+                    return Ok(Err(challenge_refused(ChallengeRefusal::Malformed)))
+                }
+            };
+            let Ok(challenge_binding) = signoff_binding(binding, &excluded, expires_at) else {
                 return Ok(Err(challenge_refused(ChallengeRefusal::Malformed)));
             };
             let taken: bool = conn.query_row(
@@ -1255,15 +1317,17 @@ fn target(conn: &Connection, op: &CeremonyOp, rp: Option<&RelyingParty>) -> Outc
             )?;
             let current = signoff_current(conn, binding)?;
             let blocked = context_blocked
-                .or_else(|| (taken || !current).then(|| ap(ApprovalCode::SignoffMismatch)));
+                .or_else(|| (taken || !current).then(|| ap(ApprovalCode::SignoffMismatch)))
+                .or(expiry_blocked);
             Ok(Ok(Target {
                 binding: challenge_binding,
-                context: binding.context_with(&excluded),
+                context: binding.context_with(&excluded, expires_at),
                 permission: Permission::SignoffAuthority,
-                expiry: Some(binding.expires_at),
+                expiry: Some(expires_at),
                 blocked,
                 kind: TargetKind::Signoff {
                     excluded: Box::new(excluded),
+                    expires_at,
                 },
             }))
         }
@@ -1344,10 +1408,20 @@ fn begin_in(
     channel: &ApprovalChannel,
 ) -> Outcome<IssuedChallenge> {
     let now = b.now.at();
-    let t = check!(target(tx, b.op, Some(channel.relying_party()))?);
+    let t = check!(target(
+        tx,
+        b.op,
+        SignoffExpiry::Compute(now),
+        Some(channel.relying_party())
+    )?);
     if let Some(refusal) = t.blocked.clone() {
         return Ok(Err(refusal));
     }
+    // Y1: fixed before the challenge is issued; stored with it and fingerprinted.
+    let signoff_expires_at = match &t.kind {
+        TargetKind::Signoff { expires_at, .. } => Some(expires_at.to_string()),
+        _ => None,
+    };
     if let TargetKind::Request { request, status } = &t.kind {
         match status {
             ApprovalStatus::Pending if now >= request.expires_at() => {
@@ -1418,9 +1492,9 @@ fn begin_in(
         "INSERT INTO challenges (challenge_id, challenge_digest, ceremony_state, issuer, subject, \
          allowed_credentials, operation, verdict, tenant_id, project_id, target_id, \
          context_fingerprint, policy_bundle_sha, revision, issued_at, expires_at, \
-         idempotency_key, rp_id, origin, status) \
+         idempotency_key, rp_id, origin, signoff_expires_at, status) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, \
-         ?18, ?19, 'issued')",
+         ?18, ?19, ?20, 'issued')",
         rusqlite::params![
             challenge.challenge_id(),
             challenge.challenge_digest().as_str(),
@@ -1441,6 +1515,7 @@ fn begin_in(
             challenge.idempotency_key(),
             channel.relying_party().rp_id,
             channel.relying_party().origin,
+            signoff_expires_at,
         ],
     )?;
     Ok(Ok(IssuedChallenge {
@@ -1469,6 +1544,8 @@ struct ChallengeRow {
     key: String,
     relying_party: RelyingParty,
     status: ChallengeStatus,
+    /// Y1: the effective signoff expiry stored at begin (signoff challenges only).
+    signoff_expires_at: Option<Timestamp>,
 }
 
 fn challenge_row(conn: &Connection, id: &str) -> Result<Option<ChallengeRow>, BodyError> {
@@ -1477,7 +1554,7 @@ fn challenge_row(conn: &Connection, id: &str) -> Result<Option<ChallengeRow>, Bo
             "SELECT challenge_digest, ceremony_state, issuer, subject, allowed_credentials, \
              operation, verdict, tenant_id, project_id, target_id, context_fingerprint, \
              policy_bundle_sha, revision, issued_at, expires_at, idempotency_key, status, \
-             rp_id, origin \
+             rp_id, origin, signoff_expires_at \
              FROM challenges WHERE challenge_id = ?1",
             [id],
             |r| {
@@ -1503,11 +1580,12 @@ fn challenge_row(conn: &Connection, id: &str) -> Result<Option<ChallengeRow>, Bo
                         text(16)?,
                     ],
                     (text(17)?, text(18)?),
+                    r.get::<_, Option<String>>(19)?,
                 ))
             },
         )
         .optional()?;
-    let Some((state, revision, t, (rp_id, origin))) = row else {
+    let Some((state, revision, t, (rp_id, origin), signoff_expires)) = row else {
         return Ok(None);
     };
     let [digest, issuer, subject, allowed, operation, verdict, tenant, project, target, fingerprint, policy, issued, expires, key, status] =
@@ -1545,6 +1623,7 @@ fn challenge_row(conn: &Connection, id: &str) -> Result<Option<ChallengeRow>, Bo
             "refused" => ChallengeStatus::Refused,
             _ => return Err(BodyError::Integrity),
         },
+        signoff_expires_at: signoff_expires.as_deref().map(ts).transpose()?,
     }))
 }
 
@@ -2001,7 +2080,12 @@ fn finish_in(
     if &row.relying_party != channel.relying_party() {
         return Ok(Err(challenge_refused(ChallengeRefusal::ChannelMismatch)));
     }
-    let t = check!(target(tx, f.op, Some(channel.relying_party()))?);
+    let t = check!(target(
+        tx,
+        f.op,
+        SignoffExpiry::Stored(row.signoff_expires_at),
+        Some(channel.relying_party())
+    )?);
     let Some(rows) = ActorRows::read(tx, &row.subject)? else {
         return Ok(Err(ap(ApprovalCode::PermissionMissing)));
     };
@@ -2160,12 +2244,24 @@ fn finish_in(
             result = CeremonyResult::Revoked { use_state: state };
             kind = "revoked";
         }
-        (CeremonyOp::Signoff { binding, .. }, TargetKind::Signoff { excluded }) => {
+        (
+            CeremonyOp::Signoff { binding, .. },
+            TargetKind::Signoff {
+                excluded,
+                expires_at,
+            },
+        ) => {
             // X7: the exclusions read in this transaction; the challenge bound the ones read
-            // at begin (a change in between is a context mismatch).
-            let signoff = check!(
-                Signoff::sign((**binding).clone(), &accepted, &actor, &excluded).map_err(ap)
-            );
+            // at begin (a change in between is a context mismatch). Y1: the expiry is the
+            // one stored with the challenge at begin.
+            let signoff = check!(Signoff::sign(
+                (**binding).clone(),
+                expires_at,
+                &accepted,
+                &actor,
+                &excluded
+            )
+            .map_err(ap));
             seq = next_seq(tx, "signoff", f.challenge_id)?;
             let s = signoff.fields();
             let n = &s.binding;
@@ -2194,7 +2290,7 @@ fn finish_in(
                     n.acceptance_policy_bundle_sha,
                     n.state_revision,
                     s.issued_at.to_string(),
-                    n.expires_at.to_string(),
+                    s.expires_at.to_string(),
                     s.subject.issuer,
                     s.subject.subject,
                     s.credential_id,
@@ -3096,12 +3192,19 @@ impl ApprovalLedger for SqliteLedger {
     fn ceremony_context(
         &self,
         op: &CeremonyOp,
-        _now: ObservedTime,
+        now: ObservedTime,
     ) -> Result<Result<CeremonyContext, Refusal>, StoreError> {
         let inner = self.lock("read")?;
         let read = || -> Outcome<CeremonyContext> {
             let rp = self.approval_channel().map(|c| c.relying_party().clone());
-            let t = check!(target(&inner.conn, op, rp.as_ref())?);
+            // Exactly the begin's computation at this trusted time (a signoff's effective
+            // expiry included, Y1).
+            let t = check!(target(
+                &inner.conn,
+                op,
+                SignoffExpiry::Compute(now.at()),
+                rp.as_ref()
+            )?);
             // R6: the displayed context is exactly the one whose fingerprint is bound.
             if context_fingerprint(&t.context).ok().as_ref() != Some(&t.binding.context_fingerprint)
             {
@@ -3121,11 +3224,11 @@ impl ApprovalLedger for SqliteLedger {
     fn pending_signoff(
         &self,
         signoff_id: &str,
-        now: ObservedTime,
+        _now: ObservedTime,
     ) -> Result<Option<NewSignoff>, StoreError> {
         let inner = self.lock("read")?;
         let read = || -> Result<Option<NewSignoff>, BodyError> {
-            pending_signoff_in(&inner.conn, signoff_id, now.at())
+            pending_signoff_in(&inner.conn, signoff_id)
         };
         read().map_err(|e| match e {
             BodyError::Sql(e) => unavailable("read", code_name(&e)),
@@ -3134,20 +3237,12 @@ impl ApprovalLedger for SqliteLedger {
     }
 }
 
-/// The expiry the signoff page requests for a pending signoff: the D-043 maximum from the
-/// time the page read it. Y1 makes the ledger's begin compute the effective expiry (bounded
-/// by this request, never extended by it); the page displays [`target`]'s context of the
-/// binding and compares fingerprints at begin, so a different effective expiry is a stale
-/// display, never a silent change.
-const PAGE_SIGNOFF_REQUESTED_SECONDS: i64 = 600;
-
 /// [`ApprovalLedger::pending_signoff`]: the first stored promotion context of `signoff_id`
 /// (the others must agree; [`target`] refuses a disagreement as `SIGNOFF_MISMATCH`), the
 /// workflow's current task and artifact and the project's active acceptance policy.
 fn pending_signoff_in(
     conn: &Connection,
     signoff_id: &str,
-    now: Timestamp,
 ) -> Result<Option<NewSignoff>, BodyError> {
     let signed: bool = conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM signoffs WHERE signoff_id = ?1)",
@@ -3220,6 +3315,5 @@ fn pending_signoff_in(
         acceptance_policy_version: policy_version,
         acceptance_policy_bundle_sha: sha,
         state_revision: revision,
-        expires_at: now.plus_seconds(PAGE_SIGNOFF_REQUESTED_SECONDS),
     }))
 }

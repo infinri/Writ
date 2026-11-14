@@ -64,6 +64,9 @@ pub const CHALLENGE_TTL_SECONDS: i64 = 120;
 pub const APPROVAL_CONTEXT: &str = "writ.approval-request-context.v1";
 /// Context member naming a signoff context (domain separation).
 pub const SIGNOFF_CONTEXT: &str = "writ.signoff-context.v1";
+/// Maximum signoff lifetime in seconds (D-043 item 2, Y1): the default and
+/// the maximum; a trusted deadline or the caller may only shorten it.
+pub const SIGNOFF_MAX_LIFETIME_SECONDS: i64 = 600;
 
 /// I-6 internal codes. Agents receive only the kernel's generic refusal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,6 +107,13 @@ pub enum ApprovalCode {
     SignoffExpired,
     /// The signoff was already consumed.
     SignoffConsumed,
+    /// `SIGNOFF_EXPIRED`, diagnostic `exceeds maximum lifetime`: a stored
+    /// signoff whose lifetime exceeds [`SIGNOFF_MAX_LIFETIME_SECONDS`] (Y1;
+    /// refused at use, never rewritten).
+    SignoffLifetimeExceeded,
+    /// `SIGNOFF_MISMATCH`, diagnostic `invalid interval`: a caller-requested
+    /// signoff expiry not after trusted time (Y1).
+    SignoffIntervalInvalid,
 }
 
 impl ApprovalCode {
@@ -127,16 +137,20 @@ impl ApprovalCode {
             SignoffUnknown => "SIGNOFF_UNKNOWN",
             SignoffRevoked => "SIGNOFF_REVOKED",
             SignoffMismatch => "SIGNOFF_MISMATCH",
-            SignoffExpired => "SIGNOFF_EXPIRED",
+            SignoffExpired | SignoffLifetimeExceeded => "SIGNOFF_EXPIRED",
             SignoffConsumed => "SIGNOFF_CONSUMED",
+            SignoffIntervalInvalid => "SIGNOFF_MISMATCH",
         }
     }
 
-    /// Operator diagnostic (challenge and assertion refusals only).
+    /// Operator diagnostic (challenge and assertion refusals, and the two
+    /// signoff interval refusals of Y1).
     pub fn diagnostic(self) -> Option<&'static str> {
         match self {
             ApprovalCode::ChallengeInvalid(r) => Some(r.diagnostic()),
             ApprovalCode::AssertionInvalid(e) => Some(e.category()),
+            ApprovalCode::SignoffLifetimeExceeded => Some("signoff: exceeds maximum lifetime"),
+            ApprovalCode::SignoffIntervalInvalid => Some("signoff: invalid interval"),
             _ => None,
         }
     }
@@ -1243,8 +1257,38 @@ pub struct NewSignoff {
     pub acceptance_policy_bundle_sha: String,
     /// Workflow state revision.
     pub state_revision: i64,
-    /// Expiry.
-    pub expires_at: Timestamp,
+}
+
+/// The effective expiry of a signoff (D-043 item 2, Y1), computed by the
+/// ledger at ceremony begin on trusted time `now`: the earliest of
+/// `now + SIGNOFF_MAX_LIFETIME_SECONDS`, the trusted deadline (the stored
+/// promotion contexts' deadline: record expiry, criterion freshness and the
+/// sealed request's `deadline_at`; the acceptance policy has no lifetime
+/// field, so no policy maximum applies) and the caller-requested expiry, if
+/// any. Caller input never extends it. A trusted deadline at or before `now`
+/// is `SIGNOFF_EXPIRED`; a requested expiry at or before `now` is
+/// `SIGNOFF_MISMATCH` (`invalid interval`).
+pub fn signoff_expiry(
+    now: Timestamp,
+    trusted_deadline: Option<Timestamp>,
+    requested: Option<Timestamp>,
+) -> Result<Timestamp, ApprovalCode> {
+    let cap = now.plus_seconds(SIGNOFF_MAX_LIFETIME_SECONDS);
+    let trusted = trusted_deadline.map_or(cap, |d| d.min(cap));
+    if trusted <= now {
+        return Err(ApprovalCode::SignoffExpired);
+    }
+    match requested {
+        Some(r) if r <= now => Err(ApprovalCode::SignoffIntervalInvalid),
+        Some(r) => Ok(r.min(trusted)),
+        None => Ok(trusted),
+    }
+}
+
+/// The stored lifetime of a signoff is within [`SIGNOFF_MAX_LIFETIME_SECONDS`]
+/// (Y1): `issued_at < expires_at <= issued_at + 600 s`.
+pub fn signoff_lifetime_within_maximum(issued_at: Timestamp, expires_at: Timestamp) -> bool {
+    issued_at < expires_at && expires_at <= issued_at.plus_seconds(SIGNOFF_MAX_LIFETIME_SECONDS)
 }
 
 impl NewSignoff {
@@ -1268,8 +1312,9 @@ impl NewSignoff {
     }
 
     /// The signed context as displayed: every binding member, including the
-    /// signoff id (the challenge target).
-    pub fn context(&self) -> Value {
+    /// signoff id (the challenge target), and the effective `expires_at` the
+    /// ledger fixed at begin (Y1).
+    pub fn context(&self, expires_at: Timestamp) -> Value {
         json::obj([
             (
                 "acceptance_policy_bundle_sha",
@@ -1285,7 +1330,7 @@ impl NewSignoff {
             ("artifact_snapshot_id", json::s(&self.artifact_snapshot_id)),
             ("context", json::s(SIGNOFF_CONTEXT)),
             ("criterion_id", json::s(&self.criterion_id)),
-            ("expires_at", ts(self.expires_at)),
+            ("expires_at", ts(expires_at)),
             ("project_id", json::s(&self.project_id)),
             ("signoff_id", json::s(&self.signoff_id)),
             ("state_revision", Value::Int(self.state_revision)),
@@ -1305,8 +1350,8 @@ impl NewSignoff {
     /// The complete signed context as displayed (R6, X7): [`NewSignoff::context`]
     /// plus the member `excluded` ([`SignoffExclusions::context`]). The
     /// signoff page renders only this; the challenge binds its fingerprint.
-    pub fn context_with(&self, excluded: &SignoffExclusions) -> Value {
-        let mut context = self.context();
+    pub fn context_with(&self, excluded: &SignoffExclusions, expires_at: Timestamp) -> Value {
+        let mut context = self.context(expires_at);
         if let Value::Obj(m) = &mut context {
             m.insert("excluded".into(), excluded.context());
         }
@@ -1317,8 +1362,9 @@ impl NewSignoff {
     pub fn displayed(
         &self,
         excluded: &SignoffExclusions,
+        expires_at: Timestamp,
     ) -> Result<DisplayedContext, CanonicalError> {
-        DisplayedContext::of(self.context_with(excluded))
+        DisplayedContext::of(self.context_with(excluded, expires_at))
     }
 }
 
@@ -1463,6 +1509,8 @@ impl SignoffExclusions {
 pub struct SignoffFields {
     /// The signed binding.
     pub binding: NewSignoff,
+    /// The effective expiry the ledger fixed at ceremony begin (Y1).
+    pub expires_at: Timestamp,
     /// The exclusions read from the ledger at signing, displayed and
     /// fingerprinted with the binding (X7).
     pub exclusions: SignoffExclusions,
@@ -1497,6 +1545,7 @@ impl Signoff {
     /// The I-5 use-time checks repeat eligibility at promotion.
     pub fn sign(
         binding: NewSignoff,
+        expires_at: Timestamp,
         accepted: &AcceptedAssertion,
         signer: &Actor<'_>,
         excluded: &SignoffExclusions,
@@ -1519,18 +1568,22 @@ impl Signoff {
             return refuse(ChallengeRefusal::ProjectMismatch);
         }
         let excluded = excluded.clone().normalized();
-        match binding.displayed(&excluded) {
+        match binding.displayed(&excluded, expires_at) {
             Ok(d) if d.fingerprint() == &b.context_fingerprint => {}
             _ => return refuse(ChallengeRefusal::ContextMismatch),
         }
-        if binding.expires_at <= accepted.accepted_at() {
+        if expires_at <= accepted.accepted_at() {
             return refuse(ChallengeRefusal::Expired);
+        }
+        if !signoff_lifetime_within_maximum(accepted.accepted_at(), expires_at) {
+            return Err(ApprovalCode::SignoffLifetimeExceeded);
         }
         check_actor(signer, accepted, Permission::SignoffAuthority)?;
         signoff_separation(accepted.subject(), signer.enrollment, &excluded.all())?;
         Ok(Signoff {
             fields: SignoffFields {
                 binding,
+                expires_at,
                 exclusions: excluded,
                 issued_at: accepted.accepted_at(),
                 subject: accepted.subject().clone(),
@@ -1543,7 +1596,8 @@ impl Signoff {
 
     /// Reconstruct a stored row (the ledger only, [`LedgerCapability`]),
     /// revalidating identifiers, `issued_at < expires_at` and the provenance
-    /// version.
+    /// version. A lifetime above [`SIGNOFF_MAX_LIFETIME_SECONDS`] is kept as
+    /// stored (never rewritten) and refused at use (Y1).
     pub fn from_stored(
         _capability: &LedgerCapability,
         fields: SignoffFields,
@@ -1556,7 +1610,7 @@ impl Signoff {
         {
             return Err(InvalidRecord("signoff: empty field"));
         }
-        if fields.binding.expires_at <= fields.issued_at {
+        if fields.expires_at <= fields.issued_at {
             return Err(InvalidRecord("signoff: expiry not after issue"));
         }
         if fields.provenance_version != PROVENANCE_VERSION_2 {
@@ -1573,7 +1627,9 @@ impl Signoff {
     /// The signed context as displayed ([`NewSignoff::context_with`] its
     /// stored exclusions).
     pub fn context(&self) -> Value {
-        self.fields.binding.context_with(&self.fields.exclusions)
+        self.fields
+            .binding
+            .context_with(&self.fields.exclusions, self.fields.expires_at)
     }
 
     /// [`context_fingerprint`] of [`Signoff::context`].
@@ -2493,8 +2549,12 @@ mod tests {
             acceptance_policy_version: "3".into(),
             acceptance_policy_bundle_sha: sha('c'),
             state_revision: 7,
-            expires_at: t("2026-11-07T11:00:00Z"),
         }
+    }
+
+    /// The effective expiry the ledger would fix at begin (`now` + 600 s, Y1).
+    fn expiry() -> Timestamp {
+        t("2026-11-07T10:11:00Z")
     }
 
     fn requester() -> SubjectId {
@@ -2523,7 +2583,7 @@ mod tests {
             project_id: "p1".into(),
             target_id: "so-1".into(),
             context_fingerprint: new_signoff()
-                .displayed(excluded)
+                .displayed(excluded, expiry())
                 .unwrap()
                 .fingerprint()
                 .clone(),
@@ -2548,6 +2608,7 @@ mod tests {
         let excluded = exclusions(artifact_changers, policy_changers);
         Signoff::sign(
             binding,
+            expiry(),
             &accept_as(
                 signer.record.subject.clone(),
                 signoff_binding_for(&excluded),
@@ -2654,6 +2715,7 @@ mod tests {
         assert_eq!(
             Signoff::sign(
                 new_signoff(),
+                expiry(),
                 &accepted,
                 &who(dave, &authority).actor(),
                 &exclusions(&[], &[])
@@ -2733,14 +2795,13 @@ mod tests {
             |s| s.acceptance_policy_version = "4".into(),
             |s| s.acceptance_policy_bundle_sha = format!("sha256:{}", "e".repeat(64)),
             |s| s.state_revision = 8,
-            |s| s.expires_at = s.expires_at.plus_seconds(1),
         ];
         for (i, change) in changes.into_iter().enumerate() {
             let mut other = new_signoff();
             change(&mut other);
             assert_ne!(
                 other
-                    .displayed(&exclusions(&[], &[]))
+                    .displayed(&exclusions(&[], &[]), expiry())
                     .unwrap()
                     .fingerprint(),
                 &fp,
@@ -2753,6 +2814,7 @@ mod tests {
         assert_eq!(
             Signoff::sign(
                 new_signoff(),
+                expiry(),
                 &accept(binding()),
                 &signer.actor(),
                 &exclusions(&[], &[])
@@ -2770,8 +2832,134 @@ mod tests {
         bad.provenance_version = "writ-provenance-1".into();
         assert!(Signoff::from_stored(&lcap(), bad).is_err());
         let mut bad = s.fields().clone();
-        bad.issued_at = bad.binding.expires_at;
+        bad.issued_at = bad.expires_at;
         assert!(Signoff::from_stored(&lcap(), bad).is_err());
+    }
+
+    /// D-043 item 2 (Y1): the effective expiry is computed from trusted time,
+    /// bounded by 600 s and the trusted deadline; a caller-requested expiry
+    /// only shortens it; expired or invalid intervals are refused.
+    #[test]
+    fn signoff_expiry_is_server_computed_bounded_and_never_extended() {
+        let now = now();
+        let cap = now.plus_seconds(SIGNOFF_MAX_LIFETIME_SECONDS);
+        // Default and maximum: 600 s.
+        assert_eq!(signoff_expiry(now, None, None), Ok(cap));
+        // An excessive requested lifetime is clamped to the cap, never extends it.
+        assert_eq!(
+            signoff_expiry(now, None, Some(now.plus_seconds(3600))),
+            Ok(cap)
+        );
+        // A later trusted deadline does not extend it either.
+        assert_eq!(
+            signoff_expiry(now, Some(now.plus_seconds(7200)), None),
+            Ok(cap)
+        );
+        // An earlier trusted deadline or request shortens it.
+        assert_eq!(
+            signoff_expiry(now, Some(now.plus_seconds(30)), Some(now.plus_seconds(300))),
+            Ok(now.plus_seconds(30))
+        );
+        assert_eq!(
+            signoff_expiry(now, Some(now.plus_seconds(300)), Some(now.plus_seconds(30))),
+            Ok(now.plus_seconds(30))
+        );
+        // An already passed trusted deadline: SIGNOFF_EXPIRED; exactly now counts as passed.
+        for d in [now, now.plus_seconds(-1)] {
+            assert_eq!(
+                signoff_expiry(now, Some(d), None),
+                Err(ApprovalCode::SignoffExpired)
+            );
+        }
+        // A requested expiry not after now: SIGNOFF_MISMATCH, invalid interval.
+        for r in [now, now.plus_seconds(-60)] {
+            let refused = signoff_expiry(now, None, Some(r));
+            assert_eq!(refused, Err(ApprovalCode::SignoffIntervalInvalid));
+            let code = refused.unwrap_err();
+            assert_eq!(code.code(), "SIGNOFF_MISMATCH");
+            assert_eq!(code.diagnostic(), Some("signoff: invalid interval"));
+        }
+        assert_eq!(
+            ApprovalCode::SignoffLifetimeExceeded.code(),
+            "SIGNOFF_EXPIRED"
+        );
+        assert_eq!(
+            ApprovalCode::SignoffLifetimeExceeded.diagnostic(),
+            Some("signoff: exceeds maximum lifetime")
+        );
+        assert!(signoff_lifetime_within_maximum(now, cap));
+        assert!(!signoff_lifetime_within_maximum(now, cap.plus_seconds(1)));
+        assert!(!signoff_lifetime_within_maximum(now, now));
+    }
+
+    /// The effective expiry is displayed and fingerprinted (Y1): a challenge
+    /// bound to one expiry never signs another, and signing refuses a
+    /// lifetime above 600 s from the accepted time.
+    #[test]
+    fn signoff_expiry_is_displayed_fingerprinted_and_capped_at_signing() {
+        let signer = who(bob(), &[Permission::SignoffAuthority]);
+        let excluded = exclusions(&[], &[]);
+        let shown = new_signoff().context_with(&excluded, expiry());
+        assert_eq!(
+            shown.get("expires_at").and_then(Value::as_str),
+            Some("2026-11-07T10:11:00Z")
+        );
+        assert_ne!(
+            new_signoff()
+                .displayed(&excluded, expiry())
+                .unwrap()
+                .fingerprint(),
+            new_signoff()
+                .displayed(&excluded, expiry().plus_seconds(1))
+                .unwrap()
+                .fingerprint()
+        );
+        let accepted = accept_as(bob(), signoff_binding());
+        // Another expiry than the challenge bound (a later one in particular): context mismatch.
+        for other in [expiry().plus_seconds(1), expiry().plus_seconds(-1)] {
+            assert_eq!(
+                Signoff::sign(new_signoff(), other, &accepted, &signer.actor(), &excluded),
+                Err(ApprovalCode::ChallengeInvalid(
+                    ChallengeRefusal::ContextMismatch
+                ))
+            );
+        }
+        let s = Signoff::sign(
+            new_signoff(),
+            expiry(),
+            &accepted,
+            &signer.actor(),
+            &excluded,
+        )
+        .unwrap();
+        assert_eq!(s.fields().expires_at, expiry());
+        assert_eq!(
+            s.context().get("expires_at").and_then(Value::as_str),
+            Some("2026-11-07T10:11:00Z")
+        );
+        // A challenge bound to a lifetime above 600 s from the accepted time never signs.
+        let long = expiry().plus_seconds(1);
+        let mut b = signoff_binding();
+        b.context_fingerprint = new_signoff()
+            .displayed(&excluded, long)
+            .unwrap()
+            .fingerprint()
+            .clone();
+        let accepted = accept_as(bob(), b);
+        assert_eq!(
+            Signoff::sign(new_signoff(), long, &accepted, &signer.actor(), &excluded),
+            Err(ApprovalCode::SignoffLifetimeExceeded)
+        );
+        // A stored row above the cap is kept as stored (refused at use, never rewritten).
+        let mut stored = s.fields().clone();
+        stored.expires_at = stored.issued_at.plus_seconds(3600);
+        assert_eq!(
+            Signoff::from_stored(&lcap(), stored.clone())
+                .unwrap()
+                .fields()
+                .expires_at,
+            stored.expires_at
+        );
     }
 
     /// X7 (S3): the exclusions are part of the displayed context and its
@@ -2783,7 +2971,7 @@ mod tests {
         let signer = who(bob(), &[Permission::SignoffAuthority]);
         let none = SignoffExclusions::default();
         let some = exclusions(&[], &[]);
-        let context = new_signoff().context_with(&some);
+        let context = new_signoff().context_with(&some, expiry());
         let shown = context.get("excluded").unwrap();
         assert_eq!(
             shown.get("delegation_chain").and_then(Value::as_str),
@@ -2791,14 +2979,20 @@ mod tests {
         );
         assert_eq!(SignoffExclusions::from_context(shown), Some(some.clone()));
         assert_ne!(
-            new_signoff().displayed(&none).unwrap().fingerprint(),
-            new_signoff().displayed(&some).unwrap().fingerprint()
+            new_signoff()
+                .displayed(&none, expiry())
+                .unwrap()
+                .fingerprint(),
+            new_signoff()
+                .displayed(&some, expiry())
+                .unwrap()
+                .fingerprint()
         );
         // A challenge bound to an empty exclusion set does not sign when the
         // ledger reads a requester at finish (the old S3 path: caller parties).
         let accepted = accept_as(bob(), signoff_binding_for(&none));
         assert_eq!(
-            Signoff::sign(new_signoff(), &accepted, &signer.actor(), &some),
+            Signoff::sign(new_signoff(), expiry(), &accepted, &signer.actor(), &some),
             Err(ApprovalCode::ChallengeInvalid(
                 ChallengeRefusal::ContextMismatch
             ))
@@ -2817,7 +3011,7 @@ mod tests {
         added.added = vec![bob()];
         let accepted = accept_as(bob(), signoff_binding_for(&added));
         assert_eq!(
-            Signoff::sign(new_signoff(), &accepted, &signer.actor(), &added),
+            Signoff::sign(new_signoff(), expiry(), &accepted, &signer.actor(), &added),
             Err(ApprovalCode::SeparationViolated)
         );
         // The union only grows.

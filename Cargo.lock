@@ -2525,6 +2525,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "writ-approval-server"
+version = "0.1.0"
+dependencies = [
+ "writ-approval",
+ "writ-broker",
+ "writ-ledger-sqlite",
+]
+
+[[package]]
 name = "writ-broker"
 version = "0.1.0"
 dependencies = [

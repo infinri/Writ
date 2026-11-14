@@ -154,6 +154,10 @@ CREATE TABLE challenges (
   status              TEXT NOT NULL CHECK (status IN ('issued', 'consumed', 'expired',
                         'refused')),
   refusal_code        TEXT,
+  -- D-043 Y1: a signoff challenge stores the effective signoff expiry the ledger computed at
+  -- begin (displayed and fingerprinted); finish takes exactly this value. Other operations
+  -- store none. A signoff challenge without it is refused at finish (fail closed).
+  signoff_expires_at  TEXT CHECK (operation = 'signoff' OR signoff_expires_at IS NULL),
   CHECK ((status = 'refused') = (refusal_code IS NOT NULL))
 ) STRICT;
 
@@ -255,6 +259,10 @@ CREATE TABLE signoff_requests (
   agent_issuer         TEXT,
   agent_subject        TEXT,
   created_at           TEXT NOT NULL,
+  -- D-043 Y1: the trusted deadline of this promotion context: the earliest of the verified
+  -- record's expiry, the human criterion's freshness and the sealed request's deadline_at.
+  -- A row without it bounds nothing and makes signoff begin refuse (fail closed).
+  deadline_at          TEXT,
   CHECK ((agent_issuer IS NULL) = (agent_subject IS NULL)),
   PRIMARY KEY (signoff_id, request_fingerprint)
 ) STRICT;

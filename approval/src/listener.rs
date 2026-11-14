@@ -79,6 +79,7 @@ use writ_broker::approval_store::{
 use writ_broker::human::{PrincipalKind, SubjectId, VerifiedRegistration, VerifierError};
 use writ_broker::refusal::Refusal;
 use writ_broker::writ_kernel::json::{self, Value};
+use writ_broker::writ_kernel::time::Timestamp;
 
 use crate::backend::{Backend, Unavailable};
 use crate::page;
@@ -704,13 +705,40 @@ fn signoff_view(state: &State, raw_id: &str) -> Response<Full> {
         Ok(None) => return none(),
         Err(Unavailable) => return unavailable(),
     };
-    let op = CeremonyOp::Signoff {
+    // D-043 Y1: the ledger computes the effective expiry (as a begin at this trusted time
+    // would); the page pins exactly that value as the requested expiry, re-reads the
+    // context with it (unchanged unless a deadline moved, then refused) and displays it.
+    // The begin computes min(its own cap, trusted deadline, this value) = this value, or a
+    // different context, which the fingerprint comparison refuses as a stale display: the
+    // page never shows one expiry and signs another.
+    let mut op = CeremonyOp::Signoff {
         binding: Box::new(binding),
         parties: SignoffParties::default(),
+        requested_expires_at: None,
     };
-    let context = match state.backend.context(&op) {
+    let first = match state.backend.context(&op) {
         Ok(Ok(c)) => c,
         Ok(Err(_)) => return none(),
+        Err(Unavailable) => return unavailable(),
+    };
+    let Some(effective) = first
+        .context
+        .get("expires_at")
+        .and_then(Value::as_str)
+        .and_then(Timestamp::parse_strict)
+    else {
+        return none();
+    };
+    if let CeremonyOp::Signoff {
+        requested_expires_at,
+        ..
+    } = &mut op
+    {
+        *requested_expires_at = Some(effective);
+    }
+    let context = match state.backend.context(&op) {
+        Ok(Ok(c)) if c.binding.context_fingerprint == first.binding.context_fingerprint => c,
+        Ok(_) => return none(),
         Err(Unavailable) => return unavailable(),
     };
     let fingerprint = context.binding.context_fingerprint.as_str().to_string();

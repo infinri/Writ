@@ -583,14 +583,23 @@ fn binding(id: &str, record_id: &str, revision: i64) -> NewSignoff {
         acceptance_policy_version: "3".into(),
         acceptance_policy_bundle_sha: sha('c'),
         state_revision: revision,
-        expires_at: Timestamp::parse_strict("2026-11-07T11:20:00Z").unwrap(),
     }
 }
 
 fn signoff_op(b: NewSignoff, added: Vec<SubjectId>) -> CeremonyOp {
+    signoff_op_until(b, added, None)
+}
+
+/// A signoff ceremony asking for an earlier expiry (Y1: it only shortens).
+fn signoff_op_until(
+    b: NewSignoff,
+    added: Vec<SubjectId>,
+    requested_expires_at: Option<Timestamp>,
+) -> CeremonyOp {
     CeremonyOp::Signoff {
         binding: Box::new(b),
         parties: SignoffParties { added },
+        requested_expires_at,
     }
 }
 
@@ -1159,4 +1168,514 @@ fn the_ordering_rule_rejects_mutant_histories() {
     assert!(check_order("signoff", &other).is_err());
     // A refused revocation.
     assert!(check_order("signoff", &committed_race()).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// D-043 item 1: the production regression behind the approved sc-12 difference. The frozen
+// case's intended invariant, through the production broker with authenticated human signoff
+// on the M4 ceremony: a promotion with an invalid binding is refused without a promotion
+// receipt, any evidence or signoff consumption or any effect; the corrected request then
+// commits with the same, previously unreserved idempotency key. Only the refusal audit and
+// the trusted-time floor are written by the refusal. No inline agent record is trusted
+// (records come from the trusted store by id) and no immutable evidence changes.
+
+/// Everything a refused promotion must leave untouched.
+fn untouched(w: &W, key: &str) {
+    assert_eq!(w.state(), ("verifying".into(), 1));
+    assert_eq!(
+        w.count(&format!(
+            "SELECT count(*) FROM promotion_receipts WHERE idempotency_key = '{key}'"
+        )),
+        0
+    );
+    // Only the setup promotion (planning to verifying, key k0) holds a receipt.
+    assert_eq!(w.count("SELECT count(*) FROM promotion_receipts"), 1);
+    assert_eq!(w.count("SELECT count(*) FROM consumed_records"), 0);
+    assert_eq!(w.count("SELECT count(*) FROM consumed_attestations"), 0);
+    assert_eq!(w.count("SELECT count(*) FROM consumed_signoffs"), 0);
+    assert_eq!(
+        w.count("SELECT count(*) FROM ledger_sequence WHERE kind = 'promotion'"),
+        1
+    );
+    assert_eq!(w.count("SELECT count(*) FROM receipts"), 0);
+    let effects: i64 = w
+        .effects
+        .db()
+        .conn
+        .query_row("SELECT count(*) FROM effects", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(effects, 0);
+}
+
+#[test]
+fn sc12_refused_invalid_binding_consumes_nothing_then_the_same_key_succeeds() {
+    let w = W::new("d043-sc12", vec![]);
+    // The human criterion is signed on the production ceremony (authenticated reviewer).
+    signed(&w, "sara").unwrap();
+    let evidence = |id: &str| w.docs.docs.lock().unwrap().get(id).cloned();
+    let record_before = evidence("acc-1");
+    let attestation_before = evidence("att-1");
+    let signoff_before = w.ledger.signoff("so-1").unwrap().unwrap();
+    // The key has never been reserved.
+    assert_eq!(
+        w.count("SELECT count(*) FROM promotion_receipts WHERE idempotency_key = 'k-sc12'"),
+        0
+    );
+    let refusals = w.count("SELECT count(*) FROM audit_refusals");
+    // Invalid binding: the request's acceptance attributes name another snapshot than the
+    // trusted record acc-1 binds.
+    let invalid = set(
+        &accept("k-sc12", 1, "acc-1"),
+        &["action", "attributes", "artifact_snapshot_id"],
+        json::s("snap-2"),
+    );
+    let refused = w.promote(&invalid);
+    assert!(refused.is_err(), "{refused:?}");
+    untouched(&w, "k-sc12");
+    // The refusal is audited (permitted), nothing else.
+    assert_eq!(w.count("SELECT count(*) FROM audit_refusals"), refusals + 1);
+    // Immutable evidence and the signoff are unchanged and unconsumed.
+    assert_eq!(evidence("acc-1"), record_before);
+    assert_eq!(evidence("att-1"), attestation_before);
+    let signoff_after = w.ledger.signoff("so-1").unwrap().unwrap();
+    assert_eq!(signoff_after, signoff_before);
+    assert!(!signoff_after.consumed);
+    // The corrected request with the same key commits and consumes exactly once.
+    assert_eq!(w.promote(&accept("k-sc12", 1, "acc-1")), Ok(committed(2)));
+    assert_eq!(w.state(), ("accepted".into(), 2));
+    assert_eq!(
+        w.count("SELECT count(*) FROM promotion_receipts WHERE idempotency_key = 'k-sc12'"),
+        1
+    );
+    assert_eq!(
+        w.count("SELECT count(*) FROM consumed_signoffs WHERE signoff_id = 'so-1' AND idempotency_key = 'k-sc12'"),
+        1
+    );
+    assert_eq!(
+        w.count("SELECT count(*) FROM consumed_records WHERE acceptance_record_id = 'acc-1'"),
+        1
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D-043 item 2 (Y1): server-controlled signoff expiry, at most 600 s.
+
+fn at(s: &str) -> Timestamp {
+    Timestamp::parse_strict(s).unwrap()
+}
+
+static REOPENS: AtomicU64 = AtomicU64::new(0);
+
+impl W {
+    /// Close the ledger and open it again with the same channel kind (a restart).
+    fn reopen(&mut self) {
+        let path = self.dir.join("ledger.db");
+        let n = REOPENS.fetch_add(1, Ordering::SeqCst);
+        drop(std::mem::replace(
+            &mut self.ledger,
+            SqliteLedger::create(&self.dir.join(format!("placeholder-{n}.db"))).unwrap(),
+        ));
+        let channel = ApprovalChannel::new(
+            Arc::new(TestVerifier::default()),
+            Arc::new(RegistrationFixture::default()),
+            "approval-listener",
+        )
+        .unwrap();
+        drop(std::mem::replace(
+            &mut self.ledger,
+            SqliteLedger::open(&path)
+                .unwrap()
+                .with_approval_channel(channel)
+                .unwrap(),
+        ));
+    }
+
+    fn text(&self, sql: &str) -> Option<String> {
+        self.ledger
+            .db()
+            .conn
+            .query_row(sql, [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// The stored signoff `so-1`'s (issued_at, expires_at).
+    fn signoff_interval(&self) -> (Timestamp, Timestamp) {
+        let s = self.ledger.signoff("so-1").unwrap().unwrap();
+        (s.signoff.fields().issued_at, s.signoff.fields().expires_at)
+    }
+}
+
+#[test]
+fn y1_expiry_is_fixed_at_begin_stored_fingerprinted_and_taken_exactly_at_finish() {
+    let w = W::new("y1-fixed", vec![]);
+    w.request_signoff(&accept("k1", 1, "acc-1")).unwrap();
+    // The stored promotion context carries its trusted deadline: the earliest of the record
+    // expiry (12:00) and the human criterion's freshness (11:30); no request deadline.
+    assert_eq!(
+        w.text("SELECT deadline_at FROM signoff_requests WHERE signoff_id = 'so-1'"),
+        Some("2026-11-07T11:30:00Z".into())
+    );
+    let op = signoff_op(binding("so-1", "acc-1", 1), vec![]);
+    let c = w.begin(&human("sara"), &op, "so-k1").unwrap();
+    // Fixed before the challenge: now (11:00) + 600 s; the challenge lives min(120 s, expiry).
+    assert_eq!(
+        w.text("SELECT signoff_expires_at FROM challenges WHERE operation = 'signoff'"),
+        Some("2026-11-07T11:10:00Z".into())
+    );
+    assert_eq!(c.expires_at, at("2026-11-07T11:02:00Z"));
+    // Finishing later never moves it.
+    w.clock.set(at("2026-11-07T11:01:30Z"));
+    w.finish(&human("sara"), &op, &c.challenge_id, "so-k1")
+        .unwrap();
+    assert_eq!(
+        w.signoff_interval(),
+        (at("2026-11-07T11:01:30Z"), at("2026-11-07T11:10:00Z"))
+    );
+    // Displayed and fingerprinted: the challenge bound the context naming that expiry.
+    let state = w.ledger.signoff("so-1").unwrap().unwrap();
+    assert_eq!(
+        state
+            .signoff
+            .context()
+            .get("expires_at")
+            .and_then(Value::as_str),
+        Some("2026-11-07T11:10:00Z")
+    );
+    assert_eq!(
+        w.text("SELECT context_fingerprint FROM challenges WHERE operation = 'signoff'"),
+        Some(state.signoff.fingerprint().unwrap().as_str().to_string())
+    );
+    // Other ceremonies store no signoff expiry.
+    assert_eq!(
+        w.count("SELECT count(*) FROM challenges WHERE operation <> 'signoff' AND signoff_expires_at IS NOT NULL"),
+        0
+    );
+}
+
+#[test]
+fn y1_exact_boundary_at_expiry_refused_one_second_before_accepted() {
+    for (n, (time, accepted)) in [
+        ("2026-11-07T11:09:59Z", true),
+        ("2026-11-07T11:10:00Z", false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let w = W::new(&format!("y1-boundary-{n}"), vec![]);
+        signed(&w, "sara").unwrap();
+        assert_eq!(w.signoff_interval().1, at("2026-11-07T11:10:00Z"));
+        w.clock.set(at(time));
+        let result = w.promote(&accept("k1", 1, "acc-1"));
+        if accepted {
+            assert_eq!(result, Ok(committed(2)), "{time}");
+        } else {
+            assert_eq!(result, Err(ap(ApprovalCode::SignoffExpired)), "{time}");
+            assert_eq!(result.unwrap_err().diagnostic(), None);
+            untouched(&w, "k1");
+        }
+    }
+}
+
+#[test]
+fn y1_expiry_survives_a_restart_and_a_clock_rollback_never_revives_it() {
+    let mut w = W::new("y1-restart", vec![]);
+    signed(&w, "sara").unwrap();
+    let before = w.signoff_interval();
+    w.reopen();
+    // The stored expiry is unchanged after the restart and still enforced.
+    assert_eq!(w.signoff_interval(), before);
+    w.clock.set(at("2026-11-07T11:10:00Z"));
+    assert_eq!(
+        w.promote(&accept("k1", 1, "acc-1")),
+        Err(ap(ApprovalCode::SignoffExpired))
+    );
+    // The refused promotion persisted the trusted-time floor at 11:10: a clock set back to
+    // 11:05 (inside the signoff's lifetime) is behind the floor and refused, also after
+    // another restart; the signoff is never revived and nothing is consumed.
+    assert_eq!(
+        w.count("SELECT floor_s FROM time_floor"),
+        at("2026-11-07T11:10:00Z").unix_seconds()
+    );
+    w.clock.set(at("2026-11-07T11:05:00Z"));
+    let rolled_back = w.promote(&accept("k1", 1, "acc-1"));
+    assert_eq!(
+        rolled_back.as_ref().map_err(|r| r.code()),
+        Err("TIME_UNAVAILABLE")
+    );
+    w.reopen();
+    let rolled_back = w.promote(&accept("k1", 1, "acc-1"));
+    assert_eq!(
+        rolled_back.as_ref().map_err(|r| r.code()),
+        Err("TIME_UNAVAILABLE")
+    );
+    untouched(&w, "k1");
+    assert_eq!(w.signoff_interval(), before);
+}
+
+#[test]
+fn y1_delayed_ceremony_completion_never_extends_the_expiry() {
+    // Finish after the challenge expired (120 s): refused, nothing signed.
+    let w = W::new("y1-delayed", vec![]);
+    w.request_signoff(&accept("k1", 1, "acc-1")).unwrap();
+    let op = signoff_op(binding("so-1", "acc-1", 1), vec![]);
+    let c = w.begin(&human("sara"), &op, "so-k1").unwrap();
+    w.clock.set(at("2026-11-07T11:02:00Z"));
+    assert_eq!(
+        w.finish(&human("sara"), &op, &c.challenge_id, "so-k1"),
+        Err(ap(ApprovalCode::ChallengeInvalid(
+            ChallengeRefusal::Expired
+        )))
+    );
+    assert_eq!(w.count("SELECT count(*) FROM signoffs"), 0);
+    // A new ceremony computes a new expiry from the current trusted time (renewal is a new
+    // ceremony; nothing is extended in place).
+    let c = w.begin(&human("sara"), &op, "so-k2").unwrap();
+    w.finish(&human("sara"), &op, &c.challenge_id, "so-k2")
+        .unwrap();
+    assert_eq!(
+        w.signoff_interval(),
+        (at("2026-11-07T11:02:00Z"), at("2026-11-07T11:12:00Z"))
+    );
+
+    // Near the signoff's expiry: a requested expiry 30 s ahead bounds the challenge too;
+    // finishing one second before it signs with exactly that expiry, which then refuses
+    // at the boundary.
+    let w = W::new("y1-near", vec![]);
+    w.request_signoff(&accept("k1", 1, "acc-1")).unwrap();
+    let op = signoff_op_until(
+        binding("so-1", "acc-1", 1),
+        vec![],
+        Some(at("2026-11-07T11:00:30Z")),
+    );
+    let c = w.begin(&human("sara"), &op, "so-k1").unwrap();
+    assert_eq!(c.expires_at, at("2026-11-07T11:00:30Z"));
+    w.clock.set(at("2026-11-07T11:00:29Z"));
+    w.finish(&human("sara"), &op, &c.challenge_id, "so-k1")
+        .unwrap();
+    assert_eq!(
+        w.signoff_interval(),
+        (at("2026-11-07T11:00:29Z"), at("2026-11-07T11:00:30Z"))
+    );
+    w.clock.set(at("2026-11-07T11:00:30Z"));
+    assert_eq!(
+        w.promote(&accept("k1", 1, "acc-1")),
+        Err(ap(ApprovalCode::SignoffExpired))
+    );
+    untouched(&w, "k1");
+}
+
+#[test]
+fn y1_requested_lifetime_only_shortens_and_invalid_intervals_refuse() {
+    let w = W::new("y1-requested", vec![]);
+    w.request_signoff(&accept("k1", 1, "acc-1")).unwrap();
+    let b = || binding("so-1", "acc-1", 1);
+    // A requested expiry at or before trusted time: SIGNOFF_MISMATCH, invalid interval;
+    // no challenge is issued.
+    for requested in ["2026-11-07T11:00:00Z", "2026-11-07T10:00:00Z"] {
+        let refused = w
+            .begin(
+                &human("sara"),
+                &signoff_op_until(b(), vec![], Some(at(requested))),
+                "so-bad",
+            )
+            .unwrap_err();
+        assert_eq!(refused, ap(ApprovalCode::SignoffIntervalInvalid));
+        assert_eq!(refused.code(), "SIGNOFF_MISMATCH");
+        assert_eq!(refused.diagnostic(), Some("signoff: invalid interval"));
+    }
+    assert_eq!(
+        w.count("SELECT count(*) FROM challenges WHERE operation = 'signoff'"),
+        0
+    );
+    // An excessive requested lifetime (one hour) is clamped to 600 s, never extended.
+    let op = signoff_op_until(b(), vec![], Some(at("2026-11-07T12:00:00Z")));
+    let c = w.begin(&human("sara"), &op, "so-long").unwrap();
+    assert_eq!(
+        w.text(&format!(
+            "SELECT signoff_expires_at FROM challenges WHERE challenge_id = '{}'",
+            c.challenge_id
+        )),
+        Some("2026-11-07T11:10:00Z".into())
+    );
+    // The finish never reads the caller's field: presenting another requested expiry at
+    // finish still signs with the stored value.
+    let other = signoff_op_until(b(), vec![], Some(at("2026-11-07T13:00:00Z")));
+    w.finish(&human("sara"), &other, &c.challenge_id, "so-long")
+        .unwrap();
+    assert_eq!(w.signoff_interval().1, at("2026-11-07T11:10:00Z"));
+
+    // An earlier request shortens it.
+    let w = W::new("y1-shorter", vec![]);
+    w.request_signoff(&accept("k1", 1, "acc-1")).unwrap();
+    let op = signoff_op_until(b(), vec![], Some(at("2026-11-07T11:05:00Z")));
+    w.ceremony(&human("sara"), &op, "so-k1").unwrap();
+    assert_eq!(w.signoff_interval().1, at("2026-11-07T11:05:00Z"));
+}
+
+#[test]
+fn y1_trusted_deadlines_bound_the_expiry_and_a_passed_deadline_refuses() {
+    // The sealed request's deadline (11:04) is earlier than 600 s and the record's.
+    let w = W::new("y1-deadline", vec![]);
+    let request = set(
+        &accept("k1", 1, "acc-1"),
+        &["deadline_at"],
+        json::s("2026-11-07T11:04:00Z"),
+    );
+    w.request_signoff(&request).unwrap();
+    assert_eq!(
+        w.text("SELECT deadline_at FROM signoff_requests"),
+        Some("2026-11-07T11:04:00Z".into())
+    );
+    let op = signoff_op(binding("so-1", "acc-1", 1), vec![]);
+    w.ceremony(&human("sara"), &op, "so-k1").unwrap();
+    assert_eq!(w.signoff_interval().1, at("2026-11-07T11:04:00Z"));
+
+    // The human criterion's freshness (11:30) has passed: SIGNOFF_EXPIRED, no challenge.
+    let w = W::new("y1-passed", vec![]);
+    w.request_signoff(&accept("k1", 1, "acc-1")).unwrap();
+    w.clock.set(at("2026-11-07T11:30:00Z"));
+    assert_eq!(
+        w.begin(&human("sara"), &op, "so-k1").unwrap_err(),
+        ap(ApprovalCode::SignoffExpired)
+    );
+    assert_eq!(
+        w.count("SELECT count(*) FROM challenges WHERE operation = 'signoff'"),
+        0
+    );
+
+    // A stored promotion context without a deadline bounds nothing: refused (fail closed).
+    let w = W::new("y1-no-deadline", vec![]);
+    w.request_signoff(&accept("k1", 1, "acc-1")).unwrap();
+    w.ledger
+        .db()
+        .conn
+        .execute("UPDATE signoff_requests SET deadline_at = NULL", [])
+        .unwrap();
+    assert_eq!(
+        w.begin(&human("sara"), &op, "so-k1").unwrap_err(),
+        ap(ApprovalCode::SignoffMismatch)
+    );
+}
+
+#[test]
+fn y1_a_pre_cap_signoff_exceeding_600_seconds_fails_closed_and_is_never_rewritten() {
+    let w = W::new("y1-pre-cap", vec![]);
+    signed(&w, "sara").unwrap();
+    // A row as the pre-D-043 code could write it: a caller-chosen one-hour lifetime with a
+    // consistent challenge (fingerprint and stored expiry), i.e. intact provenance.
+    let state = w.ledger.signoff("so-1").unwrap().unwrap();
+    let mut fields = state.signoff.fields().clone();
+    fields.expires_at = fields.issued_at.plus_seconds(3600);
+    let long = writ_broker::approval::Signoff::from_stored(
+        &writ_broker::human::LedgerCapability::for_ledger_implementation(),
+        fields.clone(),
+    )
+    .unwrap();
+    {
+        let db = w.ledger.db();
+        db.conn
+            .execute(
+                "UPDATE signoffs SET expires_at = ?1 WHERE signoff_id = 'so-1'",
+                [fields.expires_at.to_string()],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "UPDATE challenges SET context_fingerprint = ?1, signoff_expires_at = ?2 \
+                 WHERE challenge_id = ?3",
+                (
+                    long.fingerprint().unwrap().as_str(),
+                    fields.expires_at.to_string(),
+                    &fields.challenge_id,
+                ),
+            )
+            .unwrap();
+    }
+    // Unexpired at 11:05, but its stored lifetime exceeds the maximum: SIGNOFF_EXPIRED
+    // with the diagnostic; nothing consumed, the row kept exactly as stored.
+    w.clock.set(at("2026-11-07T11:05:00Z"));
+    let refused = w.promote(&accept("k1", 1, "acc-1")).unwrap_err();
+    assert_eq!(refused, ap(ApprovalCode::SignoffLifetimeExceeded));
+    assert_eq!(refused.code(), "SIGNOFF_EXPIRED");
+    assert_eq!(
+        refused.diagnostic(),
+        Some("signoff: exceeds maximum lifetime")
+    );
+    untouched(&w, "k1");
+    let after = w.ledger.signoff("so-1").unwrap().unwrap();
+    assert_eq!(after.signoff, long);
+    assert!(!after.consumed);
+}
+
+#[test]
+fn y1_the_signoff_page_displays_exactly_the_expiry_the_begin_fixes() {
+    // The approval page (W-F): `pending_signoff` builds the binding from stored state;
+    // `ceremony_context` computes the effective expiry as a begin at that trusted time; the
+    // page pins it as the requested expiry; a begin later fixes exactly it.
+    let w = W::new("y1-page", vec![]);
+    w.request_signoff(&accept("k1", 1, "acc-1")).unwrap();
+    let observed = |w: &W| {
+        let mut l: &SqliteLedger = &w.ledger;
+        writ_broker::clock::observe(&w.clock, &mut l).unwrap()
+    };
+    let pending = w
+        .ledger
+        .pending_signoff("so-1", observed(&w))
+        .unwrap()
+        .unwrap();
+    assert_eq!(pending, binding("so-1", "acc-1", 1));
+    let viewed = w
+        .ledger
+        .ceremony_context(&signoff_op(pending.clone(), vec![]), observed(&w))
+        .unwrap()
+        .unwrap();
+    let shown = viewed
+        .context
+        .get("expires_at")
+        .and_then(Value::as_str)
+        .map(at)
+        .unwrap();
+    assert_eq!(shown, at("2026-11-07T11:10:00Z"));
+    for member in ["excluded", "expires_at"] {
+        assert!(viewed.context.get(member).is_some(), "{member}");
+    }
+    let pinned = signoff_op_until(pending, vec![], Some(shown));
+    let displayed = w
+        .ledger
+        .ceremony_context(&pinned, observed(&w))
+        .unwrap()
+        .unwrap();
+    assert_eq!(displayed.binding, viewed.binding);
+    // Time passes before the human confirms: the begin fixes the displayed expiry, and the
+    // challenge binds the displayed fingerprint.
+    w.clock.set(at("2026-11-07T11:04:00Z"));
+    let c = w.begin(&human("sara"), &pinned, "so-page").unwrap();
+    assert_eq!(
+        w.text("SELECT signoff_expires_at FROM challenges WHERE operation = 'signoff'"),
+        Some("2026-11-07T11:10:00Z".into())
+    );
+    assert_eq!(
+        w.text("SELECT context_fingerprint FROM challenges WHERE operation = 'signoff'"),
+        Some(displayed.binding.context_fingerprint.as_str().to_string())
+    );
+    // Unpinned, the same later begin would bind another expiry (so the page pins it).
+    let later = w
+        .ledger
+        .ceremony_context(
+            &signoff_op(binding("so-1", "acc-1", 1), vec![]),
+            observed(&w),
+        )
+        .unwrap()
+        .unwrap();
+    assert_ne!(
+        later.binding.context_fingerprint,
+        displayed.binding.context_fingerprint
+    );
+    w.finish(&human("sara"), &pinned, &c.challenge_id, "so-page")
+        .unwrap();
+    // Signed: no longer pending.
+    assert_eq!(
+        w.ledger.pending_signoff("so-1", observed(&w)).unwrap(),
+        None
+    );
 }

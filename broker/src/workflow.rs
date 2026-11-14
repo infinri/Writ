@@ -536,6 +536,7 @@ pub struct SignoffRequest {
     agent: Option<SubjectId>,
     request_fingerprint: String,
     created_at: Timestamp,
+    deadline_at: Timestamp,
 }
 
 impl SignoffRequest {
@@ -590,6 +591,13 @@ impl SignoffRequest {
     /// Trusted time it was requested.
     pub fn created_at(&self) -> Timestamp {
         self.created_at
+    }
+    /// The trusted deadline of this promotion context (D-043 Y1): the
+    /// earliest of the verified record's `expires_at`, the human criterion's
+    /// `fresh_until` in that record and the sealed request's `deadline_at`.
+    /// A signoff for it never outlives this.
+    pub fn deadline_at(&self) -> Timestamp {
+        self.deadline_at
     }
 }
 
@@ -1095,6 +1103,28 @@ where
             return Err(Refusal::RequestScopeMismatch);
         }
         let sealed = (requester, agent);
+        // D-043 Y1: the trusted deadline of this promotion context (the sealed request's
+        // deadline only shortens; a malformed one refuses).
+        let request_deadline = match request.get("deadline_at") {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(
+                v.as_str()
+                    .and_then(Timestamp::parse_strict)
+                    .ok_or(Refusal::RequestScopeMismatch)?,
+            ),
+        };
+        let deadline = |criterion: &str| {
+            let fresh = r
+                .criteria
+                .iter()
+                .find(|c| c.criterion_id == criterion)
+                .map(|c| c.fresh_until);
+            [Some(r.expires_at), fresh, request_deadline]
+                .into_iter()
+                .flatten()
+                .min()
+                .unwrap_or(r.expires_at)
+        };
         let named: Vec<(&str, &str)> = record
             .evaluations()
             .iter()
@@ -1119,6 +1149,7 @@ where
                 agent: sealed.1.clone(),
                 request_fingerprint: verified.fingerprint().as_str().to_string(),
                 created_at: observed.at(),
+                deadline_at: deadline(criterion),
             })
             .collect();
         ledger
