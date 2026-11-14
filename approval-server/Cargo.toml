@@ -1,0 +1,24 @@
+[package]
+name = "writ-approval-server"
+version = "0.1.0"
+description = "Writ V2 production entry point of the local approval channel: writ-approval-server (M4 Y3, D-043)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Workspace path dependencies only; no registry package (approval-server/deps-allowlist.json).
+# This crate, not writ-approval, links the SQLite ledger.
+[dependencies]
+writ-approval = { path = "../approval" }
+writ-broker = { path = "../broker" }
+writ-ledger-sqlite = { path = "../persistence/sqlite" }
+
+[[bin]]
+name = "writ-approval-server"
+path = "src/main.rs"
+test = false
+bench = false
+
+[lints]
+workspace = true

@@ -16,6 +16,9 @@
 //!   channel)?)` with `v = Arc::new(PasskeyVerifier::for_listener(&listener)?)`, then
 //!   `LedgerBackend::new(Arc::new(ledger), clock)`.
 //! - [`page`]: escaped rendering of the broker's stored, fingerprint-covered context (R6).
+//!
+//! The production entry point is the separate crate `writ-approval-server`
+//! (approval-server/, Y3, D-043), so this crate never links the SQLite ledger.
 
 pub mod backend;
 pub mod listener;
