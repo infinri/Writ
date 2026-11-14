@@ -109,6 +109,16 @@ class Advisories(unittest.TestCase):
         self.assertEqual(len(check_deps.advisories({("rsa", "0.10.0-rc.20"): ["RUSTSEC-2023-0071"]}, self.EXC, False)[0]), 1)
 
 
+class ThroughMembers(unittest.TestCase):
+    def test_forbidden_crate_through_a_workspace_member_fails(self):
+        allows = {"writ-approval": {"forbidden": [], "forbidden_anywhere": ["rusqlite"]}, "writ-ledger-sqlite": {"forbidden": ["hmac"]}}
+        full = {"writ-approval": {"writ-ledger-sqlite", "rusqlite", "serde"}, "writ-ledger-sqlite": {"rusqlite", "hmac"}}
+        self.assertEqual(check_deps.forbidden_through_members(full, allows),
+                         ["writ-approval: forbidden crate rusqlite reached (directly or through a workspace member)"])
+        full["writ-approval"].discard("rusqlite")
+        self.assertEqual(check_deps.forbidden_through_members(full, allows), [])
+
+
 if __name__ == "__main__":
     unittest.main()
 

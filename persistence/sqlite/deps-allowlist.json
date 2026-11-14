@@ -59,5 +59,11 @@
       "load_extension"
     ]
   },
-  "dev_packages": {}
+  "dev_packages": {},
+  "forbidden_anywhere": [
+    "tokio",
+    "hyper",
+    "webauthn-rs",
+    "reqwest"
+  ]
 }

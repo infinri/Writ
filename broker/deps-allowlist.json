@@ -97,5 +97,13 @@
       "checksum": "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5",
       "role": "transitive, Windows targets only (windows-sys); not compiled on Linux; released 2025-10-06"
     }
-  }
+  },
+  "forbidden_anywhere": [
+    "tokio",
+    "reqwest",
+    "rusqlite",
+    "libsqlite3-sys",
+    "hyper",
+    "webauthn-rs"
+  ]
 }
