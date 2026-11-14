@@ -32,6 +32,16 @@ Modes:
                     receipts with different statuses (aggregates unchanged, per-key state wrong)
   f_resume_conflict a retry that resumed its own reserved receipt (effect_completed) is answered
                     IDEMPOTENCY_CONFLICT instead
+  a_reapprove, a_denied_grant, a_expired_live
+                    M4 approvals (D-040, D-042): a second approval of a decided request
+                    (APPROVAL_REQUEST_CLOSED), a denial (approval_denied), or an approval of an
+                    expired request (APPROVAL_REQUEST_EXPIRED) is answered grant_issued
+  a_no_request      an approval with no approval request (production_difference NO_APPROVAL_REQUEST)
+                    is answered with the M3 refusal NOT_APPROVABLE (and counted)
+  a_m3_codes        ASSERTION_INVALID and SEPARATION_VIOLATED are answered with the M3 codes
+                    HUMAN_UNAUTHENTICATED and SELF_APPROVAL_FORBIDDEN
+  a_grant_use_hidden
+                    a grant use in the final state (an M4 grant used once) is reported as 0
 """
 from __future__ import annotations
 
@@ -46,7 +56,8 @@ MODES = ["m1_b36", "conc_extra", "refusals", "c4_ledger_first", "c4_decision_fir
          "heal_on_restart", "c4_hidden_effect", "c4_hidden_consumption", "c4_hidden_dispatch",
          "c4_hidden_uncertain", "f_grant_overuse", "f_double_dispatch", "f_duplicate_effect",
          "f_effect_without_permit", "f_unsafe_reconcile", "f_redispatch", "f_group_outcome",
-         "f_status_swap", "f_resume_conflict"]
+         "f_status_swap", "f_resume_conflict", "a_reapprove", "a_denied_grant", "a_expired_live",
+         "a_no_request", "a_m3_codes", "a_grant_use_hidden"]
 LU = {"code": "LEDGER_UNAVAILABLE", "result": "refused"}
 RESERVE_CODES = [{"code": "GRANT_UNKNOWN", "result": "refused"}, {"code": "IDEMPOTENCY_CONFLICT", "result": "refused"},
                  {"code": "RECONCILIATION_REQUIRED", "result": "refused"},
@@ -146,6 +157,31 @@ def mutate(mode: str, out, inp):
             elif d.get("failures"):
                 d["failures"][-1] = dict(d["failures"][-1], possible_progress="dispatched_with_effect",
                                          stage="commit", outcome_unknown=1)
+    elif mode.startswith("a_"):
+        fin = out.get("final") if isinstance(out.get("final"), dict) else {}
+        approve = [i for i, s in enumerate(isteps) if s.get("op") == "approve"]
+        swap = {"a_reapprove": ({"code": "APPROVAL_REQUEST_CLOSED", "result": "refused"}, -1),
+                "a_expired_live": ({"code": "APPROVAL_REQUEST_EXPIRED", "result": "refused"}, -1),
+                "a_denied_grant": ({"result": "approval_denied"}, 0),
+                "a_no_request": ({"reason": "NO_APPROVAL_REQUEST", "result": "production_difference"}, 1)}
+        if mode in swap:
+            src, delta = swap[mode]
+            i = next((i for i in approve if i < len(steps) and steps[i] == src), None)
+            if i is not None:
+                steps[i] = ({"code": "NOT_APPROVABLE", "result": "refused"} if mode == "a_no_request"
+                            else {"result": "grant_issued"})
+                fin["refusals"] = fin.get("refusals", 0) + delta
+        elif mode == "a_m3_codes":
+            m3 = {"ASSERTION_INVALID": "HUMAN_UNAUTHENTICATED", "SEPARATION_VIOLATED": "SELF_APPROVAL_FORBIDDEN"}
+            for i in approve:
+                r = steps[i] if i < len(steps) else None
+                if isinstance(r, dict) and r.get("code") in m3:
+                    steps[i] = {"code": m3[r["code"]], "result": "refused"}
+        elif mode == "a_grant_use_hidden" and not any(s.get("op") == "concurrent" for s in isteps):
+            gu = fin.get("grant_uses") or {}
+            k = next((k for k in sorted(gu) if gu[k] == 1), None)
+            if k is not None:
+                gu[k] = 0
     elif mode.startswith("f_"):
         gi = next((i for i, s in enumerate(isteps) if s.get("op") == "concurrent_faults"), None)
         if gi is None:

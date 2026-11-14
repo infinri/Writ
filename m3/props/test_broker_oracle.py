@@ -155,21 +155,139 @@ class Oracles(unittest.TestCase):
             self.assertEqual(failed(res, "broker.m3.present_permit_production_order"), bad)
 
     def test_grant_backed_permit_expires_with_its_grant(self):
+        # An M4 grant lives 600 s whatever ttl_seconds says: executed 590 s after the approval,
+        # the permit expires with the grant (600 s), before its own 30 s.
         req = m1.request("P1", "k1")
         t = m1.T0
         steps = [(m1.approve(req, "g1", human="human:bob", ttl=5), {"kind": "approve", "mode": "bob", "variant": "P1"}),
+                 ({"op": "advance_time", "now": m1.ts(t + 590)}, {"kind": "time"}),
                  (m1.execute(req, "g1"), {"kind": "execute", "variant": "P1", "seal": "valid",
                                           "deps": {"ledger": "up", "policy": "up"}, "grant": "g1", "fault": None,
-                                          "now": t}),
-                 ({"op": "advance_time", "now": m1.ts(t + 10)}, {"kind": "time"}),
-                 ({"op": "present_permit", "of_step": 1, "request": req},
-                  {"kind": "present", "of": 1, "tamper": None, "now": t + 10})]
+                                          "now": t + 590}),
+                 ({"op": "advance_time", "now": m1.ts(t + 601)}, {"kind": "time"}),
+                 ({"op": "present_permit", "of_step": 2, "request": req},
+                  {"kind": "present", "of": 2, "tamper": None, "now": t + 601})]
+        for got, bad in (({"code": "PERMIT_EXPIRED", "result": "refused"}, 0),
+                         ({"code": "PERMIT_REPLAYED", "result": "refused"}, 1)):
+            res = Results("t")
+            o = out([{"result": "grant_issued"}, {"result": "time_advanced"}, OK, {"result": "time_advanced"}, got],
+                    {"observed_success": 1}, 1)
+            o["final"]["grant_uses"] = {"g1": 1}
+            bo.check_sequence(res, "p", seq(steps), o)
+            self.assertEqual(failed(res, "broker.m3.present_permit_production_order"), bad, got)
+            self.assertEqual(failed(res, "broker.m3.approve_m4_lifecycle"), 0)
+
+    def approvals(self, answers, final_uses, refusals):
+        """A sequence over every M4 approval rule, with `answers` as the adapter's output."""
+        t = m1.T0
+        up = {"ledger": "up", "policy": "up"}
+
+        def ap(req, g, mode, v="P1", **kw):
+            return (m1.approve(req, g, **kw), {"kind": "approve", "mode": mode, "variant": v})
+
+        def exe(req, g, v="P1", deps=up, now=t):
+            return (m1.execute(req, g), {"kind": "execute", "variant": v, "seal": "valid", "deps": dict(deps),
+                                         "grant": g, "fault": None, "now": now})
+
+        p0, p1, x0 = m1.request("P1", "k1"), m1.request("P1", "k2", 1), m1.request("X1", "k3")
+        steps = [
+            ap(m1.request("W1", "k1"), "g1", "ok", "W1"),            # allowed: no approval request
+            ap(p0, "g1", "wrong_cred", cred="guess"),                 # ASSERTION_INVALID
+            ap(p0, "g1", "bad_channel", channel="chat"),              # ASSERTION_INVALID
+            ap(p0, "g1", "self", human="agent:claude-session-1"),     # SEPARATION_VIOLATED
+            ap(p0, "g1", "ok"),                                       # grant_issued
+            ap(m1.request("P1", "k9"), "g2", "ok"),                   # same request: CLOSED
+            ap(p1, "g2", "self", human="agent:claude-session-1"),     # another principal: issued
+            ap(x0, "g3", "denied", "X1", verdict="denied"),           # approval_denied
+            ap(x0, "g3", "ok", "X1"),                                 # CLOSED (denial terminal)
+            exe(p0, "g1"),                                            # uses g1's grant
+            exe(m1.request("P2", "k5"), None, "P2"),                  # APPROVAL_REQUIRED records it
+            ({"op": "advance_time", "now": m1.ts(t + 600)}, {"kind": "time"}),
+            ap(m1.request("P2", "k5"), "g4", "ok", "P2"),             # EXPIRED
+            ({"op": "set_dependency", "name": "ledger", "status": "down"}, {"kind": "deps"}),
+            ap(m1.request("P2", "k6", 2), "g4", "ok", "P2"),          # LEDGER_UNAVAILABLE
+            ({"op": "set_dependency", "name": "policy", "status": "down"}, {"kind": "deps"}),
+            ap(m1.request("P2", "k6", 2), "g4", "ok", "P2"),          # NO_APPROVAL_REQUEST
+        ]
+        o = {"steps": answers, "final": {"consumed_permits": 1, "effects_applied": 1, "grant_uses": final_uses,
+                                         "receipts": {"observed_success": 1}, "refusals": refusals}}
+        return seq(steps), o
+
+    APPROVAL_ANSWERS = [bo.NO_REQUEST, {"code": "ASSERTION_INVALID", "result": "refused"},
+                        {"code": "ASSERTION_INVALID", "result": "refused"},
+                        {"code": "SEPARATION_VIOLATED", "result": "refused"}, {"result": "grant_issued"},
+                        {"code": "APPROVAL_REQUEST_CLOSED", "result": "refused"}, {"result": "grant_issued"},
+                        {"result": "approval_denied"}, {"code": "APPROVAL_REQUEST_CLOSED", "result": "refused"},
+                        OK, {"code": "APPROVAL_REQUIRED", "result": "refused"}, {"result": "time_advanced"},
+                        {"code": "APPROVAL_REQUEST_EXPIRED", "result": "refused"}, {"result": "dependency_set"},
+                        {"code": "LEDGER_UNAVAILABLE", "result": "refused"}, {"result": "dependency_set"},
+                        bo.NO_REQUEST]
+
+    def test_m4_approval_answers_are_predicted_exactly(self):
+        c, o = self.approvals(list(self.APPROVAL_ANSWERS), {"g1": 1, "g2": 0}, 8)
         res = Results("t")
-        o = out([{"result": "grant_issued"}, OK, {"result": "time_advanced"},
-                 {"code": "PERMIT_REPLAYED", "result": "refused"}], {"observed_success": 1}, 1)
-        o["final"]["grant_uses"] = {"g1": 1}
-        bo.check_sequence(res, "p", seq(steps), o)
-        self.assertEqual(failed(res, "broker.m3.present_permit_production_order"), 1)
+        bo.check_sequence(res, "p", c, o)
+        self.assertFalse(res.failed(), res.to_json()["violations"])
+        self.assertEqual(passed(res, "broker.m3.approve_m4_lifecycle"), 12)
+        self.assertEqual(passed(res, "broker.m3.grant_uses_equal_first_reservations_per_m4_grant"), 1)
+
+    def test_m3_approval_answers_and_wrong_m4_answers_are_rejected(self):
+        wrong = {1: {"code": "HUMAN_UNAUTHENTICATED", "result": "refused"},
+                 3: {"code": "SELF_APPROVAL_FORBIDDEN", "result": "refused"},
+                 5: {"result": "grant_issued"}, 7: {"result": "grant_issued"},
+                 8: {"result": "grant_issued"}, 12: {"result": "grant_issued"},
+                 0: {"code": "NOT_APPROVABLE", "result": "refused"},
+                 14: bo.NO_REQUEST, 16: {"code": "POLICY_UNAVAILABLE", "result": "refused"}}
+        for i, got in wrong.items():
+            with self.subTest(step=i):
+                answers = list(self.APPROVAL_ANSWERS)
+                answers[i] = got
+                c, o = self.approvals(answers, {"g1": 1, "g2": 0}, 8)
+                res = Results("t")
+                bo.check_sequence(res, "p", c, o)
+                self.assertEqual(failed(res, "broker.m3.approve_m4_lifecycle"), 1)
+
+    def test_m4_grant_uses_are_accounted_per_grant(self):
+        for uses, bad in (({"g1": 1, "g2": 0}, 0), ({"g1": 0, "g2": 0}, 1), ({"g1": 1}, 1),
+                          ({"g1": 0, "g2": 1}, 1), ({"g1": 1, "g2": 0, "approval/apr:x": 0}, 1)):
+            c, o = self.approvals(list(self.APPROVAL_ANSWERS), uses, 8)
+            res = Results("t")
+            bo.check_sequence(res, "p", c, o)
+            self.assertEqual(failed(res, "broker.m3.grant_uses_equal_first_reservations_per_m4_grant"), bad, uses)
+
+    def test_a_superseded_grant_keeps_its_uses_under_its_label(self):
+        # g1 names the grant of P1/principal 0, which is used; then g1 names a new grant (X1).
+        req, x = m1.request("P1", "k1"), m1.request("X1", "k2")
+        up = {"ledger": "up", "policy": "up"}
+        steps = [(m1.approve(req, "g1"), {"kind": "approve", "mode": "ok", "variant": "P1"}),
+                 (m1.execute(req, "g1"), {"kind": "execute", "variant": "P1", "seal": "valid", "deps": up,
+                                          "grant": "g1", "fault": None, "now": m1.T0}),
+                 (m1.approve(x, "g1"), {"kind": "approve", "mode": "ok", "variant": "X1"}),
+                 (m1.execute(req, "g1"), {"kind": "execute", "variant": "P1", "seal": "valid", "deps": up,
+                                          "grant": "g1", "fault": None, "now": m1.T0})]
+        for retry, uses, bad in (({"code": "IDEMPOTENCY_CONFLICT", "result": "refused"},
+                                  {"g1": 0, "approval/apr:p1": 1}, 0),
+                                 (REPLAY, {"g1": 0, "approval/apr:p1": 1}, 1),
+                                 ({"code": "IDEMPOTENCY_CONFLICT", "result": "refused"}, {"g1": 1}, 1)):
+            o = out([{"result": "grant_issued"}, OK, {"result": "grant_issued"}, retry], {"observed_success": 1},
+                    1 if retry.get("result") == "refused" else 0)
+            o["final"]["grant_uses"] = uses
+            res = Results("t")
+            bo.check_sequence(res, "p", seq(steps), o)
+            got = failed(res, "broker.m3.retry_under_a_reference_naming_another_grant_conflicts") + \
+                failed(res, "broker.m3.grant_uses_equal_first_reservations_per_m4_grant")
+            self.assertEqual(got, bad, (retry, uses))
+
+    def test_inserted_approval_is_a_refusal_of_its_own_action(self):
+        rng = random.Random("7:broker")
+        for c in bo.gen_base(rng, 200):
+            t = bo.insert_refusal(rng, c)
+            ins = t["input"]["steps"][t["meta"]["pos"]]
+            if ins["op"] == "approve":
+                self.assertEqual(ins["for_request"]["action"]["action_digest"], bo.INSERTED_DIGEST)
+                policy = [s["status"] for s in t["input"]["steps"][:t["meta"]["pos"]]
+                          if s.get("op") == "set_dependency" and s.get("name") == "policy"]
+                self.assertNotEqual(policy[-1:], ["down"])
 
     def c4_case(self, variant, grant=None, policy="up", restart=False):
         req = m1.request(variant, "k1")
@@ -430,6 +548,45 @@ class EndToEnd(unittest.TestCase):
     def test_injected_refusal_count_fails(self):
         res, _ = self.campaign(self.mutant("refusals"))
         self.assertGreater(failed(res, "broker.refusals_counted_exactly"), 0)
+
+    def test_real_adapter_gives_every_predicted_approval_answer(self):
+        # The focused sequence reaches every M4 approval answer, including the rare ones
+        # (expired request, ledger down, no policy); the real adapter matches all of them and an
+        # approval of an expired request answered grant_issued is caught.
+        c, _ = Oracles.approvals(None, [], {}, 0)
+        for argv, bad in (([str(ADAPTER)], 0), (self.mutant("a_expired_live"), 1)):
+            res = Results("broker")
+            o = bo.run_cases(Proto("p", argv), [c], res).get(c["id"])
+            bo.check_sequence(res, "p", c, o)
+            self.assertEqual(failed(res, "broker.m3.approve_m4_lifecycle"), bad, argv)
+            if not bad:
+                self.assertFalse(res.failed(), res.to_json()["violations"][:3])
+                self.assertEqual(passed(res, "broker.m3.approve_m4_lifecycle"), 12)
+
+    def test_approval_mutants_fail(self):
+        expect = {
+            "a_reapprove": "broker.m3.approve_m4_lifecycle",
+            "a_denied_grant": "broker.m3.approve_m4_lifecycle",
+            "a_no_request": "broker.m3.approve_m4_lifecycle",
+            "a_m3_codes": "broker.m3.approve_m4_lifecycle",
+            "a_grant_use_hidden": "broker.m3.grant_uses_equal_first_reservations_per_m4_grant",
+        }
+        for mode, inv in expect.items():
+            with self.subTest(mode=mode):
+                applied = False
+                for attempt in range(6):
+                    with tempfile.TemporaryDirectory() as d:
+                        log = Path(d) / "applied.log"
+                        os.environ["WRIT_MUTANT_LOG"] = str(log)
+                        try:
+                            res, _ = self.campaign(self.mutant(mode), seed=11 + attempt)
+                        finally:
+                            del os.environ["WRIT_MUTANT_LOG"]
+                        if log.exists() and log.read_text().strip():
+                            applied = True
+                            self.assertGreater(failed(res, inv), 0, f"{mode} applied but not caught (attempt {attempt})")
+                            break
+                self.assertTrue(applied, f"{mode} never applied in 6 seeded campaigns")
 
     def c4_campaign(self, argv):
         """Focused outage sequences (restarts under outage) and their C4 inspection twins."""

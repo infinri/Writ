@@ -6,7 +6,7 @@ use std::sync::{Arc, Barrier, Mutex};
 
 use writ_broker::approval_store::{
     approval_request_for, CeremonyBegin, CeremonyFinish, CeremonyOp, CeremonyResult, NewEnrollment,
-    NewRole, APPROVAL_GRANT_TTL_SECONDS,
+    NewRole,
 };
 use writ_broker::authorize::{authorize, UseTimeStatus};
 use writ_broker::clock::ObservedTime;
@@ -426,17 +426,17 @@ impl BrokerCase {
                 "grant_ref is not a production grant label".into(),
             ));
         };
-        if let Some(v) = op.get("ttl_seconds") {
-            if v.as_int() != Some(i64::from(APPROVAL_GRANT_TTL_SECONDS)) {
-                return Ok(Step::Unsupported(
-                    "TTL_NOT_REPRESENTABLE",
-                    "M4 grants live APPROVAL_GRANT_TTL_SECONDS".into(),
-                ));
-            }
-        }
+        // A fixture `ttl_seconds` has no production counterpart: an M4 grant always lives
+        // APPROVAL_GRANT_TTL_SECONDS from its decision (bindings.md section 2).
+        // A refusal the adapter answers itself (no trusted time, the ledger unavailable for the
+        // request or a ceremony) is audited like every other refusal of the broker.
+        let refuse = |code: &str| {
+            self.world.audit(code);
+            Ok(Step::Done(refused(code)))
+        };
         let observed = match broker.grants().observe() {
             Ok(t) => t,
-            Err(r) => return Ok(Step::Done(refused(r.code()))),
+            Err(r) => return refuse(r.code()),
         };
         // M4-03: the stored approval request (only for a `require_approval` decision).
         let request = {
@@ -460,9 +460,7 @@ impl BrokerCase {
         };
         let stores = self.world.stores()?;
         if let Err(f) = stores.ledger.record_approval_request(&request) {
-            return Ok(Step::Done(refused(
-                Refusal::LedgerUnavailable(f.error).code(),
-            )));
+            return refuse(Refusal::LedgerUnavailable(f.error).code());
         }
         self.enroll_once(observed)?;
         let human = text(op, "human").unwrap_or_default();
@@ -483,11 +481,7 @@ impl BrokerCase {
             verifier: &self.verifier,
             now: observed,
         }) {
-            Err(f) => {
-                return Ok(Step::Done(refused(
-                    Refusal::LedgerUnavailable(f.error).code(),
-                )))
-            }
+            Err(f) => return refuse(Refusal::LedgerUnavailable(f.error).code()),
             Ok(Err(r)) => return Ok(Step::Done(refused(r.code()))),
             Ok(Ok(c)) => c,
         };
@@ -501,11 +495,7 @@ impl BrokerCase {
             verifier: &self.verifier,
             now: observed,
         }) {
-            Err(f) => {
-                return Ok(Step::Done(refused(
-                    Refusal::LedgerUnavailable(f.error).code(),
-                )))
-            }
+            Err(f) => return refuse(Refusal::LedgerUnavailable(f.error).code()),
             Ok(Err(r)) => return Ok(Step::Done(refused(r.code()))),
             Ok(Ok(o)) => o,
         };

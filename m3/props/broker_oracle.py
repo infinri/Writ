@@ -28,6 +28,30 @@ Approved differences applied in the oracle instead of the M1 expectation:
   active one, or with no active policy); grant-backed permits expire at
   min(grant expiry, issue time + 30 s). The exact expiry instant stays unasserted (M1).
 
+Approvals on the M4 lifecycle (D-040, D-042; the adapter records the approval request the broker
+records and runs the human's ceremony through its non-shipping test verifier; m3/closure/bindings.md):
+every `approve` step has exactly one predicted answer (`check_approvals`,
+`broker.m3.approve_m4_lifecycle`), replacing the M1 `HUMAN_UNAUTHENTICATED` rule:
+- no active policy, or a decision that is not `require_approval`: no approval request exists, the
+  step answers `production_difference NO_APPROVAL_REQUEST` and is not audited;
+- `ledger: down`: the request cannot be recorded, `LEDGER_UNAVAILABLE` (audited);
+- one approval request per (action, principal, policy bundle) (the kernel's request id; the
+  idempotency key and trace are not part of it), created by the first `approve`, or by an
+  `execute` answered `APPROVAL_REQUIRED` with the ledger up, and expiring 600 s later; a decided
+  request is `APPROVAL_REQUEST_CLOSED` (one grant per request; a denial is terminal and mints no
+  grant), a pending one at or after its expiry `APPROVAL_REQUEST_EXPIRED`;
+- then the verifier: a channel, human or credential the fixture's channel table does not list is
+  `ASSERTION_INVALID`; then separation: a human whose id equals the requesting principal's
+  (case-insensitively) is `SEPARATION_VIOLATED`;
+- otherwise `grant_issued` (verdict approved: the grant reference now names the new grant, which
+  lives 600 s whatever `ttl_seconds` says) or `approval_denied`.
+Grant uses are accounted per M4 grant (`broker.m3.grant_uses_equal_first_reservations_per_m4_grant`,
+replacing the M1 per-reference rule, which assumed a re-approval resets the referenced grant): a
+first reservation uses the grant its reference names at that time; the final state keys each grant
+by the reference that still names it, otherwise by its ledger label (`approval/...`). M1 requests
+carry no agent, and every adapter approval is a fresh ceremony, so agent binding (X2) and challenge
+burning (X4) are not reachable from these generators; the Rust tests cover them.
+
 C4 and restarts (D-038 items 5 and 7):
 - every C4 execute step (`ledger: down`, sealed) has exactly one expected answer
   (`c4_expected`, stage-aware); `inserted_c4_inspection` twins put `ledger_detail` (a
@@ -65,7 +89,11 @@ from wprops.common import Proto, Results, clone, digest  # noqa: E402
 EXCLUDED_OPS = ("apply_without_permit",)
 ABSENT_PERMIT = "NO_PERMIT_TO_PRESENT"
 PERMIT_TTL = 30
-DEFAULT_GRANT_TTL = 600
+DEFAULT_GRANT_TTL = 600  # APPROVAL_GRANT_TTL_SECONDS: every M4 grant (ttl_seconds is ignored)
+APPROVAL_REQUEST_TTL = 600  # APPROVAL_REQUEST_TTL_SECONDS (no deadline in the M1 requests)
+NO_REQUEST = {"reason": "NO_APPROVAL_REQUEST", "result": "production_difference"}
+M1_GRANT_RULE = "broker.grant_uses_equal_first_reservations_refusals_consume_nothing"
+INSERTED_DIGEST = "sha256:" + "b" * 64  # an action no generated step uses
 REPLAY = {"completed": {"replayed": True, "result": "effect_completed"},
           "failed": {"replayed": True, "result": "effect_failed"}}
 
@@ -126,14 +154,31 @@ def adapt_sequence(case: dict) -> dict:
     return c
 
 
+def inserted_approval() -> dict:
+    """A wrong-credential approval of an action no generated step uses (its own approval request,
+    so it cannot change any other request's state or expiry)."""
+    req = m1.request("P1", "k1")
+    req["action"]["action_digest"] = INSERTED_DIGEST
+    return m1.approve(req, "g9", cred="guess")
+
+
 def insert_refusal(rng, case: dict) -> dict:
     """M1 refusal-insertion twin without apply_without_permit: an unsealed execute
-    (INGRESS_UNAUTHENTICATED) or an approval with a wrong credential (HUMAN_UNAUTHENTICATED)."""
+    (INGRESS_UNAUTHENTICATED) or a wrong-credential approval of its own action (M4:
+    ASSERTION_INVALID, or LEDGER_UNAVAILABLE under `ledger: down`; both refusals). With no active
+    policy an approval has no approval request and is not a refusal (NO_APPROVAL_REQUEST), so
+    the unsealed execute is inserted there."""
     c = clone(case)
     steps = c["input"]["steps"]
     pos = rng.randint(0, len(steps))
     ins = rng.choice([m1.execute(m1.request("W1", "fresh-" + str(pos)), seal_kind="absent"),
-                      m1.approve(m1.request("P1", "k1"), "g9", cred="guess")])
+                      inserted_approval()])
+    policy_up = True
+    for s in steps[:pos]:
+        if s.get("op") == "set_dependency" and s.get("name") == "policy":
+            policy_up = s.get("status") == "up"
+    if ins["op"] == "approve" and not policy_up:
+        ins = m1.execute(m1.request("W1", "fresh-" + str(pos)), seal_kind="absent")
     steps.insert(pos, ins)
     for s in steps:
         if s.get("op") == "present_permit" and s is not ins and s["of_step"] >= pos:
@@ -297,7 +342,8 @@ def track(case: dict, out: dict, res: Results, pname: str):
     now = m1.T0
     bundle = digest(m1.REF)
     policy_up = ledger_up = True
-    grants = {}    # label -> expiry of the current grant
+    grants = {}    # grant reference -> expiry of the grant it names now
+    names = {}     # grant reference -> the M4 grant it names now (its approved request)
     receipts = {}  # key -> {"req", "grant", "status", "grant_expiry", "via_reconcile"}
     permits = {}   # step -> {"issued", "expires", "bundle", "req"}
     complete = True
@@ -325,8 +371,9 @@ def track(case: dict, out: dict, res: Results, pname: str):
             elif op["name"] == "policy":
                 policy_up = op["status"] == "up"
         elif kind == "approve":
-            if r == {"result": "grant_issued"}:
-                grants[op["grant_ref"]] = now + (op.get("ttl_seconds") or DEFAULT_GRANT_TTL)
+            if r == {"result": "grant_issued"}:  # an M4 grant lives DEFAULT_GRANT_TTL seconds
+                grants[op["grant_ref"]] = now + DEFAULT_GRANT_TTL
+                names[op["grant_ref"]] = (inf["variant"], op["for_request"]["principal"]["id"], bundle)
         elif kind == "reconcile":
             pending = [k for k, v in receipts.items() if v["status"] == "dispatched"]
             if ledger_up and all(v["status"] != "unknown" for v in receipts.values()):
@@ -358,9 +405,18 @@ def track(case: dict, out: dict, res: Results, pname: str):
         elif kind == "execute":
             key = op["request"]["idempotency_key"]
             rec = receipts.get(key)
-            eligible = (inf.get("seal") == "valid" and ledger_up and policy_up and op.get("fault") is None
-                        and rec is not None and rec["req"] == op["request"] and rec["grant"] == op.get("grant_ref"))
-            if eligible and rec["status"] == "dispatched":
+            # The effective grant: the M4 grant the reference names now (a re-approval of another
+            # request under the same reference names a new grant; M1 replaced the grant itself).
+            approval = m1.VARIANTS_BY_KIND.get(op["request"]["action"]["kind"]) == "require_approval"
+            g_ref = op.get("grant_ref")
+            effective = names.get(g_ref, ("unnamed", g_ref)) if approval and g_ref is not None else None
+            same_req = (inf.get("seal") == "valid" and ledger_up and policy_up and op.get("fault") is None
+                        and rec is not None and rec["req"] == op["request"])
+            eligible = same_req and rec["effective"] == effective
+            if same_req and approval and rec["effective"] != effective and rec["status"] != "unknown":
+                check("broker.m3.retry_under_a_reference_naming_another_grant_conflicts", i, r,
+                      {"result": "refused", "code": "IDEMPOTENCY_CONFLICT"})
+            elif eligible and rec["status"] == "dispatched":
                 check("broker.m3.b36_identical_retry_before_reconcile_requires_reconciliation", i, r,
                       {"result": "refused", "code": "RECONCILIATION_REQUIRED"})
             elif eligible and rec["status"] == "observed_success" and rec["via_reconcile"]:
@@ -387,7 +443,7 @@ def track(case: dict, out: dict, res: Results, pname: str):
             if rec is None:
                 approval = m1.VARIANTS_BY_KIND.get(op["request"]["action"]["kind"]) == "require_approval"
                 g = op.get("grant_ref")
-                rec = {"req": op["request"], "grant": g, "via_reconcile": False,
+                rec = {"req": op["request"], "grant": g, "via_reconcile": False, "effective": effective,
                        "grant_expiry": grants.get(g, -1) if approval else None}
                 receipts[key] = rec
             rec["status"] = status
@@ -409,25 +465,128 @@ def _parse(stamp: str) -> int:
     return calendar.timegm(_t.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ"))
 
 
+class Replaced:
+    """Results proxy for an M1 checker whose rule `name` the M3 oracle replaces with a precise
+    M4 version (the replacement runs separately; every other M1 check is recorded unchanged)."""
+
+    def __init__(self, res: Results, name: str):
+        self.res, self.name = res, name
+
+    def check(self, inv, *args, **kwargs):
+        return True if inv == self.name else self.res.check(inv, *args, **kwargs)
+
+
 def check_sequence(res: Results, pname: str, case: dict, out) -> None:
     cid = case["id"]
     ok = isinstance(out, dict) and not is_unsupported(out) and "adapter_error" not in out
     res.check("broker.m3.answered_in_domain", pname, ok, cid, out, case=None if ok else case)
     if not ok:
         return
-    m1.check_run(res, pname, case, out, None)
+    m1.check_run(Replaced(res, M1_GRANT_RULE), pname, case, out, None)
     if not (isinstance(out.get("steps"), list) and len(out["steps"]) == len(case["input"]["steps"])):
         return
     if case["meta"]["family"] == "sequence":
-        # M1 per-operation oracles for execute and approve; presentations use the production
-        # order (track) and executes under `ledger: down` the C4 rule (check_c4)
+        # M1 per-operation oracles for execute; approvals use the M4 lifecycle (check_approvals),
+        # presentations the production order (track) and executes under `ledger: down` the C4
+        # rule (check_c4)
         info = case["meta"]["info"]
         view = dict(case, meta=dict(case["meta"], info=[
             dict(x, kind="present_m3") if x["kind"] == "present" else
+            dict(x, kind="approve_m4") if x["kind"] == "approve" else
             dict(x, kind="execute_c4") if is_c4(x) else x for x in info]))
         m1.check_ops(res, pname, view, out)
         check_c4(res, pname, case, out)
         track(case, out, res, pname)
+        check_approvals(res, pname, case, out)
+
+
+def approval_answer(state: dict, op: dict, variant: str, channels: dict) -> dict:
+    """The one answer of an `approve` step on the M4 lifecycle (module notes), updating `state`
+    as production does."""
+    if not state["policy_up"] or m1.VARIANTS[variant][2] != "require_approval":
+        return NO_REQUEST
+    if not state["ledger_up"]:
+        return _refused("LEDGER_UNAVAILABLE")
+    req = op["for_request"]
+    principal = req["principal"]["id"]
+    rk = (variant, principal, state["bundle"])
+    request = state["requests"].setdefault(rk, {"status": "pending", "created": state["now"]})
+    if request["status"] != "pending":
+        return _refused("APPROVAL_REQUEST_CLOSED")
+    if state["now"] >= request["created"] + APPROVAL_REQUEST_TTL:
+        return _refused("APPROVAL_REQUEST_EXPIRED")
+    listed = (channels.get(op.get("channel")) or {}).get(op.get("human"))
+    if listed is None or listed != op.get("credential"):
+        return _refused("ASSERTION_INVALID")
+    if op["human"].lower() == principal.lower():
+        return _refused("SEPARATION_VIOLATED")
+    if op.get("verdict") == "approved":
+        request["status"] = "approved"
+        state["refs"][op["grant_ref"]] = rk
+        state["approved"].append(rk)
+        return {"result": "grant_issued"}
+    request["status"] = "denied"
+    return {"result": "approval_denied"}
+
+
+def check_approvals(res: Results, pname: str, case: dict, out) -> None:
+    """Per-step M4 approval answers and the per-grant use accounting (module notes)."""
+    cid = case["id"]
+    steps, info, got = case["input"]["steps"], case["meta"]["info"], out["steps"]
+    channels = case["input"]["initial"].get("channels") or {}
+    state = {"now": m1.T0, "bundle": digest(m1.REF), "policy_up": True, "ledger_up": True,
+             "requests": {}, "refs": {}, "approved": []}
+    uses, reserved, sequential = Counter(), set(), True
+    for i, (op, inf, r) in enumerate(zip(steps, info, got)):
+        kind = op.get("op")
+        if kind == "advance_time":
+            state["now"] = _parse(op["now"])
+        elif kind == "activate_bundle":
+            state["bundle"] = digest(op["bundle"])
+        elif kind == "set_dependency":
+            state[f"{op['name']}_up"] = op["status"] == "up"
+        elif kind == "concurrent":
+            sequential = False  # its executes all present grants: no request is recorded
+        elif kind == "approve":
+            want = approval_answer(state, op, inf["variant"], channels)
+            tally = getattr(res, "approval_tally", None)
+            if tally is None:
+                tally = res.approval_tally = Counter()
+            tally[want.get("code") or want.get("reason") or want["result"]] += 1
+            ok = r == want
+            res.check("broker.m3.approve_m4_lifecycle", pname, ok, cid, {"step": i, "got": r, "want": want},
+                      case=None if ok else case)
+        elif kind == "execute":
+            v, req = inf["variant"], op["request"]
+            cls = m1.VARIANTS[v][2]
+            if (inf["seal"] == "valid" and state["policy_up"] and state["ledger_up"] and cls == "require_approval"
+                    and op.get("grant_ref") is None):  # APPROVAL_REQUIRED records the request
+                state["requests"].setdefault((v, req["principal"]["id"], state["bundle"]),
+                                             {"status": "pending", "created": state["now"]})
+            if not isinstance(r, dict):
+                continue
+            name, fault = r.get("result"), op.get("fault")
+            first = (name in ("effect_completed", "effect_failed") and not r.get("replayed")) or                 (name == "crashed" and fault in ("crash_after_reserve", "crash_after_dispatch"))
+            key = req["idempotency_key"]
+            if first and key not in reserved:
+                reserved.add(key)
+                if op.get("grant_ref") and cls == "require_approval":
+                    uses[state["refs"].get(op["grant_ref"], ("unnamed", op["grant_ref"]))] += 1
+    if not sequential:
+        return  # the per-grant accounting needs a known order (as M1's)
+    named = {}
+    for ref, rk in state["refs"].items():
+        named[rk] = ref
+    want_named = {named[rk]: uses[rk] for rk in state["approved"] if rk in named}
+    want_unnamed = sorted(uses[rk] for rk in state["approved"] if rk not in named)
+    gu = (out.get("final") or {}).get("grant_uses") or {}
+    have_named = {k: n for k, n in gu.items() if not k.startswith("approval/")}
+    have_unnamed = sorted(n for k, n in gu.items() if k.startswith("approval/"))
+    stray = {k: n for k, n in uses.items() if k not in state["approved"]}
+    ok = have_named == want_named and have_unnamed == want_unnamed and not stray
+    res.check("broker.m3.grant_uses_equal_first_reservations_per_m4_grant", pname, ok, cid,
+              {"final": gu, "want_named": want_named, "want_unnamed": want_unnamed, "stray": str(stray)},
+              case=None if ok else case)
 
 
 def is_c4(inf: dict) -> bool:
@@ -1061,6 +1220,7 @@ def run(proto: Proto, rng, n: int, res: Results, repeats: int) -> dict:
         "restarts_under_outage_kept": sum(c["meta"].get("restart_under_outage", 0) for c in base),
         "c4_inspection_twins": sum(1 for c in cases if c["meta"]["family"] == "inserted_c4_inspection"),
         "c4_expected_codes_by_stage": dict(sorted(getattr(res, "c4_stage_tally", Counter()).items())),
+        "approval_answers_predicted": dict(sorted(getattr(res, "approval_tally", Counter()).items())),
         "operations": dict(Counter(s.get("op") for c in cases for s in c["input"]["steps"])),
         "concurrency_distribution": {k: dict(v) for k, v in dist.items() if not k.startswith("brc-")},
         "concurrency_groups_with_multiple_outcomes": sum(1 for k, v in dist.items()
