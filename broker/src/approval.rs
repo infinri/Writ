@@ -51,7 +51,7 @@ use writ_kernel::time::Timestamp;
 use crate::grants::Verdict;
 use crate::human::{
     approval_separation, check_actor, signoff_separation, AcceptedAssertion, ActiveCredentials,
-    Actor, CeremonyState, HumanVerifier, LedgerCapability, Parties, Permission, SubjectId,
+    Actor, ApprovalChannel, CeremonyState, LedgerCapability, Parties, Permission, SubjectId,
     VerifiedAssertion, VerifierError,
 };
 
@@ -187,6 +187,9 @@ pub enum ChallengeRefusal {
     /// subject, credential, operation, verdict, target or context fingerprint
     /// (X3): never the earlier result.
     BindingMismatch,
+    /// The ledger's configured approval channel has another RP id or origin
+    /// than the one the challenge was issued for (M1).
+    ChannelMismatch,
 }
 
 impl ChallengeRefusal {
@@ -211,6 +214,7 @@ impl ChallengeRefusal {
             IdempotencyMismatch => "challenge: idempotency key mismatch",
             Malformed => "challenge: malformed",
             BindingMismatch => "challenge: binding mismatch",
+            ChannelMismatch => "challenge: approval channel mismatch",
         }
     }
 }
@@ -279,10 +283,10 @@ pub struct NewApprovalRequest {
     pub project_id: String,
     /// Requester principal.
     pub requester: SubjectId,
-    /// Agent, if any.
+    /// Agent, if any. (There is no delegation chain field: M3 sealed ingress
+    /// stores no trusted chain, and the stored context records
+    /// `delegation_chain: "unavailable"`, G4.)
     pub agent: Option<SubjectId>,
-    /// Trusted delegation chain.
-    pub delegation_chain: Vec<SubjectId>,
     /// Action kind.
     pub action_kind: String,
     /// Canonical resource id.
@@ -325,8 +329,7 @@ pub struct ApprovalRequest {
 
 impl ApprovalRequest {
     /// Validate and freeze. Capabilities are sorted and deduplicated. The
-    /// requester, the agent and every delegation-chain member must be
-    /// well-formed subjects (R7).
+    /// requester and the agent must be well-formed subjects (R7).
     pub fn new(mut fields: NewApprovalRequest) -> Result<ApprovalRequest, RequestInvalid> {
         if fields.required_approvers != 1 {
             return Err(RequestInvalid::QuorumUnsupported);
@@ -342,11 +345,7 @@ impl ApprovalRequest {
             &fields.request_fingerprint,
         ];
         let subjects_ok = fields.requester.is_well_formed()
-            && fields.agent.as_ref().is_none_or(SubjectId::is_well_formed)
-            && fields
-                .delegation_chain
-                .iter()
-                .all(SubjectId::is_well_formed);
+            && fields.agent.as_ref().is_none_or(SubjectId::is_well_formed);
         if !nonempty(&texts)
             || !subjects_ok
             || !matches!(fields.action, Value::Obj(_))
@@ -382,7 +381,6 @@ impl ApprovalRequest {
         Parties {
             requester: &self.fields.requester,
             agent: self.fields.agent.as_ref(),
-            delegation_chain: &self.fields.delegation_chain,
         }
     }
 
@@ -399,10 +397,9 @@ impl ApprovalRequest {
             ),
             ("context", json::s(APPROVAL_CONTEXT)),
             ("created_at", ts(r.created_at)),
-            (
-                "delegation_chain",
-                Value::Arr(r.delegation_chain.iter().map(subject_value).collect()),
-            ),
+            // G4, L4: no trusted chain is stored; never an empty list that
+            // reads as "no delegation".
+            ("delegation_chain", json::s(DELEGATION_CHAIN_UNAVAILABLE)),
             ("expires_at", ts(r.expires_at)),
             ("policy_bundle_sha", json::s(&r.policy_bundle_sha)),
             ("project_id", json::s(&r.project_id)),
@@ -974,13 +971,13 @@ impl Challenge {
         self.status
     }
 
-    /// Finish this challenge's ceremony with `verifier`: always with this
+    /// Finish this challenge's ceremony with the configured `channel`: always with this
     /// challenge's own ceremony state, and only over credentials of its
     /// subject. The answer is still untrusted until
     /// [`VerifiedAssertion::check`].
-    pub fn finish<V: HumanVerifier + ?Sized>(
+    pub fn finish(
         &self,
-        verifier: &V,
+        channel: &ApprovalChannel,
         response: &[u8],
         credentials: &ActiveCredentials,
     ) -> Result<VerifiedAssertion, ApprovalCode> {
@@ -989,7 +986,7 @@ impl Challenge {
                 ChallengeRefusal::SubjectMismatch,
             ));
         }
-        verifier
+        channel
             .finish(&self.ceremony_state, response, credentials)
             .map_err(ApprovalCode::AssertionInvalid)
     }
@@ -1576,9 +1573,9 @@ impl Signoff {
 mod tests {
     use super::*;
     use crate::human::{
-        CeremonyStart, CredentialStatus, CredentialUpdate, EnrollmentRecord, PrincipalKind,
-        RoleAssignment, StoredCredential, SubjectRecord, SubjectStatus, VerifierCapability,
-        WEBAUTHN_PASSKEY,
+        CeremonyStart, CredentialStatus, CredentialUpdate, EnrollmentRecord, HumanVerifier,
+        PrincipalKind, RoleAssignment, StoredCredential, SubjectRecord, SubjectStatus,
+        VerifierCapability, WEBAUTHN_PASSKEY,
     };
 
     fn vcap() -> VerifierCapability {
@@ -1663,7 +1660,6 @@ mod tests {
             project_id: "p1".into(),
             requester: SubjectId::new("adapter", "alice"),
             agent: Some(SubjectId::new("agent-realm", "agent-7")),
-            delegation_chain: vec![SubjectId::new("agent-realm", "parent-1")],
             action_kind: "file.write".into(),
             canonical_resource_id: "file:t1/p1/src/a.rs".into(),
             action_digest: sha('a'),
@@ -1802,6 +1798,7 @@ mod tests {
 
         fn finish(
             &self,
+            capability: &VerifierCapability,
             state: &CeremonyState,
             _response: &[u8],
             credentials: &ActiveCredentials,
@@ -1815,7 +1812,7 @@ mod tests {
                 .first()
                 .ok_or(VerifierError::CredentialUnknown)?;
             Ok(VerifiedAssertion::new(
-                &vcap(),
+                capability,
                 credentials.subject().clone(),
                 &cred.credential_id,
                 true,
@@ -1824,6 +1821,38 @@ mod tests {
                 None,
             ))
         }
+    }
+
+    impl crate::human::RegistrationVerifier for TestVerifier {
+        fn relying_party(&self) -> crate::human::RelyingParty {
+            crate::human::RelyingParty {
+                rp_id: "localhost".into(),
+                origin: "http://localhost:8443".into(),
+            }
+        }
+
+        fn begin_registration(
+            &self,
+            _subject: &SubjectId,
+        ) -> Result<crate::human::RegistrationStart, VerifierError> {
+            Err(VerifierError::Unavailable)
+        }
+
+        fn finish_registration(
+            &self,
+            _capability: &VerifierCapability,
+            _binding: &crate::human::RegistrationBinding,
+            _state: &CeremonyState,
+            _response: &[u8],
+        ) -> Result<crate::human::VerifiedRegistration, VerifierError> {
+            Err(VerifierError::Unavailable)
+        }
+    }
+
+    /// The test verifier as a configured approval channel.
+    fn test_channel() -> ApprovalChannel {
+        let v = std::sync::Arc::new(TestVerifier);
+        ApprovalChannel::new(v.clone(), v, "approval-listener").unwrap()
     }
 
     #[test]
@@ -1851,7 +1880,6 @@ mod tests {
             |n| n.requester.subject.clear(),
             |n| n.requester.issuer.clear(),
             |n| n.agent = Some(SubjectId::new("agent-realm", "")),
-            |n| n.delegation_chain.push(SubjectId::new("", "parent-2")),
         ];
         for (i, change) in malformed.into_iter().enumerate() {
             let mut n = new_request();
@@ -2098,6 +2126,14 @@ mod tests {
         let Value::Obj(members) = shown.context() else {
             panic!("context is an object")
         };
+        // L4: the request context never stores an empty chain that reads as "no delegation".
+        assert_eq!(
+            shown
+                .context()
+                .get("delegation_chain")
+                .and_then(Value::as_str),
+            Some(DELEGATION_CHAIN_UNAVAILABLE)
+        );
         let keys: Vec<&str> = members.keys().map(String::as_str).collect();
         assert_eq!(
             keys,
@@ -2127,7 +2163,6 @@ mod tests {
             |n| n.project_id = "p2".into(),
             |n| n.requester.subject = "mallory".into(),
             |n| n.agent = None,
-            |n| n.delegation_chain.clear(),
             |n| n.action_kind = "file.delete".into(),
             |n| n.canonical_resource_id = "file:t1/p1/src/b.rs".into(),
             |n| n.action_digest = format!("sha256:{}", "b".repeat(64)),
@@ -2213,7 +2248,7 @@ mod tests {
         let a = Challenge::issue(new_challenge("ch-a", binding(), b"state-a")).unwrap();
         let b = Challenge::issue(new_challenge("ch-b", binding(), b"state-b")).unwrap();
         // Ceremony A finished with A's own state verifies against A only.
-        let from_a = a.finish(&TestVerifier, b"response", &creds).unwrap();
+        let from_a = a.finish(&test_channel(), b"response", &creds).unwrap();
         assert!(from_a
             .clone()
             .check(&a, &binding(), "idem-1", now())
@@ -2229,7 +2264,7 @@ mod tests {
         n.subject = SubjectId::new("writ-local", "carol");
         let carol = Challenge::issue(n).unwrap();
         assert_eq!(
-            carol.finish(&TestVerifier, b"response", &creds),
+            carol.finish(&test_channel(), b"response", &creds),
             Err(ApprovalCode::ChallengeInvalid(
                 ChallengeRefusal::SubjectMismatch
             ))

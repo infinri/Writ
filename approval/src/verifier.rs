@@ -136,13 +136,14 @@ impl HumanVerifier for PasskeyVerifier {
 
     fn finish(
         &self,
+        capability: &VerifierCapability,
         state: &CeremonyState,
         response: &[u8],
         credentials: &ActiveCredentials,
     ) -> Result<VerifiedAssertion, VerifierError> {
         let checked = self.verify_assertion(state, response, credentials)?;
         Ok(VerifiedAssertion::new(
-            &VerifierCapability::for_verifier_implementation(),
+            capability,
             credentials.subject().clone(),
             &checked.credential_id,
             true,
@@ -224,6 +225,7 @@ impl RegistrationVerifier for PasskeyVerifier {
 
     fn finish_registration(
         &self,
+        capability: &VerifierCapability,
         binding: &RegistrationBinding,
         state: &CeremonyState,
         response: &[u8],
@@ -244,7 +246,7 @@ impl RegistrationVerifier for PasskeyVerifier {
             other => format!("{other:?}"),
         };
         Ok(VerifiedRegistration::new(
-            &VerifierCapability::for_verifier_implementation(),
+            capability,
             binding,
             &credential_text(key.cred_id())?,
             serde_json::to_vec(&key).map_err(|_| VerifierError::Unavailable)?,
@@ -263,12 +265,19 @@ mod tests {
     use webauthn_authenticator_rs::WebauthnAuthenticator;
     use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
     use writ_broker::human::{
-        CredentialStatus, Permission, PrincipalKind, RegistrationOperation, RoleAssignment,
-        StoredCredential, SubjectRecord, SubjectStatus,
+        ApprovalChannel, CredentialStatus, Permission, PrincipalKind, RegistrationOperation,
+        RoleAssignment, StoredCredential, SubjectRecord, SubjectStatus,
     };
     use writ_broker::writ_kernel::time::Timestamp;
 
     const ORIGIN: &str = "http://localhost:8443";
+
+    /// The production verifier for `rp_id` and `origin` as a configured approval channel
+    /// (the only caller that can lend it a verifier capability, M1).
+    fn channel(rp_id: &str, origin: &str) -> ApprovalChannel {
+        let v = std::sync::Arc::new(PasskeyVerifier::new(rp_id, origin).unwrap());
+        ApprovalChannel::new(v.clone(), v, "approval-listener").unwrap()
+    }
 
     fn t() -> Timestamp {
         Timestamp::parse_strict("2026-11-14T10:00:00Z").unwrap()
@@ -278,7 +287,7 @@ mod tests {
         SubjectId::new("writ-local", "bob")
     }
 
-    fn register(v: &PasskeyVerifier, auth: &mut SoftPasskey) -> VerifiedRegistration {
+    fn register(v: &ApprovalChannel, auth: &mut SoftPasskey) -> VerifiedRegistration {
         let start = v.begin_registration(&bob()).unwrap();
         let ccr: CreationChallengeResponse = serde_json::from_slice(&start.client_options).unwrap();
         let rpkc = auth
@@ -288,7 +297,7 @@ mod tests {
             registration_id: "reg-1".into(),
             operation: RegistrationOperation::Enroll,
             subject: bob(),
-            relying_party: v.relying_party(),
+            relying_party: v.relying_party().clone(),
         };
         v.finish_registration(&binding, &start.state, &serde_json::to_vec(&rpkc).unwrap())
             .unwrap()
@@ -331,7 +340,7 @@ mod tests {
     }
 
     fn assert_once(
-        v: &PasskeyVerifier,
+        v: &ApprovalChannel,
         auth: &mut SoftPasskey,
         creds: &ActiveCredentials,
         origin: &str,
@@ -347,7 +356,7 @@ mod tests {
 
     #[test]
     fn softpasskey_registers_es256_and_authenticates_through_the_real_verifier() {
-        let v = PasskeyVerifier::new("localhost", ORIGIN).unwrap();
+        let v = channel("localhost", ORIGIN);
         let mut auth = SoftPasskey::new(true);
         let reg = register(&v, &mut auth);
         assert_eq!(reg.algorithm(), ES256);
@@ -389,7 +398,7 @@ mod tests {
 
     #[test]
     fn wrong_origin_or_rp_id_is_refused() {
-        let v = PasskeyVerifier::new("localhost", ORIGIN).unwrap();
+        let v = channel("localhost", ORIGIN);
         let mut auth = SoftPasskey::new(true);
         let reg = register(&v, &mut auth);
         let creds = active(&reg);
@@ -405,24 +414,23 @@ mod tests {
             Some(VerifierError::BindingMismatch)
         );
         // A verifier for another RP id cannot use the credential's assertion.
-        let other_rp =
-            PasskeyVerifier::new("example.localhost", "http://example.localhost:8443").unwrap();
+        let other_rp = channel("example.localhost", "http://example.localhost:8443");
         let (start, response) = assert_once(&v, &mut auth, &creds, ORIGIN);
         assert!(other_rp.finish(&start.state, &response, &creds).is_err());
     }
 
     #[test]
-    fn the_verifier_is_the_ledger_backend_verifier() {
-        let v: std::sync::Arc<dyn HumanVerifier + Send + Sync> =
-            std::sync::Arc::new(PasskeyVerifier::new("localhost", ORIGIN).unwrap());
-        let _ = v;
+    fn the_verifier_is_the_ledger_approval_channel() {
+        let v = channel("localhost", ORIGIN);
+        assert_eq!(v.relying_party().origin, ORIGIN);
+        assert_eq!(v.relying_party().rp_id, "localhost");
         // Only an exact, parseable origin configures a verifier.
         assert!(PasskeyVerifier::new("localhost", "not a url").is_err());
     }
 
     #[test]
     fn missing_user_verification_never_registers() {
-        let v = PasskeyVerifier::new("localhost", ORIGIN).unwrap();
+        let v = channel("localhost", ORIGIN);
         let mut auth = SoftPasskey::new(false);
         let start = v.begin_registration(&bob()).unwrap();
         let ccr: CreationChallengeResponse = serde_json::from_slice(&start.client_options).unwrap();
@@ -432,7 +440,7 @@ mod tests {
                 registration_id: "reg-1".into(),
                 operation: RegistrationOperation::Enroll,
                 subject: bob(),
-                relying_party: v.relying_party(),
+                relying_party: v.relying_party().clone(),
             };
             assert_eq!(
                 v.finish_registration(&binding, &start.state, &serde_json::to_vec(&rpkc).unwrap())

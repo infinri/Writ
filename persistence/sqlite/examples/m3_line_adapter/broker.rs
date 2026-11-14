@@ -12,7 +12,7 @@ use writ_broker::authorize::{authorize, UseTimeStatus};
 use writ_broker::clock::ObservedTime;
 use writ_broker::execute::Executed;
 use writ_broker::grants::{GrantLabel, Replay};
-use writ_broker::human::{Permission, PrincipalKind, SubjectId};
+use writ_broker::human::{ApprovalChannel, Permission, PrincipalKind, SubjectId};
 use writ_broker::ingress::{verify_ingress, Seal};
 use writ_broker::keys::{IngressKey, MemoryKeyRing, PermitKey};
 use writ_broker::permit::Permit;
@@ -27,7 +27,7 @@ use writ_broker::writ_kernel::policy::load_bundle;
 use crate::common::{
     adapter_error, int, malformed, pairs, production_difference, refused, register, result,
     test_credential, text, unhex, unsupported, with_storage_fault, ChannelVerifier, Labels, Point,
-    ProdBroker, StorageFault, World, ADAPTER_SEALED, ADMIN_RESPONSE, C1, C2, C6, C7, C8,
+    ProdBroker, Registrar, StorageFault, World, ADAPTER_SEALED, ADMIN_RESPONSE, C1, C2, C6, C7, C8,
     DIFFERENCE, LISTENER_CHANNEL, TEST_ADMIN, TEST_SUBJECT_ISSUER,
 };
 
@@ -158,7 +158,7 @@ struct BrokerCase {
     bundle: Option<Value>,
     policy_up: bool,
     revision: StateRevision,
-    verifier: ChannelVerifier,
+    verifier: Arc<ChannelVerifier>,
     /// Whether the case's test administrator and fixture humans are enrolled.
     enrolled: AtomicBool,
     /// Fixture grant reference to the ledger-assigned M4 grant label (`approval/<id>`).
@@ -208,6 +208,13 @@ impl BrokerCase {
             PolicyState::Absent
         };
         let admin = SubjectId::new(TEST_SUBJECT_ISSUER, TEST_ADMIN);
+        let verifier = Arc::new(ChannelVerifier {
+            channels: initial.get("channels").cloned().unwrap_or(Value::Null),
+            labels: labels.clone(),
+            nonce: AtomicU64::new(0),
+        });
+        let channel = ApprovalChannel::new(verifier.clone(), Arc::new(Registrar), LISTENER_CHANNEL)
+            .ok_or("approval channel")?;
         let world = World::create(
             policy,
             now,
@@ -215,6 +222,7 @@ impl BrokerCase {
             ring,
             labels.clone(),
             (&admin, &test_credential(TEST_ADMIN)),
+            channel,
         )?;
         world
             .stores()?
@@ -226,11 +234,7 @@ impl BrokerCase {
             bundle,
             policy_up,
             revision,
-            verifier: ChannelVerifier {
-                channels: initial.get("channels").cloned().unwrap_or(Value::Null),
-                labels,
-                nonce: AtomicU64::new(0),
-            },
+            verifier,
             enrolled: AtomicBool::new(false),
             grants: Mutex::new(BTreeMap::new()),
             ingress,
@@ -348,7 +352,6 @@ impl BrokerCase {
                     op: &op,
                     subject: &admin,
                     idempotency_key: &key,
-                    verifier: &self.verifier,
                     now,
                 })
                 .map_err(|f| format!("enroll {human}: {:?}", f.error))?
@@ -360,8 +363,6 @@ impl BrokerCase {
                     challenge_id: &c.challenge_id,
                     response: ADMIN_RESPONSE.as_bytes(),
                     idempotency_key: &key,
-                    channel: LISTENER_CHANNEL,
-                    verifier: &self.verifier,
                     now,
                 })
                 .map_err(|f| format!("enroll {human}: {:?}", f.error))?
@@ -478,7 +479,6 @@ impl BrokerCase {
             op: &ceremony,
             subject: &subject,
             idempotency_key: &key,
-            verifier: &self.verifier,
             now: observed,
         }) {
             Err(f) => return refuse(Refusal::LedgerUnavailable(f.error).code()),
@@ -491,8 +491,6 @@ impl BrokerCase {
             challenge_id: &c.challenge_id,
             response: response.as_bytes(),
             idempotency_key: &key,
-            channel: LISTENER_CHANNEL,
-            verifier: &self.verifier,
             now: observed,
         }) {
             Err(f) => return refuse(Refusal::LedgerUnavailable(f.error).code()),

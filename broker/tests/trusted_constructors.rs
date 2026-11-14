@@ -5,8 +5,9 @@
 //! of every workspace `.rs` file (skipping `target/`, `.claude/`, `.git/`,
 //! `.venv/` and `node_modules/` directories):
 //!
-//! - `VerifierCapability::for_verifier_implementation`: production code only
-//!   under `approval/` (the `writ-approval` crate);
+//! - `VerifierCapability::for_verifier_implementation`: no production code at all (since
+//!   M1 it is `#[cfg(test)] pub(crate)` in the broker; verifiers receive the capability by
+//!   reference from the `ApprovalChannel` that calls them), and it must stay non-`pub`;
 //! - `LedgerCapability::for_ledger_implementation`: production code only
 //!   under `persistence/sqlite/src/` (the SQLite ledger);
 //! - either, in test code of the `broker/`, `approval/` or
@@ -40,10 +41,8 @@ const VERIFIER: &str = "for_verifier_implementation";
 const LEDGER: &str = "for_ledger_implementation";
 
 /// Production path prefixes allowed per capability constructor.
-const PRODUCTION_ALLOWED: [(&str, &[&str]); 2] = [
-    (VERIFIER, &["approval/"]),
-    (LEDGER, &["persistence/sqlite/src/"]),
-];
+const PRODUCTION_ALLOWED: [(&str, &[&str]); 2] =
+    [(VERIFIER, &[]), (LEDGER, &["persistence/sqlite/src/"])];
 
 /// Crates whose test code may use either capability.
 const TEST_ALLOWED: &[&str] = &["broker/", "approval/", "persistence/sqlite/"];
@@ -283,9 +282,11 @@ fn capability_constructors_are_called_only_from_the_allow_list() -> io::Result<(
     let mut saw_definitions = false;
     for (rel, text) in &texts {
         if rel == "broker/src/human.rs" {
-            saw_definitions = [VERIFIER, LEDGER]
-                .iter()
-                .all(|n| text.contains(&format!("pub fn {n}()")));
+            // M1: the verifier capability's constructor is test-only and crate-private; the
+            // ledger capability's stays public (another crate needs it).
+            saw_definitions = text.contains(&format!("pub(crate) fn {VERIFIER}()"))
+                && !text.contains(&format!("pub fn {VERIFIER}()"))
+                && text.contains(&format!("pub fn {LEDGER}()"));
         }
         found.extend(violations(rel, text, is_test_file(rel, &read)));
     }
@@ -323,10 +324,14 @@ fn the_scanner_flags_synthetic_violations() {
         violations("broker/src/attestation.rs", &both, false).len(),
         2
     );
-    // Each crate only its own capability in production code.
+    // Only the ledger its own capability in production code; no production code the
+    // verifier capability's constructor (M1: the channel lends it).
     assert_eq!(
         violations("approval/src/verifier.rs", &both, false),
-        ["approval/src/verifier.rs:3: for_ledger_implementation"]
+        [
+            "approval/src/verifier.rs:2: for_verifier_implementation",
+            "approval/src/verifier.rs:3: for_ledger_implementation"
+        ]
     );
     assert_eq!(
         violations("persistence/sqlite/src/approval_store.rs", &both, false),

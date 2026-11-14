@@ -61,7 +61,7 @@ use crate::common::{
     C1, C5, C7, C8, DIFFERENCE, HARNESS_BUNDLE, PERMIT_DROPPED, SEALED_EFFECT, SEEDED,
 };
 use crate::evidence::{record_keys, registry_entries, runner_keys, Docs};
-use crate::signoff::{self, TestVerifier, SIGNOFF_LABEL};
+use crate::signoff::{self, SIGNOFF_LABEL};
 
 /// The harness bundles by name (m3/closure/bundles, D-037 item 2).
 const BUNDLES: [(&str, &str); 14] = [
@@ -413,8 +413,6 @@ struct TransitionCase {
     seeded_receipts: u64,
     /// The active acceptance requirement set (setup, then each successful activation).
     requirements: Mutex<Value>,
-    /// The non-shipping test verifier of the harness signoffs.
-    verifier: TestVerifier,
     /// Whether the signoff reviewer is enrolled in this case.
     reviewer: Mutex<bool>,
 }
@@ -478,6 +476,7 @@ fn setup(
         ring,
         labels.clone(),
         (&admin, &admin_credential),
+        signoff::channel()?,
     )?;
     let field = |k: &str| text(initial, k).unwrap_or_default();
     let key = WorkflowKey {
@@ -527,7 +526,6 @@ fn setup(
                 .cloned()
                 .unwrap_or(Value::Null),
         ),
-        verifier: TestVerifier::default(),
         reviewer: Mutex::new(false),
     };
     // Trusted records, issued once here: the declared override, then the first inline
@@ -1063,13 +1061,7 @@ impl TransitionCase {
             .map_err(|r| format!("signoff request refused: {}", r.code()))?;
         let mut enrolled = self.reviewer.lock().map_err(|_| "reviewer")?;
         if !*enrolled {
-            signoff::enroll_reviewer(
-                ledger,
-                &self.verifier,
-                now,
-                &self.key.tenant_id,
-                &self.key.project_id,
-            )?;
+            signoff::enroll_reviewer(ledger, now, &self.key.tenant_id, &self.key.project_id)?;
             *enrolled = true;
         }
         for (id, criterion) in wanted {
@@ -1091,7 +1083,7 @@ impl TransitionCase {
                 state_revision: r.state_revision.get(),
                 expires_at: r.expires_at,
             };
-            signoff::sign(ledger, &self.verifier, now, binding)?;
+            signoff::sign(ledger, now, binding)?;
         }
         self.world.labels.add(SIGNOFF_LABEL);
         Ok(())

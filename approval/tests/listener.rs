@@ -22,7 +22,6 @@ use writ_broker::writ_kernel::json;
 use writ_broker::writ_kernel::time::Timestamp;
 
 const HOSTILE: &str = "</td><script>alert(1)</script><img src=x onerror=alert(2)>";
-const CHANNEL: &str = "approval-listener:test";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Call {
@@ -36,7 +35,6 @@ enum Call {
         challenge_id: String,
         response: Vec<u8>,
         key: String,
-        channel: String,
     },
 }
 
@@ -46,6 +44,8 @@ struct Fake {
     request: Mutex<ApprovalRequest>,
     calls: Mutex<Vec<Call>>,
     next: Mutex<u32>,
+    /// When set, `begin` refuses with it (the ledger's specific code).
+    begin_refusal: Mutex<Option<Refusal>>,
 }
 
 fn request(action_note: &str) -> ApprovalRequest {
@@ -55,7 +55,6 @@ fn request(action_note: &str) -> ApprovalRequest {
         project_id: "p1".into(),
         requester: SubjectId::new("adapter", "agent:session-1"),
         agent: None,
-        delegation_chain: vec![],
         action_kind: "repository.publish".into(),
         canonical_resource_id: "repo:writ".into(),
         action_digest: format!("sha256:{:064x}", 1),
@@ -79,6 +78,7 @@ impl Fake {
             request: Mutex::new(request(HOSTILE)),
             calls: Mutex::new(Vec::new()),
             next: Mutex::new(0),
+            begin_refusal: Mutex::new(None),
         }
     }
 
@@ -107,6 +107,9 @@ impl Backend for Fake {
             subject: subject.clone(),
             key: idempotency_key.into(),
         });
+        if let Some(refusal) = self.begin_refusal.lock().unwrap().clone() {
+            return Ok(Err(refusal));
+        }
         let mut n = self.next.lock().unwrap();
         *n += 1;
         Ok(Ok(IssuedChallenge {
@@ -122,15 +125,18 @@ impl Backend for Fake {
         challenge_id: &str,
         response: &[u8],
         idempotency_key: &str,
-        channel: &str,
     ) -> Result<Result<CeremonyOutcome, Refusal>, Unavailable> {
         self.calls.lock().unwrap().push(Call::Finish {
             op: op.clone(),
             challenge_id: challenge_id.into(),
             response: response.to_vec(),
             key: idempotency_key.into(),
-            channel: channel.into(),
         });
+        if response == b"verifier-down" {
+            return Ok(Err(Refusal::Approval(ApprovalCode::AssertionInvalid(
+                VerifierError::Unavailable,
+            ))));
+        }
         if response != b"valid-assertion" {
             return Ok(Err(Refusal::Approval(ApprovalCode::AssertionInvalid(
                 VerifierError::SignatureInvalid,
@@ -158,7 +164,6 @@ impl Server {
         let listener = ApprovalListener::bind(
             ListenerConfig {
                 port: 0,
-                channel: CHANNEL.into(),
                 subject_issuer: "writ-local".into(),
                 limits,
             },
@@ -432,7 +437,8 @@ fn a_session_and_csrf_token_alone_never_change_state() {
         "",
     );
     assert_eq!(status(&again), 403);
-    // What the broker saw: the server's operation, target and key; the configured channel.
+    // What the broker saw: the server's operation, target and key (the channel identity is
+    // the ledger's configured approval channel, never a request field).
     let calls = s.fake.calls();
     let deny = CeremonyOp::Deny {
         request_id: "req-1".into(),
@@ -447,14 +453,13 @@ fn a_session_and_csrf_token_alone_never_change_state() {
         op: fop,
         challenge_id,
         key: fkey,
-        channel,
         response,
     } = &calls[1]
     else {
         panic!("{calls:?}")
     };
     assert_eq!((fop, challenge_id.as_str()), (&deny, challenge.as_str()));
-    assert_eq!((fkey, channel.as_str()), (key, CHANNEL));
+    assert_eq!(fkey, key);
     assert_eq!(response, b"forged");
     assert_eq!(calls.len(), 2);
     // A fresh ceremony with a valid assertion decides.
@@ -599,4 +604,143 @@ fn only_the_listed_methods_and_paths_exist() {
         .as_bytes(),
     );
     assert_eq!(status(&r), 415);
+}
+
+/// Begin a deny ceremony in the session `(cookie, csrf, fingerprint)`.
+fn begin_in(s: &Server, session: &(String, String, String)) -> String {
+    let (cookie, csrf, fp) = session;
+    s.post(
+        "/ceremony/begin",
+        cookie,
+        &format!(
+            "csrf={csrf}&request_id=req-1&fingerprint={}&verdict=deny&subject=bob",
+            enc(fp)
+        ),
+        "",
+    )
+}
+
+/// Finish `challenge` in the session with `response`.
+fn finish_in(
+    s: &Server,
+    session: &(String, String, String),
+    challenge: &str,
+    response: &str,
+) -> String {
+    let (cookie, csrf, _) = session;
+    s.post(
+        "/ceremony/finish",
+        cookie,
+        &format!("csrf={csrf}&challenge_id={challenge}&response={response}"),
+        "",
+    )
+}
+
+/// L1: whatever the ledger's specific refusal of a begin (subject missing, service, revoked,
+/// permission, no credential), the page receives one generic refusal (before the fix, the
+/// body carried the ledger's code).
+#[test]
+fn a_refused_begin_answers_one_generic_refusal() {
+    let s = Server::start(Limits::default());
+    let session = s.view();
+    for code in [
+        ApprovalCode::PermissionMissing,
+        ApprovalCode::ServiceNotPermitted,
+        ApprovalCode::SubjectRevoked,
+        ApprovalCode::CredentialRevoked,
+        ApprovalCode::AssertionInvalid(VerifierError::CredentialUnknown),
+    ] {
+        let refusal = Refusal::Approval(code);
+        *s.fake.begin_refusal.lock().unwrap() = Some(refusal.clone());
+        let r = begin_in(&s, &session);
+        assert_eq!(status(&r), 403, "{r}");
+        assert!(r.ends_with("{\"error\":\"refused\"}"), "{r}");
+        assert!(!r.contains(refusal.code()), "{r}");
+    }
+    // A refused begin leaves nothing pending: the cap is not consumed.
+    *s.fake.begin_refusal.lock().unwrap() = None;
+    for _ in 0..Limits::default().max_pending {
+        assert_eq!(status(&begin_in(&s, &session)), 200);
+    }
+}
+
+/// L2: issued, unexpired challenges begun through the listener are capped across all
+/// sessions, not only per session; a finished ceremony frees its slot.
+#[test]
+fn outstanding_challenges_are_capped_across_sessions() {
+    let s = Server::start(Limits {
+        max_pending: 4,
+        max_outstanding: 3,
+        ..Limits::default()
+    });
+    let (a, b) = (s.view(), s.view());
+    let first = begin_in(&s, &a);
+    assert_eq!(status(&first), 200);
+    assert_eq!(status(&begin_in(&s, &a)), 200);
+    assert_eq!(status(&begin_in(&s, &b)), 200);
+    // Each session is under its own bound (4), the listener is at its global bound (3).
+    let over = begin_in(&s, &b);
+    assert_eq!(status(&over), 429, "{over}");
+    let third = s.view();
+    assert_eq!(status(&begin_in(&s, &third)), 429);
+    // A decided ceremony frees one slot.
+    let challenge = between(&first, "\"challenge_id\":\"", "\"");
+    assert_eq!(
+        status(&finish_in(&s, &a, &challenge, "valid-assertion")),
+        200
+    );
+    assert_eq!(status(&begin_in(&s, &b)), 200);
+    assert_eq!(status(&begin_in(&s, &b)), 429);
+}
+
+/// L2: when `max_sessions` is reached, a session with a pending ceremony is never evicted;
+/// with every session pending, a new session is refused (fail closed).
+#[test]
+fn a_session_with_a_pending_ceremony_is_never_evicted() {
+    let s = Server::start(Limits {
+        max_sessions: 2,
+        ..Limits::default()
+    });
+    let a = s.view();
+    let a_begin = begin_in(&s, &a);
+    assert_eq!(status(&a_begin), 200);
+    let b = s.view();
+    let b_begin = begin_in(&s, &b);
+    assert_eq!(status(&b_begin), 200);
+    // Both sessions are pending: a third view is refused, and nothing was evicted.
+    let refused = s.get("/request/req-1", "");
+    assert_eq!(status(&refused), 503, "{refused}");
+    assert!(header_of(&refused, "set-cookie").is_none());
+    let a_challenge = between(&a_begin, "\"challenge_id\":\"", "\"");
+    assert_eq!(
+        status(&finish_in(&s, &a, &a_challenge, "valid-assertion")),
+        200
+    );
+    // A has nothing pending now: a new session evicts it, never B.
+    let _c = s.view();
+    assert_eq!(status(&begin_in(&s, &a)), 403, "A was evicted");
+    let b_challenge = between(&b_begin, "\"challenge_id\":\"", "\"");
+    assert_eq!(
+        status(&finish_in(&s, &b, &b_challenge, "valid-assertion")),
+        200
+    );
+}
+
+/// L6: a verifier outage answers `unavailable` and keeps the pending ceremony, so the same
+/// challenge can still be finished (the ledger left it issued).
+#[test]
+fn a_verifier_outage_keeps_the_pending_ceremony() {
+    let s = Server::start(Limits::default());
+    let a = s.view();
+    let r = begin_in(&s, &a);
+    let challenge = between(&r, "\"challenge_id\":\"", "\"");
+    let down = finish_in(&s, &a, &challenge, "verifier-down");
+    assert_eq!(status(&down), 503, "{down}");
+    let done = finish_in(&s, &a, &challenge, "valid-assertion");
+    assert_eq!(status(&done), 200, "{done}");
+    // Decided: the pending entry is gone.
+    assert_eq!(
+        status(&finish_in(&s, &a, &challenge, "valid-assertion")),
+        403
+    );
 }

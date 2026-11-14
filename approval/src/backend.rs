@@ -3,8 +3,9 @@
 //! The listener sees the ledger only through [`Backend`]: a read of a stored approval
 //! request (its fingerprint-covered context, R6) and the two ceremony transactions. The
 //! operation, its target and the idempotency key are the listener's server-side state;
-//! the channel identity is the listener's configuration (O-2). [`LedgerBackend`] adapts
-//! any [`ApprovalLedger`] with a trusted clock and a [`HumanVerifier`].
+//! the verifier, its relying party and the channel identity are the ledger's configured
+//! [`writ_broker::human::ApprovalChannel`] (O-2, M1), never a call argument.
+//! [`LedgerBackend`] adapts any [`ApprovalLedger`] with a trusted clock.
 
 use std::sync::Arc;
 
@@ -13,7 +14,7 @@ use writ_broker::approval_store::{
     ApprovalLedger, CeremonyBegin, CeremonyFinish, CeremonyOp, CeremonyOutcome, IssuedChallenge,
 };
 use writ_broker::clock::{observe, EffectiveClock, ObservedTime};
-use writ_broker::human::{HumanVerifier, SubjectId};
+use writ_broker::human::SubjectId;
 use writ_broker::refusal::Refusal;
 use writ_broker::store::LedgerStore;
 
@@ -44,29 +45,20 @@ pub trait Backend: Send + Sync {
         challenge_id: &str,
         response: &[u8],
         idempotency_key: &str,
-        channel: &str,
     ) -> Result<Result<CeremonyOutcome, Refusal>, Unavailable>;
 }
 
-/// [`Backend`] over an [`ApprovalLedger`], its trusted clock and the verifier.
+/// [`Backend`] over an [`ApprovalLedger`] (opened with its approval channel configured)
+/// and its trusted clock.
 pub struct LedgerBackend<L, C> {
     ledger: Arc<L>,
     clock: Arc<C>,
-    verifier: Arc<dyn HumanVerifier + Send + Sync>,
 }
 
 impl<L, C> LedgerBackend<L, C> {
     /// The adapter.
-    pub fn new(
-        ledger: Arc<L>,
-        clock: Arc<C>,
-        verifier: Arc<dyn HumanVerifier + Send + Sync>,
-    ) -> LedgerBackend<L, C> {
-        LedgerBackend {
-            ledger,
-            clock,
-            verifier,
-        }
+    pub fn new(ledger: Arc<L>, clock: Arc<C>) -> LedgerBackend<L, C> {
+        LedgerBackend { ledger, clock }
     }
 }
 
@@ -109,7 +101,6 @@ where
                 op,
                 subject,
                 idempotency_key,
-                verifier: &*self.verifier,
                 now,
             })
             .map_err(|_| Unavailable)
@@ -121,7 +112,6 @@ where
         challenge_id: &str,
         response: &[u8],
         idempotency_key: &str,
-        channel: &str,
     ) -> Result<Result<CeremonyOutcome, Refusal>, Unavailable> {
         let now = self.now()?;
         self.ledger
@@ -130,8 +120,6 @@ where
                 challenge_id,
                 response,
                 idempotency_key,
-                channel,
-                verifier: &*self.verifier,
                 now,
             })
             .map_err(|_| Unavailable)

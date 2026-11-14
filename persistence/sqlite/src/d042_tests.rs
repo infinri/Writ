@@ -195,8 +195,6 @@ fn x4_terminal_refusals_burn_the_challenge_and_a_lost_burn_fails_closed() {
         challenge_id: &c.challenge_id,
         response: b"bad:cred-alice",
         idempotency_key: "x1",
-        channel: "approval-listener",
-        verifier: &m.v,
         now: m.now(),
     });
     let failure = lost.unwrap_err();
@@ -605,4 +603,65 @@ fn x6_an_expiry_step_that_changes_anything_commits_one_ordering_row() {
         1
     );
     assert_eq!(m.status(&id), ApprovalStatus::Expired);
+}
+
+// ---------------------------------------------------------------------------
+// L6 (security review of 4e5d196): a transient verifier outage is not a terminal refusal.
+
+#[test]
+fn l6_an_unavailable_verifier_never_burns_the_challenge() {
+    let m = M4::new("l6-unavailable");
+    let alice = human("alice");
+    let id = m.ask("k1", 1);
+    let op = CeremonyOp::Approve {
+        request_id: id.clone(),
+    };
+    let c = m.begin(&alice, &op, "u1").unwrap();
+    // The verifier reports itself unavailable: the answer is the unavailability and the
+    // challenge stays issued (before the fix it was burnt as `refused`).
+    for _ in 0..2 {
+        assert_eq!(
+            m.finish(&op, &c.challenge_id, "down:cred-alice", "u1"),
+            Err(ap(ApprovalCode::AssertionInvalid(
+                VerifierError::Unavailable
+            )))
+        );
+        assert_eq!(m.challenge_status(&c.challenge_id), "issued ");
+        assert_eq!(m.status(&id), ApprovalStatus::Pending);
+    }
+    // Once the verifier answers, the same challenge decides, exactly once.
+    let out = m.finish(&op, &c.challenge_id, &ok(&alice), "u1").unwrap();
+    assert!(matches!(out.result, CeremonyResult::Approved { .. }));
+    assert_eq!(m.challenge_status(&c.challenge_id), "consumed ");
+    // It stays single use and expiring: a terminal refusal still burns a fresh challenge,
+    // and a challenge left issued by an outage still expires.
+    let id2 = m.ask("k2", 2);
+    let op2 = CeremonyOp::Approve {
+        request_id: id2.clone(),
+    };
+    let c2 = m.begin(&alice, &op2, "u2").unwrap();
+    assert_eq!(
+        m.finish(&op2, &c2.challenge_id, "forged:cred-alice", "u2"),
+        Err(ap(ApprovalCode::AssertionInvalid(
+            VerifierError::SignatureInvalid
+        )))
+    );
+    assert_eq!(
+        m.challenge_status(&c2.challenge_id),
+        "refused ASSERTION_INVALID"
+    );
+    let id3 = m.ask("k3", 3);
+    let op3 = CeremonyOp::Approve { request_id: id3 };
+    let c3 = m.begin(&alice, &op3, "u3").unwrap();
+    assert_eq!(
+        m.finish(&op3, &c3.challenge_id, "down:cred-alice", "u3"),
+        Err(ap(ApprovalCode::AssertionInvalid(
+            VerifierError::Unavailable
+        )))
+    );
+    m.w.clock.set(now().plus_seconds(120));
+    assert_eq!(
+        m.finish(&op3, &c3.challenge_id, &ok(&alice), "u3"),
+        Err(challenge(ChallengeRefusal::Expired))
+    );
 }

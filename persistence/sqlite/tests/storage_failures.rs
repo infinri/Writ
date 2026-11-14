@@ -55,7 +55,7 @@ use writ_broker::grants::{
     Verdict,
 };
 use writ_broker::human::{
-    ActiveCredentials, CeremonyStart, CeremonyState, HumanVerifier, Permission,
+    ActiveCredentials, ApprovalChannel, CeremonyStart, CeremonyState, HumanVerifier, Permission,
     RegistrationBinding, RegistrationStart, RegistrationVerifier, RelyingParty, SubjectId,
     VerifiedAssertion, VerifiedRegistration, VerifierCapability, VerifierError, ES256,
     WEBAUTHN_PASSKEY,
@@ -327,6 +327,12 @@ impl ApprovalAuthority for Alice {
     }
 }
 
+/// The test verifier as the ledger's configured approval channel (M1).
+fn test_channel() -> ApprovalChannel {
+    let v = std::sync::Arc::new(TestVerifier);
+    ApprovalChannel::new(v.clone(), v, "approval-listener").unwrap()
+}
+
 /// Test human verifier (test code only): unique ceremonies; `ok:<credential>` verifies.
 struct TestVerifier;
 
@@ -353,6 +359,7 @@ impl HumanVerifier for TestVerifier {
 
     fn finish(
         &self,
+        cap: &VerifierCapability,
         state: &CeremonyState,
         response: &[u8],
         credentials: &ActiveCredentials,
@@ -365,7 +372,7 @@ impl HumanVerifier for TestVerifier {
             return Err(VerifierError::CredentialUnknown);
         }
         Ok(VerifiedAssertion::new(
-            &VerifierCapability::for_verifier_implementation(),
+            cap,
             credentials.subject().clone(),
             credential,
             true,
@@ -381,7 +388,6 @@ fn ceremony(ledger: &SqliteLedger, who: &SubjectId, op: &CeremonyOp, key: &str, 
         op,
         subject: who,
         idempotency_key: key,
-        verifier: &TestVerifier,
         now,
     });
     if let Ok(Ok(c)) = begin {
@@ -391,8 +397,6 @@ fn ceremony(ledger: &SqliteLedger, who: &SubjectId, op: &CeremonyOp, key: &str, 
             challenge_id: &c.challenge_id,
             response: response.as_bytes(),
             idempotency_key: key,
-            channel: "approval-listener",
-            verifier: &TestVerifier,
             now,
         });
     }
@@ -418,13 +422,14 @@ impl RegistrationVerifier for TestVerifier {
 
     fn finish_registration(
         &self,
+        cap: &VerifierCapability,
         binding: &RegistrationBinding,
         _state: &CeremonyState,
         response: &[u8],
     ) -> Result<VerifiedRegistration, VerifierError> {
         let credential = std::str::from_utf8(response).map_err(|_| VerifierError::Malformed)?;
         Ok(VerifiedRegistration::new(
-            &VerifierCapability::for_verifier_implementation(),
+            cap,
             binding,
             credential,
             format!("pk-{credential}").into_bytes(),
@@ -443,7 +448,6 @@ fn register(
     let issued = ledger
         .begin_registration(&RegistrationBegin {
             subject: who,
-            verifier: &TestVerifier,
             now: now(),
         })
         .unwrap()
@@ -452,7 +456,6 @@ fn register(
         .finish_registration(&RegistrationFinish {
             registration_id: &issued.registration_id,
             response: format!("cred-{}", who.subject).as_bytes(),
-            verifier: &TestVerifier,
             now: now(),
         })
         .unwrap()
@@ -464,7 +467,9 @@ fn register(
 /// (`approver` over every scope) through the enrollment ceremony.
 fn enroll_storage_approver(db: &Path) {
     let clock = clock();
-    let Ok(Ok(session)) = BootstrapSession::open(db) else {
+    let Ok(Ok(session)) = BootstrapSession::open(db)
+        .map(|s| s.map(|s| s.with_approval_channel(test_channel()).unwrap()))
+    else {
         panic!("bootstrap session");
     };
     let root = SubjectId::new("writ-local", "storage-root");
@@ -481,7 +486,10 @@ fn enroll_storage_approver(db: &Path) {
         )
         .unwrap()
         .unwrap();
-    let ledger = SqliteLedger::open(db).unwrap();
+    let ledger = SqliteLedger::open(db)
+        .unwrap()
+        .with_approval_channel(test_channel())
+        .unwrap();
     let now = || {
         let mut l: &SqliteLedger = &ledger;
         observe(&clock, &mut l).unwrap()
@@ -715,7 +723,10 @@ fn storage_failure_child() {
         return;
     };
     let dir = PathBuf::from(dir);
-    let ledger = SqliteLedger::open(&dir.join("ledger.db")).unwrap();
+    let ledger = SqliteLedger::open(&dir.join("ledger.db"))
+        .unwrap()
+        .with_approval_channel(test_channel())
+        .unwrap();
     let effects = SqliteEffectStore::open(&dir.join("effects.db"), ledger.ledger_id()).unwrap();
     let (active, clock, key) = (policy(), clock(), permit_key());
     let b = Broker::new(&active, &clock, &ledger, &effects, &key);

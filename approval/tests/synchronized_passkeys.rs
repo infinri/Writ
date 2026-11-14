@@ -13,9 +13,11 @@
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
 use serde_json::json;
+use std::sync::Arc;
+
 use writ_approval::verifier::{CheckedAssertion, PasskeyVerifier};
 use writ_broker::human::{
-    ActiveCredentials, CredentialStatus, HumanVerifier, Permission, PrincipalKind,
+    ActiveCredentials, ApprovalChannel, CredentialStatus, HumanVerifier, Permission, PrincipalKind,
     RegistrationBinding, RegistrationOperation, RegistrationVerifier, RoleAssignment,
     StoredCredential, SubjectId, SubjectRecord, SubjectStatus, VerifiedRegistration, VerifierError,
     ES256,
@@ -222,12 +224,18 @@ fn bob() -> SubjectId {
     SubjectId::new("writ-local", "bob")
 }
 
-fn verifier() -> PasskeyVerifier {
-    PasskeyVerifier::new("localhost", ORIGIN).unwrap()
+/// The verifier as a configured approval channel (M1: the only way to lend it a verifier
+/// capability).
+fn channel(v: &Arc<PasskeyVerifier>) -> ApprovalChannel {
+    ApprovalChannel::new(v.clone(), v.clone(), "approval-listener").unwrap()
+}
+
+fn verifier() -> Arc<PasskeyVerifier> {
+    Arc::new(PasskeyVerifier::new("localhost", ORIGIN).unwrap())
 }
 
 fn register(
-    v: &PasskeyVerifier,
+    v: &Arc<PasskeyVerifier>,
     f: &Fixture,
     flags: u8,
     counter: u32,
@@ -240,7 +248,7 @@ fn register(
         relying_party: v.relying_party(),
     };
     let response = f.registration(&start.client_options, flags, counter);
-    v.finish_registration(&binding, &start.state, &response)
+    channel(v).finish_registration(&binding, &start.state, &response)
 }
 
 fn active(credential_id: &str, material: &[u8]) -> ActiveCredentials {
@@ -280,7 +288,7 @@ fn active(credential_id: &str, material: &[u8]) -> ActiveCredentials {
 }
 
 fn assert_with(
-    v: &PasskeyVerifier,
+    v: &Arc<PasskeyVerifier>,
     f: &Fixture,
     creds: &ActiveCredentials,
     flags: u8,
@@ -292,7 +300,7 @@ fn assert_with(
     let response = f.assertion(&start.client_options, flags, counter, origin, rp_id);
     let checked = v.verify_assertion(&start.state, &response, creds);
     // The trait answer agrees: same outcome, bound to this ceremony's challenge digest.
-    match (&checked, v.finish(&start.state, &response, creds)) {
+    match (&checked, channel(v).finish(&start.state, &response, creds)) {
         (Ok(c), Ok(a)) => {
             assert_eq!(a.challenge_digest(), &start.challenge_digest);
             assert_eq!(a.credential_id(), c.credential_id);
@@ -305,7 +313,7 @@ fn assert_with(
 }
 
 fn assert_ok(
-    v: &PasskeyVerifier,
+    v: &Arc<PasskeyVerifier>,
     f: &Fixture,
     creds: &ActiveCredentials,
     flags: u8,
@@ -455,12 +463,14 @@ fn wrong_origin_rp_id_signature_or_credential_is_refused() {
     let other = Fixture::new(10);
     let other_reg = register(&v, &other, SYNCED, 0).unwrap();
     let other_creds = active(other_reg.credential_id(), other_reg.public_material());
-    assert!(v.finish(&start.state, &response, &other_creds).is_err());
+    assert!(channel(&v)
+        .finish(&start.state, &response, &other_creds)
+        .is_err());
     // Replay of a finished assertion against a new ceremony.
-    assert!(v.finish(&start.state, &response, &creds).is_ok());
+    assert!(channel(&v).finish(&start.state, &response, &creds).is_ok());
     let next = v.begin(&bob(), &creds).unwrap();
     assert_eq!(
-        v.finish(&next.state, &response, &creds).err(),
+        channel(&v).finish(&next.state, &response, &creds).err(),
         Some(VerifierError::BindingMismatch)
     );
 }

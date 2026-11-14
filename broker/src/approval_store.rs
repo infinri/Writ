@@ -38,7 +38,11 @@
 //! challenge as `refused` with the refusal code in the same transaction; a
 //! later finish on it is `CHALLENGE_INVALID` (consumed). When that commit
 //! fails or its outcome is unknown, the answer is the storage failure (fail
-//! closed), and the next transaction reads the stored status again.
+//! closed), and the next transaction reads the stored status again. A
+//! verifier that reports itself unavailable (`ASSERTION_INVALID`, verifier
+//! unavailable) and a ledger without a configured approval channel are not
+//! terminal refusals: the challenge stays `issued` (still single use and
+//! expiring) and the answer is the unavailability.
 //!
 //! **Role changes (D-042 X5).** [`CeremonyOp::RoleChange`] grants or revokes
 //! one assignment; the binding scope is the assignment's scope and the actor
@@ -61,9 +65,7 @@ use crate::approval::{
 use crate::authorize::{Authorized, UseTimeStatus};
 use crate::clock::ObservedTime;
 use crate::grants::GrantLabel;
-use crate::human::{
-    HumanVerifier, Permission, PrincipalKind, RegistrationVerifier, SubjectId, VerifiedRegistration,
-};
+use crate::human::{Permission, PrincipalKind, SubjectId, VerifiedRegistration};
 use crate::refusal::Refusal;
 use crate::store::{ExecuteLedger, StoreError, TxFailure};
 
@@ -161,7 +163,6 @@ pub fn approval_request_for(
             .agent_id
             .as_deref()
             .map(|a| SubjectId::new(realm, a)),
-        delegation_chain: Vec::new(),
         action_kind: request.action.kind.clone(),
         canonical_resource_id: request.action.resource.canonical_resource_id.clone()?,
         action_digest: request.action.action_digest.clone(),
@@ -551,9 +552,8 @@ pub struct CeremonyBegin<'a> {
     pub subject: &'a SubjectId,
     /// Idempotency key of the decision this challenge is for.
     pub idempotency_key: &'a str,
-    /// The verifier.
-    pub verifier: &'a dyn HumanVerifier,
-    /// Trusted time (persisted floor).
+    /// Trusted time (persisted floor). (No verifier: the ledger uses its
+    /// configured [`crate::human::ApprovalChannel`].)
     pub now: ObservedTime,
 }
 
@@ -578,11 +578,9 @@ pub struct CeremonyFinish<'a> {
     pub response: &'a [u8],
     /// Idempotency key (must equal the challenge's).
     pub idempotency_key: &'a str,
-    /// Channel identity from the listener configuration.
-    pub channel: &'a str,
-    /// The verifier.
-    pub verifier: &'a dyn HumanVerifier,
-    /// Trusted time (persisted floor).
+    /// Trusted time (persisted floor). (No verifier and no channel identity:
+    /// both come from the ledger's configured
+    /// [`crate::human::ApprovalChannel`].)
     pub now: ObservedTime,
 }
 
@@ -721,6 +719,10 @@ pub trait ApprovalLedger: ExecuteLedger {
     /// (`SERVICE_NOT_PERMITTED`, `SUBJECT_REVOKED`, `PERMISSION_MISSING`,
     /// `CREDENTIAL_REVOKED` when it has no active credential), the verifier
     /// (`ASSERTION_INVALID`), a duplicate id or digest (`CHALLENGE_INVALID`).
+    /// The verifier is the ledger's configured
+    /// [`crate::human::ApprovalChannel`], whose RP id and origin the
+    /// challenge records; a ledger without one refuses every ceremony
+    /// (`ASSERTION_INVALID`, verifier unavailable).
     fn begin_ceremony(
         &self,
         begin: &CeremonyBegin<'_>,
@@ -728,7 +730,13 @@ pub trait ApprovalLedger: ExecuteLedger {
 
     /// The `ceremony` transaction (module documentation): replay of an
     /// identical retry, or the checked decision, revocation, signoff or
-    /// enrollment with the challenge consumed atomically.
+    /// enrollment with the challenge consumed atomically. A configured
+    /// channel whose RP id or origin differs from the challenge's is
+    /// `CHALLENGE_INVALID` (binding mismatch; the challenge is burnt, X4); a
+    /// ledger without a configured channel refuses (`ASSERTION_INVALID`,
+    /// verifier unavailable) and leaves the challenge issued, as does a
+    /// verifier that reports itself unavailable (a transient outage is not a
+    /// terminal refusal).
     fn finish_ceremony(
         &self,
         finish: &CeremonyFinish<'_>,
@@ -748,9 +756,9 @@ pub const REGISTRATION_TTL_SECONDS: i64 = 600;
 pub struct RegistrationBegin<'a> {
     /// The subject to register (must not exist yet).
     pub subject: &'a SubjectId,
-    /// The verifier (its relying party is bound into the row).
-    pub verifier: &'a dyn RegistrationVerifier,
-    /// Trusted time (persisted floor).
+    /// Trusted time (persisted floor). (No verifier: the ledger's configured
+    /// [`crate::human::ApprovalChannel`]; its relying party is bound into the
+    /// row.)
     pub now: ObservedTime,
 }
 
@@ -771,9 +779,9 @@ pub struct RegistrationFinish<'a> {
     pub registration_id: &'a str,
     /// The client's registration response.
     pub response: &'a [u8],
-    /// The verifier (its relying party must equal the row's).
-    pub verifier: &'a dyn RegistrationVerifier,
-    /// Trusted time (persisted floor).
+    /// Trusted time (persisted floor). (No verifier: the ledger's configured
+    /// [`crate::human::ApprovalChannel`], whose relying party must equal the
+    /// row's.)
     pub now: ObservedTime,
 }
 
@@ -793,10 +801,12 @@ pub trait RegistrationLedger {
     ) -> Result<Result<IssuedRegistration, Refusal>, TxFailure>;
 
     /// Finish a registration row. Refusals: an unknown, finished, burnt or
-    /// expired row, or another relying party (`CHALLENGE_INVALID`); the
-    /// verifier, missing user verification or a result for another ceremony
-    /// (`ASSERTION_INVALID`); a credential that is not ES256 or whose id is
-    /// already stored (`ENROLLMENT_UNSUPPORTED`).
+    /// expired row (`CHALLENGE_INVALID`); the verifier, missing user
+    /// verification or a result for another ceremony (`ASSERTION_INVALID`);
+    /// a configured channel with another relying party than the row's, a
+    /// credential that is not ES256 or whose id is already stored
+    /// (`ENROLLMENT_UNSUPPORTED`). A ledger without a configured channel
+    /// refuses every registration (`ASSERTION_INVALID`, verifier unavailable).
     fn finish_registration(
         &self,
         finish: &RegistrationFinish<'_>,

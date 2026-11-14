@@ -41,8 +41,8 @@ use writ_broker::approval_store::{
 use writ_broker::clock::ObservedTime;
 use writ_broker::grants::{ApprovalLink, GrantBinding, GrantLabel, NewGrant, Verdict};
 use writ_broker::human::{
-    check_actor, check_service_permission, same_subject, ActiveCredentials, Actor, CeremonyState,
-    CredentialStatus, EnrollmentRecord, LedgerCapability, Permission, PrincipalKind,
+    check_actor, check_service_permission, same_subject, ActiveCredentials, Actor, ApprovalChannel,
+    CeremonyState, CredentialStatus, EnrollmentRecord, LedgerCapability, Permission, PrincipalKind,
     RegistrationBinding, RegistrationOperation, RelyingParty, RoleAssignment, StoredCredential,
     SubjectId, SubjectRecord, SubjectStatus, VerifiedAssertion, VerifiedRegistration,
     VerifierError, ES256,
@@ -74,6 +74,12 @@ fn ap(code: ApprovalCode) -> Refusal {
 
 fn challenge_refused(r: ChallengeRefusal) -> Refusal {
     ap(ApprovalCode::ChallengeInvalid(r))
+}
+
+/// The answer of a ledger without a configured approval channel (M1), and of a verifier
+/// that reports itself unavailable: not a terminal refusal (L6), nothing is burnt.
+fn no_channel() -> Refusal {
+    ap(ApprovalCode::AssertionInvalid(VerifierError::Unavailable))
 }
 
 fn cap() -> LedgerCapability {
@@ -565,18 +571,16 @@ fn request_from_context(v: &Value) -> Option<NewApprovalRequest> {
         Value::Null => None,
         a => Some(subject(a)?),
     };
+    // G4, L4: the stored context records the chain as unavailable, never a list.
+    if s("delegation_chain")? != writ_broker::approval::DELEGATION_CHAIN_UNAVAILABLE {
+        return None;
+    }
     Some(NewApprovalRequest {
         request_id: s("request_id")?,
         tenant_id: s("tenant_id")?,
         project_id: s("project_id")?,
         requester: subject(v.get("requester")?)?,
         agent,
-        delegation_chain: v
-            .get("delegation_chain")?
-            .as_arr()?
-            .iter()
-            .map(subject)
-            .collect::<Option<Vec<_>>>()?,
         action_kind: s("action_kind")?,
         canonical_resource_id: s("canonical_resource_id")?,
         action_digest: s("action_digest")?,
@@ -1228,6 +1232,7 @@ fn begin_in(
     tx: &Transaction<'_>,
     b: &CeremonyBegin<'_>,
     challenge_id: &str,
+    channel: &ApprovalChannel,
 ) -> Outcome<IssuedChallenge> {
     let now = b.now.at();
     let t = check!(target(tx, b.op)?);
@@ -1250,8 +1255,7 @@ fn begin_in(
         return Ok(Err(ap(ApprovalCode::PermissionMissing)));
     };
     let creds = check!(rows.select(&t, now));
-    let start = check!(b
-        .verifier
+    let start = check!(channel
         .begin(b.subject, &creds)
         .map_err(|e| ap(ApprovalCode::AssertionInvalid(e))));
     let challenge = check!(Challenge::issue(NewChallenge {
@@ -1292,8 +1296,9 @@ fn begin_in(
         "INSERT INTO challenges (challenge_id, challenge_digest, ceremony_state, issuer, subject, \
          allowed_credentials, operation, verdict, tenant_id, project_id, target_id, \
          context_fingerprint, policy_bundle_sha, revision, issued_at, expires_at, \
-         idempotency_key, status) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 'issued')",
+         idempotency_key, rp_id, origin, status) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, \
+         ?18, ?19, 'issued')",
         rusqlite::params![
             challenge.challenge_id(),
             challenge.challenge_digest().as_str(),
@@ -1312,6 +1317,8 @@ fn begin_in(
             challenge.issued_at().to_string(),
             challenge.expires_at().to_string(),
             challenge.idempotency_key(),
+            channel.relying_party().rp_id,
+            channel.relying_party().origin,
         ],
     )?;
     Ok(Ok(IssuedChallenge {
@@ -1338,6 +1345,7 @@ struct ChallengeRow {
     issued_at: Timestamp,
     expires_at: Timestamp,
     key: String,
+    relying_party: RelyingParty,
     status: ChallengeStatus,
 }
 
@@ -1346,7 +1354,8 @@ fn challenge_row(conn: &Connection, id: &str) -> Result<Option<ChallengeRow>, Bo
         .query_row(
             "SELECT challenge_digest, ceremony_state, issuer, subject, allowed_credentials, \
              operation, verdict, tenant_id, project_id, target_id, context_fingerprint, \
-             policy_bundle_sha, revision, issued_at, expires_at, idempotency_key, status \
+             policy_bundle_sha, revision, issued_at, expires_at, idempotency_key, status, \
+             rp_id, origin \
              FROM challenges WHERE challenge_id = ?1",
             [id],
             |r| {
@@ -1371,11 +1380,12 @@ fn challenge_row(conn: &Connection, id: &str) -> Result<Option<ChallengeRow>, Bo
                         text(15)?,
                         text(16)?,
                     ],
+                    (text(17)?, text(18)?),
                 ))
             },
         )
         .optional()?;
-    let Some((state, revision, t)) = row else {
+    let Some((state, revision, t, (rp_id, origin))) = row else {
         return Ok(None);
     };
     let [digest, issuer, subject, allowed, operation, verdict, tenant, project, target, fingerprint, policy, issued, expires, key, status] =
@@ -1405,6 +1415,7 @@ fn challenge_row(conn: &Connection, id: &str) -> Result<Option<ChallengeRow>, Bo
         issued_at: ts(&issued)?,
         expires_at: ts(&expires)?,
         key,
+        relying_party: RelyingParty { rp_id, origin },
         status: match status.as_str() {
             "issued" => ChallengeStatus::Issued,
             "consumed" => ChallengeStatus::Consumed,
@@ -1825,7 +1836,11 @@ fn insert_grant_rows(tx: &Transaction<'_>, grant: &NewGrant) -> rusqlite::Result
     Ok(())
 }
 
-fn finish_in(tx: &Transaction<'_>, f: &CeremonyFinish<'_>) -> Outcome<CeremonyOutcome> {
+fn finish_in(
+    tx: &Transaction<'_>,
+    f: &CeremonyFinish<'_>,
+    channel: &ApprovalChannel,
+) -> Outcome<CeremonyOutcome> {
     let now = f.now.at();
     let Some(row) = challenge_row(tx, f.challenge_id)? else {
         return Ok(Err(challenge_refused(ChallengeRefusal::Unknown)));
@@ -1834,13 +1849,17 @@ fn finish_in(tx: &Transaction<'_>, f: &CeremonyFinish<'_>) -> Outcome<CeremonyOu
         // X4: burned by an earlier terminal refusal; never fresh again.
         return Ok(Err(challenge_refused(ChallengeRefusal::Consumed)));
     }
+    // M1: the challenge was issued for the configured channel's RP id and origin; another
+    // channel never sees its ceremony state (refused before the verifier runs; burnt, X4).
+    if &row.relying_party != channel.relying_party() {
+        return Ok(Err(challenge_refused(ChallengeRefusal::ChannelMismatch)));
+    }
     let t = check!(target(tx, f.op)?);
     let Some(rows) = ActorRows::read(tx, &row.subject)? else {
         return Ok(Err(ap(ApprovalCode::PermissionMissing)));
     };
     let creds = check!(rows.select(&t, now));
-    let assertion = check!(f
-        .verifier
+    let assertion = check!(channel
         .finish(
             &CeremonyState::from_bytes(row.state.clone()),
             f.response,
@@ -1869,7 +1888,7 @@ fn finish_in(tx: &Transaction<'_>, f: &CeremonyFinish<'_>) -> Outcome<CeremonyOu
             TargetKind::Request { request, status },
         ) => {
             let (new_status, decision) =
-                check!(decide(&request, status, &accepted, &actor, f.channel).map_err(ap));
+                check!(decide(&request, status, &accepted, &actor, channel.channel()).map_err(ap));
             let grant = match new_status {
                 ApprovalStatus::Approved => Some(
                     NewGrant::for_decision(&request, &decision, APPROVAL_GRANT_TTL_SECONDS)
@@ -2159,7 +2178,7 @@ fn finish_in(tx: &Transaction<'_>, f: &CeremonyFinish<'_>) -> Outcome<CeremonyOu
         &b.project_id,
         Some(&subject),
         Some(&credential),
-        Some(f.channel),
+        Some(channel.channel()),
         now,
         Some(f.challenge_id),
         request_ref
@@ -2270,6 +2289,9 @@ impl SqliteLedger {
         b: &RegistrationBegin<'_>,
         operation: RegistrationOperation,
     ) -> Result<Result<IssuedRegistration, Refusal>, TxFailure> {
+        let Some(channel) = self.approval_channel() else {
+            return self.audited(Ok(Err(no_channel())));
+        };
         let registration_id = random_id("reg")?;
         let now = b.now.at();
         let result = self.transact("registration_issue", |tx| {
@@ -2287,13 +2309,8 @@ impl SqliteLedger {
             if exists {
                 return unsupported();
             }
-            let rp = b.verifier.relying_party();
-            if rp.rp_id.is_empty() || rp.origin.is_empty() {
-                return Ok(End::Rollback(Err(ap(ApprovalCode::AssertionInvalid(
-                    VerifierError::Unavailable,
-                )))));
-            }
-            let start = match b.verifier.begin_registration(b.subject) {
+            let rp = channel.relying_party().clone();
+            let start = match channel.begin_registration(b.subject) {
                 Ok(s) => s,
                 Err(e) => return Ok(End::Rollback(Err(ap(ApprovalCode::AssertionInvalid(e))))),
             };
@@ -2329,7 +2346,8 @@ impl SqliteLedger {
     }
 
     /// The `registration` transaction (S5, X8; [`RegistrationLedger`]): the row must be
-    /// `issued`, of `operation`, unexpired and for the verifier's relying party; the
+    /// `issued`, of `operation`, unexpired and for the configured channel's relying party
+    /// (otherwise `ENROLLMENT_UNSUPPORTED`, the row burnt); the
     /// verifier's answer must be for exactly this row, user verified, ES256 (D-041 DR-3)
     /// and of an unused credential id. The row then records the credential (`registered`);
     /// a refused answer burns it (`refused`, committed with the refusal).
@@ -2338,6 +2356,9 @@ impl SqliteLedger {
         f: &RegistrationFinish<'_>,
         operation: RegistrationOperation,
     ) -> Result<Result<VerifiedRegistration, Refusal>, TxFailure> {
+        let Some(channel) = self.approval_channel() else {
+            return self.audited(Ok(Err(no_channel())));
+        };
         let now = f.now.at();
         let result = self.transact("registration", |tx| {
             let row = tx
@@ -2389,15 +2410,22 @@ impl SqliteLedger {
                 subject: SubjectId::new(&issuer, &subject),
                 relying_party: RelyingParty { rp_id, origin },
             };
-            if f.verifier.relying_party() != binding.relying_party {
-                return burn(assertion(VerifierError::BindingMismatch));
+            // M1: a configured channel with another RP id or origin never sees the row's
+            // ceremony state; the row is burnt.
+            if channel.relying_party() != &binding.relying_party {
+                return burn(ap(ApprovalCode::EnrollmentUnsupported));
             }
-            let reg = match f.verifier.finish_registration(
+            let reg = match channel.finish_registration(
                 &binding,
                 &CeremonyState::from_bytes(state),
                 f.response,
             ) {
                 Ok(reg) => reg,
+                // L6: a transient verifier outage is not a terminal refusal; the row stays
+                // issued (still single use and expiring).
+                Err(VerifierError::Unavailable) => {
+                    return Ok(End::Rollback(Err(assertion(VerifierError::Unavailable))))
+                }
                 Err(e) => return burn(assertion(e)),
             };
             if reg.binding() != &binding {
@@ -2506,13 +2534,11 @@ impl SqliteLedger {
     pub(crate) fn bootstrap_owned_for_tests(
         &self,
         admin: &SubjectId,
-        verifier: &dyn writ_broker::human::RegistrationVerifier,
         response: &[u8],
         now: ObservedTime,
     ) -> Result<Result<i64, Refusal>, TxFailure> {
         let begin = RegistrationBegin {
             subject: admin,
-            verifier,
             now,
         };
         let issued = match self.begin_registration_as(&begin, RegistrationOperation::Bootstrap)? {
@@ -2522,7 +2548,6 @@ impl SqliteLedger {
         let finish = RegistrationFinish {
             registration_id: &issued.registration_id,
             response,
-            verifier,
             now,
         };
         let reg = match self.finish_registration_as(&finish, RegistrationOperation::Bootstrap)? {
@@ -2597,6 +2622,17 @@ impl BootstrapSession {
             return Ok(Err(ap(ApprovalCode::EnrollmentUnsupported)));
         }
         Ok(Ok(BootstrapSession { ledger }))
+    }
+
+    /// Configure the approval channel of this session's `bootstrap` registration, once
+    /// ([`SqliteLedger::with_approval_channel`]); without one the registration is refused.
+    pub fn with_approval_channel(
+        self,
+        channel: ApprovalChannel,
+    ) -> Result<BootstrapSession, StoreError> {
+        Ok(BootstrapSession {
+            ledger: self.ledger.with_approval_channel(channel)?,
+        })
     }
 
     /// Trusted time for this session's operations (raises the ledger's persisted floor).
@@ -2731,9 +2767,13 @@ impl ApprovalLedger for SqliteLedger {
         &self,
         begin: &CeremonyBegin<'_>,
     ) -> Result<Result<IssuedChallenge, Refusal>, TxFailure> {
+        // M1: only the configured channel's verifier; none configured, no ceremony.
+        let Some(channel) = self.approval_channel() else {
+            return self.audited(Ok(Err(no_channel())));
+        };
         let id = random_id("chl")?;
         let result = self.transact("challenge_issue", |tx| {
-            Ok(end(begin_in(tx, begin, &id)?, |_| false))
+            Ok(end(begin_in(tx, begin, &id, channel)?, |_| false))
         });
         self.audited(result)
     }
@@ -2742,6 +2782,11 @@ impl ApprovalLedger for SqliteLedger {
         &self,
         finish: &CeremonyFinish<'_>,
     ) -> Result<Result<CeremonyOutcome, Refusal>, TxFailure> {
+        // M1: without a configured channel nothing is verified and nothing is burnt (the
+        // challenge stays issued, single use and expiring).
+        let Some(channel) = self.approval_channel() else {
+            return self.audited(Ok(Err(no_channel())));
+        };
         let result = self.transact("ceremony", |tx| {
             // X4 (S6): the ceremony body runs inside a savepoint; a refusal undoes the body
             // and, when it identified an issued challenge, burns that challenge in this same
@@ -2749,7 +2794,7 @@ impl ApprovalLedger for SqliteLedger {
             // if that commit fails or its outcome is unknown the answer is the storage failure
             // (fail closed), and the next ceremony reads the stored status again.
             tx.execute_batch("SAVEPOINT ceremony_body")?;
-            match finish_in(tx, finish)? {
+            match finish_in(tx, finish, channel)? {
                 Ok(outcome) if outcome.replayed => Ok(End::Rollback(Ok(outcome))),
                 Ok(outcome) => {
                     tx.execute_batch("RELEASE ceremony_body")?;
@@ -2759,7 +2804,12 @@ impl ApprovalLedger for SqliteLedger {
                     tx.execute_batch("ROLLBACK TO ceremony_body; RELEASE ceremony_body")?;
                     // A challenge expired on trusted time is already unusable (time never moves
                     // back past the persisted floor); the `expire` step marks it.
-                    if refusal == challenge_refused(ChallengeRefusal::Expired) {
+                    // L6: a verifier that reports itself unavailable is a transient outage,
+                    // not a terminal refusal; the challenge stays issued (single use and
+                    // expiring all the same).
+                    if refusal == challenge_refused(ChallengeRefusal::Expired)
+                        || refusal == no_channel()
+                    {
                         return Ok(End::Rollback(Err(refusal)));
                     }
                     let burned = tx.execute(

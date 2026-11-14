@@ -13,7 +13,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Barrier;
+use std::sync::{Arc, Barrier};
 use std::thread;
 
 use writ_broker::acceptance::{MAC_ALG, RECORD_CONTRACT, RECORD_CONTRACT_V2, RECORD_PURPOSE};
@@ -25,8 +25,9 @@ use writ_broker::approval_store::{
 use writ_broker::clock::{observe, ObservedTime};
 use writ_broker::execute::Broker;
 use writ_broker::human::{
-    ActiveCredentials, CeremonyStart, CeremonyState, HumanVerifier, Permission, PrincipalKind,
-    SubjectId, VerifiedAssertion, VerifierCapability, VerifierError, WEBAUTHN_PASSKEY,
+    ActiveCredentials, ApprovalChannel, CeremonyStart, CeremonyState, HumanVerifier, Permission,
+    PrincipalKind, SubjectId, VerifiedAssertion, VerifierCapability, VerifierError,
+    WEBAUTHN_PASSKEY,
 };
 use writ_broker::keys::{AcceptanceRecordKey, MemoryKeys, PermitKey, RunnerAttestationKey};
 use writ_broker::policy::{ActivePolicy, PolicyState};
@@ -78,6 +79,7 @@ impl HumanVerifier for TestVerifier {
 
     fn finish(
         &self,
+        cap: &VerifierCapability,
         state: &CeremonyState,
         response: &[u8],
         credentials: &ActiveCredentials,
@@ -91,7 +93,7 @@ impl HumanVerifier for TestVerifier {
             return Err(VerifierError::SignatureInvalid);
         }
         Ok(VerifiedAssertion::new(
-            &VerifierCapability::for_verifier_implementation(),
+            cap,
             credentials.subject().clone(),
             credential,
             true,
@@ -292,7 +294,6 @@ struct W {
     snapshots: Snapshots,
     record_keys: MemoryKeys<AcceptanceRecordKey>,
     runner_keys: MemoryKeys<RunnerAttestationKey>,
-    v: TestVerifier,
 }
 
 impl Drop for W {
@@ -317,12 +318,21 @@ impl W {
             bootstrap_root_at(
                 &dir.join("ledger.db"),
                 &TestClock::at(now()),
-                &RegistrationFixture::default(),
+                &Arc::new(RegistrationFixture::default()),
                 &human("root"),
             ),
             Ok(1)
         );
-        let ledger = SqliteLedger::open(&dir.join("ledger.db")).unwrap();
+        let channel = ApprovalChannel::new(
+            Arc::new(TestVerifier::default()),
+            Arc::new(RegistrationFixture::default()),
+            "approval-listener",
+        )
+        .unwrap();
+        let ledger = SqliteLedger::open(&dir.join("ledger.db"))
+            .unwrap()
+            .with_approval_channel(channel)
+            .unwrap();
         let effects =
             SqliteEffectStore::create(&dir.join("effects.db"), ledger.ledger_id()).unwrap();
         let mut record_keys = MemoryKeys::new();
@@ -346,7 +356,6 @@ impl W {
             snapshots: Snapshots::default(),
             record_keys,
             runner_keys,
-            v: TestVerifier::default(),
         };
         w.snapshots
             .content
@@ -447,7 +456,6 @@ impl W {
                 op,
                 subject: who,
                 idempotency_key: key,
-                verifier: &self.v,
                 now: self.now(),
             })
             .expect("store")
@@ -466,8 +474,6 @@ impl W {
                 challenge_id,
                 response: format!("ok:cred-{}", who.subject).as_bytes(),
                 idempotency_key: key,
-                channel: "approval-listener",
-                verifier: &self.v,
                 now: self.now(),
             })
             .expect("store")
@@ -485,12 +491,7 @@ impl W {
 
     fn enroll(&self, e: NewEnrollment) -> Result<CeremonyOutcome, Refusal> {
         // The credential comes from the ledger's registration ceremony (S5, X8).
-        let e = registered(
-            &self.ledger,
-            &|| self.now(),
-            &RegistrationFixture::default(),
-            e,
-        );
+        let e = registered(&self.ledger, &|| self.now(), e);
         let key = format!("enroll-{}", e.subject.subject);
         self.ceremony(&human("root"), &CeremonyOp::Enroll { enrollment: e }, &key)
     }

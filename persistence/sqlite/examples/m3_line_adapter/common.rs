@@ -21,9 +21,10 @@ use writ_broker::execute::{
 };
 use writ_broker::grants::{GrantInsert, NewGrant, ReserveOutcome, ReserveRequest};
 use writ_broker::human::{
-    ActiveCredentials, CeremonyStart, CeremonyState, HumanVerifier, RegistrationBinding,
-    RegistrationStart, RegistrationVerifier, RelyingParty, SubjectId, VerifiedAssertion,
-    VerifiedRegistration, VerifierCapability, VerifierError, ES256, WEBAUTHN_PASSKEY,
+    ActiveCredentials, ApprovalChannel, CeremonyStart, CeremonyState, HumanVerifier,
+    RegistrationBinding, RegistrationStart, RegistrationVerifier, RelyingParty, SubjectId,
+    VerifiedAssertion, VerifiedRegistration, VerifierCapability, VerifierError, ES256,
+    WEBAUTHN_PASSKEY,
 };
 use writ_broker::keys::{MemoryKeyRing, PermitKey};
 use writ_broker::policy::{ActivePolicy, ExclusiveHold, PolicyState};
@@ -575,6 +576,7 @@ impl HumanVerifier for ChannelVerifier {
 
     fn finish(
         &self,
+        cap: &VerifierCapability,
         state: &CeremonyState,
         response: &[u8],
         credentials: &ActiveCredentials,
@@ -608,7 +610,7 @@ impl HumanVerifier for ChannelVerifier {
             self.labels.add(C3);
         }
         Ok(VerifiedAssertion::new(
-            &VerifierCapability::for_verifier_implementation(),
+            cap,
             subject.clone(),
             &credential,
             true,
@@ -650,13 +652,14 @@ impl RegistrationVerifier for Registrar {
 
     fn finish_registration(
         &self,
+        cap: &VerifierCapability,
         binding: &RegistrationBinding,
         _state: &CeremonyState,
         response: &[u8],
     ) -> Result<VerifiedRegistration, VerifierError> {
         let credential = std::str::from_utf8(response).map_err(|_| VerifierError::Malformed)?;
         Ok(VerifiedRegistration::new(
-            &VerifierCapability::for_verifier_implementation(),
+            cap,
             binding,
             credential,
             b"m3c-test-public-material".to_vec(),
@@ -676,7 +679,6 @@ pub fn register(
     let issued = ledger
         .begin_registration(&RegistrationBegin {
             subject: who,
-            verifier: &Registrar,
             now: now()?,
         })
         .map_err(|f| format!("registration: {}", f.error))?
@@ -685,7 +687,6 @@ pub fn register(
         .finish_registration(&RegistrationFinish {
             registration_id: &issued.registration_id,
             response: credential.as_bytes(),
-            verifier: &Registrar,
             now: now()?,
         })
         .map_err(|f| format!("registration: {}", f.error))?
@@ -700,10 +701,13 @@ fn bootstrap(
     clock: &dyn EffectiveClock,
     admin: &SubjectId,
     credential: &str,
+    channel: &ApprovalChannel,
 ) -> Result<(), String> {
     let session = BootstrapSession::open(path)
         .map_err(|e| format!("bootstrap: {e}"))?
-        .map_err(|r| format!("bootstrap refused: {}", r.code()))?;
+        .map_err(|r| format!("bootstrap refused: {}", r.code()))?
+        .with_approval_channel(channel.clone())
+        .map_err(|e| format!("bootstrap channel: {e}"))?;
     let now = || {
         session
             .observe(clock)
@@ -774,6 +778,8 @@ pub struct World {
     pub labels: Arc<Labels>,
     /// Injected `ledger: down` status, kept across close and reopen (restart).
     pub ledger_down: Arc<AtomicBool>,
+    /// The approval channel configured on every open of the ledger (M1).
+    channel: ApprovalChannel,
 }
 
 pub type ProdBroker<'a> = Broker<'a, Ledger, SqliteEffectStore>;
@@ -786,6 +792,7 @@ impl World {
         ring: MemoryKeyRing,
         labels: Arc<Labels>,
         admin: (&SubjectId, &str),
+        channel: ApprovalChannel,
     ) -> Result<World, String> {
         let n = CASE_COUNTER.fetch_add(1, Ordering::SeqCst);
         let dir = std::env::temp_dir().join(format!("writ-m3-closure-{}-{n}", std::process::id()));
@@ -796,9 +803,12 @@ impl World {
             SqliteLedger::create(&dir.join("ledger.db"))
                 .map_err(|e| format!("ledger create: {e}"))?,
         );
-        bootstrap(&dir.join("ledger.db"), &clock, admin.0, admin.1)?;
+        bootstrap(&dir.join("ledger.db"), &clock, admin.0, admin.1, &channel)?;
         let ledger =
             SqliteLedger::open(&dir.join("ledger.db")).map_err(|e| format!("ledger open: {e}"))?;
+        let ledger = ledger
+            .with_approval_channel(channel.clone())
+            .map_err(|e| format!("ledger channel: {e}"))?;
         let effects = SqliteEffectStore::create(&dir.join("effects.db"), ledger.ledger_id())
             .map_err(|e| format!("effects create: {e}"))?;
         let ledger_down = Arc::new(AtomicBool::new(false));
@@ -814,6 +824,7 @@ impl World {
             ring,
             labels,
             ledger_down,
+            channel,
         })
     }
 
@@ -843,7 +854,9 @@ impl World {
     pub fn reopen(&mut self) -> Result<(), String> {
         self.stores = None;
         let ledger = SqliteLedger::open(&self.dir.join("ledger.db"))
-            .map_err(|e| format!("ledger reopen: {e}"))?;
+            .map_err(|e| format!("ledger reopen: {e}"))?
+            .with_approval_channel(self.channel.clone())
+            .map_err(|e| format!("ledger channel: {e}"))?;
         let effects = SqliteEffectStore::open(&self.dir.join("effects.db"), ledger.ledger_id())
             .map_err(|e| format!("effects reopen: {e}"))?;
         self.stores = Some(Stores {

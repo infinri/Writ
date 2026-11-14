@@ -39,11 +39,22 @@
 //! **Capabilities** ([`VerifierCapability`], [`LedgerCapability`]): every
 //! constructor that yields a value without the intended path (a verifier
 //! answer, an enrollment record, a stored row read back) takes a capability
-//! token whose constructor names the trust it asserts. Rust cannot restrict
-//! callers across crates, so `broker/tests/trusted_constructors.rs` scans the
-//! workspace and fails when a capability constructor is called outside its
-//! allow-list (the `writ-approval` crate for the verifier capability, the
-//! SQLite ledger for the ledger capability, and test code).
+//! token. A [`VerifierCapability`] has no public constructor: it exists only
+//! for the duration of a verifier call made by an [`ApprovalChannel`] (lent
+//! by reference to [`HumanVerifier::finish`] and
+//! [`RegistrationVerifier::finish_registration`]) and in this crate's unit
+//! tests. The ledger capability's constructor stays public because the
+//! SQLite ledger is another crate and Rust cannot restrict callers across
+//! crates without a feature; `broker/tests/trusted_constructors.rs` confines
+//! it to the SQLite ledger and test code, and nothing built with it is ever
+//! accepted by a ledger as authority (the ledger reads its own rows, D-042 X1).
+//!
+//! **Approval channel** ([`ApprovalChannel`]): the verifier, its relying
+//! party (RP id and exact origin) and the channel identity are configured
+//! once on the ledger that serves approvals; ceremony and registration calls
+//! never take a verifier. Code linking these crates in process is inside the
+//! trust boundary (docs/implementation/M4-INTERFACES.md, "Configured approval
+//! channel").
 //!
 //! **Unicode** (review finding, LOW): subject text is compared after
 //! `to_lowercase` only; no Unicode normalization (NFC/NFKC) or confusable
@@ -52,6 +63,7 @@
 //! normalization would add a Unicode-data dependency to the broker.
 
 use std::fmt;
+use std::sync::Arc;
 
 use writ_kernel::json::Digest;
 use writ_kernel::time::Timestamp;
@@ -64,20 +76,27 @@ use crate::approval::{
 pub const WEBAUTHN_PASSKEY: &str = "webauthn-passkey";
 
 /// Capability to build a [`VerifiedAssertion`] or a
-/// [`VerifiedRegistration`]. Allowed only in the
-/// `writ-approval` crate's verifier implementation and in test code;
-/// enforced by `broker/tests/trusted_constructors.rs`. Not `Clone`.
+/// [`VerifiedRegistration`]. No public constructor: an [`ApprovalChannel`]
+/// lends one, by reference, to its verifier for the duration of
+/// [`HumanVerifier::finish`] or [`RegistrationVerifier::finish_registration`].
+/// Not `Clone`, not `Copy`.
 ///
 /// ```compile_fail
 /// use writ_broker::human::VerifierCapability;
 /// let forged = VerifierCapability(());
 /// ```
+///
+/// ```compile_fail
+/// use writ_broker::human::VerifierCapability;
+/// let forged = VerifierCapability::for_verifier_implementation();
+/// ```
 #[derive(Debug)]
 pub struct VerifierCapability(());
 
 impl VerifierCapability {
-    /// For the `writ-approval` verifier implementation (and test code) only.
-    pub fn for_verifier_implementation() -> VerifierCapability {
+    /// This crate's unit tests only.
+    #[cfg(test)]
+    pub(crate) fn for_verifier_implementation() -> VerifierCapability {
         VerifierCapability(())
     }
 }
@@ -341,7 +360,7 @@ pub struct CredentialUpdate {
 
 /// A verifier's answer: **untrusted** until [`VerifiedAssertion::check`]
 /// accepts it against the stored challenge (R3). Constructible only with a
-/// [`VerifierCapability`] (the `writ-approval` verifier and test code);
+/// [`VerifierCapability`], which an [`ApprovalChannel`] lends to its verifier;
 /// nothing consumes it except that check.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedAssertion {
@@ -552,9 +571,12 @@ pub trait HumanVerifier {
         credentials: &ActiveCredentials,
     ) -> Result<CeremonyStart, VerifierError>;
 
-    /// Finish a ceremony from the ledger-held `state` and the client `response`.
+    /// Finish a ceremony from the ledger-held `state` and the client
+    /// `response`. `capability` is lent by the [`ApprovalChannel`] for this
+    /// call only (the only way to build a [`VerifiedAssertion`]).
     fn finish(
         &self,
+        capability: &VerifierCapability,
         state: &CeremonyState,
         response: &[u8],
         credentials: &ActiveCredentials,
@@ -633,8 +655,8 @@ pub struct RegistrationStart {
 /// A verifier's registration result (S5, X8): **untrusted** until the
 /// ledger accepts it against its registration row (bound to subject, RP id,
 /// origin, operation and expiry, single use). Constructible only with a
-/// [`VerifierCapability`] (the `writ-approval` registration finish and
-/// non-shipping test verifiers); an enrollment accepts only this type and
+/// [`VerifierCapability`] (lent by an [`ApprovalChannel`] to its
+/// registration verifier); an enrollment accepts only this type and
 /// only when the ledger's row recorded it, so raw public material is never
 /// enrolled.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -716,13 +738,121 @@ pub trait RegistrationVerifier {
     fn begin_registration(&self, subject: &SubjectId) -> Result<RegistrationStart, VerifierError>;
 
     /// Finish the ceremony `binding` from the ledger-held `state` and the
-    /// client `response` (user verification required).
+    /// client `response` (user verification required). `capability` is lent
+    /// by the [`ApprovalChannel`] for this call only.
     fn finish_registration(
         &self,
+        capability: &VerifierCapability,
         binding: &RegistrationBinding,
         state: &CeremonyState,
         response: &[u8],
     ) -> Result<VerifiedRegistration, VerifierError>;
+}
+
+/// The approval channel a ledger serves (D-040 O-2): the verifier, its
+/// relying party (RP id and exact origin, read once from the registration
+/// verifier when the channel is built) and the channel identity recorded on
+/// decisions. Configured once on the ledger when it is opened for approval
+/// service and immutable afterwards; ceremony and registration calls never
+/// take a verifier. Challenges and registration rows record the RP id and
+/// origin they were issued for, and a finish under a channel with another RP
+/// id or origin is refused.
+///
+/// This does not authenticate the verifier: whoever builds the channel
+/// chooses it. Code that links these crates in process and opens the ledger
+/// is inside the trust boundary, equivalent to access to the ledger file
+/// (docs/implementation/M4-INTERFACES.md, "Configured approval channel").
+#[derive(Clone)]
+pub struct ApprovalChannel {
+    human: Arc<dyn HumanVerifier + Send + Sync>,
+    registration: Arc<dyn RegistrationVerifier + Send + Sync>,
+    relying_party: RelyingParty,
+    channel: String,
+}
+
+impl ApprovalChannel {
+    /// The channel of `human` and `registration` (in production one
+    /// `writ-approval` passkey verifier for both, configured for the same
+    /// relying party) under the channel identity `channel`. `None` when the
+    /// RP id, the origin or the channel identity is empty.
+    pub fn new(
+        human: Arc<dyn HumanVerifier + Send + Sync>,
+        registration: Arc<dyn RegistrationVerifier + Send + Sync>,
+        channel: &str,
+    ) -> Option<ApprovalChannel> {
+        let relying_party = registration.relying_party();
+        if relying_party.rp_id.is_empty() || relying_party.origin.is_empty() || channel.is_empty() {
+            return None;
+        }
+        Some(ApprovalChannel {
+            human,
+            registration,
+            relying_party,
+            channel: channel.to_string(),
+        })
+    }
+
+    /// The relying party fixed when the channel was built.
+    pub fn relying_party(&self) -> &RelyingParty {
+        &self.relying_party
+    }
+
+    /// The channel identity recorded on decisions.
+    pub fn channel(&self) -> &str {
+        &self.channel
+    }
+
+    /// [`HumanVerifier::begin`] of the channel's verifier.
+    pub fn begin(
+        &self,
+        subject: &SubjectId,
+        credentials: &ActiveCredentials,
+    ) -> Result<CeremonyStart, VerifierError> {
+        self.human.begin(subject, credentials)
+    }
+
+    /// [`HumanVerifier::finish`] of the channel's verifier, with the
+    /// capability lent for this call. The answer stays untrusted until
+    /// [`VerifiedAssertion::check`].
+    pub fn finish(
+        &self,
+        state: &CeremonyState,
+        response: &[u8],
+        credentials: &ActiveCredentials,
+    ) -> Result<VerifiedAssertion, VerifierError> {
+        self.human
+            .finish(&VerifierCapability(()), state, response, credentials)
+    }
+
+    /// [`RegistrationVerifier::begin_registration`] of the channel's verifier.
+    pub fn begin_registration(
+        &self,
+        subject: &SubjectId,
+    ) -> Result<RegistrationStart, VerifierError> {
+        self.registration.begin_registration(subject)
+    }
+
+    /// [`RegistrationVerifier::finish_registration`] of the channel's
+    /// verifier, with the capability lent for this call. The answer stays
+    /// untrusted until the ledger accepts it against its registration row.
+    pub fn finish_registration(
+        &self,
+        binding: &RegistrationBinding,
+        state: &CeremonyState,
+        response: &[u8],
+    ) -> Result<VerifiedRegistration, VerifierError> {
+        self.registration
+            .finish_registration(&VerifierCapability(()), binding, state, response)
+    }
+}
+
+impl fmt::Debug for ApprovalChannel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ApprovalChannel")
+            .field("relying_party", &self.relying_party)
+            .field("channel", &self.channel)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A human subject's enrollment (R1), written only by the M4-08
@@ -815,28 +945,29 @@ fn check_separation<'a>(
     Ok(())
 }
 
-/// The parties of a request that may never approve or sign off for it.
+/// The parties of a request that may never approve or sign off for it: the
+/// requester and the agent. M3 sealed ingress stores no trusted delegation
+/// chain (G4), so there is none to exclude; the stored request context
+/// records `delegation_chain: "unavailable"` and nothing claims
+/// delegation-chain separation.
 #[derive(Clone, Copy, Debug)]
 pub struct Parties<'a> {
     /// Requester principal.
     pub requester: &'a SubjectId,
     /// Agent, if any.
     pub agent: Option<&'a SubjectId>,
-    /// Every member of the trusted delegation chain.
-    pub delegation_chain: &'a [SubjectId],
 }
 
 impl<'a> Parties<'a> {
     fn all(&self) -> impl Iterator<Item = &'a SubjectId> {
-        std::iter::once(self.requester)
-            .chain(self.agent)
-            .chain(self.delegation_chain.iter())
+        std::iter::once(self.requester).chain(self.agent)
     }
 }
 
 /// Approval separation (O-7, R1): the approver's own enrollment record is
 /// required; neither the approver nor a linked identity may be the
-/// requester, agent or a delegation-chain member.
+/// requester or the agent. Delegation chains are not stored (G4): this
+/// separation covers requester, agent and linked identities only.
 pub fn approval_separation(
     approver: &SubjectId,
     enrollment: Option<&EnrollmentRecord>,
@@ -1048,26 +1179,21 @@ mod tests {
     }
 
     #[test]
-    fn separation_covers_requester_agent_and_every_delegation_member() {
+    fn separation_covers_requester_and_agent() {
         let requester = sid("adapter-claude", "alice");
         let agent = sid("agent-realm", "agent-7");
-        let chain = [
-            sid("agent-realm", "parent-1"),
-            sid("agent-realm", "parent-2"),
-        ];
         let parties = Parties {
             requester: &requester,
             agent: Some(&agent),
-            delegation_chain: &chain,
         };
-        for bad in [&requester, &agent, &chain[0], &chain[1]] {
+        for bad in [&requester, &agent] {
             assert_eq!(
                 approval_separation(bad, Some(&enrolled(bad, &[])), &parties),
                 Err(ApprovalCode::SeparationViolated)
             );
         }
         // The same subject text under the human realm is still the requester (fail closed).
-        for text in ["alice", "parent-2"] {
+        for text in ["alice", "agent-7"] {
             let s = sid("writ-local", text);
             assert_eq!(
                 approval_separation(&s, Some(&enrolled(&s, &[])), &parties),
@@ -1082,7 +1208,6 @@ mod tests {
         let no_agent = Parties {
             requester: &requester,
             agent: None,
-            delegation_chain: &[],
         };
         assert_eq!(
             approval_separation(&bob, Some(&enrolled(&bob, &[])), &no_agent),
@@ -1096,7 +1221,6 @@ mod tests {
         let parties = Parties {
             requester: &requester,
             agent: None,
-            delegation_chain: &[],
         };
         let bob = sid("writ-local", "bob");
         assert_eq!(
@@ -1123,10 +1247,9 @@ mod tests {
         let parties = Parties {
             requester: &requester,
             agent: Some(&agent),
-            delegation_chain: &chain,
         };
         let bob = sid("writ-local", "bob");
-        for linked in [&requester, &agent, &chain[0]] {
+        for linked in [&requester, &agent] {
             let e = enrolled(&bob, &[sid("other-adapter", "x"), linked.clone()]);
             assert_eq!(
                 approval_separation(&bob, Some(&e), &parties),
@@ -1154,7 +1277,6 @@ mod tests {
         let parties = Parties {
             requester: &requester,
             agent: None,
-            delegation_chain: &[],
         };
         for text in ["Alice", "ALICE", "aLiCe"] {
             let s = sid("writ-local", text);
@@ -1204,7 +1326,6 @@ mod tests {
         let parties = Parties {
             requester: &requester,
             agent: None,
-            delegation_chain: &chain,
         };
         let changers = [sid("writ-local", "carol"), sid("writ-local", "dave")];
         let excluded = [
