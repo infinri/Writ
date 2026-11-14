@@ -38,7 +38,9 @@ use writ_broker::writ_kernel::policy::{load_bundle, LoadedBundle};
 use writ_broker::writ_kernel::time::Timestamp;
 
 use super::grant_tests::{set, verify, TestClock};
-use super::m4_support::{bootstrap_root_at, registered, TestVerifier as RegistrationFixture};
+use super::m4_support::{
+    bootstrap_root_at, enroll_op, registered, TestVerifier as RegistrationFixture,
+};
 use super::transition_tests::{
     alice, committed, parse, sha, sign, transition, wf, Docs, Operators, Snapshots, RECORD_KEY,
 };
@@ -498,9 +500,9 @@ impl W {
 
     fn enroll(&self, e: NewEnrollment) -> Result<CeremonyOutcome, Refusal> {
         // The credential comes from the ledger's registration ceremony (S5, X8).
-        let e = registered(&self.ledger, &|| self.now(), e);
+        let e = registered(&self.ledger, &|| self.now(), &human("root"), e);
         let key = format!("enroll-{}", e.subject.subject);
-        self.ceremony(&human("root"), &CeremonyOp::Enroll { enrollment: e }, &key)
+        self.ceremony(&human("root"), &enroll_op(e), &key)
     }
 
     fn revoke(

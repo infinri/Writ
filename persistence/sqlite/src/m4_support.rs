@@ -15,8 +15,8 @@ use std::sync::Arc;
 
 use writ_broker::approval_store::{
     approval_request_for, ApprovalLedger, BootstrapEnrollment, CeremonyBegin, CeremonyFinish,
-    CeremonyOp, CeremonyResult, NewEnrollment, NewRole, RegistrationBegin, RegistrationFinish,
-    RegistrationLedger,
+    CeremonyOp, CeremonyResult, NewEnrollment, NewRole, OperatorSession, RegistrationBegin,
+    RegistrationFinish, RegistrationLedger,
 };
 use writ_broker::authorize::{authorize, UseTimeStatus};
 use writ_broker::clock::ObservedTime;
@@ -128,16 +128,39 @@ impl RegistrationVerifier for TestVerifier {
     }
 }
 
-/// One registration ceremony on `ledger` (through its configured channel).
+/// The operator page-session id test enrollments use (D-043 Y2).
+pub(crate) const TEST_SESSION: &str = "test-operator-session";
+
+/// `operator`'s test page session ([`TEST_SESSION`]).
+pub(crate) fn operator_session(operator: &SubjectId) -> OperatorSession {
+    OperatorSession {
+        operator: operator.clone(),
+        session_id: TEST_SESSION.into(),
+    }
+}
+
+/// The `Enroll` operation of `e` in [`TEST_SESSION`].
+pub(crate) fn enroll_op(e: NewEnrollment) -> CeremonyOp {
+    CeremonyOp::Enroll {
+        enrollment: e,
+        operator_session: TEST_SESSION.into(),
+    }
+}
+
+/// One registration ceremony on `ledger` (through its configured channel), in `operator`'s
+/// [`TEST_SESSION`] (none for a bootstrap).
 pub(crate) fn session_register(
     ledger: &dyn RegistrationLedger,
     now: &dyn Fn() -> ObservedTime,
     subject: &SubjectId,
     response: &str,
+    operator: Option<&SubjectId>,
 ) -> Result<VerifiedRegistration, Refusal> {
+    let session = operator.map(operator_session);
     let issued = ledger
         .begin_registration(&RegistrationBegin {
             subject,
+            operator: session.as_ref(),
             now: now(),
         })
         .expect("store")?;
@@ -145,22 +168,25 @@ pub(crate) fn session_register(
         .finish_registration(&RegistrationFinish {
             registration_id: &issued.registration_id,
             response: response.as_bytes(),
+            operator: session.as_ref(),
             now: now(),
         })
         .expect("store")
 }
 
 /// `e` with a credential `cred-<name>` registered through `ledger`'s `enroll` registration
-/// ceremony (S5, X8), when it is a human without one.
+/// ceremony (S5, X8) in `operator`'s [`TEST_SESSION`], when it is a human without one.
 pub(crate) fn registered(
     ledger: &dyn RegistrationLedger,
     now: &dyn Fn() -> ObservedTime,
+    operator: &SubjectId,
     mut e: NewEnrollment,
 ) -> NewEnrollment {
     if e.kind == PrincipalKind::Human && e.credential.is_none() {
         let name = &e.subject.subject;
         let response = format!("ok|cred-{name}|pk-{name}");
-        e.credential = Some(session_register(ledger, now, &e.subject, &response).unwrap());
+        e.credential =
+            Some(session_register(ledger, now, &e.subject, &response, Some(operator)).unwrap());
     }
     e
 }
@@ -179,7 +205,7 @@ pub(crate) fn bootstrap_root_at(
         .with_approval_channel(channel_of(v))
         .expect("store");
     let response = format!("ok|{}|pk-{}", credential(admin), admin.subject);
-    let reg = session_register(&s, &|| s.observe(clock).unwrap(), admin, &response)?;
+    let reg = session_register(&s, &|| s.observe(clock).unwrap(), admin, &response, None)?;
     let now = s.observe(clock).unwrap();
     s.bootstrap(
         &BootstrapEnrollment {
@@ -331,6 +357,7 @@ pub(crate) fn ensure_approver(ledger: &SqliteLedger, now: ObservedTime) -> Resul
     let enrollment = registered(
         ledger,
         &|| now,
+        &root,
         NewEnrollment {
             subject: approver.clone(),
             kind: PrincipalKind::Human,
@@ -346,7 +373,7 @@ pub(crate) fn ensure_approver(ledger: &SqliteLedger, now: ObservedTime) -> Resul
     ceremony(
         ledger,
         &root,
-        &CeremonyOp::Enroll { enrollment },
+        &enroll_op(enrollment),
         "support-enroll-approver",
         now,
     )

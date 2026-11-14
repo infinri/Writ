@@ -30,8 +30,8 @@ use writ_broker::approval::{
 use writ_broker::approval::{ApprovalCode, ChallengeRefusal};
 use writ_broker::approval_store::{
     approval_binding, approval_request_for, ApprovalLedger, BootstrapEnrollment, CeremonyBegin,
-    CeremonyFinish, CeremonyOp, CeremonyResult, NewEnrollment, NewRole, RegistrationBegin,
-    RegistrationFinish, RegistrationLedger, APPROVAL_GRANT_TTL_SECONDS,
+    CeremonyFinish, CeremonyOp, CeremonyResult, NewEnrollment, NewRole, OperatorSession,
+    RegistrationBegin, RegistrationFinish, RegistrationLedger, APPROVAL_GRANT_TTL_SECONDS,
 };
 use writ_broker::authorize::authorize;
 use writ_broker::clock::{observe, ClockError, Drift, EffectiveClock, ObservedTime, Reading};
@@ -343,15 +343,26 @@ impl RegistrationVerifier for TestVerifier {
     }
 }
 
-/// One registration ceremony (S5, X8) for `who` with credential `cred-<subject>`.
+/// `root`'s operator page session (D-043 Y2).
+fn root_session() -> OperatorSession {
+    OperatorSession {
+        operator: subject("root"),
+        session_id: "root-session".into(),
+    }
+}
+
+/// One registration ceremony (S5, X8) for `who` with credential `cred-<subject>`, in
+/// `operator`'s session (none for the bootstrap).
 fn register(
     ledger: &dyn RegistrationLedger,
     now: &dyn Fn() -> ObservedTime,
     who: &SubjectId,
+    operator: Option<&OperatorSession>,
 ) -> VerifiedRegistration {
     let issued = ledger
         .begin_registration(&RegistrationBegin {
             subject: who,
+            operator,
             now: now(),
         })
         .unwrap()
@@ -360,6 +371,7 @@ fn register(
         .finish_registration(&RegistrationFinish {
             registration_id: &issued.registration_id,
             response: format!("cred-{}", who.subject).as_bytes(),
+            operator,
             now: now(),
         })
         .unwrap()
@@ -383,7 +395,12 @@ fn ledger_with_alice(db: &std::path::Path) -> SqliteLedger {
     };
     let session = session.with_approval_channel(test_channel()).unwrap();
     let root = subject("root");
-    let reg = register(&session, &|| session.observe(&TestClock).unwrap(), &root);
+    let reg = register(
+        &session,
+        &|| session.observe(&TestClock).unwrap(),
+        &root,
+        None,
+    );
     let at = session.observe(&TestClock).unwrap();
     session
         .bootstrap(
@@ -406,7 +423,12 @@ fn enroll_alice(ledger: &SqliteLedger) {
     let enrollment = NewEnrollment {
         subject: subject("alice"),
         kind: PrincipalKind::Human,
-        credential: Some(register(ledger, &|| observed(ledger), &subject("alice"))),
+        credential: Some(register(
+            ledger,
+            &|| observed(ledger),
+            &subject("alice"),
+            Some(&root_session()),
+        )),
         linked_identities: vec![],
         roles: vec![NewRole {
             permission: Permission::Approver,
@@ -417,7 +439,10 @@ fn enroll_alice(ledger: &SqliteLedger) {
     ceremony(
         ledger,
         &subject("root"),
-        &CeremonyOp::Enroll { enrollment },
+        &CeremonyOp::Enroll {
+            enrollment,
+            operator_session: root_session().session_id,
+        },
         "e1",
     )
     .unwrap();
@@ -793,6 +818,7 @@ fn a_ledger_without_a_configured_channel_refuses_every_ceremony() {
                 linked_identities: vec![],
                 roles: vec![],
             },
+            operator_session: root_session().session_id,
         },
     ] {
         let begin = bare.begin_ceremony(&CeremonyBegin {
@@ -805,12 +831,14 @@ fn a_ledger_without_a_configured_channel_refuses_every_ceremony() {
     }
     let reg = bare.begin_registration(&RegistrationBegin {
         subject: &subject("bob"),
+        operator: Some(&root_session()),
         now,
     });
     assert_eq!(reg.unwrap(), Err(unavailable_verifier()));
     let reg = bare.finish_registration(&RegistrationFinish {
         registration_id: "reg-any",
         response: b"cred-bob",
+        operator: Some(&root_session()),
         now,
     });
     assert_eq!(reg.unwrap(), Err(unavailable_verifier()));
@@ -847,6 +875,7 @@ fn a_ledger_without_a_configured_channel_refuses_every_ceremony() {
     };
     let reg = session.begin_registration(&RegistrationBegin {
         subject: &subject("root"),
+        operator: None,
         now: session.observe(&TestClock).unwrap(),
     });
     assert_eq!(reg.unwrap(), Err(unavailable_verifier()));
@@ -913,6 +942,7 @@ fn a_stub_verifier_cannot_be_used_once_a_channel_is_configured() {
     let row = ledger
         .begin_registration(&RegistrationBegin {
             subject: &subject("mallory"),
+            operator: Some(&root_session()),
             now: observed(&ledger),
         })
         .unwrap()
@@ -942,6 +972,7 @@ fn a_stub_verifier_cannot_be_used_once_a_channel_is_configured() {
         .finish_registration(&RegistrationFinish {
             registration_id: &row.registration_id,
             response: b"cred-mallory",
+            operator: Some(&root_session()),
             now: observed(&stubbed),
         })
         .unwrap();

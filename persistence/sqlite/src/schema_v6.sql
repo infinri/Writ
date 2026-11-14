@@ -65,6 +65,8 @@ CREATE TABLE enrollment_links (
 -- Server-held WebAuthn registration ceremonies (S5, X8): bound to the subject, RP id, origin,
 -- operation and expiry; single use (issued -> registered -> enrolled, or issued -> refused).
 -- The verified credential is recorded at `registered`; an enrollment copies it from here.
+-- D-043 Y2: an `enroll` row records the initiating operator and the approval listener's page
+-- session; its finish and the consuming Enroll ceremony must come from both. `bootstrap` has none.
 CREATE TABLE registrations (
   registration_id TEXT PRIMARY KEY CHECK (registration_id <> ''),
   operation       TEXT NOT NULL CHECK (operation IN ('bootstrap', 'enroll')),
@@ -80,6 +82,12 @@ CREATE TABLE registrations (
   public_material BLOB,
   algorithm       TEXT,
   consumed_by     TEXT,                       -- enrolling challenge id, or 'bootstrap'
+  operator_issuer  TEXT CHECK (operator_issuer <> ''),
+  operator_subject TEXT CHECK (operator_subject <> ''),
+  operator_session TEXT CHECK (operator_session <> ''),
+  CHECK ((operation = 'enroll') = (operator_session IS NOT NULL)),
+  CHECK ((operator_session IS NULL) = (operator_issuer IS NULL)),
+  CHECK ((operator_session IS NULL) = (operator_subject IS NULL)),
   CHECK ((status IN ('issued', 'refused')) = (credential_id IS NULL)),
   CHECK ((credential_id IS NULL) = (public_material IS NULL)),
   CHECK (algorithm IS NULL OR algorithm = 'ES256')

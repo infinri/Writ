@@ -27,7 +27,7 @@ use writ_broker::human::{
 use writ_broker::writ_kernel::json::Digest;
 use writ_ledger_sqlite::SqliteLedger;
 
-use crate::common::{register, Registrar};
+use crate::common::{operator_session, register, Registrar, OPERATOR_SESSION};
 
 /// Adaptation label of a case whose signoff was issued through the test verifier.
 pub const SIGNOFF_LABEL: &str = "M4-test-verifier-signoff";
@@ -166,6 +166,7 @@ pub fn enroll_reviewer(
             &|| Ok(now),
             &subject(REVIEWER),
             &credential(REVIEWER),
+            Some(&operator_session(&subject(ADMINISTRATOR))),
         )?),
         linked_identities: Vec::new(),
         roles: vec![NewRole {
@@ -178,7 +179,10 @@ pub fn enroll_reviewer(
         ledger,
         now,
         ADMINISTRATOR,
-        &CeremonyOp::Enroll { enrollment },
+        &CeremonyOp::Enroll {
+            enrollment,
+            operator_session: OPERATOR_SESSION.into(),
+        },
         "m3c-enroll-reviewer",
     )
 }

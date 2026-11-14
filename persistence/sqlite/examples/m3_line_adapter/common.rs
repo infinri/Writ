@@ -12,7 +12,8 @@ use rusqlite::{Connection, OpenFlags};
 use writ_broker::approval::ApprovalRequest;
 use writ_broker::approval_store::{
     ApprovalLedger, BootstrapEnrollment, CeremonyBegin, CeremonyFinish, CeremonyOutcome,
-    IssuedChallenge, RegistrationBegin, RegistrationFinish, RegistrationLedger, RequestRecorded,
+    IssuedChallenge, OperatorSession, RegistrationBegin, RegistrationFinish, RegistrationLedger,
+    RequestRecorded,
 };
 use writ_broker::clock::{ClockError, ClockEvent, Drift, EffectiveClock, ObservedTime, Reading};
 use writ_broker::execute::{
@@ -676,16 +677,30 @@ impl RegistrationVerifier for Registrar {
     }
 }
 
-/// A test credential `credential` for `who` from `ledger`'s registration ceremony.
+/// The operator page-session id of the adapter's enrollments (D-043 Y2).
+pub const OPERATOR_SESSION: &str = "m3c-operator-session";
+
+/// `operator`'s adapter page session ([`OPERATOR_SESSION`]).
+pub fn operator_session(operator: &SubjectId) -> OperatorSession {
+    OperatorSession {
+        operator: operator.clone(),
+        session_id: OPERATOR_SESSION.into(),
+    }
+}
+
+/// A test credential `credential` for `who` from `ledger`'s registration ceremony, in
+/// `operator`'s session (none for the bootstrap).
 pub fn register(
     ledger: &dyn RegistrationLedger,
     now: &dyn Fn() -> Result<ObservedTime, String>,
     who: &SubjectId,
     credential: &str,
+    operator: Option<&OperatorSession>,
 ) -> Result<VerifiedRegistration, String> {
     let issued = ledger
         .begin_registration(&RegistrationBegin {
             subject: who,
+            operator,
             now: now()?,
         })
         .map_err(|f| format!("registration: {}", f.error))?
@@ -694,6 +709,7 @@ pub fn register(
         .finish_registration(&RegistrationFinish {
             registration_id: &issued.registration_id,
             response: credential.as_bytes(),
+            operator,
             now: now()?,
         })
         .map_err(|f| format!("registration: {}", f.error))?
@@ -720,7 +736,7 @@ fn bootstrap(
             .observe(clock)
             .map_err(|e| format!("bootstrap time: {e:?}"))
     };
-    let reg = register(&session, &now, admin, credential)?;
+    let reg = register(&session, &now, admin, credential, None)?;
     let at = now()?;
     session
         .bootstrap(

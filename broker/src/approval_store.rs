@@ -521,6 +521,12 @@ pub enum CeremonyOp {
     Enroll {
         /// The enrollment.
         enrollment: NewEnrollment,
+        /// The operator page session that began the credential's registration row
+        /// ([`OperatorSession::session_id`], D-043 Y2): the enrollment of a human is
+        /// refused unless it equals the row's and the acting operator is the row's
+        /// operator. Held server-side by the approval listener, never a request field;
+        /// not part of the displayed context.
+        operator_session: String,
     },
     /// Grant or revoke one role assignment (administrative ceremony, X5).
     RoleChange {
@@ -744,11 +750,62 @@ pub trait ApprovalLedger: ExecuteLedger {
 
     /// A stored signoff with its revocation and consumption status (a read).
     fn signoff(&self, signoff_id: &str) -> Result<Option<SignoffState>, StoreError>;
+
+    /// The context a ceremony for `op` would bind, recomputed from stored
+    /// state exactly as [`ApprovalLedger::begin_ceremony`] computes it (a
+    /// read, R6): what the approval page displays. Refusals: an unknown or
+    /// malformed target (as at begin). Nothing is issued or written; the
+    /// begin recomputes the binding and the page compares fingerprints
+    /// (stale display).
+    fn ceremony_context(
+        &self,
+        op: &CeremonyOp,
+        now: ObservedTime,
+    ) -> Result<Result<CeremonyContext, Refusal>, StoreError>;
+
+    /// The signoff binding the page offers for `signoff_id` (a read), built
+    /// from stored state only: the stored promotion context
+    /// (`signoff_requests`), the workflow's current task, artifact and
+    /// revision and the project's active acceptance policy; `None` when no
+    /// stored promotion context names it or it is already signed. Its
+    /// expiry is the ledger's (D-043 Y1); the page displays
+    /// [`ApprovalLedger::ceremony_context`] of it and never computes one.
+    fn pending_signoff(
+        &self,
+        signoff_id: &str,
+        now: ObservedTime,
+    ) -> Result<Option<NewSignoff>, StoreError>;
+}
+
+/// What a ceremony would bind and display ([`ApprovalLedger::ceremony_context`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CeremonyContext {
+    /// The complete displayed context (its canonical digest is
+    /// `binding.context_fingerprint`).
+    pub context: Value,
+    /// The binding a challenge would carry.
+    pub binding: ChallengeBinding,
 }
 
 /// Lifetime of a registration row (S5, X8): the registration must finish,
 /// and the enrollment that uses it must commit, within it.
 pub const REGISTRATION_TTL_SECONDS: i64 = 600;
+
+/// The authenticated operator page session a normal (`Enroll`) registration
+/// row belongs to (D-043 Y2): the operator who initiates it (an active human
+/// holding `operator` in the global scope with an active credential) and the
+/// approval listener's page-session id (a random, non-secret identifier held
+/// server-side, distinct from the session cookie). The row records both; its
+/// finish and the `Enroll` ceremony that consumes it are refused unless they
+/// come from the same operator and session. The bootstrap registration has
+/// none (the one-shot `BootstrapSession`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OperatorSession {
+    /// The initiating operator.
+    pub operator: SubjectId,
+    /// The page-session id.
+    pub session_id: String,
+}
 
 /// The start of a registration ceremony (S5, X8). The operation is the
 /// ledger's, never the caller's: the serving ledger registers only for
@@ -756,6 +813,9 @@ pub const REGISTRATION_TTL_SECONDS: i64 = 600;
 pub struct RegistrationBegin<'a> {
     /// The subject to register (must not exist yet).
     pub subject: &'a SubjectId,
+    /// The operator session (required for `Enroll`, absent for `Bootstrap`;
+    /// D-043 Y2).
+    pub operator: Option<&'a OperatorSession>,
     /// Trusted time (persisted floor). (No verifier: the ledger's configured
     /// [`crate::human::ApprovalChannel`]; its relying party is bound into the
     /// row.)
@@ -779,6 +839,9 @@ pub struct RegistrationFinish<'a> {
     pub registration_id: &'a str,
     /// The client's registration response.
     pub response: &'a [u8],
+    /// The operator session; must equal the row's (D-043 Y2; absent for
+    /// `Bootstrap`).
+    pub operator: Option<&'a OperatorSession>,
     /// Trusted time (persisted floor). (No verifier: the ledger's configured
     /// [`crate::human::ApprovalChannel`], whose relying party must equal the
     /// row's.)

@@ -24,6 +24,7 @@
 
 use rusqlite::{Connection, OptionalExtension, Transaction};
 use writ_broker::acceptance::SignoffUse;
+use writ_broker::approval::context_fingerprint;
 use writ_broker::approval::{
     decide, ApprovalCode, ApprovalRequest, ApprovalStatus, Challenge, ChallengeBinding,
     ChallengeOperation, ChallengeRefusal, ChallengeStatus, NewApprovalRequest, NewChallenge,
@@ -32,11 +33,12 @@ use writ_broker::approval::{
 };
 use writ_broker::approval_store::{
     approval_binding, kind_text, parse_kind, parse_permission, permission_text, revocation_binding,
-    role_change_binding, signoff_binding, ApprovalLedger, BootstrapEnrollment, CeremonyBegin,
-    CeremonyFinish, CeremonyOp, CeremonyOutcome, CeremonyResult, Expired, IssuedChallenge,
-    IssuedRegistration, NewEnrollment, RegistrationBegin, RegistrationFinish, RegistrationLedger,
-    RequestRecorded, RoleChange, SignoffState, UseState, APPROVAL_GRANT_TTL_SECONDS,
-    BOOTSTRAP_ISSUER, BOOTSTRAP_SUBJECT, GLOBAL_SCOPE, REGISTRATION_TTL_SECONDS,
+    revocation_context, role_change_binding, role_change_context, signoff_binding, ApprovalLedger,
+    BootstrapEnrollment, CeremonyBegin, CeremonyContext, CeremonyFinish, CeremonyOp,
+    CeremonyOutcome, CeremonyResult, Expired, IssuedChallenge, IssuedRegistration, NewEnrollment,
+    RegistrationBegin, RegistrationFinish, RegistrationLedger, RequestRecorded, RoleChange,
+    SignoffState, UseState, APPROVAL_GRANT_TTL_SECONDS, BOOTSTRAP_ISSUER, BOOTSTRAP_SUBJECT,
+    GLOBAL_SCOPE, REGISTRATION_TTL_SECONDS,
 };
 use writ_broker::clock::ObservedTime;
 use writ_broker::grants::{ApprovalLink, GrantBinding, GrantLabel, NewGrant, Verdict};
@@ -736,6 +738,8 @@ enum TargetKind {
 
 struct Target {
     binding: ChallengeBinding,
+    /// The complete displayed context whose fingerprint `binding` carries (R6).
+    context: Value,
     permission: Permission,
     expiry: Option<Timestamp>,
     /// A refusal that applies once the assertion is accepted (already revoked, signoff id
@@ -900,10 +904,12 @@ fn revoke_target(conn: &Connection, target: &RevocationTarget, reason: &str) -> 
             )
         }
     };
+    let context = revocation_context(target, reason, &scope.0, &scope.1, record.clone());
     let binding = revocation_binding(target, reason, &scope.0, &scope.1, record)
         .map_err(|_| BodyError::Integrity)?;
     Ok(Ok(Target {
         binding,
+        context,
         permission: Permission::Revoker,
         expiry: None,
         blocked,
@@ -1017,6 +1023,53 @@ fn registration_expired(
         Some(at) => Ok(now >= ts(&at)?),
         None => Ok(true),
     }
+}
+
+/// The initiating operator and page session recorded on an `enroll` registration row
+/// (D-043 Y2); `None` for an unknown row or one without them (bootstrap).
+fn registration_operator(
+    conn: &Connection,
+    registration_id: &str,
+) -> Result<Option<(SubjectId, String)>, BodyError> {
+    let row: Option<(Option<String>, Option<String>, Option<String>)> = conn
+        .query_row(
+            "SELECT operator_issuer, operator_subject, operator_session FROM registrations \
+             WHERE registration_id = ?1 AND operation = 'enroll'",
+            [registration_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    Ok(match row {
+        Some((Some(issuer), Some(subject), Some(session))) => {
+            Some((SubjectId::new(&issuer, &subject), session))
+        }
+        _ => None,
+    })
+}
+
+/// The enrollment of a human is performed by the operator who began its registration row,
+/// under the relying party (RP id and origin) the row was issued for (D-043 Y2); a service
+/// enrollment has no row.
+fn enrollment_bound(
+    conn: &Connection,
+    e: &NewEnrollment,
+    actor: &SubjectId,
+    rp: &RelyingParty,
+) -> Result<bool, BodyError> {
+    let Some(c) = &e.credential else {
+        return Ok(true);
+    };
+    let row_rp: Option<(String, String)> = conn
+        .query_row(
+            "SELECT rp_id, origin FROM registrations WHERE registration_id = ?1",
+            [c.registration_id()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let same_rp = row_rp.is_some_and(|(id, origin)| id == rp.rp_id && origin == rp.origin);
+    Ok(same_rp
+        && registration_operator(conn, c.registration_id())?
+            .is_some_and(|(operator, _)| &operator == actor))
 }
 
 /// Why `e` cannot be enrolled (ENROLLMENT_UNSUPPORTED), if anything.
@@ -1136,10 +1189,12 @@ fn role_change_target(conn: &Connection, change: &RoleChange) -> Outcome<Target>
             ((tenant, project), value, subject, blocked)
         }
     };
+    let context = role_change_context(change, &scope.0, &scope.1, record.clone());
     let binding = role_change_binding(change, &scope.0, &scope.1, record)
         .map_err(|_| BodyError::Integrity)?;
     Ok(Ok(Target {
         binding,
+        context,
         permission: Permission::Operator,
         expiry: None,
         blocked,
@@ -1155,6 +1210,7 @@ fn target(conn: &Connection, op: &CeremonyOp) -> Outcome<Target> {
             };
             Ok(Ok(Target {
                 binding: approval_binding(&request, op.operation()),
+                context: request.context().clone(),
                 permission: Permission::Approver,
                 expiry: Some(request.expires_at()),
                 blocked: None,
@@ -1199,6 +1255,7 @@ fn target(conn: &Connection, op: &CeremonyOp) -> Outcome<Target> {
                 .or_else(|| (taken || !current).then(|| ap(ApprovalCode::SignoffMismatch)));
             Ok(Ok(Target {
                 binding: challenge_binding,
+                context: binding.context_with(&excluded),
                 permission: Permission::SignoffAuthority,
                 expiry: Some(binding.expires_at),
                 blocked,
@@ -1207,14 +1264,26 @@ fn target(conn: &Connection, op: &CeremonyOp) -> Outcome<Target> {
                 },
             }))
         }
-        CeremonyOp::Enroll { enrollment } => {
+        CeremonyOp::Enroll {
+            enrollment,
+            operator_session,
+        } => {
             let Ok(binding) = enrollment.binding() else {
                 return Ok(Err(ap(ApprovalCode::EnrollmentUnsupported)));
             };
-            let blocked = enrollment_blocked(conn, enrollment, RegistrationOperation::Enroll)?
-                .then(|| ap(ApprovalCode::EnrollmentUnsupported));
+            // D-043 Y2: a human's registration row must belong to this operator session
+            // (the operator is checked against the actor at begin and at finish).
+            let session_ok = match &enrollment.credential {
+                Some(c) => registration_operator(conn, c.registration_id())?
+                    .is_some_and(|(_, session)| session == *operator_session),
+                None => true,
+            };
+            let blocked = (!session_ok
+                || enrollment_blocked(conn, enrollment, RegistrationOperation::Enroll)?)
+            .then(|| ap(ApprovalCode::EnrollmentUnsupported));
             Ok(Ok(Target {
                 binding,
+                context: enrollment.context(),
                 permission: Permission::Operator,
                 expiry: None,
                 blocked,
@@ -1255,6 +1324,13 @@ fn begin_in(
         return Ok(Err(ap(ApprovalCode::PermissionMissing)));
     };
     let creds = check!(rows.select(&t, now));
+    // D-043 Y2: only the operator who began the credential's registration row enrolls it,
+    // under the row's relying party.
+    if let CeremonyOp::Enroll { enrollment, .. } = b.op {
+        if !enrollment_bound(tx, enrollment, b.subject, channel.relying_party())? {
+            return Ok(Err(ap(ApprovalCode::EnrollmentUnsupported)));
+        }
+    }
     let start = check!(channel
         .begin(b.subject, &creds)
         .map_err(|e| ap(ApprovalCode::AssertionInvalid(e))));
@@ -2062,8 +2138,13 @@ fn finish_in(
             };
             kind = "signed_off";
         }
-        (CeremonyOp::Enroll { enrollment }, TargetKind::Enroll) => {
+        (CeremonyOp::Enroll { enrollment, .. }, TargetKind::Enroll) => {
             check!(check_actor(&actor, &accepted, Permission::Operator).map_err(ap));
+            // D-043 Y2: only the operator who began the registration row enrolls it, under
+            // the row's relying party.
+            if !enrollment_bound(tx, enrollment, &subject, channel.relying_party())? {
+                return Ok(Err(ap(ApprovalCode::EnrollmentUnsupported)));
+            }
             if same_subject(&subject, &enrollment.subject)
                 || enrollment
                     .linked_identities
@@ -2309,6 +2390,25 @@ impl SqliteLedger {
             if exists {
                 return unsupported();
             }
+            // D-043 Y2: an `enroll` row is created only for an operator session: an active
+            // human holding `operator` in the global scope with an active credential, never
+            // registering itself; the bootstrap row has none.
+            let operator = match (operation, b.operator) {
+                (RegistrationOperation::Enroll, Some(o)) => {
+                    if !o.operator.is_well_formed() || o.session_id.is_empty() {
+                        return unsupported();
+                    }
+                    if let Err(code) = operator_may_register(tx, &o.operator, now)? {
+                        return Ok(End::Rollback(Err(ap(code))));
+                    }
+                    if same_subject(&o.operator, b.subject) {
+                        return Ok(End::Rollback(Err(ap(ApprovalCode::SeparationViolated))));
+                    }
+                    Some(o)
+                }
+                (RegistrationOperation::Bootstrap, None) => None,
+                _ => return unsupported(),
+            };
             let rp = channel.relying_party().clone();
             let start = match channel.begin_registration(b.subject) {
                 Ok(s) => s,
@@ -2322,8 +2422,9 @@ impl SqliteLedger {
             let expires_at = now.plus_seconds(REGISTRATION_TTL_SECONDS);
             tx.execute(
                 "INSERT INTO registrations (registration_id, operation, issuer, subject, rp_id, \
-                 origin, ceremony_state, issued_at, expires_at, status) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'issued')",
+                 origin, ceremony_state, issued_at, expires_at, status, operator_issuer, \
+                 operator_subject, operator_session) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'issued', ?10, ?11, ?12)",
                 rusqlite::params![
                     registration_id,
                     operation.as_str(),
@@ -2334,6 +2435,9 @@ impl SqliteLedger {
                     start.state.as_bytes(),
                     now.to_string(),
                     expires_at.to_string(),
+                    operator.map(|o| o.operator.issuer.as_str()),
+                    operator.map(|o| o.operator.subject.as_str()),
+                    operator.map(|o| o.session_id.as_str()),
                 ],
             )?;
             Ok(End::Commit(Ok(IssuedRegistration {
@@ -2382,6 +2486,7 @@ impl SqliteLedger {
                     },
                 )
                 .optional()?;
+            let recorded = registration_operator(tx, f.registration_id)?;
             let refuse = |r: ChallengeRefusal| Ok(End::Rollback(Err(challenge_refused(r))));
             let Some(([op, issuer, subject, rp_id, origin, status, expires], state)) = row else {
                 return refuse(ChallengeRefusal::Unknown);
@@ -2404,6 +2509,18 @@ impl SqliteLedger {
                 Ok(End::Commit(Err(refusal)))
             };
             let assertion = |e: VerifierError| ap(ApprovalCode::AssertionInvalid(e));
+            // D-043 Y2: only the operator session that began the row finishes it; another
+            // operator or session (or none) burns the row.
+            let same_session = match (&recorded, f.operator) {
+                (Some((operator, session)), Some(o)) => {
+                    operator == &o.operator && session == &o.session_id
+                }
+                (None, None) => operation == RegistrationOperation::Bootstrap,
+                _ => false,
+            };
+            if !same_session {
+                return burn(ap(ApprovalCode::EnrollmentUnsupported));
+            }
             let binding = RegistrationBinding {
                 registration_id: f.registration_id.to_string(),
                 operation,
@@ -2539,6 +2656,7 @@ impl SqliteLedger {
     ) -> Result<Result<i64, Refusal>, TxFailure> {
         let begin = RegistrationBegin {
             subject: admin,
+            operator: None,
             now,
         };
         let issued = match self.begin_registration_as(&begin, RegistrationOperation::Bootstrap)? {
@@ -2548,6 +2666,7 @@ impl SqliteLedger {
         let finish = RegistrationFinish {
             registration_id: &issued.registration_id,
             response,
+            operator: None,
             now,
         };
         let reg = match self.finish_registration_as(&finish, RegistrationOperation::Bootstrap)? {
@@ -2563,6 +2682,35 @@ impl SqliteLedger {
             now,
         )
     }
+}
+
+/// Whether `operator` may begin an `enroll` registration (D-043 Y2): an active human
+/// holding `operator` in the global scope with at least one active credential (the same
+/// selection as an `Enroll` ceremony's actor).
+fn operator_may_register(
+    conn: &Connection,
+    operator: &SubjectId,
+    now: Timestamp,
+) -> Result<Result<(), ApprovalCode>, BodyError> {
+    let Some(rows) = ActorRows::read(conn, operator)? else {
+        return Ok(Err(ApprovalCode::PermissionMissing));
+    };
+    let creds = match ActiveCredentials::select(
+        &rows.record,
+        rows.credentials.iter().cloned(),
+        &rows.assignments,
+        Permission::Operator,
+        GLOBAL_SCOPE,
+        GLOBAL_SCOPE,
+        now,
+    ) {
+        Ok(c) => c,
+        Err(code) => return Ok(Err(code)),
+    };
+    if creds.as_slice().is_empty() {
+        return Ok(Err(ApprovalCode::CredentialRevoked));
+    }
+    Ok(Ok(()))
 }
 
 /// The ledger has had a subject or a bootstrap (bootstrap is over for good).
@@ -2851,4 +2999,132 @@ impl ApprovalLedger for SqliteLedger {
             _ => unavailable("read", "integrity"),
         })
     }
+    fn ceremony_context(
+        &self,
+        op: &CeremonyOp,
+        _now: ObservedTime,
+    ) -> Result<Result<CeremonyContext, Refusal>, StoreError> {
+        let inner = self.lock("read")?;
+        let read = || -> Outcome<CeremonyContext> {
+            let t = check!(target(&inner.conn, op)?);
+            // R6: the displayed context is exactly the one whose fingerprint is bound.
+            if context_fingerprint(&t.context).ok().as_ref() != Some(&t.binding.context_fingerprint)
+            {
+                return Err(BodyError::Integrity);
+            }
+            Ok(Ok(CeremonyContext {
+                context: t.context,
+                binding: t.binding,
+            }))
+        };
+        read().map_err(|e| match e {
+            BodyError::Sql(e) => unavailable("read", code_name(&e)),
+            _ => unavailable("read", "integrity"),
+        })
+    }
+
+    fn pending_signoff(
+        &self,
+        signoff_id: &str,
+        now: ObservedTime,
+    ) -> Result<Option<NewSignoff>, StoreError> {
+        let inner = self.lock("read")?;
+        let read = || -> Result<Option<NewSignoff>, BodyError> {
+            pending_signoff_in(&inner.conn, signoff_id, now.at())
+        };
+        read().map_err(|e| match e {
+            BodyError::Sql(e) => unavailable("read", code_name(&e)),
+            _ => unavailable("read", "integrity"),
+        })
+    }
+}
+
+/// The expiry the signoff page requests for a pending signoff: the D-043 maximum from the
+/// time the page read it. Y1 makes the ledger's begin compute the effective expiry (bounded
+/// by this request, never extended by it); the page displays [`target`]'s context of the
+/// binding and compares fingerprints at begin, so a different effective expiry is a stale
+/// display, never a silent change.
+const PAGE_SIGNOFF_REQUESTED_SECONDS: i64 = 600;
+
+/// [`ApprovalLedger::pending_signoff`]: the first stored promotion context of `signoff_id`
+/// (the others must agree; [`target`] refuses a disagreement as `SIGNOFF_MISMATCH`), the
+/// workflow's current task and artifact and the project's active acceptance policy.
+fn pending_signoff_in(
+    conn: &Connection,
+    signoff_id: &str,
+    now: Timestamp,
+) -> Result<Option<NewSignoff>, BodyError> {
+    let signed: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM signoffs WHERE signoff_id = ?1)",
+        [signoff_id],
+        |r| r.get(0),
+    )?;
+    if signed {
+        return Ok(None);
+    }
+    let row: Option<([String; 7], i64)> = conn
+        .query_row(
+            "SELECT tenant_id, project_id, workflow_id, acceptance_record_id, criterion_id, \
+             from_state, to_state, state_revision FROM signoff_requests WHERE signoff_id = ?1 \
+             ORDER BY request_fingerprint LIMIT 1",
+            [signoff_id],
+            |r| {
+                Ok((
+                    [
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ],
+                    r.get(7)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some(([tenant, project, workflow, record, criterion, from, to], revision)) = row else {
+        return Ok(None);
+    };
+    let Some(w) = read_workflow(conn, &tenant, &project, &workflow)? else {
+        return Ok(None);
+    };
+    let policy: Option<(String, String)> = conn
+        .query_row(
+            "SELECT requirements, bundle_sha FROM acceptance_policies \
+             WHERE tenant_id = ?1 AND project_id = ?2",
+            (&tenant, &project),
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((requirements, sha)) = policy else {
+        return Ok(None);
+    };
+    let req = json::parse(requirements.as_bytes()).map_err(|_| BodyError::Integrity)?;
+    let member = |k: &str| req.get(k).and_then(Value::as_str).map(str::to_string);
+    let (Some(policy_id), Some(policy_version)) = (
+        member("acceptance_policy_id"),
+        member("acceptance_policy_version"),
+    ) else {
+        return Ok(None);
+    };
+    Ok(Some(NewSignoff {
+        signoff_id: signoff_id.to_string(),
+        tenant_id: tenant,
+        project_id: project,
+        task_id: w.task_id,
+        workflow_id: workflow,
+        from_state: from,
+        to_state: to,
+        acceptance_record_id: record,
+        criterion_id: criterion,
+        artifact_snapshot_id: w.artifact_snapshot_id,
+        artifact_digest: w.artifact_digest,
+        acceptance_policy_id: policy_id,
+        acceptance_policy_version: policy_version,
+        acceptance_policy_bundle_sha: sha,
+        state_revision: revision,
+        expires_at: now.plus_seconds(PAGE_SIGNOFF_REQUESTED_SECONDS),
+    }))
 }

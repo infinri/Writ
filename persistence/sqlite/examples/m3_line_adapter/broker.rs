@@ -25,10 +25,11 @@ use writ_broker::writ_kernel::json::{self, Map, Value};
 use writ_broker::writ_kernel::policy::load_bundle;
 
 use crate::common::{
-    adapter_error, int, malformed, pairs, production_difference, refused, register, result,
-    test_credential, text, unhex, unsupported, with_storage_fault, ChannelVerifier, Labels, Point,
-    ProdBroker, Registrar, StorageFault, World, ADAPTER_SEALED, ADMIN_RESPONSE, C1, C2, C6, C7, C8,
-    DIFFERENCE, LISTENER_CHANNEL, TEST_ADMIN, TEST_SUBJECT_ISSUER,
+    adapter_error, int, malformed, operator_session, pairs, production_difference, refused,
+    register, result, test_credential, text, unhex, unsupported, with_storage_fault,
+    ChannelVerifier, Labels, Point, ProdBroker, Registrar, StorageFault, World, ADAPTER_SEALED,
+    ADMIN_RESPONSE, C1, C2, C6, C7, C8, DIFFERENCE, LISTENER_CHANNEL, OPERATOR_SESSION, TEST_ADMIN,
+    TEST_SUBJECT_ISSUER,
 };
 
 const BROKER_STATE: [&str; 7] = [
@@ -336,6 +337,7 @@ impl BrokerCase {
                         &|| Ok(now),
                         &SubjectId::new(TEST_SUBJECT_ISSUER, &human),
                         &test_credential(&human),
+                        Some(&operator_session(&admin)),
                     )?),
                     linked_identities: Vec::new(),
                     roles: vec![NewRole {
@@ -344,6 +346,7 @@ impl BrokerCase {
                         project_id: "*".into(),
                     }],
                 },
+                operator_session: OPERATOR_SESSION.into(),
             };
             let key = format!("m3c-enroll-{human}");
             let c = stores

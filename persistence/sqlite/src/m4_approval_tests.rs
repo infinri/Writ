@@ -15,8 +15,8 @@ use std::thread;
 use writ_broker::approval::{ApprovalCode, ApprovalStatus, ChallengeRefusal, RevocationTarget};
 use writ_broker::approval_store::{
     ApprovalLedger, BootstrapEnrollment, CeremonyBegin, CeremonyFinish, CeremonyOp,
-    CeremonyOutcome, CeremonyResult, IssuedChallenge, NewEnrollment, NewRole, RegistrationBegin,
-    RegistrationFinish, RegistrationLedger, UseState,
+    CeremonyOutcome, CeremonyResult, IssuedChallenge, NewEnrollment, NewRole, OperatorSession,
+    RegistrationBegin, RegistrationFinish, RegistrationLedger, UseState, REGISTRATION_TTL_SECONDS,
 };
 use writ_broker::clock::{observe, ObservedTime};
 use writ_broker::execute::{Executed, Execution};
@@ -32,8 +32,8 @@ use writ_broker::writ_kernel::json::{self, Value};
 use super::execute_tests::World;
 use super::grant_tests::{approve, label, now, publish, revision, set, uses, verify};
 use super::m4_support::{
-    bootstrap_root_at, channel_of, forged_registration, registered, session_register, TestVerifier,
-    ORIGIN,
+    bootstrap_root_at, channel_of, enroll_op, forged_registration, operator_session, registered,
+    session_register, TestVerifier, ORIGIN,
 };
 use super::{fault, BootstrapSession, SqliteLedger, SCHEMA_V5, SCHEMA_VERSION_V5};
 
@@ -179,6 +179,7 @@ impl M4 {
             .finish_registration(&RegistrationFinish {
                 registration_id: id,
                 response: response.as_bytes(),
+                operator: Some(&operator_session(&root())),
                 now: self.now(),
             })
             .expect("store")
@@ -239,18 +240,18 @@ impl M4 {
         subject: &SubjectId,
         response: &str,
     ) -> Result<VerifiedRegistration, Refusal> {
-        session_register(self.l(), &|| self.now(), subject, response)
+        session_register(self.l(), &|| self.now(), subject, response, Some(&root()))
     }
 
     /// `e` with a registered credential `cred-<name>` when it is a human without one.
     pub(crate) fn registered(&self, e: NewEnrollment) -> NewEnrollment {
-        registered(self.l(), &|| self.now(), e)
+        registered(self.l(), &|| self.now(), &root(), e)
     }
 
     pub(crate) fn enroll(&self, e: NewEnrollment) -> Result<CeremonyOutcome, Refusal> {
         let e = self.registered(e);
         let key = format!("enroll-{}", e.subject.subject);
-        self.ceremony(&root(), &CeremonyOp::Enroll { enrollment: e }, &key)
+        self.ceremony(&root(), &enroll_op(e), &key)
     }
 
     pub(crate) fn exec(&self, req: &Value, grant: Option<&GrantLabel>) -> Execution {
@@ -861,7 +862,7 @@ fn approval_by_the_requester_agent_unenrolled_service_or_unscoped_subject_is_ref
 fn enrollment_happens_only_through_the_documented_ceremony() {
     let m = M4::new("enroll");
     let unsupported = Some(ap(ApprovalCode::EnrollmentUnsupported));
-    let enroll = |e: NewEnrollment| CeremonyOp::Enroll { enrollment: e };
+    let enroll = enroll_op;
     // Existing subject (no recovery, no additional credentials): no registration at all.
     assert_eq!(
         m.register(&human("alice"), "ok|cred-alice-2|pk").err(),
@@ -897,7 +898,18 @@ fn enrollment_happens_only_through_the_documented_ceremony() {
     );
     let mut me = person("root", &[(Permission::Approver, T, P)], vec![]);
     me.subject = SubjectId::new("other-realm", "ROOT");
-    let me = m.registered(me);
+    // D-043 Y2: an operator never begins a registration row for itself.
+    assert_eq!(
+        m.register(&me.subject, "ok|cred-me|pk-me").err(),
+        Some(ap(ApprovalCode::SeparationViolated))
+    );
+    // A linked identity equal to the operator is refused at the ceremony.
+    let mut me = m.registered(person(
+        "root-alias",
+        &[(Permission::Approver, T, P)],
+        vec![],
+    ));
+    me.linked_identities = vec![SubjectId::new("other-realm", "ROOT")];
     assert_eq!(
         m.ceremony(&root(), &enroll(me), "e6"),
         Err(ap(ApprovalCode::SeparationViolated))
@@ -963,7 +975,7 @@ fn enrollment_happens_only_through_the_documented_ceremony() {
 fn enrollment_refuses_raw_or_foreign_public_material() {
     let m = M4::new("enroll-raw");
     let unsupported = Some(ap(ApprovalCode::EnrollmentUnsupported));
-    let enroll = |e: NewEnrollment| CeremonyOp::Enroll { enrollment: e };
+    let enroll = enroll_op;
     let binding = |id: &str, subject: &SubjectId, operation| RegistrationBinding {
         registration_id: id.into(),
         operation,
@@ -1068,6 +1080,7 @@ fn registration_is_verified_bound_and_single_use() {
             .l()
             .begin_registration(&RegistrationBegin {
                 subject: &human(name),
+                operator: Some(&operator_session(&root())),
                 now: m.now(),
             })
             .unwrap()
@@ -1077,6 +1090,7 @@ fn registration_is_verified_bound_and_single_use() {
                 .finish_registration(&RegistrationFinish {
                     registration_id: &issued.registration_id,
                     response: response.as_bytes(),
+                    operator: Some(&operator_session(&root())),
                     now: m.now(),
                 })
                 .unwrap()
@@ -1100,6 +1114,7 @@ fn registration_is_verified_bound_and_single_use() {
         .l()
         .begin_registration(&RegistrationBegin {
             subject: &human("d1"),
+            operator: Some(&operator_session(&root())),
             now: m.now(),
         })
         .unwrap()
@@ -1109,6 +1124,7 @@ fn registration_is_verified_bound_and_single_use() {
             .finish_registration(&RegistrationFinish {
                 registration_id: &issued.registration_id,
                 response: response.as_bytes(),
+                operator: Some(&operator_session(&root())),
                 now: m.now(),
             })
             .unwrap()
@@ -1132,6 +1148,7 @@ fn registration_is_verified_bound_and_single_use() {
         .l()
         .begin_registration(&RegistrationBegin {
             subject: &human("o1"),
+            operator: Some(&operator_session(&root())),
             now: m.now(),
         })
         .unwrap()
@@ -1157,6 +1174,7 @@ fn registration_is_verified_bound_and_single_use() {
         .finish_registration(&RegistrationFinish {
             registration_id: reg.registration_id(),
             response: b"ok|cred-p1b|pk",
+            operator: Some(&operator_session(&root())),
             now: m.now(),
         })
         .unwrap();
@@ -1166,6 +1184,7 @@ fn registration_is_verified_bound_and_single_use() {
         .finish_registration(&RegistrationFinish {
             registration_id: "reg-unknown",
             response: b"ok|cred-x|pk",
+            operator: Some(&operator_session(&root())),
             now: m.now(),
         })
         .unwrap();
@@ -1180,6 +1199,7 @@ fn registration_is_verified_bound_and_single_use() {
         .l()
         .begin_registration(&RegistrationBegin {
             subject: &human("q1"),
+            operator: Some(&operator_session(&root())),
             now: m.now(),
         })
         .unwrap()
@@ -1190,6 +1210,7 @@ fn registration_is_verified_bound_and_single_use() {
         .finish_registration(&RegistrationFinish {
             registration_id: &issued.registration_id,
             response: b"ok|cred-q1|pk",
+            operator: Some(&operator_session(&root())),
             now: m.now(),
         })
         .unwrap();
@@ -1233,6 +1254,7 @@ fn bootstrap_is_exclusive_against_service_and_happens_once() {
         },
         &root(),
         "ok|cred-root|pk-root",
+        None,
     );
     assert_eq!(early, Err(ap(ApprovalCode::EnrollmentUnsupported)));
     drop(service);
@@ -1251,6 +1273,7 @@ fn bootstrap_is_exclusive_against_service_and_happens_once() {
         &|| session.observe(&clock).unwrap(),
         &human("someone-else"),
         "ok|cred-else|pk",
+        None,
     )
     .unwrap();
     let now1 = session.observe(&clock).unwrap();
@@ -1792,9 +1815,7 @@ fn an_unknown_commit_is_recovered_by_an_identical_retry_without_a_second_grant()
         .unwrap();
     assert!(!r1.replayed && r2.replayed);
     assert_eq!(m.count("SELECT count(*) FROM revocations"), 1);
-    let enroll = CeremonyOp::Enroll {
-        enrollment: m.registered(person("zed", &[(Permission::Approver, T, P)], vec![])),
-    };
+    let enroll = enroll_op(m.registered(person("zed", &[(Permission::Approver, T, P)], vec![])));
     let ec = m.begin(&root(), &enroll, "ekey").unwrap();
     let e1 = m
         .finish(&enroll, &ec.challenge_id, &ok(&root()), "ekey")
@@ -2159,4 +2180,300 @@ fn the_upgrade_from_writ_ledger_5_marks_every_pre_m4_grant_and_keeps_all_history
     drop(ledger);
     assert!(SqliteLedger::upgrade(&path).is_err(), "one-way");
     assert!(SqliteLedger::open(&path).is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// D-043 Y2: registration rows bound to the initiating operator session.
+
+/// A registration row for `subject` begun in `session` (no finish).
+fn begin_row(
+    m: &M4,
+    subject: &SubjectId,
+    session: Option<&OperatorSession>,
+) -> Result<String, Refusal> {
+    m.l()
+        .begin_registration(&RegistrationBegin {
+            subject,
+            operator: session,
+            now: m.now(),
+        })
+        .expect("store")
+        .map(|i| i.registration_id)
+}
+
+/// Finish row `id` for `subject` (credential `cred-<subject>`) in `session`.
+fn finish_row(
+    m: &M4,
+    id: &str,
+    subject: &SubjectId,
+    session: Option<&OperatorSession>,
+) -> Result<VerifiedRegistration, Refusal> {
+    let response = format!("ok|cred-{0}|pk-{0}", subject.subject);
+    m.l()
+        .finish_registration(&RegistrationFinish {
+            registration_id: id,
+            response: response.as_bytes(),
+            operator: session,
+            now: m.now(),
+        })
+        .expect("store")
+}
+
+fn in_session(operator: &SubjectId, id: &str) -> OperatorSession {
+    OperatorSession {
+        operator: operator.clone(),
+        session_id: id.into(),
+    }
+}
+
+fn enroll_in(e: NewEnrollment, session: &str) -> CeremonyOp {
+    CeremonyOp::Enroll {
+        enrollment: e,
+        operator_session: session.into(),
+    }
+}
+
+/// `name` (approver in the fixture scope) with `reg` as its credential.
+fn with_credential(name: &str, reg: VerifiedRegistration) -> NewEnrollment {
+    let mut e = person(name, &[(Permission::Approver, T, P)], vec![]);
+    e.credential = Some(reg);
+    e
+}
+
+#[test]
+fn y2_registration_rows_are_bound_to_the_initiating_operator_session() {
+    let mut m = M4::new("y2-binding");
+    let unsupported = Some(ap(ApprovalCode::EnrollmentUnsupported));
+    // A second global operator.
+    m.enroll(person("olga", &[(Permission::Operator, "*", "*")], vec![]))
+        .unwrap();
+    let olga = human("olga");
+    let s1 = in_session(&root(), "s1");
+
+    // Happy path: begun, finished and enrolled by root in s1; the row records the operator,
+    // the page session and the relying party, and is consumed by the enrollment.
+    let id = begin_row(&m, &human("kay"), Some(&s1)).unwrap();
+    assert_eq!(
+        m.count(&format!(
+            "SELECT count(*) FROM registrations WHERE registration_id = '{id}' \
+             AND operation = 'enroll' AND operator_issuer = 'writ-local' \
+             AND operator_subject = 'root' AND operator_session = 's1' \
+             AND rp_id = 'localhost' AND origin = '{ORIGIN}'"
+        )),
+        1
+    );
+    let reg = finish_row(&m, &id, &human("kay"), Some(&s1)).unwrap();
+    let op = enroll_in(with_credential("kay", reg), "s1");
+    let out = m.ceremony(&root(), &op, "y2-ok").unwrap();
+    assert_eq!(
+        out.result,
+        CeremonyResult::Enrolled {
+            subject: human("kay")
+        }
+    );
+    assert_eq!(
+        m.text(
+            "SELECT status FROM registrations WHERE registration_id = ?1",
+            &id
+        )
+        .as_deref(),
+        Some("enrolled")
+    );
+
+    // No operator session: the serving ledger never creates an unbound row.
+    assert_eq!(begin_row(&m, &human("lou"), None).err(), unsupported);
+    // An operator session of someone who is not an active global operator.
+    assert_eq!(
+        begin_row(&m, &human("lou"), Some(&in_session(&human("alice"), "s1"))).err(),
+        Some(ap(ApprovalCode::PermissionMissing))
+    );
+    assert_eq!(
+        begin_row(&m, &human("lou"), Some(&in_session(&human("nobody"), "s1"))).err(),
+        Some(ap(ApprovalCode::PermissionMissing))
+    );
+    // An empty session id.
+    assert_eq!(
+        begin_row(&m, &human("lou"), Some(&in_session(&root(), ""))).err(),
+        unsupported
+    );
+    assert_eq!(
+        m.count("SELECT count(*) FROM registrations WHERE subject = 'lou'"),
+        0
+    );
+
+    // A finish by another operator, in another session or without one burns the row.
+    for (n, wrong) in [
+        Some(in_session(&olga, "s1")),
+        Some(in_session(&root(), "s2")),
+        None,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let who = human(&format!("fin-{n}"));
+        let id = begin_row(&m, &who, Some(&s1)).unwrap();
+        assert_eq!(
+            finish_row(&m, &id, &who, wrong.as_ref()).err(),
+            unsupported,
+            "{n}"
+        );
+        assert_eq!(
+            finish_row(&m, &id, &who, Some(&s1)).err(),
+            Some(challenge(ChallengeRefusal::Consumed)),
+            "{n}"
+        );
+    }
+
+    // The Enroll ceremony by another operator, or in another session, is refused at begin.
+    let id = begin_row(&m, &human("mia"), Some(&s1)).unwrap();
+    let reg = finish_row(&m, &id, &human("mia"), Some(&s1)).unwrap();
+    let mia = with_credential("mia", reg);
+    assert_eq!(
+        m.begin(&olga, &enroll_in(mia.clone(), "s1"), "y2-o").err(),
+        unsupported
+    );
+    assert_eq!(
+        m.begin(&root(), &enroll_in(mia.clone(), "s2"), "y2-s")
+            .err(),
+        unsupported
+    );
+    // ... and at finish (a session changed after the begin burns the challenge).
+    let c = m
+        .begin(&root(), &enroll_in(mia.clone(), "s1"), "y2-f")
+        .unwrap();
+    assert_eq!(
+        m.finish(
+            &enroll_in(mia.clone(), "s2"),
+            &c.challenge_id,
+            &ok(&root()),
+            "y2-f"
+        )
+        .err(),
+        unsupported
+    );
+    assert_eq!(
+        m.finish(
+            &enroll_in(mia.clone(), "s1"),
+            &c.challenge_id,
+            &ok(&root()),
+            "y2-f"
+        )
+        .err(),
+        Some(challenge(ChallengeRefusal::Consumed))
+    );
+    // Another subject's registration never enrolls a different subject.
+    let mut other = mia.clone();
+    other.subject = human("ned");
+    assert_eq!(
+        m.begin(&root(), &enroll_in(other, "s1"), "y2-n").err(),
+        unsupported
+    );
+    // The right operator, session and subject still enroll it.
+    assert!(m.ceremony(&root(), &enroll_in(mia, "s1"), "y2-m").is_ok());
+
+    // A row of olga's session enrolls only through olga.
+    let so = in_session(&olga, "so");
+    let id = begin_row(&m, &human("pia"), Some(&so)).unwrap();
+    let reg = finish_row(&m, &id, &human("pia"), Some(&so)).unwrap();
+    let pia = enroll_in(with_credential("pia", reg), "so");
+    assert_eq!(m.begin(&root(), &pia, "y2-p1").err(), unsupported);
+    let c = m.begin(&olga, &pia, "y2-p2").unwrap();
+    assert!(m.finish(&pia, &c.challenge_id, &ok(&olga), "y2-p2").is_ok());
+
+    // Another relying party (origin): a ledger reopened with another channel does not
+    // enroll a row registered under the original one.
+    let id = begin_row(&m, &human("quinn"), Some(&s1)).unwrap();
+    let reg = finish_row(&m, &id, &human("quinn"), Some(&s1)).unwrap();
+    let quinn = enroll_in(with_credential("quinn", reg), "s1");
+    let other_rp = Arc::new(TestVerifier::default());
+    other_rp.other_origin.store(true, Ordering::SeqCst);
+    let original = m.reopen_with(&other_rp);
+    assert_eq!(m.begin(&root(), &quinn, "y2-rp").err(), unsupported);
+    m.reopen_with(&original);
+
+    // Expired: the enrollment must commit within the row's lifetime.
+    let c = m.begin(&root(), &quinn, "y2-exp").unwrap();
+    m.w.clock.set(now().plus_seconds(REGISTRATION_TTL_SECONDS));
+    assert!(m
+        .finish(&quinn, &c.challenge_id, &ok(&root()), "y2-exp")
+        .is_err());
+    assert_eq!(
+        m.count("SELECT count(*) FROM subjects WHERE subject = 'quinn'"),
+        0
+    );
+}
+
+#[test]
+fn y2_the_bootstrap_registration_stays_one_shot_and_unbound() {
+    let m = M4::new("y2-bootstrap");
+    // The bootstrap row carries no operator session.
+    assert_eq!(
+        m.count(
+            "SELECT count(*) FROM registrations WHERE operation = 'bootstrap' \
+             AND operator_issuer IS NULL AND operator_subject IS NULL \
+             AND operator_session IS NULL"
+        ),
+        1
+    );
+    // The schema refuses an `enroll` row without an operator session and a `bootstrap` row
+    // with one.
+    for sql in [
+        "INSERT INTO registrations (registration_id, operation, issuer, subject, rp_id, origin, \
+         ceremony_state, issued_at, expires_at, status) VALUES ('r-x', 'enroll', 'i', 's', \
+         'localhost', 'o', x'00', 't', 't', 'issued')",
+        "INSERT INTO registrations (registration_id, operation, issuer, subject, rp_id, origin, \
+         ceremony_state, issued_at, expires_at, status, operator_issuer, operator_subject, \
+         operator_session) VALUES ('r-y', 'bootstrap', 'i', 's', 'localhost', 'o', x'00', 't', \
+         't', 'issued', 'i', 'root', 's1')",
+    ] {
+        assert!(m.l().db().conn.execute(sql, []).is_err(), "{sql}");
+    }
+}
+
+#[test]
+fn y2_the_page_context_is_the_bound_context() {
+    // R6: what `ceremony_context` returns for each operation is exactly the context whose
+    // fingerprint a begin binds.
+    let m = M4::new("y2-context");
+    let id = begin_row(&m, &human("ray"), Some(&in_session(&root(), "s1"))).unwrap();
+    let reg = finish_row(&m, &id, &human("ray"), Some(&in_session(&root(), "s1"))).unwrap();
+    let ops = [
+        enroll_in(with_credential("ray", reg), "s1"),
+        CeremonyOp::Revoke {
+            target: RevocationTarget::Subject(human("alice")),
+            reason: "<left>".into(),
+        },
+        CeremonyOp::RoleChange {
+            change: writ_broker::approval_store::RoleChange::Grant {
+                subject: human("alice"),
+                permission: Permission::SignoffAuthority,
+                tenant_id: T.into(),
+                project_id: P.into(),
+            },
+        },
+    ];
+    for (n, op) in ops.iter().enumerate() {
+        let shown = m.l().ceremony_context(op, m.now()).unwrap().unwrap();
+        assert_eq!(
+            writ_broker::approval::context_fingerprint(&shown.context).unwrap(),
+            shown.binding.context_fingerprint,
+            "{n}"
+        );
+        let c = m.begin(&root(), op, &format!("ctx-{n}")).unwrap();
+        let stored = m
+            .text(
+                "SELECT context_fingerprint FROM challenges WHERE challenge_id = ?1",
+                &c.challenge_id,
+            )
+            .unwrap();
+        assert_eq!(stored, shown.binding.context_fingerprint.as_str(), "{n}");
+    }
+    // An unknown target is refused, as at begin.
+    let unknown = CeremonyOp::Revoke {
+        target: RevocationTarget::Credential("cred-none".into()),
+        reason: "x".into(),
+    };
+    assert!(m.l().ceremony_context(&unknown, m.now()).unwrap().is_err());
+    // No stored promotion context names this signoff id.
+    assert_eq!(m.l().pending_signoff("so-none", m.now()).unwrap(), None);
 }

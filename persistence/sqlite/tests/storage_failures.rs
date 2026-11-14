@@ -39,7 +39,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use writ_broker::approval_store::{
     approval_request_for, ApprovalLedger, BootstrapEnrollment, CeremonyBegin, CeremonyFinish,
-    CeremonyOp, NewEnrollment, NewRole, RegistrationBegin, RegistrationFinish, RegistrationLedger,
+    CeremonyOp, NewEnrollment, NewRole, OperatorSession, RegistrationBegin, RegistrationFinish,
+    RegistrationLedger,
 };
 use writ_broker::authorize::authorize;
 use writ_broker::clock::{
@@ -448,10 +449,12 @@ fn register(
     ledger: &dyn RegistrationLedger,
     now: &dyn Fn() -> ObservedTime,
     who: &SubjectId,
+    operator: Option<&OperatorSession>,
 ) -> VerifiedRegistration {
     let issued = ledger
         .begin_registration(&RegistrationBegin {
             subject: who,
+            operator,
             now: now(),
         })
         .unwrap()
@@ -460,6 +463,7 @@ fn register(
         .finish_registration(&RegistrationFinish {
             registration_id: &issued.registration_id,
             response: format!("cred-{}", who.subject).as_bytes(),
+            operator,
             now: now(),
         })
         .unwrap()
@@ -477,7 +481,7 @@ fn enroll_storage_approver(db: &Path) {
         panic!("bootstrap session");
     };
     let root = SubjectId::new("writ-local", "storage-root");
-    let reg = register(&session, &|| session.observe(&clock).unwrap(), &root);
+    let reg = register(&session, &|| session.observe(&clock).unwrap(), &root, None);
     let at = session.observe(&clock).unwrap();
     session
         .bootstrap(
@@ -499,10 +503,14 @@ fn enroll_storage_approver(db: &Path) {
         observe(&clock, &mut l).unwrap()
     };
     let approver = SubjectId::new("writ-local", "storage-approver");
+    let session = OperatorSession {
+        operator: root.clone(),
+        session_id: "storage-root-session".into(),
+    };
     let enrollment = NewEnrollment {
         subject: approver.clone(),
         kind: writ_broker::human::PrincipalKind::Human,
-        credential: Some(register(&ledger, &now, &approver)),
+        credential: Some(register(&ledger, &now, &approver, Some(&session))),
         linked_identities: vec![],
         roles: vec![NewRole {
             permission: Permission::Approver,
@@ -513,7 +521,10 @@ fn enroll_storage_approver(db: &Path) {
     ceremony(
         &ledger,
         &root,
-        &CeremonyOp::Enroll { enrollment },
+        &CeremonyOp::Enroll {
+            enrollment,
+            operator_session: session.session_id.clone(),
+        },
         "enroll-storage-approver",
         now(),
     );
