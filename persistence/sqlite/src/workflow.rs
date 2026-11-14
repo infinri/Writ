@@ -1,5 +1,7 @@
 //! The transition service's ledger transactions (M3-05, D-036, schema `writ-ledger-5`; since
-//! `writ-ledger-6` each `admin` and `promote` commit also takes one I-8 `ledger_sequence` row):
+//! `writ-ledger-6` each `admin` and `promote` commit also takes one I-8 `ledger_sequence` row,
+//! `promote` reads every signoff the record names and consumes the checked ones atomically
+//! (M4-06), and `signoff_request` stores promotion contexts (X7)):
 //! [`WorkflowLedger`] for [`SqliteLedger`] and the effect-prerequisite read used inside
 //! T-reserve. Every write is one fenced `BEGIN IMMEDIATE` transaction; the semantics are
 //! the broker's (`writ_broker::workflow`), the store reads rows, hands them to the broker's
@@ -13,11 +15,11 @@ use writ_broker::refusal::Refusal;
 use writ_broker::store::{StoreError, TxFailure};
 use writ_broker::workflow::{
     AdminChange, AdminRequest, LastPromotion, PromotionIntent, PromotionOutcome, PromotionView,
-    StoredEntry, StoredPolicy, StoredWorkflow, WorkflowKey, WorkflowLedger,
+    SignoffRequest, StoredEntry, StoredPolicy, StoredWorkflow, WorkflowKey, WorkflowLedger,
 };
 use writ_broker::writ_kernel::json;
 
-use crate::approval_store::next_seq;
+use crate::approval_store::{consume_signoffs, next_seq, signoff_use};
 use crate::{code_name, stored_grant, unavailable, BodyError, End, SqliteLedger};
 
 pub(crate) fn read_workflow(
@@ -424,12 +426,20 @@ impl WorkflowLedger for SqliteLedger {
                     consumed_attestations.insert(id.to_string());
                 }
             }
+            // M4-06: the stored state of each signoff the record names, read here (C2).
+            let mut signoffs = Vec::new();
+            for id in intent.signoff_ids() {
+                if let Some(u) = signoff_use(tx, id)? {
+                    signoffs.push(u);
+                }
+            }
             let view = PromotionView {
                 workflow,
                 policy,
                 registry,
                 record_consumed,
                 consumed_attestations,
+                signoffs,
             };
             let write = match intent.check(&view) {
                 Ok(write) => write,
@@ -500,6 +510,12 @@ impl WorkflowLedger for SqliteLedger {
                     )?;
                 }
             }
+            consume_signoffs(
+                tx,
+                &write.signoff_ids,
+                request.tenant_id(),
+                request.idempotency_key(),
+            )?;
             tx.execute(
                 "INSERT INTO promotion_receipts (tenant_id, idempotency_key, fingerprint, \
                  receipt_id, project_id, workflow_id, revision) \
@@ -530,6 +546,38 @@ impl WorkflowLedger for SqliteLedger {
                 revision: write.revision,
                 receipt_id: write.receipt_id,
             })))
+        })
+    }
+
+    fn record_signoff_requests(&self, requests: &[SignoffRequest]) -> Result<(), TxFailure> {
+        self.transact("signoff_request", |tx| {
+            for r in requests {
+                tx.execute(
+                    "INSERT OR IGNORE INTO signoff_requests (signoff_id, request_fingerprint, \
+                     tenant_id, project_id, workflow_id, acceptance_record_id, criterion_id, \
+                     from_state, to_state, state_revision, requester_issuer, requester_subject, \
+                     agent_issuer, agent_subject, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                    rusqlite::params![
+                        r.signoff_id(),
+                        r.request_fingerprint(),
+                        r.tenant_id(),
+                        r.project_id(),
+                        r.workflow_id(),
+                        r.acceptance_record_id(),
+                        r.criterion_id(),
+                        r.from_state(),
+                        r.to_state(),
+                        r.state_revision(),
+                        r.requester().issuer,
+                        r.requester().subject,
+                        r.agent().map(|a| a.issuer.as_str()),
+                        r.agent().map(|a| a.subject.as_str()),
+                        r.created_at().to_string(),
+                    ],
+                )?;
+            }
+            Ok(End::Commit(()))
         })
     }
 }

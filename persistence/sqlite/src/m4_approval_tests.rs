@@ -12,13 +12,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Barrier;
 use std::thread;
 
-use writ_broker::approval::{
-    ApprovalCode, ApprovalStatus, ChallengeRefusal, NewSignoff, RevocationTarget,
-};
+use writ_broker::approval::{ApprovalCode, ApprovalStatus, ChallengeRefusal, RevocationTarget};
 use writ_broker::approval_store::{
     ApprovalLedger, BootstrapEnrollment, CeremonyBegin, CeremonyFinish, CeremonyOp,
     CeremonyOutcome, CeremonyResult, IssuedChallenge, NewCredential, NewEnrollment, NewRole,
-    SignoffParties, UseState,
+    UseState,
 };
 use writ_broker::clock::{observe, ObservedTime};
 use writ_broker::execute::{Executed, Execution};
@@ -32,10 +30,9 @@ use writ_broker::refusal::Refusal;
 use writ_broker::store::{ExecuteLedger, StoreError, TxStage};
 use writ_broker::writ_kernel::json::{self, Digest, Value};
 
-use super::approval_store::consume_signoff;
 use super::execute_tests::World;
 use super::grant_tests::{approve, now, publish, revision, set, uses, verify};
-use super::{fault, End, SqliteLedger, SCHEMA_V5, SCHEMA_VERSION_V5};
+use super::{fault, SqliteLedger, SCHEMA_V5, SCHEMA_VERSION_V5};
 
 const T: &str = "fixture-tenant";
 const P: &str = "fixture-project";
@@ -1537,180 +1534,6 @@ fn unavailable_storage_fails_closed_without_partial_state() {
 }
 
 // ---------------------------------------------------------------------------
-// Signoff storage (consumption at promotion is M4-06; the store primitive is tested here).
-
-fn signoff_world(m: &M4) -> NewSignoff {
-    m.l()
-        .db()
-        .conn
-        .execute_batch(&format!(
-            "INSERT INTO workflows (tenant_id, project_id, workflow_id, task_id, state, revision, artifact_snapshot_id, artifact_digest)
-               VALUES ('{T}', '{P}', 'wf-1', 'task-1', 'verifying', 1, 'snap-1', 'sha256:bb');
-             INSERT INTO acceptance_policies (tenant_id, project_id, requirements, bundle_sha)
-               VALUES ('{T}', '{P}', '{{\"acceptance_policy_bundle_sha\":\"sha256:cc\",\"acceptance_policy_id\":\"accept\",\"acceptance_policy_version\":\"3\"}}', 'sha256:cc');
-             INSERT INTO admin_events (operation, tenant_id, project_id, target, operator_id, operator_issuer, channel, evidence_ref, at)
-               VALUES ('update_artifact', '{T}', '{P}', 'wf-1', 'sam', 'writ-local', 'ops', 'ev-1', '2026-11-05T11:00:00Z');"
-        ))
-        .unwrap();
-    NewSignoff {
-        signoff_id: "so-1".into(),
-        tenant_id: T.into(),
-        project_id: P.into(),
-        task_id: "task-1".into(),
-        workflow_id: "wf-1".into(),
-        from_state: "verifying".into(),
-        to_state: "accepted".into(),
-        acceptance_record_id: "acc-1".into(),
-        criterion_id: "signoff".into(),
-        artifact_snapshot_id: "snap-1".into(),
-        artifact_digest: "sha256:bb".into(),
-        acceptance_policy_id: "accept".into(),
-        acceptance_policy_version: "3".into(),
-        acceptance_policy_bundle_sha: "sha256:cc".into(),
-        state_revision: 1,
-        expires_at: now().plus_seconds(3600),
-    }
-}
-
-fn signoff_op(binding: NewSignoff) -> CeremonyOp {
-    CeremonyOp::Signoff {
-        binding: Box::new(binding),
-        parties: SignoffParties {
-            requester: requester(),
-            agent: None,
-            delegation_chain: vec![],
-        },
-    }
-}
-
-fn consume(m: &M4, id: &str, key: &str) -> Result<(), ApprovalCode> {
-    m.l()
-        .transact("promote", |tx| {
-            Ok(match consume_signoff(tx, id, T, key)? {
-                Ok(()) => End::Commit(Ok(())),
-                Err(code) => End::Rollback(Err(code)),
-            })
-        })
-        .unwrap()
-}
-
-#[test]
-fn a_signoff_is_bound_to_current_state_separated_and_consumed_once() {
-    let m = M4::new("signoff");
-    let binding = signoff_world(&m);
-    m.enroll(person(
-        "sara",
-        &[(Permission::SignoffAuthority, T, P)],
-        vec![],
-    ))
-    .unwrap();
-    m.enroll(person(
-        "sam",
-        &[(Permission::SignoffAuthority, T, P)],
-        vec![],
-    ))
-    .unwrap();
-    // The subject who changed the artifact never signs off (O-7; durable admin events, C2).
-    assert_eq!(
-        m.ceremony(&human("sam"), &signoff_op(binding.clone()), "s0"),
-        Err(ap(ApprovalCode::SeparationViolated))
-    );
-    // A binding that is not the current state is refused.
-    let mut stale = binding.clone();
-    stale.state_revision = 0;
-    assert_eq!(
-        m.begin(&human("sara"), &signoff_op(stale), "s1").err(),
-        Some(ap(ApprovalCode::SignoffMismatch))
-    );
-    // Only the signoff authority.
-    assert_eq!(
-        m.begin(&human("alice"), &signoff_op(binding.clone()), "s2")
-            .err(),
-        Some(ap(ApprovalCode::PermissionMissing))
-    );
-    let out = m
-        .ceremony(&human("sara"), &signoff_op(binding.clone()), "s3")
-        .unwrap();
-    assert_eq!(
-        out.result,
-        CeremonyResult::SignedOff {
-            signoff_id: "so-1".into()
-        }
-    );
-    let state = m.l().signoff("so-1").unwrap().unwrap();
-    assert_eq!(state.signoff.fields().binding, binding);
-    assert_eq!(
-        state.signoff.fields().provenance_version,
-        "writ-provenance-2"
-    );
-    assert!(!state.revoked && !state.consumed);
-    // The signoff id is single: no second signoff under it.
-    assert_eq!(
-        m.begin(&human("sara"), &signoff_op(binding.clone()), "s4")
-            .err(),
-        Some(ap(ApprovalCode::SignoffMismatch))
-    );
-    assert_eq!(
-        consume(&m, "so-unknown", "p1"),
-        Err(ApprovalCode::SignoffUnknown)
-    );
-    assert_eq!(consume(&m, "so-1", "p1"), Ok(()));
-    assert_eq!(
-        consume(&m, "so-1", "p2"),
-        Err(ApprovalCode::SignoffConsumed)
-    );
-    assert!(m.l().signoff("so-1").unwrap().unwrap().consumed);
-    // Revoking a consumed signoff undoes nothing and is recorded as after use.
-    let out = m
-        .revoke(
-            &human("carol"),
-            RevocationTarget::Signoff("so-1".into()),
-            "r1",
-        )
-        .unwrap();
-    assert_eq!(
-        out.result,
-        CeremonyResult::Revoked {
-            use_state: UseState::Consumed
-        }
-    );
-    assert!(m.l().signoff("so-1").unwrap().unwrap().revoked);
-}
-
-#[test]
-fn a_revoked_signoff_or_signer_is_never_consumed() {
-    let m = M4::new("signoff-revoked");
-    let binding = signoff_world(&m);
-    m.enroll(person(
-        "sara",
-        &[(Permission::SignoffAuthority, T, P)],
-        vec![],
-    ))
-    .unwrap();
-    m.ceremony(&human("sara"), &signoff_op(binding.clone()), "s1")
-        .unwrap();
-    m.revoke(
-        &human("carol"),
-        RevocationTarget::Signoff("so-1".into()),
-        "r1",
-    )
-    .unwrap();
-    assert_eq!(consume(&m, "so-1", "p1"), Err(ApprovalCode::SignoffRevoked));
-    let mut second = binding;
-    second.signoff_id = "so-2".into();
-    m.ceremony(&human("sara"), &signoff_op(second), "s2")
-        .unwrap();
-    m.revoke(
-        &root(),
-        RevocationTarget::Credential("cred-sara".into()),
-        "r2",
-    )
-    .unwrap();
-    assert_eq!(consume(&m, "so-2", "p2"), Err(ApprovalCode::SignoffRevoked));
-    assert_eq!(m.count("SELECT count(*) FROM consumed_signoffs"), 0);
-}
-
-// ---------------------------------------------------------------------------
 // M4-10 / O-14: migration from writ-ledger-5.
 
 #[test]
@@ -1794,6 +1617,7 @@ fn the_upgrade_from_writ_ledger_5_marks_every_pre_m4_grant_and_keeps_all_history
     for t in [
         "approval_events",
         "consumed_signoffs",
+        "signoff_requests",
         "signoffs",
         "revocations",
         "legacy_grants",

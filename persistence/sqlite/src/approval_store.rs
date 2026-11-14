@@ -2,7 +2,9 @@
 //! `writ-ledger-6`): [`ApprovalLedger`] for [`SqliteLedger`], the explicit bootstrap
 //! enrollment ([`SqliteLedger::bootstrap_administrator`], docs/implementation/
 //! M4-ENROLLMENT-CEREMONY.md), the grant revocation read used by T-reserve, T-dispatch and
-//! promotion, signoff consumption inside a promotion transaction, and the I-8 sequence.
+//! promotion, the signoff reads of a promotion transaction (M4-06: [`signoff_use`],
+//! [`consume_signoffs`]), the signoff exclusions read from authoritative state (X7:
+//! [`signoff_exclusions`]), and the I-8 sequence.
 //!
 //! Every state change is one fenced `BEGIN IMMEDIATE` transaction on the single owner
 //! connection, so ceremonies, revocations, T-reserve, T-dispatch and promotions are totally
@@ -20,6 +22,7 @@
 //! sentinel digest otherwise, so `Challenge::check` refuses in its own order.
 
 use rusqlite::{Connection, OptionalExtension, Transaction};
+use writ_broker::acceptance::SignoffUse;
 use writ_broker::approval::{
     decide, ApprovalCode, ApprovalRequest, ApprovalStatus, Challenge, ChallengeBinding,
     ChallengeOperation, ChallengeRefusal, ChallengeStatus, NewApprovalRequest, NewChallenge,
@@ -37,7 +40,7 @@ use writ_broker::clock::ObservedTime;
 use writ_broker::grants::{GrantLabel, NewGrant, Verdict};
 use writ_broker::human::{
     check_actor, check_service_permission, same_subject, ActiveCredentials, Actor, CeremonyState,
-    CredentialStatus, EnrollmentRecord, LedgerCapability, Parties, Permission, PrincipalKind,
+    CredentialStatus, EnrollmentRecord, LedgerCapability, Permission, PrincipalKind,
     RoleAssignment, StoredCredential, SubjectId, SubjectRecord, SubjectStatus, VerifiedAssertion,
 };
 use writ_broker::refusal::Refusal;
@@ -117,36 +120,177 @@ pub(crate) fn grant_revoked(conn: &Connection, label: &str) -> rusqlite::Result<
     )
 }
 
-/// Consume `signoff_id` single-use ledger-wide inside the calling promotion transaction
-/// (I-5): `SIGNOFF_UNKNOWN`, `SIGNOFF_REVOKED` (the signoff, or its signer's subject or
-/// credential), `SIGNOFF_CONSUMED`, else one `consumed_signoffs` row. The promotion's own
-/// I-5 use-time checks (binding, freshness, role, separation) are the caller's (M4-06).
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn consume_signoff(
-    tx: &Transaction<'_>,
+/// The stored state of `signoff_id` for the I-5 use-time checks, read inside the calling
+/// promotion transaction (M4-06, C2): the revalidated signoff; whether the consumed
+/// `signoff` challenge and `signed_off` event that produced it bind its subject,
+/// credential, target, scope, policy, revision and complete context fingerprint
+/// (provenance); signoff and credential revocation; the signer's subject, enrollment and
+/// roles; the exclusions re-read now ([`signoff_exclusions`]); consumption. `None`: no
+/// such signoff. The broker decides ([`writ_broker::acceptance::check_use`]).
+pub(crate) fn signoff_use(
+    conn: &Connection,
     signoff_id: &str,
-    tenant_id: &str,
-    idempotency_key: &str,
-) -> Result<Result<(), ApprovalCode>, BodyError> {
-    if read_signoff(tx, signoff_id)?.is_none() {
-        return Ok(Err(ApprovalCode::SignoffUnknown));
-    }
-    if signoff_revoked(tx, signoff_id)? {
-        return Ok(Err(ApprovalCode::SignoffRevoked));
-    }
-    let consumed: bool = tx.query_row(
+) -> Result<Option<SignoffUse>, BodyError> {
+    let Some(signoff) = read_signoff(conn, signoff_id)? else {
+        return Ok(None);
+    };
+    let f = signoff.fields();
+    let b = &f.binding;
+    let fingerprint = signoff.fingerprint().map_err(|_| BodyError::Integrity)?;
+    let challenge = challenge_row(conn, &f.challenge_id)?;
+    let event: Option<Option<String>> = conn
+        .query_row(
+            "SELECT credential_id FROM approval_events WHERE challenge_id = ?1 \
+             AND kind = 'signed_off' AND target_id = ?2",
+            (&f.challenge_id, signoff_id),
+            |r| r.get(0),
+        )
+        .optional()?;
+    let provenance_intact = challenge.is_some_and(|c| {
+        c.status == ChallengeStatus::Consumed
+            && c.operation == ChallengeOperation::Signoff
+            && c.subject == f.subject
+            && c.allowed.iter().any(|a| a == &f.credential_id)
+            && c.target_id == b.signoff_id
+            && c.tenant_id == b.tenant_id
+            && c.project_id == b.project_id
+            && c.policy == b.acceptance_policy_bundle_sha
+            && c.revision == b.state_revision
+            && c.fingerprint == fingerprint.as_str()
+    }) && event.flatten().as_deref() == Some(f.credential_id.as_str());
+    let signoff_revoked: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM revocations WHERE target_kind = 'signoff' \
+           AND target_id = 'signoff:' || ?1)",
+        [signoff_id],
+        |r| r.get(0),
+    )?;
+    let credential_active: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM credentials WHERE credential_id = ?1 AND issuer = ?2 \
+           AND subject = ?3 AND status = 'active')",
+        (&f.credential_id, &f.subject.issuer, &f.subject.subject),
+        |r| r.get(0),
+    )?;
+    let consumed: bool = conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM consumed_signoffs WHERE signoff_id = ?1)",
         [signoff_id],
         |r| r.get(0),
     )?;
-    if consumed {
-        return Ok(Err(ApprovalCode::SignoffConsumed));
+    let exclusions = signoff_exclusions(conn, b)?
+        .map(|(e, _)| e)
+        .unwrap_or_default();
+    Ok(Some(SignoffUse {
+        signer: subject_record(conn, &f.subject)?,
+        enrollment: enrollment(conn, &f.subject)?,
+        assignments: assignments(conn, &f.subject)?,
+        provenance_intact,
+        signoff_revoked,
+        credential_revoked: !credential_active,
+        exclusions,
+        consumed,
+        signoff,
+    }))
+}
+
+/// Consume the checked signoffs single-use ledger-wide inside the calling promotion
+/// transaction (I-5): one `consumed_signoffs` row each (the primary key refuses a second).
+pub(crate) fn consume_signoffs(
+    tx: &Transaction<'_>,
+    signoff_ids: &[String],
+    tenant_id: &str,
+    idempotency_key: &str,
+) -> rusqlite::Result<()> {
+    for id in signoff_ids {
+        tx.execute(
+            "INSERT INTO consumed_signoffs (signoff_id, tenant_id, idempotency_key) \
+             VALUES (?1, ?2, ?3)",
+            (id, tenant_id, idempotency_key),
+        )?;
     }
-    tx.execute(
-        "INSERT INTO consumed_signoffs (signoff_id, tenant_id, idempotency_key) VALUES (?1, ?2, ?3)",
-        (signoff_id, tenant_id, idempotency_key),
-    )?;
-    Ok(Ok(()))
+    Ok(())
+}
+
+/// The signoff exclusions read from authoritative ledger state (X7, C2): the requesters and
+/// agents of every stored promotion context (`signoff_requests`) of the signoff id in its
+/// tenant and project; every enrolled subject whose enrollment links name one of them
+/// ([`same_subject`], fail closed); the artifact and policy changers ([`changers`]).
+/// `None` when no stored promotion context names the signoff id; otherwise also whether
+/// every context agrees with the binding (record, criterion, workflow, transition,
+/// revision).
+pub(crate) fn signoff_exclusions(
+    conn: &Connection,
+    b: &NewSignoff,
+) -> Result<Option<(SignoffExclusions, bool)>, BodyError> {
+    type Row = (
+        String,
+        String,
+        String,
+        String,
+        String,
+        i64,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+    );
+    let rows: Vec<Row> = conn
+        .prepare(
+            "SELECT workflow_id, acceptance_record_id, criterion_id, from_state, to_state, \
+             state_revision, requester_issuer, requester_subject, agent_issuer, agent_subject \
+             FROM signoff_requests WHERE signoff_id = ?1 AND tenant_id = ?2 AND project_id = ?3 \
+             ORDER BY request_fingerprint",
+        )?
+        .query_map((&b.signoff_id, &b.tenant_id, &b.project_id), |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
+                r.get(8)?,
+                r.get(9)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    let mut out = SignoffExclusions::default();
+    let mut consistent = true;
+    for (workflow, record, criterion, from, to, revision, ri, rs, ai, asub) in rows {
+        consistent &= workflow == b.workflow_id
+            && record == b.acceptance_record_id
+            && criterion == b.criterion_id
+            && from == b.from_state
+            && to == b.to_state
+            && revision == b.state_revision;
+        out.requesters.push(SubjectId::new(&ri, &rs));
+        match (ai, asub) {
+            (Some(i), Some(a)) => out.agents.push(SubjectId::new(&i, &a)),
+            (None, None) => {}
+            _ => return Err(BodyError::Integrity),
+        }
+    }
+    let parties: Vec<SubjectId> = out.requesters.iter().chain(&out.agents).cloned().collect();
+    let links: Vec<(String, String, String, String)> = conn
+        .prepare(
+            "SELECT issuer, subject, linked_issuer, linked_subject FROM enrollment_links \
+             ORDER BY 1, 2, 3, 4",
+        )?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (issuer, subject, li, ls) in links {
+        let linked = SubjectId::new(&li, &ls);
+        if parties.iter().any(|p| same_subject(p, &linked)) {
+            out.linked_subjects.push(SubjectId::new(&issuer, &subject));
+        }
+    }
+    let (artifact, policy) = changers(conn, b)?;
+    out.artifact_changers = artifact;
+    out.policy_changers = policy;
+    Ok(Some((out.normalized(), consistent)))
 }
 
 fn signoff_revoked(conn: &Connection, signoff_id: &str) -> rusqlite::Result<bool> {
@@ -432,7 +576,7 @@ fn read_signoff(conn: &Connection, signoff_id: &str) -> Result<Option<Signoff>, 
              acceptance_record_id, criterion_id, artifact_snapshot_id, artifact_digest, \
              acceptance_policy_id, acceptance_policy_version, acceptance_policy_bundle_sha, \
              state_revision, issued_at, expires_at, issuer, subject, credential_id, \
-             challenge_id, provenance_version FROM signoffs WHERE signoff_id = ?1",
+             challenge_id, provenance_version, exclusions FROM signoffs WHERE signoff_id = ?1",
             [signoff_id],
             |r| {
                 let text = |i: usize| r.get::<_, String>(i);
@@ -461,6 +605,7 @@ fn read_signoff(conn: &Connection, signoff_id: &str) -> Result<Option<Signoff>, 
                         text(18)?,
                         text(19)?,
                         text(20)?,
+                        text(21)?,
                     ],
                 ))
             },
@@ -471,7 +616,11 @@ fn read_signoff(conn: &Connection, signoff_id: &str) -> Result<Option<Signoff>, 
     };
     let [tenant, project, task, workflow, from, to, record, criterion, snapshot, digest, policy, version, sha] =
         b;
-    let [issued, expires, issuer, subject, credential, challenge, provenance] = p;
+    let [issued, expires, issuer, subject, credential, challenge, provenance, exclusions] = p;
+    let exclusions = json::parse(exclusions.as_bytes())
+        .ok()
+        .and_then(|v| SignoffExclusions::from_context(&v))
+        .ok_or(BodyError::Integrity)?;
     let binding = NewSignoff {
         signoff_id: signoff_id.to_string(),
         tenant_id: tenant,
@@ -494,6 +643,7 @@ fn read_signoff(conn: &Connection, signoff_id: &str) -> Result<Option<Signoff>, 
         &cap(),
         SignoffFields {
             binding,
+            exclusions,
             issued_at: ts(&issued)?,
             subject: SubjectId::new(&issuer, &subject),
             credential_id: credential,
@@ -517,7 +667,10 @@ enum TargetKind {
         /// For a grant minted by an M4 decision: its approver and whether it is unused.
         grant_approver: Option<(SubjectId, bool)>,
     },
-    Signoff,
+    Signoff {
+        /// The exclusions read in this transaction (X7).
+        excluded: Box<SignoffExclusions>,
+    },
     Enroll,
 }
 
@@ -783,8 +936,28 @@ fn target(conn: &Connection, op: &CeremonyOp) -> Outcome<Target> {
             }))
         }
         CeremonyOp::Revoke { target, reason } => revoke_target(conn, target, reason),
-        CeremonyOp::Signoff { binding, .. } => {
-            let Ok(challenge_binding) = signoff_binding(binding) else {
+        CeremonyOp::Signoff { binding, parties } => {
+            // X7: the exclusions come from the ledger; the caller's list only adds.
+            let (excluded, context_blocked) = match signoff_exclusions(conn, binding)? {
+                None => (
+                    SignoffExclusions::default(),
+                    Some(ap(ApprovalCode::SignoffUnknown)),
+                ),
+                Some((stored, consistent)) => {
+                    let added = SignoffExclusions {
+                        added: parties.added.clone(),
+                        ..SignoffExclusions::default()
+                    };
+                    (
+                        stored.union(&added),
+                        (!consistent).then(|| ap(ApprovalCode::SignoffMismatch)),
+                    )
+                }
+            };
+            if !excluded.well_formed() {
+                return Ok(Err(challenge_refused(ChallengeRefusal::Malformed)));
+            }
+            let Ok(challenge_binding) = signoff_binding(binding, &excluded) else {
                 return Ok(Err(challenge_refused(ChallengeRefusal::Malformed)));
             };
             let taken: bool = conn.query_row(
@@ -792,14 +965,17 @@ fn target(conn: &Connection, op: &CeremonyOp) -> Outcome<Target> {
                 [&binding.signoff_id],
                 |r| r.get(0),
             )?;
-            let blocked = (taken || !signoff_current(conn, binding)?)
-                .then(|| ap(ApprovalCode::SignoffMismatch));
+            let current = signoff_current(conn, binding)?;
+            let blocked = context_blocked
+                .or_else(|| (taken || !current).then(|| ap(ApprovalCode::SignoffMismatch)));
             Ok(Ok(Target {
                 binding: challenge_binding,
                 permission: Permission::SignoffAuthority,
                 expiry: Some(binding.expires_at),
                 blocked,
-                kind: TargetKind::Signoff,
+                kind: TargetKind::Signoff {
+                    excluded: Box::new(excluded),
+                },
             }))
         }
         CeremonyOp::Enroll { enrollment } => {
@@ -1307,8 +1483,9 @@ fn write_enrollment(
 }
 
 /// Subjects who changed the artifact of the signoff's workflow, and who activated the
-/// project's acceptance policy, from durable administrative events (C2; fail closed: every
-/// such change, not only those of this revision).
+/// project's acceptance policy, from durable administrative events (C2, X7). Administrative
+/// events record no revision, so this is every such change of the workflow and project, a
+/// superset of the changes for the exact revision (fail closed).
 fn changers(
     conn: &Connection,
     b: &NewSignoff,
@@ -1505,23 +1682,12 @@ fn finish_in(tx: &Transaction<'_>, f: &CeremonyFinish<'_>) -> Outcome<CeremonyOu
             result = CeremonyResult::Revoked { use_state: state };
             kind = "revoked";
         }
-        (CeremonyOp::Signoff { binding, parties }, TargetKind::Signoff) => {
-            let (artifact, policy) = changers(tx, binding)?;
-            let signoff = check!(Signoff::sign(
-                (**binding).clone(),
-                &accepted,
-                &actor,
-                &SignoffExclusions {
-                    parties: Parties {
-                        requester: &parties.requester,
-                        agent: parties.agent.as_ref(),
-                        delegation_chain: &parties.delegation_chain,
-                    },
-                    artifact_changers: &artifact,
-                    policy_changers: &policy,
-                },
-            )
-            .map_err(ap));
+        (CeremonyOp::Signoff { binding, .. }, TargetKind::Signoff { excluded }) => {
+            // X7: the exclusions read in this transaction; the challenge bound the ones read
+            // at begin (a change in between is a context mismatch).
+            let signoff = check!(
+                Signoff::sign((**binding).clone(), &accepted, &actor, &excluded).map_err(ap)
+            );
             seq = next_seq(tx, "signoff", f.challenge_id)?;
             let s = signoff.fields();
             let n = &s.binding;
@@ -1530,9 +1696,9 @@ fn finish_in(tx: &Transaction<'_>, f: &CeremonyFinish<'_>) -> Outcome<CeremonyOu
                  from_state, to_state, acceptance_record_id, criterion_id, artifact_snapshot_id, \
                  artifact_digest, acceptance_policy_id, acceptance_policy_version, \
                  acceptance_policy_bundle_sha, state_revision, issued_at, expires_at, issuer, \
-                 subject, credential_id, challenge_id, provenance_version) VALUES (?1, ?2, ?3, \
-                 ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, \
-                 ?21, ?22)",
+                 subject, credential_id, challenge_id, provenance_version, exclusions) VALUES \
+                 (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, \
+                 ?18, ?19, ?20, ?21, ?22, ?23)",
                 rusqlite::params![
                     n.signoff_id,
                     n.tenant_id,
@@ -1556,6 +1722,7 @@ fn finish_in(tx: &Transaction<'_>, f: &CeremonyFinish<'_>) -> Outcome<CeremonyOu
                     s.credential_id,
                     s.challenge_id,
                     s.provenance_version,
+                    json::canonical(&s.exclusions.context()).map_err(|_| BodyError::Integrity)?,
                 ],
             )?;
             request_ref = None;

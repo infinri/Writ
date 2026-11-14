@@ -680,15 +680,20 @@ pub fn approval_separation(
     check_separation(approver, enrollment, parties.all())
 }
 
-/// Signoff separation (O-7, R1): as approval, and not a subject who changed
-/// the artifact or the acceptance policy for the revision being accepted.
+/// Signoff separation (O-7, R1, X7): the signer's own enrollment record is
+/// required; neither the signer nor a linked identity may be any of
+/// `excluded` (the stored promotion requesters and agents, the enrolled
+/// subjects linked to them, the artifact and policy changers and any added
+/// exclusion, read from the ledger by the caller; see
+/// [`crate::approval::SignoffExclusions`]). Delegation chains are not stored
+/// (G4): this separation covers requester, agent and linked identities, not a
+/// delegation chain.
 pub fn signoff_separation(
     signer: &SubjectId,
     enrollment: Option<&EnrollmentRecord>,
-    parties: &Parties<'_>,
-    changers: &[SubjectId],
+    excluded: &[SubjectId],
 ) -> Result<(), ApprovalCode> {
-    check_separation(signer, enrollment, parties.all().chain(changers.iter()))
+    check_separation(signer, enrollment, excluded.iter())
 }
 
 /// O-8: services hold only [`Permission::Operator`].
@@ -912,7 +917,7 @@ mod tests {
             Err(ApprovalCode::SeparationViolated)
         );
         assert_eq!(
-            signoff_separation(&bob, None, &parties, &[]),
+            signoff_separation(&bob, None, std::slice::from_ref(&requester)),
             Err(ApprovalCode::SeparationViolated)
         );
         // Another subject's record does not count.
@@ -941,7 +946,11 @@ mod tests {
                 Err(ApprovalCode::SeparationViolated)
             );
             assert_eq!(
-                signoff_separation(&bob, Some(&e), &parties, &[]),
+                signoff_separation(
+                    &bob,
+                    Some(&e),
+                    &[requester.clone(), agent.clone(), chain[0].clone()]
+                ),
                 Err(ApprovalCode::SeparationViolated)
             );
         }
@@ -1011,14 +1020,20 @@ mod tests {
             delegation_chain: &chain,
         };
         let changers = [sid("writ-local", "carol"), sid("writ-local", "dave")];
+        let excluded = [
+            requester.clone(),
+            chain[0].clone(),
+            changers[0].clone(),
+            changers[1].clone(),
+        ];
         let bob = sid("writ-local", "bob");
         assert_eq!(
-            signoff_separation(&bob, Some(&enrolled(&bob, &[])), &parties, &changers),
+            signoff_separation(&bob, Some(&enrolled(&bob, &[])), &excluded),
             Ok(())
         );
         for bad in [&changers[0], &changers[1], &chain[0], &requester] {
             assert_eq!(
-                signoff_separation(bad, Some(&enrolled(bad, &[])), &parties, &changers),
+                signoff_separation(bad, Some(&enrolled(bad, &[])), &excluded),
                 Err(ApprovalCode::SeparationViolated)
             );
         }

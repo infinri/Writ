@@ -41,7 +41,7 @@ fn record_keys() -> MemoryKeys<AcceptanceRecordKey> {
     k
 }
 
-fn runner_keys() -> MemoryKeys<RunnerAttestationKey> {
+pub(crate) fn runner_keys() -> MemoryKeys<RunnerAttestationKey> {
     let mut k = MemoryKeys::new();
     k.register(
         "runner-key-1",
@@ -120,22 +120,27 @@ pub(crate) fn good_record() -> Value {
     sign(&envelope(kernel_record()), &RECORD_KEY)
 }
 
-fn attestation() -> Value {
+pub(crate) fn attestation() -> Value {
     let text =
         include_str!("../../../docs/contracts/proposed/examples/runner-attestation.valid.json");
     sign(&parse(text.as_bytes()).unwrap(), &RUNNER_KEY)
 }
 
-fn registry_entry(evaluator: &str) -> RegistryEntry {
+pub(crate) fn registry_entry(evaluator: &str) -> RegistryEntry {
     let text = include_str!(
         "../../../docs/contracts/proposed/examples/evaluator-registry-entry.valid.json"
     );
     let mut v = parse(text.as_bytes()).unwrap();
-    if evaluator == "doc-check" {
-        v = set(&v, &["evaluator_id"], json::s("doc-check"));
-        v = set(&v, &["class"], json::s("evidence"));
-        v = set(&v, &["trust"], json::s("E"));
-        v = set(&v, &["criteria"], Value::Arr(vec![json::s("docs")]));
+    let other = match evaluator {
+        "doc-check" => Some(("evidence", "E", "docs")),
+        "approval-service" => Some(("human", "H", "signoff")),
+        _ => None,
+    };
+    if let Some((class, trust, criterion)) = other {
+        v = set(&v, &["evaluator_id"], json::s(evaluator));
+        v = set(&v, &["class"], json::s(class));
+        v = set(&v, &["trust"], json::s(trust));
+        v = set(&v, &["criteria"], Value::Arr(vec![json::s(criterion)]));
         if let Value::Obj(m) = &mut v {
             m.remove("command");
         }
@@ -434,8 +439,11 @@ impl Use {
                 registry: &registry,
                 attestations: &self.attestations,
                 consumed_attestations: &self.consumed,
+                signoffs: &[],
+                promotion_parties: &[],
             },
         )
+        .map(|c| c.attestation_ids)
     }
 }
 

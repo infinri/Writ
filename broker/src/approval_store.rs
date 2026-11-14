@@ -42,7 +42,7 @@ use writ_kernel::time::Timestamp;
 
 use crate::approval::{
     context_fingerprint, ApprovalRequest, ApprovalStatus, ChallengeBinding, ChallengeOperation,
-    NewApprovalRequest, NewSignoff, RevocationTarget, Signoff,
+    NewApprovalRequest, NewSignoff, RevocationTarget, Signoff, SignoffExclusions,
 };
 use crate::authorize::{Authorized, UseTimeStatus};
 use crate::clock::ObservedTime;
@@ -219,15 +219,19 @@ pub fn revocation_binding(
 }
 
 /// What a signoff challenge binds: the signoff's scope, its id, the
-/// fingerprint of its displayed context, its acceptance policy bundle digest
-/// and the state revision.
-pub fn signoff_binding(binding: &NewSignoff) -> Result<ChallengeBinding, CanonicalError> {
+/// fingerprint of its complete displayed context (the binding and the
+/// exclusions the ledger read, X7), its acceptance policy bundle digest and
+/// the state revision.
+pub fn signoff_binding(
+    binding: &NewSignoff,
+    excluded: &SignoffExclusions,
+) -> Result<ChallengeBinding, CanonicalError> {
     Ok(ChallengeBinding {
         operation: ChallengeOperation::Signoff,
         tenant_id: binding.tenant_id.clone(),
         project_id: binding.project_id.clone(),
         target_id: binding.signoff_id.clone(),
-        context_fingerprint: binding.displayed()?.fingerprint().clone(),
+        context_fingerprint: binding.displayed(excluded)?.fingerprint().clone(),
         policy_bundle_sha: binding.acceptance_policy_bundle_sha.clone(),
         revision: binding.state_revision,
     })
@@ -360,17 +364,17 @@ pub struct BootstrapEnrollment {
     pub linked_identities: Vec<SubjectId>,
 }
 
-/// Parties a signoff excludes beyond the durable artifact and policy
-/// changers the ledger reads itself (C2): they can only add exclusions; the
-/// I-5 use-time check repeats separation against the promotion request.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Caller-supplied signoff exclusions (S3, X7). They can only add: the
+/// ledger reads the requesters and agents of the stored promotion contexts,
+/// the enrolled subjects linked to them and the artifact and policy changers
+/// itself inside the transaction ([`SignoffExclusions`]); these subjects are
+/// added to that set (displayed and fingerprinted as `added`), never
+/// replacing or removing anything. The I-5 use-time check repeats separation
+/// against the promotion request.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SignoffParties {
-    /// Requester of the promotion the signoff is for.
-    pub requester: SubjectId,
-    /// Its agent, if any.
-    pub agent: Option<SubjectId>,
-    /// Its trusted delegation chain.
-    pub delegation_chain: Vec<SubjectId>,
+    /// Additional excluded subjects.
+    pub added: Vec<SubjectId>,
 }
 
 /// The human operation of one ceremony.
@@ -397,7 +401,7 @@ pub enum CeremonyOp {
     Signoff {
         /// The binding to sign.
         binding: Box<NewSignoff>,
-        /// Additional excluded parties.
+        /// Additional excluded subjects (they only add, X7).
         parties: SignoffParties,
     },
     /// Enroll a subject (administrative ceremony).

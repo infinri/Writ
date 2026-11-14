@@ -1425,6 +1425,9 @@ mod runner_tests;
 mod m4_approval_tests;
 
 #[cfg(test)]
+mod m4_signoff_tests;
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
