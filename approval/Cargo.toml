@@ -11,6 +11,10 @@ publish.workspace = true
 # allow-list; the dependency gate is expected to fail until the lead integrates it.
 [dependencies]
 writ-broker = { path = "../broker" }
+# Production entry point only (Y3, D-043): `writ-approval-server` opens the local ledger through
+# its normal ownership path. A workspace path dependency; its registry closure (rusqlite and the
+# pinned SQLite) is gated by persistence/sqlite/deps-allowlist.json, not added here.
+writ-ledger-sqlite = { path = "../persistence/sqlite" }
 serde_json = { version = "=1.0.154", default-features = false, features = ["std"] }
 webauthn-rs = { version = "=0.6.2", default-features = false, features = ["danger-allow-state-serialisation"] }
 hyper = { version = "1", default-features = false, features = ["server", "http1"] }
@@ -20,6 +24,13 @@ tokio = { version = "1", default-features = false, features = ["rt", "net", "tim
 [dev-dependencies]
 webauthn-authenticator-rs = { version = "=0.6.2", default-features = false, features = ["softpasskey"] }
 p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
+
+# The production entry point (Y3, D-043; approval/README.md). No test verifier, no fallback.
+[[bin]]
+name = "writ-approval-server"
+path = "src/bin/writ-approval-server.rs"
+test = false
+bench = false
 
 [lints]
 workspace = true

@@ -16,8 +16,12 @@
 //!   channel)?)` with `v = Arc::new(PasskeyVerifier::for_listener(&listener)?)`, then
 //!   `LedgerBackend::new(Arc::new(ledger), clock)`.
 //! - [`page`]: escaped rendering of the broker's stored, fingerprint-covered context (R6).
+//! - [`server`]: the required configuration of the production entry point
+//!   `writ-approval-server` (Y3, D-043; approval/README.md), which wires exactly this
+//!   verifier, the ledger's approval channel and the listener.
 
 pub mod backend;
 pub mod listener;
 pub mod page;
+pub mod server;
 pub mod verifier;
