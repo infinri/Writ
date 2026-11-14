@@ -23,9 +23,14 @@
 //! [`Signoff`] and [`Revocation`] have private fields. New ones are built
 //! only from an [`AcceptedAssertion`] (itself only from
 //! [`crate::human::VerifiedAssertion::check`]): [`decide`],
-//! [`Signoff::sign`], [`Revocation::record`]. Each also has a `from_stored`
-//! constructor for the ledger only, which revalidates the record's
-//! invariants when a stored row is read back.
+//! [`Signoff::sign`], [`Revocation::record`]. Each of these decides
+//! eligibility itself from the caller-supplied stored records ([`Actor`]):
+//! human subject (`SERVICE_NOT_PERMITTED`), active (`SUBJECT_REVOKED`),
+//! the operation's permission in the challenge's scope at the acceptance
+//! time (`PERMISSION_MISSING`), and for decisions and signoffs separation
+//! (`SEPARATION_VIOLATED`). Each also has a `from_stored` constructor that
+//! requires a [`LedgerCapability`] and revalidates the record's invariants
+//! when a stored row is read back.
 //!
 //! **Displayed context** (R6): the approval and signoff pages render only a
 //! [`DisplayedContext`], whose fingerprint is the D-006 digest of exactly
@@ -42,8 +47,9 @@ use writ_kernel::time::Timestamp;
 
 use crate::grants::Verdict;
 use crate::human::{
-    approval_separation, AcceptedAssertion, ActiveCredentials, CeremonyState, EnrollmentRecord,
-    HumanVerifier, Parties, SubjectId, VerifiedAssertion, VerifierError,
+    approval_separation, check_actor, signoff_separation, AcceptedAssertion, ActiveCredentials,
+    Actor, CeremonyState, HumanVerifier, LedgerCapability, Parties, Permission, SubjectId,
+    VerifiedAssertion, VerifierError,
 };
 
 /// Version of approval, revocation and signoff provenance (successor of
@@ -539,9 +545,12 @@ pub struct ApprovalDecision {
 }
 
 impl ApprovalDecision {
-    /// Reconstruct a stored row (the ledger only): revalidates non-empty
-    /// identifiers and the provenance version.
-    pub fn from_stored(fields: DecisionFields) -> Result<ApprovalDecision, InvalidRecord> {
+    /// Reconstruct a stored row (the ledger only, [`LedgerCapability`]):
+    /// revalidates non-empty identifiers and the provenance version.
+    pub fn from_stored(
+        _capability: &LedgerCapability,
+        fields: DecisionFields,
+    ) -> Result<ApprovalDecision, InvalidRecord> {
         if !nonempty(&[
             &fields.request_id,
             &fields.credential_id,
@@ -565,14 +574,17 @@ impl ApprovalDecision {
 
 /// Decide `request` (stored status `from`) from an accepted assertion: the
 /// challenge must target this request in its scope with its current
-/// fingerprint; separation (O-7, R1) with the approver's `enrollment`; the
-/// transition with the verdict derived from the challenge (R5). Permission
-/// and revocation lookups are the caller's (ledger) checks.
+/// fingerprint; the approver must be the accepted subject, human, active and
+/// hold [`Permission::Approver`] for the request's scope at the decision
+/// time ([`check_actor`]); separation (O-7, R1) with the approver's own
+/// enrollment record; then the transition with the verdict derived from the
+/// challenge (R5). The caller supplies the approver's stored records; this
+/// function decides.
 pub fn decide(
     request: &ApprovalRequest,
     from: ApprovalStatus,
     accepted: &AcceptedAssertion,
-    enrollment: Option<&EnrollmentRecord>,
+    approver: &Actor<'_>,
     channel: &str,
 ) -> Result<(ApprovalStatus, ApprovalDecision), ApprovalCode> {
     let b = accepted.binding();
@@ -590,7 +602,8 @@ pub fn decide(
     if &b.context_fingerprint != request.fingerprint() {
         return refuse(ChallengeRefusal::ContextMismatch);
     }
-    approval_separation(accepted.subject(), enrollment, &request.parties())?;
+    check_actor(approver, accepted, Permission::Approver)?;
+    approval_separation(accepted.subject(), approver.enrollment, &request.parties())?;
     let status = transition(from, accepted, request.expires_at())?;
     let verdict = match status {
         ApprovalStatus::Approved => Verdict::Approved,
@@ -728,7 +741,8 @@ pub fn challenge_expiry(issued_at: Timestamp, target_expiry: Timestamp) -> Times
 }
 
 /// A server-side challenge row (I-2, R2). Private fields: built by
-/// [`Challenge::issue`] or, for the ledger only, [`Challenge::from_stored`].
+/// [`Challenge::issue`] or, with a [`LedgerCapability`],
+/// [`Challenge::from_stored`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Challenge {
     challenge_id: String,
@@ -846,8 +860,11 @@ impl Challenge {
     /// Reconstruct a stored row (the ledger only), revalidating: well-formed
     /// fields (`Malformed`), the stored verdict text equal to the
     /// operation's (`VerdictMismatch`), and `issued_at < expires_at <=
-    /// issued_at + 120 s` (`Malformed`).
-    pub fn from_stored(row: StoredChallenge) -> Result<Challenge, ChallengeRefusal> {
+    /// issued_at + 120 s` (`Malformed`). Requires a [`LedgerCapability`].
+    pub fn from_stored(
+        _capability: &LedgerCapability,
+        row: StoredChallenge,
+    ) -> Result<Challenge, ChallengeRefusal> {
         if !challenge_well_formed(
             &row.challenge_id,
             &row.ceremony_state,
@@ -1072,6 +1089,17 @@ pub struct RevocationFields {
     pub challenge_id: String,
 }
 
+/// The revoker's own unused grant (M4-START-PLAN section 3: an approver may
+/// revoke its own unused grant). The caller supplies it from the ledger only
+/// when the grant has no recorded use.
+#[derive(Clone, Copy, Debug)]
+pub struct OwnUnusedGrant<'a> {
+    /// The grant label (the [`RevocationTarget::Grant`] id).
+    pub grant_label: &'a str,
+    /// The subject that approved the grant.
+    pub approved_by: &'a SubjectId,
+}
+
 /// A committed revocation (I-4). Never refunds, replenishes or substitutes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Revocation {
@@ -1080,12 +1108,18 @@ pub struct Revocation {
 
 impl Revocation {
     /// Record a revocation of `target` from an accepted `Revoke` challenge
-    /// that targets it (`CHALLENGE_INVALID` otherwise). Permission checks
-    /// are the caller's.
+    /// that targets it (`CHALLENGE_INVALID` otherwise). The revoker must be
+    /// the accepted subject, human and active, and hold
+    /// [`Permission::Revoker`] in the challenge's scope at the acceptance
+    /// time; or, when `own_unused_grant` names this grant target and this
+    /// subject as its approver, hold [`Permission::Approver`] there instead
+    /// (`SERVICE_NOT_PERMITTED`, `SUBJECT_REVOKED`, `PERMISSION_MISSING`).
     pub fn record(
         target: RevocationTarget,
         reason: &str,
         accepted: &AcceptedAssertion,
+        revoker: &Actor<'_>,
+        own_unused_grant: Option<OwnUnusedGrant<'_>>,
     ) -> Result<Revocation, ApprovalCode> {
         if accepted.operation() != ChallengeOperation::Revoke {
             return Err(ApprovalCode::ChallengeInvalid(
@@ -1096,6 +1130,17 @@ impl Revocation {
             return Err(ApprovalCode::ChallengeInvalid(
                 ChallengeRefusal::TargetMismatch,
             ));
+        }
+        let own = own_unused_grant.is_some_and(|g| {
+            matches!(&target, RevocationTarget::Grant(id) if id == g.grant_label)
+                && g.approved_by == accepted.subject()
+        });
+        match check_actor(revoker, accepted, Permission::Revoker) {
+            Ok(()) => {}
+            Err(ApprovalCode::PermissionMissing) if own => {
+                check_actor(revoker, accepted, Permission::Approver)?
+            }
+            Err(e) => return Err(e),
         }
         Ok(Revocation {
             fields: RevocationFields {
@@ -1108,8 +1153,12 @@ impl Revocation {
         })
     }
 
-    /// Reconstruct a stored row (the ledger only), revalidating identifiers.
-    pub fn from_stored(fields: RevocationFields) -> Result<Revocation, InvalidRecord> {
+    /// Reconstruct a stored row (the ledger only, [`LedgerCapability`]),
+    /// revalidating identifiers.
+    pub fn from_stored(
+        _capability: &LedgerCapability,
+        fields: RevocationFields,
+    ) -> Result<Revocation, InvalidRecord> {
         if !fields.target.well_formed()
             || !fields.by.is_well_formed()
             || fields.challenge_id.is_empty()
@@ -1224,6 +1273,19 @@ impl NewSignoff {
     }
 }
 
+/// Who may never sign off a criterion (O-7): the request's parties and the
+/// subjects who changed the artifact or the acceptance policy for the
+/// revision being accepted. Supplied by the caller from the ledger.
+#[derive(Clone, Copy, Debug)]
+pub struct SignoffExclusions<'a> {
+    /// Requester, agent and delegation chain.
+    pub parties: Parties<'a>,
+    /// Subjects who changed the artifact for this revision.
+    pub artifact_changers: &'a [SubjectId],
+    /// Subjects who changed the acceptance policy for this revision.
+    pub policy_changers: &'a [SubjectId],
+}
+
 /// The fields of a stored signoff.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SignoffFields {
@@ -1251,11 +1313,17 @@ pub struct Signoff {
 impl Signoff {
     /// Sign `binding` from an accepted `Signoff` challenge that targets its
     /// signoff id in its scope with its displayed fingerprint
-    /// (`CHALLENGE_INVALID` otherwise). Separation, permission and the other
-    /// I-5 checks run at use time.
+    /// (`CHALLENGE_INVALID` otherwise). The signer must be the accepted
+    /// subject, human, active and hold [`Permission::SignoffAuthority`] for
+    /// the scope at the signing time ([`check_actor`]), and pass
+    /// [`signoff_separation`] with its own enrollment record against every
+    /// party and changer in `excluded`. The I-5 use-time checks repeat
+    /// eligibility at promotion.
     pub fn sign(
         binding: NewSignoff,
         accepted: &AcceptedAssertion,
+        signer: &Actor<'_>,
+        excluded: &SignoffExclusions<'_>,
     ) -> Result<Signoff, ApprovalCode> {
         let b = accepted.binding();
         let refuse = |c| Err(ApprovalCode::ChallengeInvalid(c));
@@ -1281,6 +1349,19 @@ impl Signoff {
         if binding.expires_at <= accepted.accepted_at() {
             return refuse(ChallengeRefusal::Expired);
         }
+        check_actor(signer, accepted, Permission::SignoffAuthority)?;
+        let changers: Vec<SubjectId> = excluded
+            .artifact_changers
+            .iter()
+            .chain(excluded.policy_changers)
+            .cloned()
+            .collect();
+        signoff_separation(
+            accepted.subject(),
+            signer.enrollment,
+            &excluded.parties,
+            &changers,
+        )?;
         Ok(Signoff {
             fields: SignoffFields {
                 binding,
@@ -1293,9 +1374,13 @@ impl Signoff {
         })
     }
 
-    /// Reconstruct a stored row (the ledger only), revalidating identifiers,
-    /// `issued_at < expires_at` and the provenance version.
-    pub fn from_stored(fields: SignoffFields) -> Result<Signoff, InvalidRecord> {
+    /// Reconstruct a stored row (the ledger only, [`LedgerCapability`]),
+    /// revalidating identifiers, `issued_at < expires_at` and the provenance
+    /// version.
+    pub fn from_stored(
+        _capability: &LedgerCapability,
+        fields: SignoffFields,
+    ) -> Result<Signoff, InvalidRecord> {
         if !fields.binding.well_formed()
             || !fields.subject.is_well_formed()
             || !nonempty(&[&fields.credential_id, &fields.challenge_id])
@@ -1332,9 +1417,73 @@ impl Signoff {
 mod tests {
     use super::*;
     use crate::human::{
-        CeremonyStart, CredentialStatus, CredentialUpdate, PrincipalKind, StoredCredential,
-        SubjectRecord, SubjectStatus, WEBAUTHN_PASSKEY,
+        CeremonyStart, CredentialStatus, CredentialUpdate, EnrollmentRecord, PrincipalKind,
+        RoleAssignment, StoredCredential, SubjectRecord, SubjectStatus, VerifierCapability,
+        WEBAUTHN_PASSKEY,
     };
+
+    fn vcap() -> VerifierCapability {
+        VerifierCapability::for_verifier_implementation()
+    }
+
+    fn lcap() -> LedgerCapability {
+        LedgerCapability::for_ledger_implementation()
+    }
+
+    /// A subject's stored records, as the ledger would supply them.
+    struct Who {
+        record: SubjectRecord,
+        enrollment: Option<EnrollmentRecord>,
+        roles: Vec<RoleAssignment>,
+    }
+
+    impl Who {
+        fn actor(&self) -> Actor<'_> {
+            Actor {
+                record: &self.record,
+                enrollment: self.enrollment.as_ref(),
+                assignments: &self.roles,
+            }
+        }
+    }
+
+    fn role(subject: &SubjectId, permission: Permission) -> RoleAssignment {
+        RoleAssignment {
+            assignment_id: format!("role-{}", permission as u8),
+            subject: subject.clone(),
+            kind: PrincipalKind::Human,
+            permission,
+            tenant_id: "t1".into(),
+            project_id: "p1".into(),
+            granted_at: t("2026-11-01T00:00:00Z"),
+            revoked_at: None,
+        }
+    }
+
+    /// An enrolled, active human holding `permissions` in (t1, p1).
+    fn who(subject: SubjectId, permissions: &[Permission]) -> Who {
+        let enrollment = EnrollmentRecord::new(
+            &lcap(),
+            subject.clone(),
+            vec![SubjectId::new("adapter", &format!("u-{}", subject.subject))],
+            t("2026-11-01T00:00:00Z"),
+            SubjectId::new("writ-local", "admin"),
+        )
+        .unwrap();
+        Who {
+            roles: permissions.iter().map(|p| role(&subject, *p)).collect(),
+            record: SubjectRecord {
+                subject,
+                kind: PrincipalKind::Human,
+                status: SubjectStatus::Active,
+            },
+            enrollment: Some(enrollment),
+        }
+    }
+
+    fn approver() -> Who {
+        who(bob(), &[Permission::Approver])
+    }
 
     fn t(s: &str) -> Timestamp {
         Timestamp::parse_strict(s).unwrap()
@@ -1419,6 +1568,7 @@ mod tests {
 
     fn assertion_for(c: &Challenge) -> VerifiedAssertion {
         VerifiedAssertion::new(
+            &vcap(),
             bob(),
             "cred-1",
             true,
@@ -1442,16 +1592,6 @@ mod tests {
             .unwrap()
     }
 
-    fn enrollment() -> EnrollmentRecord {
-        EnrollmentRecord::new(
-            bob(),
-            vec![SubjectId::new("adapter", "u-bob")],
-            t("2026-11-01T00:00:00Z"),
-            SubjectId::new("writ-local", "admin"),
-        )
-        .unwrap()
-    }
-
     fn active_credentials() -> ActiveCredentials {
         let record = SubjectRecord {
             subject: bob(),
@@ -1470,7 +1610,16 @@ mod tests {
             enrolled_at: t("2026-11-01T00:00:00Z"),
             enrolled_by: SubjectId::new("writ-local", "admin"),
         });
-        ActiveCredentials::select(&record, stored, now()).unwrap()
+        ActiveCredentials::select(
+            &record,
+            stored,
+            &[role(&bob(), Permission::Approver)],
+            Permission::Approver,
+            "t1",
+            "p1",
+            now(),
+        )
+        .unwrap()
     }
 
     /// A deterministic test verifier: the challenge digest is the digest of
@@ -1507,6 +1656,7 @@ mod tests {
                 .first()
                 .ok_or(VerifierError::CredentialUnknown)?;
             Ok(VerifiedAssertion::new(
+                &vcap(),
                 credentials.subject().clone(),
                 &cred.credential_id,
                 true,
@@ -1607,7 +1757,7 @@ mod tests {
             &r,
             ApprovalStatus::Pending,
             &deny,
-            Some(&enrollment()),
+            &approver().actor(),
             "local",
         )
         .unwrap();
@@ -1638,7 +1788,7 @@ mod tests {
         let mut row = stored(&challenge_for(binding_for(ChallengeOperation::Deny)));
         row.verdict = "approved".into();
         assert_eq!(
-            Challenge::from_stored(row),
+            Challenge::from_stored(&lcap(), row),
             Err(ChallengeRefusal::VerdictMismatch)
         );
         for op in [
@@ -1658,10 +1808,21 @@ mod tests {
         let r = request();
         let accepted = accept(binding());
         assert_eq!(
-            decide(&r, ApprovalStatus::Pending, &accepted, None, "local"),
+            decide(
+                &r,
+                ApprovalStatus::Pending,
+                &accepted,
+                &Who {
+                    enrollment: None,
+                    ..approver()
+                }
+                .actor(),
+                "local"
+            ),
             Err(ApprovalCode::SeparationViolated)
         );
         let linked_to_requester = EnrollmentRecord::new(
+            &lcap(),
             bob(),
             vec![SubjectId::new("adapter", "alice")],
             t("2026-11-01T00:00:00Z"),
@@ -1673,7 +1834,11 @@ mod tests {
                 &r,
                 ApprovalStatus::Pending,
                 &accepted,
-                Some(&linked_to_requester),
+                &Who {
+                    enrollment: Some(linked_to_requester),
+                    ..approver()
+                }
+                .actor(),
                 "local"
             ),
             Err(ApprovalCode::SeparationViolated)
@@ -1682,7 +1847,7 @@ mod tests {
             &r,
             ApprovalStatus::Pending,
             &accepted,
-            Some(&enrollment()),
+            &approver().actor(),
             "local",
         )
         .unwrap();
@@ -1713,7 +1878,7 @@ mod tests {
                 &r,
                 ApprovalStatus::Approved,
                 &accepted,
-                Some(&enrollment()),
+                &approver().actor(),
                 "local"
             ),
             Err(ApprovalCode::RequestClosed)
@@ -1726,7 +1891,7 @@ mod tests {
                 &r,
                 ApprovalStatus::Pending,
                 &accept(other),
-                Some(&enrollment()),
+                &approver().actor(),
                 "local"
             ),
             Err(ApprovalCode::ChallengeInvalid(
@@ -1740,7 +1905,7 @@ mod tests {
                 &r,
                 ApprovalStatus::Pending,
                 &accept(stale),
-                Some(&enrollment()),
+                &approver().actor(),
                 "local"
             ),
             Err(ApprovalCode::ChallengeInvalid(
@@ -1749,15 +1914,15 @@ mod tests {
         );
         // Stored decision rows are revalidated.
         assert_eq!(
-            ApprovalDecision::from_stored(f.clone()),
+            ApprovalDecision::from_stored(&lcap(), f.clone()),
             Ok(decision.clone())
         );
         let mut bad = f.clone();
         bad.provenance_version = "writ-provenance-1".into();
-        assert!(ApprovalDecision::from_stored(bad).is_err());
+        assert!(ApprovalDecision::from_stored(&lcap(), bad).is_err());
         let mut bad = f.clone();
         bad.challenge_id.clear();
-        assert!(ApprovalDecision::from_stored(bad).is_err());
+        assert!(ApprovalDecision::from_stored(&lcap(), bad).is_err());
     }
 
     #[test]
@@ -1941,6 +2106,7 @@ mod tests {
         // stored challenge yields the AcceptedAssertion a decision needs.
         let c = challenge_for(binding());
         let forged = VerifiedAssertion::new(
+            &vcap(),
             bob(),
             "cred-1",
             true,
@@ -1958,6 +2124,7 @@ mod tests {
         let digest = c.challenge_digest().clone();
         let mk = |subject: SubjectId, cred: &str, uv: bool, method: &str, upd: Option<&str>| {
             VerifiedAssertion::new(
+                &vcap(),
                 subject,
                 cred,
                 uv,
@@ -2067,7 +2234,7 @@ mod tests {
     #[test]
     fn a_challenge_is_single_use_and_stored_rows_are_revalidated() {
         let c = challenge("2026-11-07T10:00:00Z", "2026-11-07T10:10:00Z");
-        assert_eq!(Challenge::from_stored(stored(&c)), Ok(c.clone()));
+        assert_eq!(Challenge::from_stored(&lcap(), stored(&c)), Ok(c.clone()));
         let used = c.consume().unwrap();
         assert_eq!(used.status(), ChallengeStatus::Consumed);
         assert_eq!(used.consume(), Err(ChallengeRefusal::Consumed));
@@ -2077,7 +2244,7 @@ mod tests {
         );
         let mut row = stored(&c);
         row.status = ChallengeStatus::Expired;
-        let expired = Challenge::from_stored(row).unwrap();
+        let expired = Challenge::from_stored(&lcap(), row).unwrap();
         assert_eq!(expired.consume(), Err(ChallengeRefusal::Expired));
         assert_eq!(
             assertion_for(&expired).check(&expired, &binding(), "idem-1", now()),
@@ -2086,13 +2253,13 @@ mod tests {
         let mut row = stored(&c);
         row.expires_at = row.issued_at.plus_seconds(CHALLENGE_TTL_SECONDS + 1);
         assert_eq!(
-            Challenge::from_stored(row),
+            Challenge::from_stored(&lcap(), row),
             Err(ChallengeRefusal::Malformed)
         );
         let mut row = stored(&c);
         row.ceremony_state = CeremonyState::from_bytes(vec![]);
         assert_eq!(
-            Challenge::from_stored(row),
+            Challenge::from_stored(&lcap(), row),
             Err(ChallengeRefusal::Malformed)
         );
     }
@@ -2130,9 +2297,199 @@ mod tests {
         }
     }
 
+    fn requester() -> SubjectId {
+        SubjectId::new("adapter", "alice")
+    }
+
+    fn exclusions<'a>(
+        artifact_changers: &'a [SubjectId],
+        policy_changers: &'a [SubjectId],
+    ) -> SignoffExclusions<'a> {
+        SignoffExclusions {
+            parties: Parties {
+                requester: &REQUESTER,
+                agent: None,
+                delegation_chain: &[],
+            },
+            artifact_changers,
+            policy_changers,
+        }
+    }
+
+    static REQUESTER: std::sync::LazyLock<SubjectId> = std::sync::LazyLock::new(requester);
+
+    /// Sign `binding` as `signer` through an accepted signoff challenge for
+    /// the signer's subject.
+    fn sign(
+        binding: NewSignoff,
+        signer: &Who,
+        artifact_changers: &[SubjectId],
+        policy_changers: &[SubjectId],
+    ) -> Result<Signoff, ApprovalCode> {
+        Signoff::sign(
+            binding,
+            &accept_as(signer.record.subject.clone(), signoff_binding()),
+            &signer.actor(),
+            &exclusions(artifact_changers, policy_changers),
+        )
+    }
+
+    fn accept_as(subject: SubjectId, binding: ChallengeBinding) -> AcceptedAssertion {
+        let mut n = new_challenge("ch-1", binding.clone(), b"state-a");
+        n.subject = subject.clone();
+        let c = Challenge::issue(n).unwrap();
+        VerifiedAssertion::new(
+            &vcap(),
+            subject,
+            "cred-1",
+            true,
+            WEBAUTHN_PASSKEY,
+            c.challenge_digest().clone(),
+            None,
+        )
+        .check(&c, &binding, "idem-1", now())
+        .unwrap()
+    }
+
+    #[test]
+    fn signoff_refuses_ineligible_signers() {
+        let authority = [Permission::SignoffAuthority];
+        let carol = SubjectId::new("writ-local", "carol");
+        let dave = SubjectId::new("writ-local", "dave");
+        let sep = Err(ApprovalCode::SeparationViolated);
+        // The requester (same subject text under the human realm) is refused.
+        let as_requester = who(SubjectId::new("writ-local", "alice"), &authority);
+        assert_eq!(sign(new_signoff(), &as_requester, &[], &[]), sep);
+        // A signer linked to the requester identity is refused.
+        let mut linked = who(bob(), &authority);
+        linked.enrollment = Some(
+            EnrollmentRecord::new(
+                &lcap(),
+                bob(),
+                vec![requester()],
+                t("2026-11-01T00:00:00Z"),
+                SubjectId::new("writ-local", "admin"),
+            )
+            .unwrap(),
+        );
+        assert_eq!(sign(new_signoff(), &linked, &[], &[]), sep);
+        // The artifact changer and the policy changer are refused.
+        let changer = who(carol.clone(), &authority);
+        assert_eq!(
+            sign(new_signoff(), &changer, std::slice::from_ref(&carol), &[]),
+            sep
+        );
+        assert_eq!(
+            sign(new_signoff(), &changer, &[], std::slice::from_ref(&carol)),
+            sep
+        );
+        // ... but another subject who changed nothing may sign.
+        assert!(sign(
+            new_signoff(),
+            &who(dave.clone(), &authority),
+            std::slice::from_ref(&carol),
+            std::slice::from_ref(&carol)
+        )
+        .is_ok());
+        // An unenrolled signer is refused.
+        let mut unenrolled = who(bob(), &authority);
+        unenrolled.enrollment = None;
+        assert_eq!(sign(new_signoff(), &unenrolled, &[], &[]), sep);
+        // A service subject is refused, whatever it holds.
+        let mut service = who(bob(), &authority);
+        service.record.kind = PrincipalKind::Service;
+        assert_eq!(
+            sign(new_signoff(), &service, &[], &[]),
+            Err(ApprovalCode::ServiceNotPermitted)
+        );
+        // A signer without SignoffAuthority (or with it in another scope) is refused.
+        let missing = Err(ApprovalCode::PermissionMissing);
+        assert_eq!(
+            sign(
+                new_signoff(),
+                &who(bob(), &[Permission::Approver]),
+                &[],
+                &[]
+            ),
+            missing
+        );
+        let mut elsewhere = who(bob(), &authority);
+        elsewhere.roles[0].project_id = "p2".into();
+        assert_eq!(sign(new_signoff(), &elsewhere, &[], &[]), missing);
+        let mut lapsed = who(bob(), &authority);
+        lapsed.roles[0].revoked_at = Some(now());
+        assert_eq!(sign(new_signoff(), &lapsed, &[], &[]), missing);
+        // A revoked signer is refused.
+        let mut revoked = who(bob(), &authority);
+        revoked.record.status = SubjectStatus::Revoked { at: now() };
+        assert_eq!(
+            sign(new_signoff(), &revoked, &[], &[]),
+            Err(ApprovalCode::SubjectRevoked)
+        );
+        // Records of another subject are not the signer's.
+        let accepted = accept_as(bob(), signoff_binding());
+        assert_eq!(
+            Signoff::sign(
+                new_signoff(),
+                &accepted,
+                &who(dave, &authority).actor(),
+                &exclusions(&[], &[])
+            ),
+            Err(ApprovalCode::ChallengeInvalid(
+                ChallengeRefusal::SubjectMismatch
+            ))
+        );
+    }
+
+    #[test]
+    fn decide_refuses_services_and_approvers_without_permission() {
+        let r = request();
+        let accepted = accept(binding());
+        let mut service = approver();
+        service.record.kind = PrincipalKind::Service;
+        assert_eq!(
+            decide(
+                &r,
+                ApprovalStatus::Pending,
+                &accepted,
+                &service.actor(),
+                "local"
+            ),
+            Err(ApprovalCode::ServiceNotPermitted)
+        );
+        for permissions in [
+            &[][..],
+            &[Permission::SignoffAuthority, Permission::Revoker],
+        ] {
+            assert_eq!(
+                decide(
+                    &r,
+                    ApprovalStatus::Pending,
+                    &accepted,
+                    &who(bob(), permissions).actor(),
+                    "local"
+                ),
+                Err(ApprovalCode::PermissionMissing)
+            );
+        }
+        // Deny needs the Approver permission too.
+        let deny = accept(binding_for(ChallengeOperation::Deny));
+        assert_eq!(
+            decide(
+                &r,
+                ApprovalStatus::Pending,
+                &deny,
+                &who(bob(), &[]).actor(),
+                "local"
+            ),
+            Err(ApprovalCode::PermissionMissing)
+        );
+    }
+
     #[test]
     fn signoff_context_binds_every_acceptance_member() {
-        let s = Signoff::sign(new_signoff(), &accept(signoff_binding())).unwrap();
+        let signer = who(bob(), &[Permission::SignoffAuthority]);
+        let s = sign(new_signoff(), &signer, &[], &[]).unwrap();
         assert_eq!(s.fields().subject, bob());
         assert_eq!(s.fields().issued_at, now());
         assert_eq!(s.fields().challenge_id, "ch-1");
@@ -2160,26 +2517,31 @@ mod tests {
             change(&mut other);
             assert_ne!(other.displayed().unwrap().fingerprint(), &fp, "change {i}");
             // A changed binding cannot be signed with the original challenge.
-            assert!(
-                Signoff::sign(other, &accept(signoff_binding())).is_err(),
-                "change {i}"
-            );
+            assert!(sign(other, &signer, &[], &[]).is_err(), "change {i}");
         }
         // Only a signoff challenge signs.
         assert_eq!(
-            Signoff::sign(new_signoff(), &accept(binding())),
+            Signoff::sign(
+                new_signoff(),
+                &accept(binding()),
+                &signer.actor(),
+                &exclusions(&[], &[])
+            ),
             Err(ApprovalCode::ChallengeInvalid(
                 ChallengeRefusal::OperationMismatch
             ))
         );
         // Stored rows are revalidated.
-        assert_eq!(Signoff::from_stored(s.fields().clone()), Ok(s.clone()));
+        assert_eq!(
+            Signoff::from_stored(&lcap(), s.fields().clone()),
+            Ok(s.clone())
+        );
         let mut bad = s.fields().clone();
         bad.provenance_version = "writ-provenance-1".into();
-        assert!(Signoff::from_stored(bad).is_err());
+        assert!(Signoff::from_stored(&lcap(), bad).is_err());
         let mut bad = s.fields().clone();
         bad.issued_at = bad.binding.expires_at;
-        assert!(Signoff::from_stored(bad).is_err());
+        assert!(Signoff::from_stored(&lcap(), bad).is_err());
     }
 
     #[test]
@@ -2187,10 +2549,21 @@ mod tests {
         let target = RevocationTarget::Grant("g-1".into());
         let mut b = binding_for(ChallengeOperation::Revoke);
         b.target_id = target.target_id();
-        let r = Revocation::record(target.clone(), "compromised", &accept(b)).unwrap();
+        let revoker = who(bob(), &[Permission::Revoker]);
+        let r = Revocation::record(
+            target.clone(),
+            "compromised",
+            &accept(b.clone()),
+            &revoker.actor(),
+            None,
+        )
+        .unwrap();
         assert_eq!(r.fields().by, bob());
         assert_eq!(r.fields().at, now());
-        assert_eq!(Revocation::from_stored(r.fields().clone()), Ok(r.clone()));
+        assert_eq!(
+            Revocation::from_stored(&lcap(), r.fields().clone()),
+            Ok(r.clone())
+        );
         assert_eq!(
             Revocation::record(
                 RevocationTarget::Grant("g-2".into()),
@@ -2199,14 +2572,16 @@ mod tests {
                     let mut b = binding_for(ChallengeOperation::Revoke);
                     b.target_id = target.target_id();
                     b
-                })
+                }),
+                &revoker.actor(),
+                None
             ),
             Err(ApprovalCode::ChallengeInvalid(
                 ChallengeRefusal::TargetMismatch
             ))
         );
         assert_eq!(
-            Revocation::record(target, "x", &accept(binding())),
+            Revocation::record(target, "x", &accept(binding()), &revoker.actor(), None),
             Err(ApprovalCode::ChallengeInvalid(
                 ChallengeRefusal::OperationMismatch
             ))
@@ -2216,6 +2591,52 @@ mod tests {
             RevocationTarget::Subject(SubjectId::new("a:b", "c")).target_id(),
             RevocationTarget::Subject(SubjectId::new("a", "b:c")).target_id()
         );
+    }
+
+    #[test]
+    fn revocation_needs_the_revoker_permission_or_the_own_unused_grant() {
+        let target = RevocationTarget::Grant("g-1".into());
+        let mut b = binding_for(ChallengeOperation::Revoke);
+        b.target_id = target.target_id();
+        let accepted = accept(b);
+        let record = |w: &Who, own: Option<OwnUnusedGrant<'_>>| {
+            Revocation::record(target.clone(), "x", &accepted, &w.actor(), own)
+        };
+        let missing = Err(ApprovalCode::PermissionMissing);
+        // Without Revoker: refused.
+        assert_eq!(record(&who(bob(), &[]), None), missing);
+        assert_eq!(record(&approver(), None), missing);
+        // The approver of its own unused grant may revoke it.
+        let bob_id = bob();
+        let mine = OwnUnusedGrant {
+            grant_label: "g-1",
+            approved_by: &bob_id,
+        };
+        assert!(record(&approver(), Some(mine)).is_ok());
+        // ... but not another approver's grant, another grant, or without Approver.
+        let carol = SubjectId::new("writ-local", "carol");
+        let theirs = OwnUnusedGrant {
+            grant_label: "g-1",
+            approved_by: &carol,
+        };
+        assert_eq!(record(&approver(), Some(theirs)), missing);
+        let other = OwnUnusedGrant {
+            grant_label: "g-2",
+            approved_by: &bob_id,
+        };
+        assert_eq!(record(&approver(), Some(other)), missing);
+        assert_eq!(record(&who(bob(), &[]), Some(mine)), missing);
+        // A service is refused even with a stored Revoker assignment.
+        let mut service = who(bob(), &[Permission::Revoker]);
+        service.record.kind = PrincipalKind::Service;
+        assert_eq!(
+            record(&service, Some(mine)),
+            Err(ApprovalCode::ServiceNotPermitted)
+        );
+        // A revoked subject is refused.
+        let mut revoked = who(bob(), &[Permission::Revoker]);
+        revoked.record.status = SubjectStatus::Revoked { at: now() };
+        assert_eq!(record(&revoked, None), Err(ApprovalCode::SubjectRevoked));
     }
 
     #[test]

@@ -30,7 +30,26 @@
 //! ([`same_subject`]). A false refusal is the safe direction (O-7).
 //!
 //! **Services** (O-8) may hold only [`Permission::Operator`]; never approver,
-//! signoff authority or revoker ([`check_service_permission`]).
+//! signoff authority or revoker ([`check_service_permission`]). Credential
+//! selection, decisions, signoffs and revocations additionally refuse any
+//! non-human subject (`SERVICE_NOT_PERMITTED`) and a subject without the
+//! operation's permission in scope (`PERMISSION_MISSING`): see
+//! [`check_human_permission`] and [`Actor`].
+//!
+//! **Capabilities** ([`VerifierCapability`], [`LedgerCapability`]): every
+//! constructor that yields a value without the intended path (a verifier
+//! answer, an enrollment record, a stored row read back) takes a capability
+//! token whose constructor names the trust it asserts. Rust cannot restrict
+//! callers across crates, so `broker/tests/trusted_constructors.rs` scans the
+//! workspace and fails when a capability constructor is called outside its
+//! allow-list (the `writ-approval` crate for the verifier capability, the
+//! SQLite ledger for the ledger capability, and test code).
+//!
+//! **Unicode** (review finding, LOW): subject text is compared after
+//! `to_lowercase` only; no Unicode normalization (NFC/NFKC) or confusable
+//! folding is applied. Separation rests on the explicit enrollment links
+//! (R1); the text match is only an additional fail-closed check, and
+//! normalization would add a Unicode-data dependency to the broker.
 
 use std::fmt;
 
@@ -43,6 +62,43 @@ use crate::approval::{
 
 /// The only authentication method of the local profile (D-040 O-1).
 pub const WEBAUTHN_PASSKEY: &str = "webauthn-passkey";
+
+/// Capability to build a [`VerifiedAssertion`]. Allowed only in the
+/// `writ-approval` crate's verifier implementation and in test code;
+/// enforced by `broker/tests/trusted_constructors.rs`. Not `Clone`.
+///
+/// ```compile_fail
+/// use writ_broker::human::VerifierCapability;
+/// let forged = VerifierCapability(());
+/// ```
+#[derive(Debug)]
+pub struct VerifierCapability(());
+
+impl VerifierCapability {
+    /// For the `writ-approval` verifier implementation (and test code) only.
+    pub fn for_verifier_implementation() -> VerifierCapability {
+        VerifierCapability(())
+    }
+}
+
+/// Capability to reconstruct stored rows (`from_stored`) and enrollment
+/// records. Allowed only in the SQLite ledger (`persistence/sqlite/src`) and
+/// in test code; enforced by `broker/tests/trusted_constructors.rs`. Not
+/// `Clone`.
+///
+/// ```compile_fail
+/// use writ_broker::human::LedgerCapability;
+/// let forged = LedgerCapability(());
+/// ```
+#[derive(Debug)]
+pub struct LedgerCapability(());
+
+impl LedgerCapability {
+    /// For the ledger implementation (and test code) only.
+    pub fn for_ledger_implementation() -> LedgerCapability {
+        LedgerCapability(())
+    }
+}
 
 /// A stable subject identity: issuer or realm plus subject. Never a display name.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -177,9 +233,11 @@ pub struct StoredCredential {
     pub enrolled_by: SubjectId,
 }
 
-/// The active credentials of one active subject (R4): the only credential
-/// input to [`HumanVerifier`]. Built only by [`ActiveCredentials::select`],
-/// which drops revoked credentials and credentials of any other subject.
+/// The active credentials of one active human subject (R4): the only
+/// credential input to [`HumanVerifier`]. Built only by
+/// [`ActiveCredentials::select`], which refuses a non-human, revoked or
+/// unpermitted subject and drops revoked credentials and credentials of any
+/// other subject.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActiveCredentials {
     subject: SubjectId,
@@ -187,14 +245,20 @@ pub struct ActiveCredentials {
 }
 
 impl ActiveCredentials {
-    /// The active credentials of `subject` among `stored`; `SUBJECT_REVOKED`
-    /// when the subject is revoked at `now`. The result may be empty.
+    /// The active credentials of `subject` among `stored`, for an operation
+    /// needing `permission` in (tenant, project): [`check_human_permission`]
+    /// first (`SERVICE_NOT_PERMITTED`, `SUBJECT_REVOKED`,
+    /// `PERMISSION_MISSING`). The result may be empty.
     pub fn select(
         subject: &SubjectRecord,
         stored: impl IntoIterator<Item = StoredCredential>,
+        assignments: &[RoleAssignment],
+        permission: Permission,
+        tenant_id: &str,
+        project_id: &str,
         now: Timestamp,
     ) -> Result<ActiveCredentials, ApprovalCode> {
-        subject.check_active(now)?;
+        check_human_permission(subject, assignments, permission, tenant_id, project_id, now)?;
         let credentials = stored
             .into_iter()
             .filter(|c| c.status == CredentialStatus::Active && c.subject == subject.subject)
@@ -275,8 +339,9 @@ pub struct CredentialUpdate {
 }
 
 /// A verifier's answer: **untrusted** until [`VerifiedAssertion::check`]
-/// accepts it against the stored challenge (R3). Constructible by any
-/// [`HumanVerifier`] implementation; nothing consumes it except that check.
+/// accepts it against the stored challenge (R3). Constructible only with a
+/// [`VerifierCapability`] (the `writ-approval` verifier and test code);
+/// nothing consumes it except that check.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedAssertion {
     subject: SubjectId,
@@ -292,6 +357,7 @@ impl VerifiedAssertion {
     /// credential, the user-verification flag, the method, the digest of the
     /// server challenge the ceremony produced, and the credential update.
     pub fn new(
+        _capability: &VerifierCapability,
         subject: SubjectId,
         credential_id: &str,
         user_verified: bool,
@@ -508,8 +574,10 @@ pub struct EnrollmentRecord {
 
 impl EnrollmentRecord {
     /// Validate (every identity well formed); linked identities are stored
-    /// sorted and unique. For the M4-08 ceremony and the ledger only.
+    /// sorted and unique. Only with a [`LedgerCapability`]: the M4-08
+    /// ceremony writes the record through the ledger, which reads it back.
     pub fn new(
+        _capability: &LedgerCapability,
         subject: SubjectId,
         mut linked_identities: Vec<SubjectId>,
         enrolled_at: Timestamp,
@@ -553,7 +621,8 @@ impl EnrollmentRecord {
 }
 
 /// Same subject, fail closed: equal ids, or equal subject text under any
-/// issuer, compared case-insensitively.
+/// issuer, compared case-insensitively (`to_lowercase`; no Unicode
+/// normalization, see the module notes: enrollment links are primary).
 pub fn same_subject(a: &SubjectId, b: &SubjectId) -> bool {
     a == b || a.subject.to_lowercase() == b.subject.to_lowercase()
 }
@@ -662,6 +731,69 @@ pub fn check_permission(
     Ok(())
 }
 
+/// A human actor: the authenticated subject's stored records, supplied by
+/// the caller from the ledger; [`check_actor`] decides.
+#[derive(Clone, Copy, Debug)]
+pub struct Actor<'a> {
+    /// The subject row.
+    pub record: &'a SubjectRecord,
+    /// The subject's enrollment record, if any (none refuses separation).
+    pub enrollment: Option<&'a EnrollmentRecord>,
+    /// Role assignments (any subject's; only the actor's count).
+    pub assignments: &'a [RoleAssignment],
+}
+
+/// The subject is human (`SERVICE_NOT_PERMITTED`), active at `now`
+/// (`SUBJECT_REVOKED`) and holds `permission` for (tenant, project) at `now`
+/// (`PERMISSION_MISSING`).
+pub fn check_human_permission(
+    record: &SubjectRecord,
+    assignments: &[RoleAssignment],
+    permission: Permission,
+    tenant_id: &str,
+    project_id: &str,
+    now: Timestamp,
+) -> Result<(), ApprovalCode> {
+    if record.kind != PrincipalKind::Human {
+        return Err(ApprovalCode::ServiceNotPermitted);
+    }
+    record.check_active(now)?;
+    check_permission(
+        assignments,
+        &record.subject,
+        PrincipalKind::Human,
+        permission,
+        tenant_id,
+        project_id,
+        now,
+    )
+}
+
+/// The actor's record is the accepted assertion's subject
+/// (`CHALLENGE_INVALID`, subject mismatch), then
+/// [`check_human_permission`] at the acceptance time in the challenge's
+/// scope.
+pub fn check_actor(
+    actor: &Actor<'_>,
+    accepted: &AcceptedAssertion,
+    permission: Permission,
+) -> Result<(), ApprovalCode> {
+    if &actor.record.subject != accepted.subject() {
+        return Err(ApprovalCode::ChallengeInvalid(
+            crate::approval::ChallengeRefusal::SubjectMismatch,
+        ));
+    }
+    let b = accepted.binding();
+    check_human_permission(
+        actor.record,
+        actor.assignments,
+        permission,
+        &b.tenant_id,
+        &b.project_id,
+        accepted.accepted_at(),
+    )
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -677,6 +809,7 @@ mod tests {
 
     fn enrolled(subject: &SubjectId, linked: &[SubjectId]) -> EnrollmentRecord {
         EnrollmentRecord::new(
+            &LedgerCapability::for_ledger_implementation(),
             subject.clone(),
             linked.to_vec(),
             t("2026-11-01T00:00:00Z"),
@@ -849,7 +982,9 @@ mod tests {
         let bob = sid("writ-local", "bob");
         let e = enrolled(&bob, &[sid("a", "2"), sid("a", "1"), sid("a", "2")]);
         assert_eq!(e.linked_identities(), [sid("a", "1"), sid("a", "2")]);
+        let cap = LedgerCapability::for_ledger_implementation();
         assert!(EnrollmentRecord::new(
+            &cap,
             sid("", "bob"),
             vec![],
             t("2026-11-01T00:00:00Z"),
@@ -857,6 +992,7 @@ mod tests {
         )
         .is_err());
         assert!(EnrollmentRecord::new(
+            &cap,
             bob,
             vec![sid("adapter", "")],
             t("2026-11-01T00:00:00Z"),
@@ -928,7 +1064,15 @@ mod tests {
                 CredentialStatus::Active,
             ),
         ];
-        let active = ActiveCredentials::select(&record, stored.clone(), now).unwrap();
+        let roles = [role(
+            bob.clone(),
+            PrincipalKind::Human,
+            Permission::Approver,
+        )];
+        let select = |r: &SubjectRecord, stored: Vec<StoredCredential>| {
+            ActiveCredentials::select(r, stored, &roles, Permission::Approver, "t1", "p1", now)
+        };
+        let active = select(&record, stored.clone()).unwrap();
         assert_eq!(active.ids(), ["cred-1"]);
         assert_eq!(active.subject(), &bob);
         assert!(active
@@ -939,10 +1083,83 @@ mod tests {
             status: SubjectStatus::Revoked { at: now },
             ..record
         };
+        assert_eq!(select(&revoked, stored), Err(ApprovalCode::SubjectRevoked));
+    }
+
+    #[test]
+    fn credential_selection_refuses_services_and_missing_permission() {
+        let bob = sid("writ-local", "bob");
+        let now = t("2026-11-07T00:00:00Z");
+        let human = SubjectRecord {
+            subject: bob.clone(),
+            kind: PrincipalKind::Human,
+            status: SubjectStatus::Active,
+        };
+        let stored = || vec![cred("cred-1", &bob, CredentialStatus::Active)];
+        let approver = [role(
+            bob.clone(),
+            PrincipalKind::Human,
+            Permission::Approver,
+        )];
+        // A service subject never reaches a verifier, whatever it holds.
+        let service = SubjectRecord {
+            kind: PrincipalKind::Service,
+            ..human.clone()
+        };
+        let service_roles = [role(
+            bob.clone(),
+            PrincipalKind::Service,
+            Permission::Operator,
+        )];
+        for (roles, p) in [
+            (&approver[..], Permission::Approver),
+            (&service_roles[..], Permission::Operator),
+        ] {
+            assert_eq!(
+                ActiveCredentials::select(&service, stored(), roles, p, "t1", "p1", now),
+                Err(ApprovalCode::ServiceNotPermitted)
+            );
+        }
+        // Missing permission, wrong permission or wrong scope.
+        let missing = Err(ApprovalCode::PermissionMissing);
         assert_eq!(
-            ActiveCredentials::select(&revoked, stored, now),
-            Err(ApprovalCode::SubjectRevoked)
+            ActiveCredentials::select(&human, stored(), &[], Permission::Approver, "t1", "p1", now),
+            missing
         );
+        assert_eq!(
+            ActiveCredentials::select(
+                &human,
+                stored(),
+                &approver,
+                Permission::SignoffAuthority,
+                "t1",
+                "p1",
+                now
+            ),
+            missing
+        );
+        assert_eq!(
+            ActiveCredentials::select(
+                &human,
+                stored(),
+                &approver,
+                Permission::Approver,
+                "t2",
+                "p1",
+                now
+            ),
+            missing
+        );
+        assert!(ActiveCredentials::select(
+            &human,
+            stored(),
+            &approver,
+            Permission::Approver,
+            "t1",
+            "p1",
+            now
+        )
+        .is_ok());
     }
 
     #[test]

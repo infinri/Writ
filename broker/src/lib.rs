@@ -45,6 +45,12 @@
 //!   separation and the service-permission rule.
 //! - [`approval`]: approval requests and their state machine, decisions,
 //!   challenges, revocations, signoffs, context fingerprints and I-6 codes.
+//!   Decisions, signoffs and revocations decide eligibility themselves
+//!   (human subject, permission in scope, separation; [`human::Actor`]).
+//! - Trusted constructors (verifier answers, enrollment records, stored rows)
+//!   need a [`human::VerifierCapability`] or [`human::LedgerCapability`];
+//!   `tests/trusted_constructors.rs` confines their constructors to the
+//!   `writ-approval` crate, the SQLite ledger and test code.
 
 pub mod acceptance;
 pub mod approval;
