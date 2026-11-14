@@ -658,6 +658,9 @@ pub enum ChallengeOperation {
     Enroll,
     /// Change a role assignment.
     RoleChange,
+    /// Start a normal (`enroll`) registration row (D-043 Y2): an authenticated
+    /// operator ceremony that creates the operator- and session-bound row.
+    RegistrationStart,
 }
 
 impl ChallengeOperation {
@@ -670,15 +673,24 @@ impl ChallengeOperation {
             ChallengeOperation::Signoff => "signoff",
             ChallengeOperation::Enroll => "enroll",
             ChallengeOperation::RoleChange => "role_change",
+            ChallengeOperation::RegistrationStart => "registration_start",
         }
     }
 
     /// Parse the stored text.
     pub fn parse(text: &str) -> Option<ChallengeOperation> {
         use ChallengeOperation::*;
-        [Approve, Deny, Revoke, Signoff, Enroll, RoleChange]
-            .into_iter()
-            .find(|o| o.as_str() == text)
+        [
+            Approve,
+            Deny,
+            Revoke,
+            Signoff,
+            Enroll,
+            RoleChange,
+            RegistrationStart,
+        ]
+        .into_iter()
+        .find(|o| o.as_str() == text)
     }
 
     /// The closed verdict text of the operation (R5; clarification 4).
@@ -690,6 +702,7 @@ impl ChallengeOperation {
             ChallengeOperation::Signoff => "signed_off",
             ChallengeOperation::Enroll => "enrolled",
             ChallengeOperation::RoleChange => "role_changed",
+            ChallengeOperation::RegistrationStart => "start",
         }
     }
 

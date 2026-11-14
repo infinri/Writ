@@ -688,23 +688,64 @@ pub fn operator_session(operator: &SubjectId) -> OperatorSession {
     }
 }
 
-/// A test credential `credential` for `who` from `ledger`'s registration ceremony, in
-/// `operator`'s session (none for the bootstrap).
+/// An operator starting a registration on the serving ledger (D-043 Y2): the ledger, the
+/// operator's page session and the operator's test assertion response.
+pub type Starter<'a> = (&'a SqliteLedger, &'a OperatorSession, &'a str);
+
+/// A test credential `credential` for `who` from `ledger`'s registration ceremony: the
+/// bootstrap session's own row, or (with `operator`) a row created by that operator's
+/// authenticated `RegistrationStart` ceremony in its session (D-043 Y2).
 pub fn register(
     ledger: &dyn RegistrationLedger,
     now: &dyn Fn() -> Result<ObservedTime, String>,
     who: &SubjectId,
     credential: &str,
-    operator: Option<&OperatorSession>,
+    operator: Option<Starter<'_>>,
 ) -> Result<VerifiedRegistration, String> {
-    let issued = ledger
-        .begin_registration(&RegistrationBegin {
-            subject: who,
-            operator,
-            now: now()?,
-        })
-        .map_err(|f| format!("registration: {}", f.error))?
-        .map_err(|r| format!("registration refused: {}", r.code()))?;
+    let issued = match operator {
+        Some((serving, o, response)) => {
+            let op = writ_broker::approval_store::CeremonyOp::RegistrationStart {
+                subject: who.clone(),
+                operator: o.operator.clone(),
+                operator_session: o.session_id.clone(),
+            };
+            let key = format!("m3c-start-{}", who.subject);
+            let c = serving
+                .begin_ceremony(&CeremonyBegin {
+                    op: &op,
+                    subject: &o.operator,
+                    idempotency_key: &key,
+                    now: now()?,
+                })
+                .map_err(|f| format!("registration start: {}", f.error))?
+                .map_err(|r| format!("registration start refused: {}", r.code()))?;
+            let done = serving
+                .finish_ceremony(&CeremonyFinish {
+                    op: &op,
+                    challenge_id: &c.challenge_id,
+                    response: response.as_bytes(),
+                    idempotency_key: &key,
+                    now: now()?,
+                })
+                .map_err(|f| format!("registration start: {}", f.error))?
+                .map_err(|r| format!("registration start refused: {}", r.code()))?;
+            match done.result {
+                writ_broker::approval_store::CeremonyResult::RegistrationStarted {
+                    registration,
+                } => registration,
+                _ => return Err("registration start: unexpected result".into()),
+            }
+        }
+        None => ledger
+            .begin_registration(&RegistrationBegin {
+                subject: who,
+                operator: None,
+                now: now()?,
+            })
+            .map_err(|f| format!("registration: {}", f.error))?
+            .map_err(|r| format!("registration refused: {}", r.code()))?,
+    };
+    let operator = operator.map(|(_, o, _)| o);
     ledger
         .finish_registration(&RegistrationFinish {
             registration_id: &issued.registration_id,

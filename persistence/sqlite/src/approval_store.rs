@@ -32,10 +32,11 @@ use writ_broker::approval::{
     StoredChallenge, CHALLENGE_TTL_SECONDS, PROVENANCE_VERSION_2,
 };
 use writ_broker::approval_store::{
-    approval_binding, kind_text, parse_kind, parse_permission, permission_text, revocation_binding,
-    revocation_context, role_change_binding, role_change_context, signoff_binding, ApprovalLedger,
-    BootstrapEnrollment, CeremonyBegin, CeremonyContext, CeremonyFinish, CeremonyOp,
-    CeremonyOutcome, CeremonyResult, Expired, IssuedChallenge, IssuedRegistration, NewEnrollment,
+    approval_binding, kind_text, parse_kind, parse_permission, permission_text,
+    registration_start_binding, registration_start_context, revocation_binding, revocation_context,
+    role_change_binding, role_change_context, signoff_binding, ApprovalLedger, BootstrapEnrollment,
+    CeremonyBegin, CeremonyContext, CeremonyFinish, CeremonyOp, CeremonyOutcome, CeremonyResult,
+    Expired, IssuedChallenge, IssuedRegistration, NewEnrollment, OperatorSession,
     RegistrationBegin, RegistrationFinish, RegistrationLedger, RequestRecorded, RoleChange,
     SignoffState, UseState, APPROVAL_GRANT_TTL_SECONDS, BOOTSTRAP_ISSUER, BOOTSTRAP_SUBJECT,
     GLOBAL_SCOPE, REGISTRATION_TTL_SECONDS,
@@ -734,6 +735,8 @@ enum TargetKind {
     RoleChange {
         subject: SubjectId,
     },
+    /// A registration start (D-043 Y2).
+    RegistrationStart,
 }
 
 struct Target {
@@ -1202,7 +1205,7 @@ fn role_change_target(conn: &Connection, change: &RoleChange) -> Outcome<Target>
     }))
 }
 
-fn target(conn: &Connection, op: &CeremonyOp) -> Outcome<Target> {
+fn target(conn: &Connection, op: &CeremonyOp, rp: Option<&RelyingParty>) -> Outcome<Target> {
     match op {
         CeremonyOp::Approve { request_id } | CeremonyOp::Deny { request_id } => {
             let Some((request, status)) = load_request(conn, request_id)? else {
@@ -1291,6 +1294,43 @@ fn target(conn: &Connection, op: &CeremonyOp) -> Outcome<Target> {
             }))
         }
         CeremonyOp::RoleChange { change } => role_change_target(conn, change),
+        CeremonyOp::RegistrationStart {
+            subject,
+            operator,
+            operator_session,
+        } => {
+            // M1: the row binds the configured channel's relying party; none configured,
+            // no ceremony.
+            let Some(rp) = rp else {
+                return Ok(Err(no_channel()));
+            };
+            if !subject.is_well_formed() || !operator.is_well_formed() {
+                return Ok(Err(ap(ApprovalCode::EnrollmentUnsupported)));
+            }
+            let exists: bool = conn.query_row(
+                "SELECT EXISTS (SELECT 1 FROM subjects WHERE issuer = ?1 AND subject = ?2)",
+                (&subject.issuer, &subject.subject),
+                |r| r.get(0),
+            )?;
+            let blocked = if exists || operator_session.is_empty() || !bootstrapped(conn)? {
+                Some(ap(ApprovalCode::EnrollmentUnsupported))
+            } else if same_subject(operator, subject) {
+                // No self-registration (no self-escalation), under any issuer.
+                Some(ap(ApprovalCode::SeparationViolated))
+            } else {
+                None
+            };
+            let binding = registration_start_binding(subject, operator, rp)
+                .map_err(|_| BodyError::Integrity)?;
+            Ok(Ok(Target {
+                binding,
+                context: registration_start_context(subject, operator, rp),
+                permission: Permission::Operator,
+                expiry: None,
+                blocked,
+                kind: TargetKind::RegistrationStart,
+            }))
+        }
     }
 }
 
@@ -1304,7 +1344,7 @@ fn begin_in(
     channel: &ApprovalChannel,
 ) -> Outcome<IssuedChallenge> {
     let now = b.now.at();
-    let t = check!(target(tx, b.op)?);
+    let t = check!(target(tx, b.op, Some(channel.relying_party()))?);
     if let Some(refusal) = t.blocked.clone() {
         return Ok(Err(refusal));
     }
@@ -1324,6 +1364,12 @@ fn begin_in(
         return Ok(Err(ap(ApprovalCode::PermissionMissing)));
     };
     let creds = check!(rows.select(&t, now));
+    // D-043 Y2: a registration start is performed by the operator it names.
+    if let CeremonyOp::RegistrationStart { operator, .. } = b.op {
+        if operator != b.subject {
+            return Ok(Err(ap(ApprovalCode::EnrollmentUnsupported)));
+        }
+    }
     // D-043 Y2: only the operator who began the credential's registration row enrolls it,
     // under the row's relying party.
     if let CeremonyOp::Enroll { enrollment, .. } = b.op {
@@ -1623,6 +1669,31 @@ fn replay(
             )?;
             CeremonyResult::Enrolled {
                 subject: SubjectId::new(&issuer, &subject),
+            }
+        }
+        "registration_started" => {
+            let (id, options, expires, session): (String, Vec<u8>, String, String) = conn
+                .query_row(
+                    "SELECT registration_id, client_options, expires_at, operator_session \
+                     FROM registrations WHERE started_by = ?1",
+                    [challenge_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )?;
+            // D-043 Y2: the page session is not fingerprinted; a retry from another session
+            // is a binding mismatch, never the row of the original one.
+            let same_session = matches!(
+                f.op,
+                CeremonyOp::RegistrationStart { operator_session, .. } if *operator_session == session
+            );
+            if !same_session {
+                return Ok(Err(challenge_refused(ChallengeRefusal::BindingMismatch)));
+            }
+            CeremonyResult::RegistrationStarted {
+                registration: IssuedRegistration {
+                    registration_id: id,
+                    client_options: options,
+                    expires_at: ts(&expires)?,
+                },
             }
         }
         "role_changed" => {
@@ -1930,7 +2001,7 @@ fn finish_in(
     if &row.relying_party != channel.relying_party() {
         return Ok(Err(challenge_refused(ChallengeRefusal::ChannelMismatch)));
     }
-    let t = check!(target(tx, f.op)?);
+    let t = check!(target(tx, f.op, Some(channel.relying_party()))?);
     let Some(rows) = ActorRows::read(tx, &row.subject)? else {
         return Ok(Err(ap(ApprovalCode::PermissionMissing)));
     };
@@ -2236,6 +2307,70 @@ fn finish_in(
             result = CeremonyResult::RoleChanged { assignment_id };
             kind = "role_changed";
         }
+        (
+            CeremonyOp::RegistrationStart {
+                subject: intended,
+                operator,
+                operator_session,
+            },
+            TargetKind::RegistrationStart,
+        ) => {
+            // D-043 Y2: an authenticated operator in the global scope, the one the operation
+            // names, never registering itself (checked as `blocked` and again here).
+            check!(check_actor(&actor, &accepted, Permission::Operator).map_err(ap));
+            if &subject != operator {
+                return Ok(Err(ap(ApprovalCode::EnrollmentUnsupported)));
+            }
+            if same_subject(&subject, intended) {
+                return Ok(Err(ap(ApprovalCode::SeparationViolated)));
+            }
+            let start = match channel.begin_registration(intended) {
+                Ok(start) if !start.state.is_empty() => start,
+                Ok(_) => {
+                    return Ok(Err(ap(ApprovalCode::AssertionInvalid(
+                        VerifierError::Malformed,
+                    ))))
+                }
+                // L6: an unavailable verifier is not a terminal refusal (not burnt).
+                Err(VerifierError::Unavailable) => return Ok(Err(no_channel())),
+                Err(e) => return Ok(Err(ap(ApprovalCode::AssertionInvalid(e)))),
+            };
+            seq = next_seq(tx, "registration", f.challenge_id)?;
+            let rp = channel.relying_party();
+            let registration_id = format!("reg-{}", f.challenge_id);
+            let expires_at = now.plus_seconds(REGISTRATION_TTL_SECONDS);
+            tx.execute(
+                "INSERT INTO registrations (registration_id, operation, issuer, subject, rp_id, \
+                 origin, ceremony_state, issued_at, expires_at, status, operator_issuer, \
+                 operator_subject, operator_session, started_by, client_options) \
+                 VALUES (?1, 'enroll', ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'issued', ?9, ?10, ?11, ?12, \
+                 ?13)",
+                rusqlite::params![
+                    registration_id,
+                    intended.issuer,
+                    intended.subject,
+                    rp.rp_id,
+                    rp.origin,
+                    start.state.as_bytes(),
+                    now.to_string(),
+                    expires_at.to_string(),
+                    operator.issuer,
+                    operator.subject,
+                    operator_session,
+                    f.challenge_id,
+                    start.client_options,
+                ],
+            )?;
+            request_ref = None;
+            result = CeremonyResult::RegistrationStarted {
+                registration: IssuedRegistration {
+                    registration_id,
+                    client_options: start.client_options,
+                    expires_at,
+                },
+            };
+            kind = "registration_started";
+        }
         _ => return Err(BodyError::Integrity),
     }
     let consumed = tx.execute(
@@ -2390,25 +2525,13 @@ impl SqliteLedger {
             if exists {
                 return unsupported();
             }
-            // D-043 Y2: an `enroll` row is created only for an operator session: an active
-            // human holding `operator` in the global scope with an active credential, never
-            // registering itself; the bootstrap row has none.
-            let operator = match (operation, b.operator) {
-                (RegistrationOperation::Enroll, Some(o)) => {
-                    if !o.operator.is_well_formed() || o.session_id.is_empty() {
-                        return unsupported();
-                    }
-                    if let Err(code) = operator_may_register(tx, &o.operator, now)? {
-                        return Ok(End::Rollback(Err(ap(code))));
-                    }
-                    if same_subject(&o.operator, b.subject) {
-                        return Ok(End::Rollback(Err(ap(ApprovalCode::SeparationViolated))));
-                    }
-                    Some(o)
-                }
-                (RegistrationOperation::Bootstrap, None) => None,
-                _ => return unsupported(),
-            };
+            // D-043 Y2: the serving ledger creates an `enroll` row only in a consumed
+            // `RegistrationStart` ceremony of an authenticated operator, never here; this
+            // transaction issues only the one-shot bootstrap row.
+            if operation != RegistrationOperation::Bootstrap || b.operator.is_some() {
+                return unsupported();
+            }
+            let operator: Option<&OperatorSession> = None;
             let rp = channel.relying_party().clone();
             let start = match channel.begin_registration(b.subject) {
                 Ok(s) => s,
@@ -2682,35 +2805,6 @@ impl SqliteLedger {
             now,
         )
     }
-}
-
-/// Whether `operator` may begin an `enroll` registration (D-043 Y2): an active human
-/// holding `operator` in the global scope with at least one active credential (the same
-/// selection as an `Enroll` ceremony's actor).
-fn operator_may_register(
-    conn: &Connection,
-    operator: &SubjectId,
-    now: Timestamp,
-) -> Result<Result<(), ApprovalCode>, BodyError> {
-    let Some(rows) = ActorRows::read(conn, operator)? else {
-        return Ok(Err(ApprovalCode::PermissionMissing));
-    };
-    let creds = match ActiveCredentials::select(
-        &rows.record,
-        rows.credentials.iter().cloned(),
-        &rows.assignments,
-        Permission::Operator,
-        GLOBAL_SCOPE,
-        GLOBAL_SCOPE,
-        now,
-    ) {
-        Ok(c) => c,
-        Err(code) => return Ok(Err(code)),
-    };
-    if creds.as_slice().is_empty() {
-        return Ok(Err(ApprovalCode::CredentialRevoked));
-    }
-    Ok(Ok(()))
 }
 
 /// The ledger has had a subject or a bootstrap (bootstrap is over for good).
@@ -3006,7 +3100,8 @@ impl ApprovalLedger for SqliteLedger {
     ) -> Result<Result<CeremonyContext, Refusal>, StoreError> {
         let inner = self.lock("read")?;
         let read = || -> Outcome<CeremonyContext> {
-            let t = check!(target(&inner.conn, op)?);
+            let rp = self.approval_channel().map(|c| c.relying_party().clone());
+            let t = check!(target(&inner.conn, op, rp.as_ref())?);
             // R6: the displayed context is exactly the one whose fingerprint is bound.
             if context_fingerprint(&t.context).ok().as_ref() != Some(&t.binding.context_fingerprint)
             {

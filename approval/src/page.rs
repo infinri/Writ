@@ -166,6 +166,10 @@ pub struct Target<'a> {
     pub context: &'a Value,
     /// The page session's CSRF token.
     pub csrf: &'a str,
+    /// A registration start (D-043 Y2): after the operator's ceremony the page registers
+    /// the new person's passkey and offers the enrollment form (`form#prepare`, hidden
+    /// until the registration is finished).
+    pub then_enroll: bool,
 }
 
 /// A signoff, revocation, enrollment or role-change page: the displayed context and one
@@ -181,7 +185,8 @@ pub fn target_page(d: &Target<'_>) -> String {
          <form id=\"decide\">\
          <label>Subject <input name=\"subject\" autocomplete=\"username webauthn\" required></label>\
          <button type=\"submit\" name=\"verdict\" value=\"confirm\">Confirm with passkey</button>\
-         </form><p id=\"result\" role=\"status\"></p></main></body></html>",
+         </form><p id=\"result\" role=\"status\"></p>{after}</main></body></html>",
+        after = if d.then_enroll { ENROLL_AFTER_START } else { "" },
         head = head(d.title),
         title = escape(d.title),
         csrf = escape(d.csrf),
@@ -227,11 +232,17 @@ const ROLE_FORM: &str = "<form id=\"prepare\">\
 <label>Project (grant) <input name=\"project_id\"></label>\
 <button type=\"submit\">Show the change</button></form>";
 
-const ENROLL_FORM: &str = "<form id=\"register\">\
+const ENROLL_FORM: &str = "<form id=\"prepare\">\
+<input type=\"hidden\" name=\"operation\" value=\"registration-start\">\
 <label>Operator (you) <input name=\"operator\" autocomplete=\"username\" required></label>\
 <label>New subject <input name=\"subject\" required></label>\
-<button type=\"submit\">Register the new person's passkey</button></form>\
-<form id=\"prepare\"><input type=\"hidden\" name=\"operation\" value=\"enroll\">\
+<button type=\"submit\">Show the registration start</button></form>";
+
+/// The enrollment form a registration-start page reveals once the new person's passkey is
+/// registered (D-043 Y2).
+const ENROLL_AFTER_START: &str = "<button id=\"register-new\" type=\"button\" hidden>\
+Register the new person's passkey</button><form id=\"prepare\" hidden>\
+<input type=\"hidden\" name=\"operation\" value=\"enroll\">\
 <input type=\"hidden\" name=\"registration_id\">\
 <label>Linked requester identities (one &quot;issuer subject&quot; per line) \
 <textarea name=\"linked\"></textarea></label>\
@@ -240,8 +251,9 @@ const ENROLL_FORM: &str = "<form id=\"register\">\
 <button type=\"submit\">Show the enrollment</button></form>";
 
 /// An operator form page (`/revoke`, `/role`, `/enroll`). Its fields go to `/prepare`
-/// (for enrollment, first to `/registration/begin` and `/registration/finish`); the
-/// prepared context is then displayed by `/view` before any ceremony.
+/// (for enrollment: the operator's registration start, then the new person's
+/// registration on that page and `/registration/finish`); the prepared context is
+/// displayed by `/view` before any ceremony.
 pub fn form_page(kind: FormKind, csrf: &str) -> String {
     let (title, body) = match kind {
         FormKind::Revoke => ("Revoke", REVOKE_FORM),
@@ -347,15 +359,17 @@ pub const SCRIPT: &str = r#""use strict";
       out.textContent = done.error || "refused";
     });
   }
-  const register = document.getElementById("register");
-  if (register) {
-    register.addEventListener("submit", async (event) => {
-      event.preventDefault();
+  // D-043 Y2: after the operator's start ceremony, the new person registers a passkey
+  // (a separate action, so the new person's authenticator is the one in use), then the
+  // enrollment form is revealed.
+  let started = null;
+  const registerNew = document.getElementById("register-new");
+  if (registerNew) {
+    registerNew.addEventListener("click", async () => {
       out.textContent = "";
+      if (!started) { return; }
       try {
-        const begun = await post("/registration/begin", fieldsOf(register));
-        if (!begun.registration_id) { out.textContent = begun.error || "refused"; return; }
-        const pk = begun.options.publicKey;
+        const pk = started.options.publicKey;
         pk.challenge = unb64(pk.challenge);
         pk.user.id = unb64(pk.user.id);
         (pk.excludeCredentials || []).forEach((c) => { c.id = unb64(c.id); });
@@ -368,10 +382,12 @@ pub const SCRIPT: &str = r#""use strict";
           },
         });
         const done = await post("/registration/finish", {
-          csrf: page.dataset.csrf, registration_id: begun.registration_id, response: response,
+          csrf: page.dataset.csrf, registration_id: started.registration_id, response: response,
         });
         if (done.result && prepare) {
-          prepare.elements.registration_id.value = begun.registration_id;
+          prepare.elements.registration_id.value = started.registration_id;
+          prepare.hidden = false;
+          registerNew.hidden = true;
         }
         out.textContent = done.result || done.error || "refused";
       } catch (e) {
@@ -407,6 +423,10 @@ pub const SCRIPT: &str = r#""use strict";
       const done = await post("/ceremony/finish", {
         csrf: page.dataset.csrf, challenge_id: begun.challenge_id, response: response,
       });
+      if (done.registration_id && registerNew) {
+        started = done;
+        registerNew.hidden = false;
+      }
       out.textContent = done.result || done.error || "refused";
     } catch (e) {
       out.textContent = "The authenticator did not complete the ceremony.";

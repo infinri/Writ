@@ -449,16 +449,56 @@ fn register(
     ledger: &dyn RegistrationLedger,
     now: &dyn Fn() -> ObservedTime,
     who: &SubjectId,
-    operator: Option<&OperatorSession>,
+    operator: Option<(&SqliteLedger, &OperatorSession)>,
 ) -> VerifiedRegistration {
-    let issued = ledger
-        .begin_registration(&RegistrationBegin {
-            subject: who,
-            operator,
-            now: now(),
-        })
-        .unwrap()
-        .unwrap();
+    let issued = match operator {
+        // D-043 Y2: on the serving ledger only the operator's authenticated
+        // `RegistrationStart` ceremony creates the row.
+        Some((serving, o)) => {
+            let op = CeremonyOp::RegistrationStart {
+                subject: who.clone(),
+                operator: o.operator.clone(),
+                operator_session: o.session_id.clone(),
+            };
+            let key = format!("start-{}", who.subject);
+            let c = serving
+                .begin_ceremony(&CeremonyBegin {
+                    op: &op,
+                    subject: &o.operator,
+                    idempotency_key: &key,
+                    now: now(),
+                })
+                .unwrap()
+                .unwrap();
+            let response = format!("ok:cred-{}", o.operator.subject);
+            match serving
+                .finish_ceremony(&CeremonyFinish {
+                    op: &op,
+                    challenge_id: &c.challenge_id,
+                    response: response.as_bytes(),
+                    idempotency_key: &key,
+                    now: now(),
+                })
+                .unwrap()
+                .unwrap()
+                .result
+            {
+                writ_broker::approval_store::CeremonyResult::RegistrationStarted {
+                    registration,
+                } => registration,
+                other => panic!("registration start: {other:?}"),
+            }
+        }
+        None => ledger
+            .begin_registration(&RegistrationBegin {
+                subject: who,
+                operator: None,
+                now: now(),
+            })
+            .unwrap()
+            .unwrap(),
+    };
+    let operator = operator.map(|(_, o)| o);
     ledger
         .finish_registration(&RegistrationFinish {
             registration_id: &issued.registration_id,
@@ -510,7 +550,12 @@ fn enroll_storage_approver(db: &Path) {
     let enrollment = NewEnrollment {
         subject: approver.clone(),
         kind: writ_broker::human::PrincipalKind::Human,
-        credential: Some(register(&ledger, &now, &approver, Some(&session))),
+        credential: Some(register(
+            &ledger,
+            &now,
+            &approver,
+            Some((&ledger, &session)),
+        )),
         linked_identities: vec![],
         roles: vec![NewRole {
             permission: Permission::Approver,

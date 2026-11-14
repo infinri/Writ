@@ -3,7 +3,8 @@
 //! The listener sees the ledger only through [`Backend`]: reads of a stored approval
 //! request, of a pending signoff and of the context any ceremony would bind (its
 //! fingerprint-covered context, R6), the two ceremony transactions and the two
-//! operator-bound registration transactions (D-043 Y2). The
+//! operator-bound registration finish (D-043 Y2; the row itself is created by the
+//! operator's `RegistrationStart` ceremony). The
 //! operation, its target and the idempotency key are the listener's server-side state;
 //! the verifier, its relying party and the channel identity are the ledger's configured
 //! [`writ_broker::human::ApprovalChannel`] (O-2, M1), never a call argument.
@@ -14,8 +15,7 @@ use std::sync::Arc;
 use writ_broker::approval::{ApprovalRequest, ApprovalStatus, NewSignoff};
 use writ_broker::approval_store::{
     ApprovalLedger, CeremonyBegin, CeremonyContext, CeremonyFinish, CeremonyOp, CeremonyOutcome,
-    IssuedChallenge, IssuedRegistration, OperatorSession, RegistrationBegin, RegistrationFinish,
-    RegistrationLedger,
+    IssuedChallenge, OperatorSession, RegistrationFinish, RegistrationLedger,
 };
 use writ_broker::clock::{observe, EffectiveClock, ObservedTime};
 use writ_broker::human::{SubjectId, VerifiedRegistration};
@@ -58,14 +58,6 @@ pub trait Backend: Send + Sync {
     /// The signoff binding offered for `signoff_id` (the ledger's `pending_signoff`; a
     /// read).
     fn pending_signoff(&self, signoff_id: &str) -> Result<Option<NewSignoff>, Unavailable>;
-
-    /// Begin an `enroll` registration row for `subject` in `operator`'s page session
-    /// (D-043 Y2).
-    fn begin_registration(
-        &self,
-        subject: &SubjectId,
-        operator: &OperatorSession,
-    ) -> Result<Result<IssuedRegistration, Refusal>, Unavailable>;
 
     /// Finish registration row `registration_id` in `operator`'s page session (D-043 Y2).
     fn finish_registration(
@@ -164,21 +156,6 @@ where
         let now = self.now()?;
         self.ledger
             .pending_signoff(signoff_id, now)
-            .map_err(|_| Unavailable)
-    }
-
-    fn begin_registration(
-        &self,
-        subject: &SubjectId,
-        operator: &OperatorSession,
-    ) -> Result<Result<IssuedRegistration, Refusal>, Unavailable> {
-        let now = self.now()?;
-        self.ledger
-            .begin_registration(&RegistrationBegin {
-                subject,
-                operator: Some(operator),
-                now,
-            })
             .map_err(|_| Unavailable)
     }
 

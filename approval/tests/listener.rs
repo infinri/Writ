@@ -48,10 +48,6 @@ enum Call {
         response: Vec<u8>,
         key: String,
     },
-    BeginRegistration {
-        subject: SubjectId,
-        operator: OperatorSession,
-    },
     FinishRegistration {
         registration_id: String,
         response: Vec<u8>,
@@ -273,6 +269,19 @@ impl Backend for Fake {
             CeremonyOp::RoleChange { .. } => CeremonyResult::RoleChanged {
                 assignment_id: "role-1".into(),
             },
+            CeremonyOp::RegistrationStart { subject, .. } => {
+                let mut rows = self.rows.lock().unwrap();
+                let id = format!("reg-{}", rows.len() + 1);
+                rows.push((id.clone(), subject.clone()));
+                CeremonyResult::RegistrationStarted {
+                    registration: IssuedRegistration {
+                        registration_id: id,
+                        client_options:
+                            br#"{"publicKey":{"challenge":"AAAA","user":{"id":"AAAA"}}}"#.to_vec(),
+                        expires_at: Timestamp::parse_strict("2026-11-14T10:10:00Z").unwrap(),
+                    },
+                }
+            }
         };
         Ok(Ok(CeremonyOutcome {
             result,
@@ -309,6 +318,17 @@ impl Backend for Fake {
                 ChallengeOperation::Enroll,
                 enrollment.target_id(),
             ),
+            CeremonyOp::RegistrationStart {
+                subject, operator, ..
+            } => (
+                json::obj([
+                    ("operator", json::s(&operator.subject)),
+                    ("record", record),
+                    ("subject", json::s(&subject.subject)),
+                ]),
+                ChallengeOperation::RegistrationStart,
+                subject.subject.clone(),
+            ),
             CeremonyOp::Signoff { binding, parties } => {
                 let excluded = SignoffExclusions {
                     requesters: vec![SubjectId::new("adapter", HOSTILE)],
@@ -341,28 +361,6 @@ impl Backend for Fake {
 
     fn pending_signoff(&self, signoff_id: &str) -> Result<Option<NewSignoff>, Unavailable> {
         Ok((signoff_id == "so-1").then(signoff_binding))
-    }
-
-    fn begin_registration(
-        &self,
-        subject: &SubjectId,
-        operator: &OperatorSession,
-    ) -> Result<Result<IssuedRegistration, Refusal>, Unavailable> {
-        self.calls.lock().unwrap().push(Call::BeginRegistration {
-            subject: subject.clone(),
-            operator: operator.clone(),
-        });
-        if operator.operator.subject == "mallory" {
-            return Ok(Err(Refusal::Approval(ApprovalCode::PermissionMissing)));
-        }
-        let mut rows = self.rows.lock().unwrap();
-        let id = format!("reg-{}", rows.len() + 1);
-        rows.push((id.clone(), subject.clone()));
-        Ok(Ok(IssuedRegistration {
-            registration_id: id,
-            client_options: br#"{"publicKey":{"challenge":"AAAA","user":{"id":"AAAA"}}}"#.to_vec(),
-            expires_at: Timestamp::parse_strict("2026-11-14T10:10:00Z").unwrap(),
-        }))
     }
 
     fn finish_registration(
@@ -1275,25 +1273,81 @@ fn the_role_page_grants_or_revokes_one_assignment() {
 #[test]
 fn enrollment_registers_in_the_operator_session_then_enrolls_through_that_operator() {
     let s = Server::start(Limits::default());
-    let (cookie, csrf, page) = open(&s, "/enroll");
-    assert!(page.contains("id=\"register\"") && page.contains("id=\"prepare\""));
-    let begun = s.post(
-        "/registration/begin",
+    // 1. The operator's registration start: displayed, then the operator's own ceremony.
+    let (cookie, csrf, fp, page) = prepared(
+        &s,
+        "/enroll",
+        &[
+            ("operation", "registration-start"),
+            ("operator", "root"),
+            ("subject", "newbie"),
+        ],
+    );
+    assert!(page.contains("Registration start") && page.contains("newbie"));
+    assert!(page.contains("id=\"register-new\" type=\"button\" hidden"));
+    assert!(page.contains("id=\"prepare\" hidden"));
+    let begin = |subject: &str| {
+        s.post(
+            "/ceremony/begin",
+            &cookie,
+            &body(
+                &csrf,
+                &[
+                    ("fingerprint", &fp),
+                    ("verdict", "confirm"),
+                    ("subject", subject),
+                ],
+            ),
+            "",
+        )
+    };
+    // Only the operator the start names may begin it (nothing reaches the ledger).
+    let r = begin("olga");
+    assert_eq!(status(&r), 403, "{r}");
+    assert!(r.ends_with("{\"error\":\"refused\"}"));
+    assert!(s.fake.calls().is_empty());
+    let begun = begin("root");
+    assert_eq!(status(&begun), 200, "{begun}");
+    let challenge = between(&begun, "\"challenge_id\":\"", "\"");
+    let started = s.post(
+        "/ceremony/finish",
         &cookie,
-        &body(&csrf, &[("operator", "root"), ("subject", "newbie")]),
+        &body(
+            &csrf,
+            &[
+                ("challenge_id", &challenge),
+                ("response", "valid-assertion"),
+            ],
+        ),
         "",
     );
-    assert_eq!(status(&begun), 200, "{begun}");
-    let id = between(&begun, "\"registration_id\":\"", "\"");
-    let Some(Call::BeginRegistration { subject, operator }) = s.fake.calls().last().cloned() else {
-        panic!("registration begin");
+    assert_eq!(status(&started), 200, "{started}");
+    assert!(started.contains("\"result\":\"registration started\""));
+    assert!(started.contains("\"options\":{\"publicKey\""));
+    let id = between(&started, "\"registration_id\":\"", "\"");
+    let Some(Call::Finish {
+        op:
+            CeremonyOp::RegistrationStart {
+                subject,
+                operator,
+                operator_session,
+            },
+        ..
+    }) = s.fake.calls().last().cloned()
+    else {
+        panic!("registration start");
     };
     assert_eq!(subject, SubjectId::new("writ-local", "newbie"));
-    assert_eq!(operator.operator, SubjectId::new("writ-local", "root"));
+    assert_eq!(operator, SubjectId::new("writ-local", "root"));
     // The page-session id is server-held and is not the session cookie.
-    assert!(!operator.session_id.is_empty());
-    assert!(!operator.session_id.contains(&cookie) && !begun.contains(&operator.session_id));
-    // Another page session can neither finish nor enroll this row.
+    assert!(!operator_session.is_empty());
+    assert!(!operator_session.contains(&cookie) && !started.contains(&operator_session));
+    let session = OperatorSession {
+        operator: operator.clone(),
+        session_id: operator_session.clone(),
+    };
+    // 2. The new person's registration: another page session can neither finish nor
+    // enroll this row.
     let (other_cookie, other_csrf, _) = open(&s, "/enroll");
     let r = s.post(
         "/registration/finish",
@@ -1305,6 +1359,14 @@ fn enrollment_registers_in_the_operator_session_then_enrolls_through_that_operat
         "",
     );
     assert_eq!(status(&r), 403, "{r}");
+    // No registration row is ever begun without the start ceremony.
+    let r = s.post(
+        "/registration/begin",
+        &cookie,
+        &body(&csrf, &[("operator", "root"), ("subject", "x")]),
+        "",
+    );
+    assert_eq!(status(&r), 404, "{r}");
     let finished = s.post(
         "/registration/finish",
         &cookie,
@@ -1324,9 +1386,10 @@ fn enrollment_registers_in_the_operator_session_then_enrolls_through_that_operat
         panic!("registration finish");
     };
     assert_eq!(
-        finish_operator, operator,
+        finish_operator, session,
         "the same operator session finishes it"
     );
+    // 3. The Enroll ceremony of the registered credential.
     let enroll_fields = [
         ("operation", "enroll"),
         ("registration_id", id.as_str()),
@@ -1340,7 +1403,6 @@ fn enrollment_registers_in_the_operator_session_then_enrolls_through_that_operat
         "",
     );
     assert_eq!(status(&r), 400, "{r}");
-    // In its own session: displayed, then begun only by the registering operator.
     let r = s.post("/prepare", &cookie, &body(&csrf, &enroll_fields), "");
     assert_eq!(status(&r), 200, "{r}");
     let page = view_of(&s, &cookie);
@@ -1374,12 +1436,12 @@ fn enrollment_registers_in_the_operator_session_then_enrolls_through_that_operat
     let op = confirm(&s, &cookie, &csrf, &fp, "root");
     let CeremonyOp::Enroll {
         enrollment,
-        operator_session,
+        operator_session: enroll_session,
     } = op
     else {
         panic!("enroll");
     };
-    assert_eq!(operator_session, operator.session_id);
+    assert_eq!(enroll_session, operator_session);
     assert_eq!(enrollment.subject, SubjectId::new("writ-local", "newbie"));
     assert_eq!(enrollment.kind, PrincipalKind::Human);
     assert_eq!(
@@ -1408,22 +1470,43 @@ fn enrollment_registers_in_the_operator_session_then_enrolls_through_that_operat
     // The row is used: it cannot be prepared again in this session.
     let r = s.post("/prepare", &cookie, &body(&csrf, &enroll_fields), "");
     assert_eq!(status(&r), 400, "{r}");
-    // A refused registration begin is one generic refusal; a refused finish forgets the row.
-    let r = s.post(
-        "/registration/begin",
-        &cookie,
-        &body(&csrf, &[("operator", "mallory"), ("subject", "x")]),
-        "",
+    // A refused registration finish forgets the row; an outage keeps it (L6).
+    let (cookie, csrf, fp, _) = prepared(
+        &s,
+        "/enroll",
+        &[
+            ("operation", "registration-start"),
+            ("operator", "root"),
+            ("subject", "y"),
+        ],
     );
-    assert_eq!(status(&r), 403);
-    assert!(r.ends_with("{\"error\":\"refused\"}"), "{r}");
     let begun = s.post(
-        "/registration/begin",
+        "/ceremony/begin",
         &cookie,
-        &body(&csrf, &[("operator", "root"), ("subject", "y")]),
+        &body(
+            &csrf,
+            &[
+                ("fingerprint", &fp),
+                ("verdict", "confirm"),
+                ("subject", "root"),
+            ],
+        ),
         "",
     );
-    let id = between(&begun, "\"registration_id\":\"", "\"");
+    let challenge = between(&begun, "\"challenge_id\":\"", "\"");
+    let started = s.post(
+        "/ceremony/finish",
+        &cookie,
+        &body(
+            &csrf,
+            &[
+                ("challenge_id", &challenge),
+                ("response", "valid-assertion"),
+            ],
+        ),
+        "",
+    );
+    let id = between(&started, "\"registration_id\":\"", "\"");
     let fin = |response: &str| {
         s.post(
             "/registration/finish",

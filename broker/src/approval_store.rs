@@ -65,7 +65,7 @@ use crate::approval::{
 use crate::authorize::{Authorized, UseTimeStatus};
 use crate::clock::ObservedTime;
 use crate::grants::GrantLabel;
-use crate::human::{Permission, PrincipalKind, SubjectId, VerifiedRegistration};
+use crate::human::{Permission, PrincipalKind, RelyingParty, SubjectId, VerifiedRegistration};
 use crate::refusal::Refusal;
 use crate::store::{ExecuteLedger, StoreError, TxFailure};
 
@@ -85,6 +85,9 @@ pub const REVOCATION_CONTEXT: &str = "writ.revocation-context.v1";
 pub const ENROLLMENT_CONTEXT: &str = "writ.enrollment-context.v1";
 /// Context member naming a role-change context (domain separation, X5).
 pub const ROLE_CHANGE_CONTEXT: &str = "writ.role-change-context.v1";
+/// Context member naming a registration-start context (domain separation,
+/// D-043 Y2).
+pub const REGISTRATION_START_CONTEXT: &str = "writ.registration-start-context.v1";
 /// The enrolling administrator recorded for the bootstrap enrollment.
 pub const BOOTSTRAP_ISSUER: &str = "writ-local";
 /// See [`BOOTSTRAP_ISSUER`].
@@ -349,6 +352,63 @@ pub fn role_change_binding(
     })
 }
 
+/// The challenge target of a registration start (D-043 Y2): the intended
+/// subject's revocation target id plus the length-prefixed RP id and the
+/// origin of the configured channel.
+pub fn registration_start_target(subject: &SubjectId, rp: &RelyingParty) -> String {
+    format!(
+        "registration-start:{}:{}:{}:{}",
+        RevocationTarget::Subject(subject.clone()).target_id(),
+        rp.rp_id.len(),
+        rp.rp_id,
+        rp.origin
+    )
+}
+
+/// The displayed context of a registration start (D-043 Y2): the operator,
+/// the intended subject, the operation (`enroll`), the RP id and origin of
+/// the configured channel and the row's lifetime
+/// ([`REGISTRATION_TTL_SECONDS`], counted from the start ceremony's commit).
+/// Roles and linked identities are not part of it: they are displayed and
+/// bound by the later `Enroll` ceremony.
+pub fn registration_start_context(
+    subject: &SubjectId,
+    operator: &SubjectId,
+    rp: &RelyingParty,
+) -> Value {
+    json::obj([
+        ("context", json::s(REGISTRATION_START_CONTEXT)),
+        ("operation", json::s("enroll")),
+        ("operator", subject_value(operator)),
+        ("origin", json::s(&rp.origin)),
+        (
+            "registration_lifetime_seconds",
+            Value::Int(REGISTRATION_TTL_SECONDS),
+        ),
+        ("rp_id", json::s(&rp.rp_id)),
+        ("subject", subject_value(subject)),
+    ])
+}
+
+/// What a registration-start challenge binds ([`registration_start_context`])
+/// in the global scope; policy [`NO_POLICY`], revision 0.
+pub fn registration_start_binding(
+    subject: &SubjectId,
+    operator: &SubjectId,
+    rp: &RelyingParty,
+) -> Result<ChallengeBinding, CanonicalError> {
+    let context = registration_start_context(subject, operator, rp);
+    Ok(ChallengeBinding {
+        operation: ChallengeOperation::RegistrationStart,
+        tenant_id: GLOBAL_SCOPE.to_string(),
+        project_id: GLOBAL_SCOPE.to_string(),
+        target_id: registration_start_target(subject, rp),
+        context_fingerprint: context_fingerprint(&context)?,
+        policy_bundle_sha: NO_POLICY.to_string(),
+        revision: 0,
+    })
+}
+
 /// One permission to assign at enrollment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewRole {
@@ -533,6 +593,20 @@ pub enum CeremonyOp {
         /// The change.
         change: RoleChange,
     },
+    /// Start a normal registration row for a new human (D-043 Y2): the
+    /// operator's fresh user-verified ceremony, consumed atomically with
+    /// creating the row bound to the operator, `operator_session`, the
+    /// subject and the configured channel's RP id and origin. The only way
+    /// the serving ledger creates an `enroll` registration row.
+    RegistrationStart {
+        /// The intended new subject.
+        subject: SubjectId,
+        /// The operator performing the ceremony (must be the acting subject).
+        operator: SubjectId,
+        /// The approval page session the row is bound to (server-held; not
+        /// displayed or fingerprinted).
+        operator_session: String,
+    },
 }
 
 impl CeremonyOp {
@@ -545,6 +619,7 @@ impl CeremonyOp {
             CeremonyOp::Signoff { .. } => ChallengeOperation::Signoff,
             CeremonyOp::Enroll { .. } => ChallengeOperation::Enroll,
             CeremonyOp::RoleChange { .. } => ChallengeOperation::RoleChange,
+            CeremonyOp::RegistrationStart { .. } => ChallengeOperation::RegistrationStart,
         }
     }
 }
@@ -656,6 +731,11 @@ pub enum CeremonyResult {
     RoleChanged {
         /// The assignment id.
         assignment_id: String,
+    },
+    /// The bound registration row was created (D-043 Y2).
+    RegistrationStarted {
+        /// The row, with the verifier's creation options for the page.
+        registration: IssuedRegistration,
     },
 }
 

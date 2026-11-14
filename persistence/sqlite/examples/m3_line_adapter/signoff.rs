@@ -166,7 +166,11 @@ pub fn enroll_reviewer(
             &|| Ok(now),
             &subject(REVIEWER),
             &credential(REVIEWER),
-            Some(&operator_session(&subject(ADMINISTRATOR))),
+            Some((
+                ledger,
+                &operator_session(&subject(ADMINISTRATOR)),
+                &format!("ok:{}", credential(ADMINISTRATOR)),
+            )),
         )?),
         linked_identities: Vec::new(),
         roles: vec![NewRole {

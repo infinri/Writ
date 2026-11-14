@@ -30,8 +30,9 @@ use writ_broker::approval::{
 use writ_broker::approval::{ApprovalCode, ChallengeRefusal};
 use writ_broker::approval_store::{
     approval_binding, approval_request_for, ApprovalLedger, BootstrapEnrollment, CeremonyBegin,
-    CeremonyFinish, CeremonyOp, CeremonyResult, NewEnrollment, NewRole, OperatorSession,
-    RegistrationBegin, RegistrationFinish, RegistrationLedger, APPROVAL_GRANT_TTL_SECONDS,
+    CeremonyFinish, CeremonyOp, CeremonyResult, IssuedRegistration, NewEnrollment, NewRole,
+    OperatorSession, RegistrationBegin, RegistrationFinish, RegistrationLedger,
+    APPROVAL_GRANT_TTL_SECONDS,
 };
 use writ_broker::authorize::authorize;
 use writ_broker::clock::{observe, ClockError, Drift, EffectiveClock, ObservedTime, Reading};
@@ -351,22 +352,46 @@ fn root_session() -> OperatorSession {
     }
 }
 
-/// One registration ceremony (S5, X8) for `who` with credential `cred-<subject>`, in
-/// `operator`'s session (none for the bootstrap).
+/// The `enroll` registration row of `who`, created by `operator`'s authenticated
+/// `RegistrationStart` ceremony (D-043 Y2).
+fn start(ledger: &SqliteLedger, who: &SubjectId, operator: &OperatorSession) -> IssuedRegistration {
+    let op = CeremonyOp::RegistrationStart {
+        subject: who.clone(),
+        operator: operator.operator.clone(),
+        operator_session: operator.session_id.clone(),
+    };
+    match ceremony(
+        ledger,
+        &operator.operator,
+        &op,
+        &format!("start-{}", who.subject),
+    ) {
+        Ok(CeremonyResult::RegistrationStarted { registration }) => registration,
+        other => panic!("registration start: {other:?}"),
+    }
+}
+
+/// One registration ceremony (S5, X8) for `who` with credential `cred-<subject>`: the
+/// bootstrap session's own row, or (with `operator`) a row started by that operator's
+/// ceremony on the serving ledger (D-043 Y2).
 fn register(
     ledger: &dyn RegistrationLedger,
     now: &dyn Fn() -> ObservedTime,
     who: &SubjectId,
-    operator: Option<&OperatorSession>,
+    operator: Option<(&SqliteLedger, &OperatorSession)>,
 ) -> VerifiedRegistration {
-    let issued = ledger
-        .begin_registration(&RegistrationBegin {
-            subject: who,
-            operator,
-            now: now(),
-        })
-        .unwrap()
-        .unwrap();
+    let issued = match operator {
+        Some((serving, o)) => start(serving, who, o),
+        None => ledger
+            .begin_registration(&RegistrationBegin {
+                subject: who,
+                operator: None,
+                now: now(),
+            })
+            .unwrap()
+            .unwrap(),
+    };
+    let operator = operator.map(|(_, o)| o);
     ledger
         .finish_registration(&RegistrationFinish {
             registration_id: &issued.registration_id,
@@ -427,7 +452,7 @@ fn enroll_alice(ledger: &SqliteLedger) {
             ledger,
             &|| observed(ledger),
             &subject("alice"),
-            Some(&root_session()),
+            Some((ledger, &root_session())),
         )),
         linked_identities: vec![],
         roles: vec![NewRole {
@@ -939,14 +964,7 @@ fn a_stub_verifier_cannot_be_used_once_a_channel_is_configured() {
         })
         .unwrap()
         .unwrap();
-    let row = ledger
-        .begin_registration(&RegistrationBegin {
-            subject: &subject("mallory"),
-            operator: Some(&root_session()),
-            now: observed(&ledger),
-        })
-        .unwrap()
-        .unwrap();
+    let row = start(&ledger, &subject("mallory"), &root_session());
     drop(ledger);
     // The stub configured on a later open, for another relying party.
     let stubbed = SqliteLedger::open(&db)

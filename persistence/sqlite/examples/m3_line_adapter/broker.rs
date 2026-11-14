@@ -337,7 +337,11 @@ impl BrokerCase {
                         &|| Ok(now),
                         &SubjectId::new(TEST_SUBJECT_ISSUER, &human),
                         &test_credential(&human),
-                        Some(&operator_session(&admin)),
+                        Some((
+                            stores.ledger.production(),
+                            &operator_session(&admin),
+                            ADMIN_RESPONSE,
+                        )),
                     )?),
                     linked_identities: Vec::new(),
                     roles: vec![NewRole {

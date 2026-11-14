@@ -15,8 +15,8 @@ use std::sync::Arc;
 
 use writ_broker::approval_store::{
     approval_request_for, ApprovalLedger, BootstrapEnrollment, CeremonyBegin, CeremonyFinish,
-    CeremonyOp, CeremonyResult, NewEnrollment, NewRole, OperatorSession, RegistrationBegin,
-    RegistrationFinish, RegistrationLedger,
+    CeremonyOp, CeremonyResult, IssuedRegistration, NewEnrollment, NewRole, OperatorSession,
+    RegistrationBegin, RegistrationFinish, RegistrationLedger,
 };
 use writ_broker::authorize::{authorize, UseTimeStatus};
 use writ_broker::clock::ObservedTime;
@@ -147,20 +147,18 @@ pub(crate) fn enroll_op(e: NewEnrollment) -> CeremonyOp {
     }
 }
 
-/// One registration ceremony on `ledger` (through its configured channel), in `operator`'s
-/// [`TEST_SESSION`] (none for a bootstrap).
+/// One registration ceremony on `ledger` through `begin_registration` (the bootstrap
+/// session's only path; the serving ledger refuses it, D-043 Y2).
 pub(crate) fn session_register(
     ledger: &dyn RegistrationLedger,
     now: &dyn Fn() -> ObservedTime,
     subject: &SubjectId,
     response: &str,
-    operator: Option<&SubjectId>,
 ) -> Result<VerifiedRegistration, Refusal> {
-    let session = operator.map(operator_session);
     let issued = ledger
         .begin_registration(&RegistrationBegin {
             subject,
-            operator: session.as_ref(),
+            operator: None,
             now: now(),
         })
         .expect("store")?;
@@ -168,16 +166,63 @@ pub(crate) fn session_register(
         .finish_registration(&RegistrationFinish {
             registration_id: &issued.registration_id,
             response: response.as_bytes(),
-            operator: session.as_ref(),
+            operator: None,
             now: now(),
         })
         .expect("store")
 }
 
-/// `e` with a credential `cred-<name>` registered through `ledger`'s `enroll` registration
-/// ceremony (S5, X8) in `operator`'s [`TEST_SESSION`], when it is a human without one.
+/// The `RegistrationStart` operation of `subject` by `operator` in `session` (D-043 Y2).
+pub(crate) fn start_op(subject: &SubjectId, operator: &SubjectId, session: &str) -> CeremonyOp {
+    CeremonyOp::RegistrationStart {
+        subject: subject.clone(),
+        operator: operator.clone(),
+        operator_session: session.into(),
+    }
+}
+
+/// An `enroll` registration row for `subject`, created by `operator`'s authenticated
+/// `RegistrationStart` ceremony (response `ok:cred-<operator>`) in `session` (D-043 Y2).
+pub(crate) fn start_registration(
+    ledger: &SqliteLedger,
+    now: &dyn Fn() -> ObservedTime,
+    subject: &SubjectId,
+    operator: &SubjectId,
+    session: &str,
+) -> Result<IssuedRegistration, Refusal> {
+    let op = start_op(subject, operator, session);
+    let key = format!("start-{}", NONCES.fetch_add(1, Ordering::SeqCst));
+    match ceremony(ledger, operator, &op, &key, now())? {
+        CeremonyResult::RegistrationStarted { registration } => Ok(registration),
+        other => panic!("a registration start answers RegistrationStarted, got {other:?}"),
+    }
+}
+
+/// A registration of `subject` in `operator`'s [`TEST_SESSION`]: the start ceremony, then
+/// the registration finish in the same operator session.
+pub(crate) fn operator_register(
+    ledger: &SqliteLedger,
+    now: &dyn Fn() -> ObservedTime,
+    subject: &SubjectId,
+    response: &str,
+    operator: &SubjectId,
+) -> Result<VerifiedRegistration, Refusal> {
+    let issued = start_registration(ledger, now, subject, operator, TEST_SESSION)?;
+    ledger
+        .finish_registration(&RegistrationFinish {
+            registration_id: &issued.registration_id,
+            response: response.as_bytes(),
+            operator: Some(&operator_session(operator)),
+            now: now(),
+        })
+        .expect("store")
+}
+
+/// `e` with a credential `cred-<name>` registered through `ledger`'s operator-started
+/// registration (S5, X8, D-043 Y2) in `operator`'s [`TEST_SESSION`], when it is a human
+/// without one.
 pub(crate) fn registered(
-    ledger: &dyn RegistrationLedger,
+    ledger: &SqliteLedger,
     now: &dyn Fn() -> ObservedTime,
     operator: &SubjectId,
     mut e: NewEnrollment,
@@ -186,7 +231,7 @@ pub(crate) fn registered(
         let name = &e.subject.subject;
         let response = format!("ok|cred-{name}|pk-{name}");
         e.credential =
-            Some(session_register(ledger, now, &e.subject, &response, Some(operator)).unwrap());
+            Some(operator_register(ledger, now, &e.subject, &response, operator).unwrap());
     }
     e
 }
@@ -205,7 +250,7 @@ pub(crate) fn bootstrap_root_at(
         .with_approval_channel(channel_of(v))
         .expect("store");
     let response = format!("ok|{}|pk-{}", credential(admin), admin.subject);
-    let reg = session_register(&s, &|| s.observe(clock).unwrap(), admin, &response, None)?;
+    let reg = session_register(&s, &|| s.observe(clock).unwrap(), admin, &response)?;
     let now = s.observe(clock).unwrap();
     s.bootstrap(
         &BootstrapEnrollment {

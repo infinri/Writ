@@ -73,8 +73,8 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use writ_broker::approval::{ApprovalCode, RevocationTarget};
 use writ_broker::approval_store::{
-    parse_permission, CeremonyOp, CeremonyResult, NewEnrollment, NewRole, OperatorSession,
-    RoleChange, SignoffParties, REGISTRATION_TTL_SECONDS,
+    parse_permission, CeremonyOp, CeremonyOutcome, CeremonyResult, NewEnrollment, NewRole,
+    OperatorSession, RoleChange, SignoffParties, REGISTRATION_TTL_SECONDS,
 };
 use writ_broker::human::{PrincipalKind, SubjectId, VerifiedRegistration, VerifierError};
 use writ_broker::refusal::Refusal;
@@ -547,7 +547,6 @@ async fn handle(state: &State, req: Request<Incoming>) -> Response<Full> {
         "/ceremony/begin" => begin(state, &token, &field),
         "/ceremony/finish" => finish(state, &token, &field),
         "/prepare" => prepare(state, &token, &field),
-        "/registration/begin" => registration_begin(state, &token, &field),
         "/registration/finish" => registration_finish(state, &token, &field),
         _ => refused(StatusCode::NOT_FOUND, "path"),
     }
@@ -683,6 +682,7 @@ fn title(op: &CeremonyOp) -> &'static str {
         CeremonyOp::Signoff { .. } => "Signoff",
         CeremonyOp::Enroll { .. } => "Enrollment",
         CeremonyOp::RoleChange { .. } => "Role change",
+        CeremonyOp::RegistrationStart { .. } => "Registration start",
     }
 }
 
@@ -726,6 +726,7 @@ fn signoff_view(state: &State, raw_id: &str) -> Response<Full> {
         Err(response) => return *response,
     };
     let body = page::target_page(&page::Target {
+        then_enroll: false,
         title: "Signoff",
         fingerprint: &fingerprint,
         context: &context.context,
@@ -766,6 +767,7 @@ fn shown_view(state: &State, token: Option<&str>) -> Response<Full> {
             title,
             context,
             fingerprint,
+            op,
             ..
         }) => html(
             StatusCode::OK,
@@ -774,6 +776,9 @@ fn shown_view(state: &State, token: Option<&str>) -> Response<Full> {
                 fingerprint,
                 context,
                 csrf: &session.csrf,
+                // D-043 Y2: after the operator's start ceremony, the new person's passkey
+                // is registered on this page and the enrollment is prepared from it.
+                then_enroll: matches!(**op, CeremonyOp::RegistrationStart { .. }),
             }),
         ),
         _ => not_found(),
@@ -998,6 +1003,27 @@ fn finish<'a>(
     };
     if let Some(session) = sessions(state).get_mut(token) {
         session.pending.remove(challenge_id);
+        // D-043 Y2: the row the operator's start ceremony created belongs to this session.
+        if let (
+            CeremonyOp::RegistrationStart {
+                subject, operator, ..
+            },
+            Ok(CeremonyOutcome {
+                result: CeremonyResult::RegistrationStarted { registration },
+                ..
+            }),
+        ) = (&op, &answer)
+        {
+            session.registrations.insert(
+                registration.registration_id.clone(),
+                Registration {
+                    subject: subject.clone(),
+                    operator: operator.clone(),
+                    expires: Instant::now() + Duration::from_secs(REGISTRATION_SECONDS),
+                    verified: None,
+                },
+            );
+        }
         // An enrollment consumed its registration row (or burnt the challenge); either way
         // the row is no longer this session's to use.
         if let CeremonyOp::Enroll {
@@ -1013,6 +1039,21 @@ fn finish<'a>(
         }
     }
     match answer {
+        Ok(CeremonyOutcome {
+            result: CeremonyResult::RegistrationStarted { registration },
+            replayed,
+            ..
+        }) => respond(
+            StatusCode::OK,
+            "application/json",
+            format!(
+                "{{\"result\":\"registration started\",\"replayed\":{replayed},\
+                 \"registration_id\":\"{}\",\"expires_at\":\"{}\",\"options\":{}}}",
+                page::json_string(&registration.registration_id),
+                page::json_string(&registration.expires_at.to_string()),
+                options_json(&registration.client_options),
+            ),
+        ),
         Ok(outcome) => {
             let result = match outcome.result {
                 CeremonyResult::Approved { .. } => "approved",
@@ -1021,6 +1062,7 @@ fn finish<'a>(
                 CeremonyResult::SignedOff { .. } => "signed off",
                 CeremonyResult::Enrolled { .. } => "enrolled",
                 CeremonyResult::RoleChanged { .. } => "role changed",
+                CeremonyResult::RegistrationStarted { .. } => "registration started",
             };
             respond(
                 StatusCode::OK,
@@ -1141,6 +1183,18 @@ fn form_op<'a>(
             },
             None,
         )),
+        Some("registration-start") => {
+            let operator = subject_field(state, field("operator")).ok_or("operator")?;
+            let subject = subject_field(state, field("subject")).ok_or("subject")?;
+            Ok((
+                CeremonyOp::RegistrationStart {
+                    subject,
+                    operator: operator.clone(),
+                    operator_session: session.id.clone(),
+                },
+                Some(operator),
+            ))
+        }
         Some("enroll") => {
             let id = nonempty(field("registration_id")).ok_or("registration")?;
             let registration = session.registrations.get(id).ok_or("registration")?;
@@ -1210,89 +1264,6 @@ fn prepare<'a>(
         StatusCode::OK,
         "application/json",
         "{\"view\":\"/view\"}".into(),
-    )
-}
-
-/// POST `/registration/begin`: an `enroll` registration row for a new subject, begun by
-/// the named operator in this page session (D-043 Y2). Counted against the same bounds as
-/// ceremonies (L2) for the row's lifetime; a ledger refusal is one generic `refused` (L1).
-fn registration_begin<'a>(
-    state: &State,
-    token: &str,
-    field: &dyn Fn(&str) -> Option<&'a str>,
-) -> Response<Full> {
-    let limits = &state.config.limits;
-    let (Some(operator), Some(subject)) = (
-        subject_field(state, field("operator")),
-        subject_field(state, field("subject")),
-    ) else {
-        return refused(StatusCode::BAD_REQUEST, "subject");
-    };
-    let (session_id, reservation) = {
-        let mut sessions = sessions(state);
-        let now = Instant::now();
-        prune(&mut sessions, now);
-        let total = outstanding(&sessions);
-        let Some(session) = checked(&mut sessions, token, field("csrf")) else {
-            return refused(StatusCode::FORBIDDEN, "session");
-        };
-        if session.outstanding() >= limits.max_pending || total >= limits.max_outstanding {
-            return refused(StatusCode::TOO_MANY_REQUESTS, "pending");
-        }
-        let Some(slot) = random_token() else {
-            return unavailable();
-        };
-        let reservation = format!("reservation:{slot}");
-        session.registrations.insert(
-            reservation.clone(),
-            Registration {
-                subject: subject.clone(),
-                operator: operator.clone(),
-                expires: now + Duration::from_secs(REGISTRATION_SECONDS),
-                verified: None,
-            },
-        );
-        (session.id.clone(), reservation)
-    };
-    let release = |response: Response<Full>| {
-        if let Some(session) = sessions(state).get_mut(token) {
-            session.registrations.remove(&reservation);
-        }
-        response
-    };
-    let operator_session = OperatorSession {
-        operator,
-        session_id,
-    };
-    let issued = match state
-        .backend
-        .begin_registration(&subject, &operator_session)
-    {
-        Ok(Ok(issued)) => issued,
-        Ok(Err(_)) => return release(refused(StatusCode::FORBIDDEN, "refused")),
-        Err(Unavailable) => return release(unavailable()),
-    };
-    {
-        let mut sessions = sessions(state);
-        let Some(session) = sessions.get_mut(token) else {
-            return refused(StatusCode::FORBIDDEN, "session");
-        };
-        let Some(row) = session.registrations.remove(&reservation) else {
-            return refused(StatusCode::FORBIDDEN, "session");
-        };
-        session
-            .registrations
-            .insert(issued.registration_id.clone(), row);
-    }
-    respond(
-        StatusCode::OK,
-        "application/json",
-        format!(
-            "{{\"registration_id\":\"{}\",\"expires_at\":\"{}\",\"options\":{}}}",
-            page::json_string(&issued.registration_id),
-            page::json_string(&issued.expires_at.to_string()),
-            options_json(&issued.client_options),
-        ),
     )
 }
 

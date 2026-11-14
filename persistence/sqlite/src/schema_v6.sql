@@ -12,7 +12,7 @@
 CREATE TABLE ledger_sequence (
   seq        INTEGER PRIMARY KEY AUTOINCREMENT,
   kind       TEXT NOT NULL CHECK (kind IN ('promotion', 'administration', 'revocation',
-               'decision', 'signoff', 'enrollment', 'bootstrap', 'expiry')),
+               'decision', 'signoff', 'enrollment', 'bootstrap', 'expiry', 'registration')),
   reference  TEXT NOT NULL
 ) STRICT;
 
@@ -65,8 +65,9 @@ CREATE TABLE enrollment_links (
 -- Server-held WebAuthn registration ceremonies (S5, X8): bound to the subject, RP id, origin,
 -- operation and expiry; single use (issued -> registered -> enrolled, or issued -> refused).
 -- The verified credential is recorded at `registered`; an enrollment copies it from here.
--- D-043 Y2: an `enroll` row records the initiating operator and the approval listener's page
--- session; its finish and the consuming Enroll ceremony must come from both. `bootstrap` has none.
+-- D-043 Y2: an `enroll` row is created only by a consumed `registration_start` ceremony of the
+-- operator (`started_by`) and records the operator and the approval listener's page session; its
+-- finish and the consuming Enroll ceremony must come from both. `bootstrap` has none.
 CREATE TABLE registrations (
   registration_id TEXT PRIMARY KEY CHECK (registration_id <> ''),
   operation       TEXT NOT NULL CHECK (operation IN ('bootstrap', 'enroll')),
@@ -85,6 +86,9 @@ CREATE TABLE registrations (
   operator_issuer  TEXT CHECK (operator_issuer <> ''),
   operator_subject TEXT CHECK (operator_subject <> ''),
   operator_session TEXT CHECK (operator_session <> ''),
+  started_by       TEXT UNIQUE,                -- the consumed registration_start challenge id
+  client_options   BLOB,                       -- creation options (replay of the start)
+  CHECK ((operation = 'enroll') = (started_by IS NOT NULL)),
   CHECK ((operation = 'enroll') = (operator_session IS NOT NULL)),
   CHECK ((operator_session IS NULL) = (operator_issuer IS NULL)),
   CHECK ((operator_session IS NULL) = (operator_subject IS NULL)),
@@ -133,7 +137,8 @@ CREATE TABLE challenges (
   subject             TEXT NOT NULL,
   allowed_credentials TEXT NOT NULL,          -- canonical JSON array of credential ids
   operation           TEXT NOT NULL CHECK (operation IN
-                        ('approve', 'deny', 'revoke', 'signoff', 'enroll', 'role_change')),
+                        ('approve', 'deny', 'revoke', 'signoff', 'enroll', 'role_change',
+                         'registration_start')),
   verdict             TEXT NOT NULL,
   tenant_id           TEXT NOT NULL,
   project_id          TEXT NOT NULL,
@@ -266,7 +271,7 @@ CREATE TABLE approval_events (
   seq                 INTEGER PRIMARY KEY AUTOINCREMENT,
   kind                TEXT NOT NULL CHECK (kind IN ('request_created', 'approved', 'denied',
                         'expired', 'revoked', 'signed_off', 'enrolled', 'bootstrap',
-                        'role_changed')),
+                        'role_changed', 'registration_started')),
   target_id           TEXT NOT NULL,
   tenant_id           TEXT NOT NULL,
   project_id          TEXT NOT NULL,
