@@ -902,8 +902,10 @@ pub struct OperatorSession {
 }
 
 /// The start of a registration ceremony (S5, X8). The operation is the
-/// ledger's, never the caller's: the serving ledger registers only for
-/// `Enroll`; the exclusive bootstrap session only for `Bootstrap`.
+/// ledger's, never the caller's: only the exclusive bootstrap session issues
+/// a row here (`Bootstrap`); the serving ledger refuses
+/// (`ENROLLMENT_UNSUPPORTED`) and creates `enroll` rows only in a consumed
+/// [`CeremonyOp::RegistrationStart`] ceremony (D-043 Y2).
 pub struct RegistrationBegin<'a> {
     /// The subject to register (must not exist yet).
     pub subject: &'a SubjectId,

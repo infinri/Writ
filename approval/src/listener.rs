@@ -24,8 +24,9 @@
 //!   stored promotion context), the operator forms `GET /revoke`, `GET /role` and
 //!   `GET /enroll`, `POST /prepare` (a form's operation becomes the session's displayed
 //!   target with the ledger's context for it; a read) and `GET /view` (that context),
-//!   `POST /registration/begin` and `POST /registration/finish` (the new person's passkey
-//!   registration, bound to the operator and this page session, D-043 Y2), and
+//!   `POST /registration/finish` (the new person's passkey registration for a row the
+//!   operator's authenticated registration-start ceremony created, bound to the operator
+//!   and this page session, D-043 Y2; there is no registration begin route), and
 //!   `POST /ceremony/begin` and `POST /ceremony/finish` for every operation. Every page
 //!   displays only the ledger's context for the ceremony, which is what its fingerprint
 //!   covers (R6); the operation, target, idempotency key, registration result and
@@ -48,7 +49,7 @@
 //!   answers one generic `refused` (L1: the page session is not an authentication, so it
 //!   never learns whether the subject is unknown, a service, revoked, without permission
 //!   or without a credential; the specific code stays in the ledger's refusal audit);
-//!   `/prepare` and `/registration/begin` answer the same generic `refused`, and a
+//!   `/prepare` answers the same generic `refused`, and a
 //!   signoff id the ledger does not offer is one generic not-found page.
 //!   After a begin, the page receives the verifier's options including the subject's
 //!   allowed credential ids (WebAuthn `allowCredentials`; documented exposure). A refused

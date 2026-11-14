@@ -2913,8 +2913,9 @@ fn bootstrapped(conn: &Connection) -> rusqlite::Result<bool> {
     )
 }
 
-/// The serving ledger registers credentials only for the administrative `Enroll`
-/// ceremony (S5, X8), never for a bootstrap.
+/// The serving ledger finishes `enroll` registration rows (S5, X8) but never begins one
+/// here: rows come only from the operator's `RegistrationStart` ceremony (D-043 Y2); a
+/// bootstrap row only from [`BootstrapSession`].
 impl RegistrationLedger for SqliteLedger {
     fn begin_registration(
         &self,

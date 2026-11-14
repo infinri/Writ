@@ -325,9 +325,9 @@ white-space:pre-wrap;word-break:break-all}.null{color:#666}";
 
 /// The page script: asks the broker for a challenge, runs the WebAuthn assertion with the
 /// verifier's options (user verification required by the verifier) and posts the response;
-/// on the operator form pages it posts the form to `/prepare` and opens `/view`, and on the
-/// enrollment page it first runs the WebAuthn registration of the new person's passkey
-/// (`/registration/begin`, `/registration/finish`). It never chooses the operation's target
+/// on the operator form pages it posts the form to `/prepare` and opens `/view`, and after
+/// the operator's registration-start ceremony it runs the WebAuthn registration of the new
+/// person's passkey (`/registration/finish`). It never chooses the operation's target
 /// or context once displayed: those are the server's session state.
 pub const SCRIPT: &str = r#""use strict";
 (function () {

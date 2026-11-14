@@ -23,11 +23,11 @@ import {
   staticServer, stop, waitExit,
 } from "./lib/harness.mjs";
 
-const FLOW_MODULES = ["./flows/approve-deny.mjs"];
+const FLOW_MODULES = ["./flows/approve-deny.mjs", "./flows/operator-pages.mjs"];
 const FLOW_TIMEOUT_MS = 60000;
 const LABEL = "CDP virtual authenticator, simulated UV";
 const ISSUER = "writ-local";
-const SUBJECTS = { admin: "browser-admin", approver: "browser-approver" };
+const SUBJECTS = { admin: "browser-admin", approver: "browser-approver", target: "browser-target" };
 
 function args() {
   const out = { chrome: "/usr/bin/google-chrome" };
@@ -93,7 +93,8 @@ async function main() {
     await page.navigate(`${origin}/setup`);
     const fixture = spawnLines(opt.fixture, [
       "setup", "--ledger", ledger, "--origin", origin, "--issuer", ISSUER,
-      "--admin", SUBJECTS.admin, "--approver", SUBJECTS.approver, "--requests", requestIds.join(","),
+      "--admin", SUBJECTS.admin, "--approver", SUBJECTS.approver, "--target", SUBJECTS.target,
+      "--requests", requestIds.join(","),
     ], (e) => process.stderr.write(`fixture: ${e}`));
     children.fixture = fixture;
     const done = await driveFixture(fixture, page, log);
@@ -115,7 +116,7 @@ async function main() {
 
     const t = {
       page, port, origin, wrongPort, wrongOrigin, fingerprints: done.requests,
-      subjects: { approver: SUBJECTS.approver, admin: SUBJECTS.admin },
+      subjects: { approver: SUBJECTS.approver, admin: SUBJECTS.admin, target: SUBJECTS.target },
       async openRequest(id) {
         await page.navigate(`${origin}/request/${encodeURIComponent(id)}`);
         return page.evaluate(`(() => {
