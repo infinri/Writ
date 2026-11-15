@@ -110,6 +110,11 @@
 //! and ownership rules; the ledger reads the runner needs are `RunnerState` for
 //! [`SqliteLedger`].
 //!
+//! **Immutable snapshots (M5a-06):** the content-addressed snapshot store
+//! [`SqliteSnapshotStore`] (module `snapshots`, schema `writ-snapshots-1`) is a separate file
+//! bound to this ledger's [`LedgerId`] and fenced by its own owner epoch; it implements both
+//! broker snapshot interfaces and the byte-stream ingest API of M5-INTERFACES J-4.
+//!
 //! **Trusted time (since schema `writ-ledger-2`):** `time_floor` holds the high-water mark `H`
 //! (at most one row, raised only, in the fenced `time_floor` transaction, which returns the
 //! stored maximum); `clock_events` holds startup, drift and acknowledgement records (fenced
@@ -147,10 +152,16 @@ pub use writ_broker::store::{ExecuteLedger, GrantLedger, LedgerStore, StoreError
 mod approval_store;
 mod effects;
 mod runner_store;
+mod snapshots;
 mod workflow;
 pub use approval_store::BootstrapSession;
 pub use effects::{SqliteEffectStore, EFFECTS_SCHEMA, EFFECTS_SCHEMA_VERSION};
 pub use runner_store::{SqliteRunnerStore, RUNNER_SCHEMA, RUNNER_SCHEMA_VERSION};
+pub use snapshots::{
+    snapshot_id_for, Committed, DeploymentProof, IngestSession, SnapshotError, SnapshotLimits,
+    SnapshotRefusal, SqliteSnapshotStore, VerifiedSnapshot, SNAPSHOTS_SCHEMA,
+    SNAPSHOTS_SCHEMA_VERSION,
+};
 use writ_broker::store::{TxFailure, TxStage};
 
 /// The exact `writ-ledger-3` schema (the base objects of every ledger).
@@ -1435,6 +1446,9 @@ mod m4_support;
 
 #[cfg(test)]
 mod d042_tests;
+
+#[cfg(test)]
+mod snapshot_tests;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

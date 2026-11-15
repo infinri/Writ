@@ -118,6 +118,10 @@ fn kill_child() {
         super::transition_tests::promote_child(&dir, stage_of(parts[2]));
         return;
     }
+    if parts[0] == "snapshot" {
+        super::snapshot_tests::snapshot_kill_child(&dir, parts[2]);
+        return;
+    }
     if parts[0] == "runner" {
         say("READY");
         super::runner_tests::runner_kill_child(&dir);
@@ -877,4 +881,21 @@ fn sigkill_during_a_runner_job_leaves_the_run_started_and_never_reruns() {
     kill(child);
     super::runner_tests::after_runner_kill(&dir, &job_pid);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[ignore = "spawns and kills child processes; fork duplicates other tests' ownership-lock descriptors, so run alone: cargo test -p writ-ledger-sqlite --lib kill_tests -- --ignored --test-threads=1"]
+fn sigkill_during_snapshot_ingest_leaves_no_partial_snapshot() {
+    for (mode, announce) in [("staged", "STAGED"), ("commit", "AT snapshot_commit Body")] {
+        let dir =
+            std::env::temp_dir().join(format!("writ-kill-{}-snap-{mode}", std::process::id()));
+        super::snapshot_tests::prepare_snapshot_kill(&dir);
+        let mut child = spawn_child(&format!("snapshot|{}|{mode}", dir.display()));
+        let rx = lines(&mut child);
+        wait_for(&rx, announce);
+        assert!(child.try_wait().unwrap().is_none(), "the owner is running");
+        kill(child);
+        super::snapshot_tests::after_snapshot_kill(&dir, mode);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
