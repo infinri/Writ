@@ -1,6 +1,6 @@
 # M5 plan: host enforcement, containment, snapshots, keys and adapters
 
-**Status:** **AUTHORIZED under [D-045](DECISION-LOG.md)** (owner, 2026-11-15; answers M5-D1..M5-D17 in section 10). M5 is split into **M5a trusted foundations** and **M5b host integration**, each with its own evidence and gate review; M5 completes only when both gates pass. All M5a and M5b tasks are **NOT STARTED** unless a row in [TASKS](TASKS.md) says otherwise. Baseline: `8fbf26d` (D-045 recorded). Binding interface design: [M5-INTERFACES](M5-INTERFACES.md) (**DRAFT for lead review**; no consumer is integrated before the lead marks a section binding).
+**Status:** **AUTHORIZED under [D-045](DECISION-LOG.md)** (owner, 2026-11-15; answers M5-D1..M5-D17 in section 10). M5 is split into **M5a trusted foundations** and **M5b host integration**, each with its own evidence and gate review; M5 completes only when both gates pass. All M5a and M5b tasks are **NOT STARTED** unless a row in [TASKS](TASKS.md) says otherwise. Baseline: `8fbf26d` (D-045 recorded). Binding interface design: [M5-INTERFACES](M5-INTERFACES.md) (revision 2 after two independent reviews: J-0, J-2..J-9 BINDING (revised); J-1 and the job identity in J-5 BLOCKED on owner decisions C-1 and H-2; no consumer is integrated against a blocked section).
 
 **Predecessor:** **M4 ACCEPTED** as scoped development scope under [D-044](DECISION-LOG.md) (conditions met: authenticated scoped reads, browser suite as a required CI step, required CI on the exact SHA `8b2057a`, run 43659759755, 6/6; E-077). The earlier text of this plan that called M4 "conditionally accepted" and made M5 wait for the D-044 conditions is superseded.
 
@@ -161,7 +161,7 @@ Bounded parallel workers with disjoint ownership as in D-040..D-045; the lead ow
 
 1. **Scope.** Addressed by the split (M5-D1); M5b integration still depends on several M5a items at once.
 2. **Advisory profile mislabelled.** Same-user deployments and non-reference hosts keep failing closed for governed jobs and writes; any advisory functionality must be labelled accurately (M5-D2, INV-39).
-3. **Host kernel features.** Unprivileged user namespaces, cgroup-v2 delegation and `openat2` flags vary by distribution and configuration; readiness comes only from probes (M5-D2). Some distributions restrict unprivileged user namespaces by policy (for example AppArmor restrictions on recent Ubuntu releases), which is one reason the reference image is Debian (M5-INTERFACES J-9).
+3. **Host kernel features.** Unprivileged user namespaces, cgroup-v2 delegation and `openat2` flags vary by distribution and configuration; readiness comes only from probes (M5-D2). The reference image is Ubuntu 24.04 LTS (lead decision M-5), which restricts unprivileged user namespaces by AppArmor; the restriction stays on and only a private, digest-pinned bubblewrap copy executable by `writ` receives the `userns` grant (M5-INTERFACES J-9).
 4. **External trusted binaries.** bubblewrap and the per-job cgroup entry helper are in the trusted computing base; they are pinned and recorded with the reference image.
 5. **Host drift.** Claude Code's hook contract and version change; SR-06 plan revision 3 was prepared against 2.1.318; preflight is repeated on the pinned version (M5b-07).
 6. **Trial and CI environments.** No hypervisor on the workstation; VM, isolated CI runner, model credential and authenticator hardware are external (section 12).
@@ -200,7 +200,7 @@ M5 completes only when both gates pass. Release and production stay NO-GO.
 | M5-D16 | Small carry-overs | Tokio `signal` through feature review; bounded graceful shutdown; CO-M4X-04 at M12, fail closed | M5a-02, M5a-11; J-8 |
 | M5-D17 | Snapshot ingest | Agent-submitted bytes over the authenticated socket; the store computes the digest; no agent paths reopened; a claimed digest is checked, never authority | M5a-06; J-4 |
 
-New trust-boundary questions found while designing the interfaces are listed in [M5-INTERFACES](M5-INTERFACES.md) J-10; they are raised only when dependent work reaches them (D-045 "Execution and cleanup").
+New trust-boundary questions found while designing the interfaces are listed in [M5-INTERFACES](M5-INTERFACES.md) J-10: owner decisions C-1 (approval display integrity when agent and human share a desktop user), H-2 (identity of runner job processes) and Q-3 (operator dispositions); Q-1 and Q-2 are answered there. They are raised when dependent work reaches them (D-045 "Execution and cleanup").
 
 ## 11. Recovery checkpoints
 
