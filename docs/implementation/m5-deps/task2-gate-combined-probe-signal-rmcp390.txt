@@ -1,0 +1,4 @@
+dependency gate: combined release build: signal-hook-registry 1.4.8 not approved by any member
+dependency gate: combined test build: signal-hook-registry 1.4.8 not approved by any member (normal or dev)
+dependency gate: ADVISORY PRESENT (development only, not a release disposition): rsa 0.10.0-rc.19: ['RUSTSEC-2023-0071'] under recorded DEVELOPMENT-ONLY exception (D-041 DR-3; reachability evidence and update plan in M4-DEPENDENCY-REVIEW.md 'Lead reproduction')
+dependency gate: 270 locked packages; standalone closures {'writ-kernel': 10, 'writ-broker': 18, 'writ-ledger-sqlite': 8, 'writ-approval': 189, 'writ-approval-server': 10, 'writ-m5-probe': 7, 'writ-m5-mcp-probe': 85}; combined release build 202 packages, test build 223; kernel subtree in the combined build adds ['subtle 2.6.1'] (feature unification); 18 problems (OSV checked)

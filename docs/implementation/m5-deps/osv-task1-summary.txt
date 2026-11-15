@@ -1,0 +1,5 @@
+rsa 0.10.0-rc.19: [('RUSTSEC-2023-0071', ['CVE-2023-49092', 'GHSA-4grx-2x9w-596c', 'GHSA-c38w-74pg-36hr'], '2026-11-08')]
+rsa 0.10.0: []
+crypto-glue 0.2.2: []
+webauthn-rs 0.6.2: []
+webauthn-rs-core 0.6.2: []

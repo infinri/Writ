@@ -1,0 +1,109 @@
+++ uname -a
+Linux EPDC-FRAGAACPAJ5431000X 6.17.0-40-generic #40~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Tue Jun 23 16:48:12 UTC 2 x86_64 x86_64 x86_64 GNU/Linux
+++ cat /etc/os-release
+PRETTY_NAME="Ubuntu 24.04.3 LTS"
+NAME="Ubuntu"
+VERSION_ID="24.04"
+VERSION="24.04.3 LTS (Noble Numbat)"
+VERSION_CODENAME=noble
+ID=ubuntu
+ID_LIKE=debian
+HOME_URL="https://www.ubuntu.com/"
+SUPPORT_URL="https://help.ubuntu.com/"
+BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"
+PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"
+UBUNTU_CODENAME=noble
+LOGO=ubuntu-logo
+++ head -2
+++ systemctl --version
+systemd 255 (255.4-1ubuntu8.18)
++PAM +AUDIT +SELINUX +APPARMOR +IMA +SMACK +SECCOMP +GCRYPT -GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN +IPTC +KMOD +LIBCRYPTSETUP +LIBFDISK +PCRE2 -PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD -BPF_FRAMEWORK -XKBCOMMON +UTMP +SYSVINIT default-hierarchy=unified
+++ command -v bwrap
+/usr/bin/bwrap
+++ bwrap --version
+bubblewrap 0.9.0
++++ uname -r
+++ dpkg-query -W '-f=${Package} ${Version}\n' bubblewrap systemd linux-image-6.17.0-40-generic uidmap
+dpkg-query: no packages found matching uidmap
+bubblewrap 0.9.0-1ubuntu0.3
+linux-image-6.17.0-40-generic 6.17.0-40.40~24.04.1
+systemd 255.4-1ubuntu8.18
+++ cat /proc/self/cgroup
+0::/user.slice/user-1001.slice/user@1001.service/app.slice/app-org.gnome.Terminal.slice/vte-spawn-7f48447c-c52e-45bb-b13c-c3f3ecdcfd75.scope
+++ stat -fc %T /sys/fs/cgroup
+cgroup2fs
+++ findmnt -n /sys/fs/cgroup
+/sys/fs/cgroup cgroup2 cgroup2 rw,nosuid,nodev,noexec,relatime,nsdelegate,memory_recursiveprot
+++ cat /sys/fs/cgroup/cgroup.controllers
+cpuset cpu io memory hugetlb pids rdma misc dmem
+++ cat /sys/fs/cgroup/cgroup.subtree_control
+cpuset cpu io memory hugetlb pids rdma misc dmem
++++ cut -d: -f3 /proc/self/cgroup
+++ CG=/user.slice/user-1001.slice/user@1001.service/app.slice/app-org.gnome.Terminal.slice/vte-spawn-7f48447c-c52e-45bb-b13c-c3f3ecdcfd75.scope
+++ ls -ld /sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/app-org.gnome.Terminal.slice/vte-spawn-7f48447c-c52e-45bb-b13c-c3f3ecdcfd75.scope
+drwxr-xr-x 2 lucio.saldivar lucio.saldivar 0 Nov 14 10:02 /sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/app-org.gnome.Terminal.slice/vte-spawn-7f48447c-c52e-45bb-b13c-c3f3ecdcfd75.scope
+++ cat /sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/app-org.gnome.Terminal.slice/vte-spawn-7f48447c-c52e-45bb-b13c-c3f3ecdcfd75.scope/cgroup.controllers
+memory pids
++++ id -u
++++ id -u
+++ cat /sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/cgroup.controllers
+cpu memory pids
++++ id -u
++++ id -u
++++ id -u
++++ id -u
+++ ls -l /sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/cgroup.subtree_control /sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/cgroup.procs
+-rw-r--r-- 1 lucio.saldivar lucio.saldivar 0 Nov 14 10:01 /sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/cgroup.procs
+-rw-r--r-- 1 lucio.saldivar lucio.saldivar 0 Nov 14 10:01 /sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/cgroup.subtree_control
+++ cat /proc/sys/kernel/unprivileged_userns_clone
+1
+++ cat /proc/sys/user/max_user_namespaces
+124807
+++ cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns
+1
+++ cat /proc/sys/kernel/apparmor_restrict_unprivileged_unconfined
+0
+++ cat /sys/kernel/security/lsm
+lockdown,capability,landlock,yama,apparmor,ima,evm++ echo
+
+++ cat /proc/sys/kernel/yama/ptrace_scope
+1
+++ cat /proc/sys/kernel/unprivileged_bpf_disabled
+2
+++ cat /proc/sys/fs/protected_symlinks /proc/sys/fs/protected_hardlinks
+1
+1
++++ uname -r
+++ grep -E 'CONFIG_SECURITY_LANDLOCK|CONFIG_LSM=|CONFIG_CGROUP_PIDS|CONFIG_USER_NS=|CONFIG_PID_NS|CONFIG_SECCOMP_FILTER' /boot/config-6.17.0-40-generic
+++ local _cc_a
+++ for _cc_a in ${1+"$@"}
+++ case "$_cc_a" in
+++ for _cc_a in ${1+"$@"}
+++ case "$_cc_a" in
+++ for _cc_a in ${1+"$@"}
+++ case "$_cc_a" in
+++ [[ -x /home/lucio.saldivar/.local/share/claude/versions/2.1.325 ]]
+++ [[ -n '' ]]
+++ [[ linux-gnu == \m\s\y\s ]]
+++ [[ linux-gnu == \c\y\g\w\i\n ]]
+++ [[ linux-gnu == \w\i\n\3\2 ]]
+++ exec -a ugrep /home/lucio.saldivar/.local/share/claude/versions/2.1.325 -G --ignore-files --hidden -I --exclude-dir=.git --exclude-dir=.svn --exclude-dir=.hg --exclude-dir=.bzr --exclude-dir=.jj --exclude-dir=.sl -E 'CONFIG_SECURITY_LANDLOCK|CONFIG_LSM=|CONFIG_CGROUP_PIDS|CONFIG_USER_NS=|CONFIG_PID_NS|CONFIG_SECCOMP_FILTER' /boot/config-6.17.0-40-generic
+CONFIG_CGROUP_PIDS=y
+CONFIG_USER_NS=y
+CONFIG_PID_NS=y
+CONFIG_SECCOMP_FILTER=y
+CONFIG_SECURITY_LANDLOCK=y
+CONFIG_LSM="landlock,lockdown,yama,integrity,apparmor"
+++ id -u
+1001
+++ id -nG
+lucio.saldivar adm cdrom sudo dip plugdev users lpadmin docker
+++ systemctl --user --version
+++ echo user-manager-ok
+user-manager-ok
+++ systemd-run --version
+++ head -1
+systemd 255 (255.4-1ubuntu8.18)
++++ command -v bwrap
+++ ls -l /usr/bin/bwrap
+-rwxr-xr-x 1 root root 72160 Sep 17 15:12 /usr/bin/bwrap

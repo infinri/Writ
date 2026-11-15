@@ -1,0 +1,6 @@
+rmcp LATEST protocol version: ProtocolVersion("2026-07-28")
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{},"serverInfo":{"name":"rmcp","version":"3.9.0"}}}
+ <- 2025-11-25
+rmcp LATEST protocol version: ProtocolVersion("2026-07-28")
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"rmcp","version":"3.9.0"}}}
+ <- 2024-11-05

@@ -1,0 +1,9 @@
+pid=Pid(3817037) sid=Ok(Pid(3817034)) pgid=Ok(Pid(3817037))
+pidfd_open: ok
+waitid(P_PIDFD, self): Some(Os { code: 10, kind: Uncategorized, message: "No child processes" }) (ECHILD expected)
+openat2(/etc, os-release, BENEATH|NO_SYMLINKS|NO_MAGICLINKS|NO_XDEV): Err(Os { code: 40, kind: FilesystemLoop, message: "Too many levels of symbolic links" })
+openat2(/etc, ../etc/hostname, BENEATH): Err(Os { code: 18, kind: CrossesDevices, message: "Invalid cross-device link" }) (EXDEV expected)
+fstatfs(/etc): f_type=0xef53
+statx MNT_ID: mask_has_mnt_id=true mnt_id=32
+no_new_privs=Ok(false) dumpable=Ok(Dumpable)
+SO_PEERCRED on socketpair: Ok(UCred { pid: Pid(3817037), uid: Uid(1001), gid: Gid(1001) })

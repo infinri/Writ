@@ -1,0 +1,20 @@
+lxc-usernsexec
+unprivileged_userns
+-rw-r--r-- 1 root root 24 Dec  2  2025 /etc/hostname
+landlock_create_ruleset(NULL,0,LANDLOCK_CREATE_RULESET_VERSION) -> 7 errno 0 
+--- bwrap userns+pidns trial (no settings changed)
+bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+exit=1
+--- unshare -U trial
+exit=0
+--- bwrap userns+pidns, no netns
+bwrap: setting up uid map: Permission denied
+exit=1
+--- bwrap with netns, no --proc
+bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+exit=1
+--- unshare -Urn ip link
+unshare: write failed /proc/self/uid_map: Operation not permitted
+exit=1
+unconfined
+

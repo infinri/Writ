@@ -1,0 +1,24 @@
+closure 61 needing approval 23 osv hits []
+  chrono 0.4.45 [was locked_unbuilt -> now built] 2026-06-04 MIT OR Apache-2.0 cksum_ok=True yanked=False
+  dyn-clone 1.0.20 [was locked_unbuilt -> now built] 2025-07-27 MIT OR Apache-2.0 cksum_ok=True yanked=False
+  equivalent 1.0.3 [was locked_unbuilt -> now built] 2026-10-13 Apache-2.0 OR MIT cksum_ok=True yanked=False
+  futures-channel 0.3.34 [dev-only approved -> now normal] 2026-08-11 MIT OR Apache-2.0 cksum_ok=True yanked=False
+  futures-executor 0.3.34 [dev-only approved -> now normal] 2026-08-11 MIT OR Apache-2.0 cksum_ok=True yanked=False
+  futures-io 0.3.34 [dev-only approved -> now normal] 2026-08-11 MIT OR Apache-2.0 cksum_ok=True yanked=False
+  futures-macro 0.3.34 [dev-only approved -> now normal] 2026-08-11 MIT OR Apache-2.0 cksum_ok=True yanked=False
+  futures-sink 0.3.34 [dev-only approved -> now normal] 2026-08-11 MIT OR Apache-2.0 cksum_ok=True yanked=False
+  futures-task 0.3.34 [dev-only approved -> now normal] 2026-08-11 MIT OR Apache-2.0 cksum_ok=True yanked=False
+  futures-util 0.3.34 [dev-only approved -> now normal] 2026-08-11 MIT OR Apache-2.0 cksum_ok=True yanked=False
+  futures 0.3.34 [dev-only approved -> now normal] 2026-08-11 MIT OR Apache-2.0 cksum_ok=True yanked=False
+  hashbrown 0.17.1 [was locked_unbuilt -> now built] 2026-05-09 MIT OR Apache-2.0 cksum_ok=True yanked=False
+  indexmap 2.14.2 [was locked_unbuilt -> now built] 2026-09-05 Apache-2.0 OR MIT cksum_ok=True yanked=False
+  pastey 0.2.3 [new] 2026-05-20 MIT OR Apache-2.0 cksum_ok=True yanked=False
+  ref-cast-impl 1.0.27 [was locked_unbuilt -> now built] 2026-08-19 MIT OR Apache-2.0 cksum_ok=True yanked=False
+  ref-cast 1.0.27 [was locked_unbuilt -> now built] 2026-08-19 MIT OR Apache-2.0 cksum_ok=True yanked=False
+  rmcp 3.9.0 [new] 2026-11-05 Apache-2.0 cksum_ok=True yanked=False
+  schemars_derive 1.2.3 [new] 2026-10-12 MIT cksum_ok=True yanked=False
+  schemars 1.2.3 [was locked_unbuilt -> now built] 2026-10-12 MIT cksum_ok=True yanked=False
+  serde_derive_internals 0.30.0 [new] 2026-07-25 MIT OR Apache-2.0 cksum_ok=True yanked=False
+  slab 0.4.12 [dev-only approved -> now normal] 2026-01-31 MIT cksum_ok=True yanked=False
+  tokio-macros 2.7.2 [dev-only approved -> now normal] 2026-07-29 MIT cksum_ok=True yanked=False
+  tokio-util 0.7.20 [dev-only approved -> now normal] 2026-10-09 MIT cksum_ok=True yanked=False

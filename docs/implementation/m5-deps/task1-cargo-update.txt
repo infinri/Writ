@@ -1,0 +1,31 @@
+++ cargo update -p rsa --precise 0.10.0
+    Updating crates.io index
+error: failed to select a version for `rsa`.
+    ... required by package `crypto-glue v0.2.2`
+    ... which satisfies dependency `crypto-glue = "^0.2.1"` (locked to 0.2.2) of package `webauthn-authenticator-rs v0.6.2`
+    ... which satisfies dependency `webauthn-authenticator-rs = "=0.6.2"` (locked to 0.6.2) of package `writ-approval v0.1.0 (/tmp/claude-1001/-home-lucio-saldivar-workspaces-Writ/80ea5938-c3a4-4206-9970-b00f5cc3393d/scratchpad/m5deps/wt/approval)`
+    ... which satisfies path dependency `writ-approval` (locked to 0.1.0) of package `writ-approval-server v0.1.0 (/tmp/claude-1001/-home-lucio-saldivar-workspaces-Writ/80ea5938-c3a4-4206-9970-b00f5cc3393d/scratchpad/m5deps/wt/approval-server)`
+versions that meet the requirements `^0.10.0-rc.18` are: 0.10.0
+
+package `crypto-glue` depends on `rsa` with feature `sha2` but `rsa` does not have that feature.
+note: a required dependency with that name exists, but only optional dependencies can be used as features.
+
+
+failed to select a version for `rsa` which could resolve this conflict
+++ echo exit=101
+exit=101
+++ git diff --stat Cargo.lock
+++ cargo update -p crypto-glue
+    Updating crates.io index
+     Locking 0 packages to highest compatible versions
+note: pass `--verbose` to see 20 unchanged dependencies behind latest
+++ echo exit=0
+exit=0
+++ git diff --stat Cargo.lock
+++ cargo update -p webauthn-rs
+    Updating crates.io index
+     Locking 0 packages to highest compatible versions
+note: pass `--verbose` to see 20 unchanged dependencies behind latest
+++ echo exit=0
+exit=0
+++ git diff --stat Cargo.lock

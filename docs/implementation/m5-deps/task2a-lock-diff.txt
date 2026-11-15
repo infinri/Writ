@@ -1,0 +1,18 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index a74a905..8f56b92 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2558,6 +2558,13 @@ dependencies = [
+  "writ-broker",
+ ]
+ 
++[[package]]
++name = "writ-m5-probe"
++version = "0.1.0"
++dependencies = [
++ "rustix",
++]
++
+ [[package]]
+ name = "writeable"
+ version = "0.6.4"

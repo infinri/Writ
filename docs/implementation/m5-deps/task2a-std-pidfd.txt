@@ -1,0 +1,6 @@
+error[E0658]: use of unstable library feature `linux_pidfd`
+error[E0658]: use of unstable library feature `linux_pidfd`
+error[E0658]: use of unstable library feature `linux_pidfd`
+error[E0658]: use of unstable library feature `linux_pidfd`
+error[E0658]: use of unstable library feature `linux_pidfd`
+process_group(0) stable: ExitStatus(unix_wait_status(0))
