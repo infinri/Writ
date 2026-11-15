@@ -719,7 +719,10 @@ impl<'a, S: RunnerStore + ?Sized> RunnerAdapter<'a, S> {
         }
         let runner_key = match src.keys.runner_key(key_id).map_err(|_| D::KeyUnavailable)? {
             KeyStatus::Active(k) => k,
-            KeyStatus::Revoked | KeyStatus::Unknown => return Err(D::KeyUnauthenticated),
+            KeyStatus::Revoked
+            | KeyStatus::Unknown
+            | KeyStatus::Expired
+            | KeyStatus::NotYetValid => return Err(D::KeyUnauthenticated),
         };
         let content = src
             .snapshots

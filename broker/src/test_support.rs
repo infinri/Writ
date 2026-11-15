@@ -260,3 +260,35 @@ impl crate::store::LedgerStore for MemoryLedger {
         Ok(())
     }
 }
+
+/// A key id for tests.
+pub fn kid(text: &str) -> crate::keys::KeyId {
+    crate::keys::KeyId::parse(text).unwrap()
+}
+
+/// A validity window around [`now`] (2026-11-01 to 2026-12-01).
+pub fn november() -> crate::keys::KeyValidity {
+    crate::keys::KeyValidity::new(
+        Timestamp::parse_strict("2026-11-01T00:00:00Z").unwrap(),
+        Timestamp::parse_strict("2026-12-01T00:00:00Z").unwrap(),
+    )
+    .unwrap()
+}
+
+/// A key source holding `permit/k1` ([`PERMIT_KEY`]) and `ingress/fixture-1`
+/// ([`FIXTURE_KEY`]), both valid in [`november`], issuing margin 60 s.
+pub fn keyed_source() -> crate::keys::MemoryKeySource {
+    use crate::keys::{KeyPurpose, Material, MemoryKeySource};
+    let mut s = MemoryKeySource::new(60);
+    s.insert(
+        kid("permit/k1"),
+        Material::new(KeyPurpose::Permit, PERMIT_KEY.to_vec()).unwrap(),
+        november(),
+    );
+    s.insert(
+        kid("ingress/fixture-1"),
+        Material::new(KeyPurpose::Ingress, FIXTURE_KEY.to_vec()).unwrap(),
+        november(),
+    );
+    s
+}
