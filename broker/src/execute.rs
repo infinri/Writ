@@ -825,7 +825,7 @@ where
         )
         .map_err(|e| match e {
             PermitIssueError::TimeUnavailable => Refusal::TimeUnavailable,
-            PermitIssueError::Signing => Refusal::PermitInvalid,
+            PermitIssueError::Signing | PermitIssueError::KeysUnavailable => Refusal::PermitInvalid,
         })?;
         *permit = Some(issued.clone());
         let result = match self.adapt(authorized.hold(), &issued, verified.request()) {

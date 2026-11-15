@@ -485,6 +485,7 @@ impl W {
                     request_fingerprint: "fp-1".into(),
                     policy_bundle_sha: sha('9'),
                     expires_at: now().plus_seconds(30),
+                    key_id: None,
                 },
                 request,
             )
@@ -908,6 +909,7 @@ fn storage_failures_never_run_twice_and_a_started_run_is_no_evidence() {
                     request_fingerprint: "fp-1".into(),
                     policy_bundle_sha: sha('9'),
                     expires_at: now().plus_seconds(30),
+                    key_id: None,
                 },
                 &request(),
             )
