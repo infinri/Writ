@@ -3418,6 +3418,12 @@ fn read_session_valid(
 /// session, the subject (active human) and its credential (active), then the target and the
 /// subject's permission for it over a scope containing the target's. Every refusal is the
 /// one [`ReadRefused`].
+///
+/// D-044 review LOW-4: the permission is checked before any heavy context is built where
+/// the scope is cheap to read (a request's and a signoff's scope come from one indexed row;
+/// a ceremony first needs the permission over some scope), so a known but out-of-scope
+/// target and an unknown one mostly take comparable work. Residual: a ceremony target the
+/// subject's permission does cover somewhere is still built before its scope is compared.
 fn read_in(
     conn: &Connection,
     read: &RecordRead<'_>,
@@ -3442,30 +3448,60 @@ fn read_in(
     if !creds.ids().iter().any(|c| c == s.credential_id()) {
         return refused();
     }
+    let holds = |p: Permission, tenant: &str, project: &str| {
+        check_human_permission(&rows.record, &rows.assignments, p, tenant, project, now).is_ok()
+    };
+    // The permission over some scope (an active assignment of the subject's kind).
+    let holds_somewhere = |p: Permission| {
+        rows.assignments.iter().any(|a| {
+            a.permission == p
+                && a.kind == PrincipalKind::Human
+                && a.active_at(now)
+                && holds(p, &a.tenant_id, &a.project_id)
+        })
+    };
+    let scope_of = |sql: &str, id: &str| -> rusqlite::Result<Option<(String, String)>> {
+        conn.query_row(sql, [id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()
+    };
     match read.target {
+        ReadTarget::Form { permission } => {
+            if !holds_somewhere(*permission) {
+                return refused();
+            }
+            Ok(Ok(RecordView::Permitted))
+        }
         ReadTarget::ApprovalRequest { request_id } => {
+            let Some((tenant, project)) = scope_of(
+                "SELECT tenant_id, project_id FROM approval_requests WHERE request_id = ?1",
+                request_id,
+            )?
+            else {
+                return refused();
+            };
+            if !holds(Permission::Approver, &tenant, &project) {
+                return refused();
+            }
             let Some((request, status)) = load_request(conn, request_id)? else {
                 return refused();
             };
-            let r = request.fields();
-            if check_human_permission(
-                &rows.record,
-                &rows.assignments,
-                Permission::Approver,
-                &r.tenant_id,
-                &r.project_id,
-                now,
-            )
-            .is_err()
-            {
-                return refused();
-            }
             Ok(Ok(RecordView::ApprovalRequest {
                 request: Box::new(request),
                 status,
             }))
         }
         ReadTarget::Signoff { signoff_id } => {
+            let Some((tenant, project)) = scope_of(
+                "SELECT tenant_id, project_id FROM signoff_requests WHERE signoff_id = ?1 \
+                 ORDER BY request_fingerprint LIMIT 1",
+                signoff_id,
+            )?
+            else {
+                return refused();
+            };
+            if !holds(Permission::SignoffAuthority, &tenant, &project) {
+                return refused();
+            }
             let Some(binding) = pending_signoff_in(conn, signoff_id)? else {
                 return refused();
             };
@@ -3507,14 +3543,23 @@ fn read_in(
             }))
         }
         ReadTarget::Ceremony(op) => {
-            match &**op {
+            let needed: &[Permission] = match &**op {
                 // A login is never a readable target.
                 CeremonyOp::ReadSession { .. } => return refused(),
                 // D-043 Y2: a registration start is read only by the operator it names.
                 CeremonyOp::RegistrationStart { operator, .. } if operator != s.subject() => {
                     return refused()
                 }
-                _ => {}
+                CeremonyOp::Approve { .. } | CeremonyOp::Deny { .. } => &[Permission::Approver],
+                CeremonyOp::Signoff { .. } => &[Permission::SignoffAuthority],
+                // An approver may revoke its own unused grant (I-4).
+                CeremonyOp::Revoke { .. } => &[Permission::Revoker, Permission::Approver],
+                CeremonyOp::Enroll { .. }
+                | CeremonyOp::RoleChange { .. }
+                | CeremonyOp::RegistrationStart { .. } => &[Permission::Operator],
+            };
+            if !needed.iter().any(|p| holds_somewhere(*p)) {
+                return refused();
             }
             let Ok(t) = target(conn, op, SignoffExpiry::Compute(now), Some(rp))? else {
                 return refused();

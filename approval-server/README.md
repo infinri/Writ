@@ -44,11 +44,11 @@ Every route keeps exact `Host`, `Origin` (required on every `POST`), form bodies
 |---|---|---|
 | `GET /` | nothing | landing page: the login form only (no record, no session) |
 | `GET /static/approval.js`, `GET /static/approval.css` | nothing | page script and style |
-| `POST /login/begin` | nothing (`subject`) | login challenge in a new pre-authentication session; a presented session is ended; a refusal is one generic `refused` |
-| `POST /login/finish` | the login session (`csrf`, `challenge_id`, `response`) | verifies the assertion, binds the read session (subject, credential) to the page session, rotates the cookie and CSRF token |
+| `POST /login/begin` | nothing (`subject`); own bound and rate limit (429 `pending` / `rate`) | login challenge in a new pre-authentication session; a presented session is ended; a subject the ledger refuses gets a decoy of identical shape (4 stable `allowCredentials`, review M1) |
+| `POST /login/finish` | the login session (`csrf`, `challenge_id`, `response`) | verifies the assertion, binds the read session (subject, credential) to the page session, rotates the cookie and CSRF token; every failure is one 403 `refused` |
 | `GET /request/<id>` | read session; `approver` over the request's scope | approval request page (approve or deny) |
 | `GET /signoff/<id>` | read session; `signoff_authority` over the signoff's scope | pending signoff page (exclusions, `delegation_chain: unavailable`, pinned effective expiry) |
-| `GET /revoke`, `GET /role`, `GET /enroll` | read session | operator forms (nothing read yet) |
+| `GET /revoke`, `GET /role`, `GET /enroll` | read session; live `revoker` (revoke) or `operator` (role, enroll) over some scope | operator forms (no record) |
 | `POST /prepare` | read session; the operation's permission (`revoker`, or `operator` for roles, enrollment and registration start) | the form's context through the ledger's scoped read; answers `{"view":"/view"}` |
 | `GET /view` | read session (re-read at every display) | the prepared context |
 | `POST /ceremony/begin`, `POST /ceremony/finish` | read session; a fresh operation-bound ceremony whose actor is the read session's subject | approve, deny, signoff, revocation, role change, registration start, enrollment |
@@ -78,6 +78,8 @@ Every flow signs in first through the landing page or the login routes (`flows/l
 - **cross-scope reads:** a request of tenant `t-other` for that approver, a request for the signoff reviewer and for the operator, the signoff for the approver, and an approver's role `prepare` all answer the one refusal.
 - **replayed login assertion:** the same login finish again (old and rotated cookie) is refused; the old assertion on a new login challenge answers `ASSERTION_INVALID` and leaves that session unauthenticated; a login challenge finished as a ceremony is refused.
 - **session invalidated after revocation:** the target's open session reads a request; the administrator revokes its credential through the revoke page's ceremony; the open session (raw and in the browser) then gets the one refusal and a new login is refused.
+- **login begin indistinguishable (review M1):** an enrolled and an unknown subject get the same status, header names, body shape and four stable credential ids; both finishes answer 403 `refused`.
+- **operator forms need the live permission (review LOW-3):** the reviewer's and the approver's sessions get the one 404 on `/revoke`, `/role` and `/enroll`; the administrator gets the forms.
 - **operator pages:** revoke, role change, enrollment (the operator is the signed-in subject), signoff and their refusals, each after signing in; a registration start prepared by an approver is refused before anything is displayed.
 
 Run locally (pinned toolchain, Chrome at `/usr/bin/google-chrome`, Node 22):
@@ -114,9 +116,9 @@ Notes: Chrome's singleton socket path must be short, so `TMPDIR` must not be a d
 - `approval/browser-tests/run.sh`: `check-release-binary: PASS`, and the browser suite reported 16 passed, 0 failed (8 flows plus 8 final ledger-status checks), all labelled CDP virtual authenticator, simulated UV. The temporary directory was removed.
 - `cargo test --locked --workspace`, run under `run-with-clean-fds.sh`, passed, including `approval-server/tests/server_entry.rs` (5 tests). `cargo clippy --workspace --all-targets -D warnings` and `cargo fmt --check` were clean. `check_deps.py` reported 0 problems, and `check-v2-docs.py` passed.
 
-## Results (worker W-H, D-044 item 3, read sessions Z1..Z4; 2026-11-14, Chrome 150.0.7871.46, Node 22.22.3)
+## Results (worker W-H, D-044 item 3 and the review fixes M1, M2, LOW-3..LOW-7; 2026-11-15, Chrome 150.0.7871.46, Node 22.22.3)
 
-Local results on the worker branch, not yet integrated, not yet run in CI, and not yet independently reviewed (D-044 item 5 asks for an independent security review of the new read boundary).
+Local results on the worker branch (on top of `6039bca`), not yet run in CI on the resulting commit.
 
-- `approval/browser-tests/run.sh`, run twice: `check-release-binary: PASS`, and each run reported 38 passed, 0 failed (23 flows, 14 final ledger-status checks, 1 stored-signoff check), all labelled CDP virtual authenticator, simulated UV; the temporary directory was removed each time.
-- `cargo test --locked --workspace` under `run-with-clean-fds.sh`: 563 passed, 0 failed, 4 ignored (the kill tests, then run alone: 4 passed). `cargo fmt --check` and `cargo clippy --workspace --all-targets -D warnings` clean. Closure gate `--repeat 2`: exact 17, adapted 72, approved differences 38, deferred 0, GATE PASS, report verifies. Property gate (CI profile): 19,796 checks, 0 failed. `check_deps.py`: 0 problems. `check-v2-docs.py` passed.
+- `WRIT_BROWSER_CI=1 approval/browser-tests/run.sh --results .. --diagnostics ..`, run twice: `check-release-binary: PASS`, and each run reported 40 passed, 0 failed, 25 of 25 flows executed (25 flows, 14 final ledger-status checks, 1 stored-signoff check), all labelled CDP virtual authenticator, simulated UV; the temporary directory was removed each time. The flows retry a login begin answered `rate` (the login rate limit, M2). Sanitizer self-test: 644 of 644 cases held.
+- `cargo test --locked --workspace` under `run-with-clean-fds.sh`: 567 passed, 0 failed, 4 ignored (the kill tests, then run alone: 4 passed). Property gate (CI profile): 19,796 checks, 0 failed. `cargo fmt --check` and `cargo clippy --workspace --all-targets -D warnings` clean. Closure gate `--repeat 2`: exact 17, adapted 72, approved differences 38, deferred 0, GATE PASS, report verifies. `check_deps.py`: 0 problems. `check-v2-docs.py` passed.

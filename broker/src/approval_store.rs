@@ -571,6 +571,13 @@ pub enum ReadTarget {
     /// `revoker` for a revocation, `operator` for enrollment, registration
     /// start and role changes). A read-session operation is never readable.
     Ceremony(Box<CeremonyOp>),
+    /// An operator form page (D-044 review LOW-3): no record, only whether the
+    /// session's subject currently holds `permission` over some scope (`revoker`
+    /// for the revoke form, `operator` for the role and enrollment forms).
+    Form {
+        /// The permission the form's operations need.
+        permission: Permission,
+    },
 }
 
 /// The result of a protected read.
@@ -591,6 +598,8 @@ pub enum RecordView {
         /// Its context and binding.
         context: CeremonyContext,
     },
+    /// The form is available to the session ([`ReadTarget::Form`]).
+    Permitted,
 }
 
 /// The one refusal of every protected read (D-044 Z3): an unknown, expired

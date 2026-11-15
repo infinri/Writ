@@ -426,6 +426,11 @@ impl Fake {
     }
 }
 
+/// The fake's real credential id of `subject` (base64url-safe text).
+fn real_credential(subject: &str) -> String {
+    format!("real-credential-of-{subject}")
+}
+
 /// Subjects the fake's ledger refuses every target to (no role anywhere).
 const NO_ROLES: &str = "mallory";
 /// A subject whose login the fake's ledger refuses (unknown).
@@ -473,6 +478,7 @@ impl Backend for Fake {
                 }
             }
             ReadTarget::Signoff { .. } => Err(ReadRefused),
+            ReadTarget::Form { .. } => Ok(RecordView::Permitted),
             ReadTarget::Ceremony(op) => match self.context(op)? {
                 Ok(context) => Ok(RecordView::Ceremony {
                     op: op.clone(),
@@ -497,10 +503,16 @@ impl Backend for Fake {
             return Ok(Err(Refusal::Approval(ApprovalCode::PermissionMissing)));
         }
         let n = self.logins.lock().unwrap().len();
+        // The verifier's options as webauthn-rs shapes them (one real credential with a
+        // transport, its own timeout); the listener normalizes and pads them (M1).
+        let options = format!(
+            r#"{{"publicKey":{{"challenge":"Q2hhbGxlbmdlLW51bWJlci0{n:03}","timeout":300000,"rpId":"localhost","allowCredentials":[{{"type":"public-key","id":"{}","transports":["internal"]}}],"userVerification":"required"}}}}"#,
+            real_credential(&subject.subject)
+        );
         Ok(Ok(IssuedChallenge {
-            challenge_id: format!("login-{n}"),
-            client_options: br#"{"publicKey":{"challenge":"AAAA","rpId":"localhost"}}"#.to_vec(),
-            expires_at: Timestamp::parse_strict("2026-11-14T10:02:00Z").unwrap(),
+            challenge_id: format!("chl-{n:032x}"),
+            client_options: options.into_bytes(),
+            expires_at: Timestamp::parse_rfc3339("2026-11-14T10:02:00.123456789Z").unwrap(),
         }))
     }
 
@@ -1126,9 +1138,10 @@ fn outstanding_challenges_are_capped_across_sessions() {
     let over = begin_in(&s, &b);
     assert_eq!(status(&over), 429, "{over}");
     assert_eq!(status(&begin_in(&s, &third)), 429);
-    // A login challenge counts too: no login while the bound is reached.
-    let login = s.post("/login/begin", "", "subject=bob", "");
-    assert_eq!(status(&login), 429, "{login}");
+    // D-044 review M2: a login never takes a mutation slot, and the mutation bound never
+    // blocks a login (its own bound and rate limit apply).
+    let (_extra, _) = s.login("bob");
+    assert_eq!(status(&begin_in(&s, &third)), 429);
     // A decided ceremony frees one slot.
     let challenge = between(&first, "\"challenge_id\":\"", "\"");
     assert_eq!(
@@ -1153,9 +1166,19 @@ fn a_session_with_a_pending_ceremony_is_never_evicted() {
     let b = s.view();
     let b_begin = begin_in(&s, &b);
     assert_eq!(status(&b_begin), 200);
-    // Both sessions are pending: a third session (a login) is refused, and nothing was
-    // evicted.
-    let refused = s.post("/login/begin", "", "subject=carol", "");
+    // Both sessions are pending: a third authenticated session is refused at its login
+    // finish (the login session itself is bounded separately, M2), and nothing was evicted.
+    let begun = s.post("/login/begin", "", "subject=carol", "");
+    assert_eq!(status(&begun), 200, "{begun}");
+    let pre = between(&begun, "writ_session=", ";");
+    let csrf = between(&begun, "\"csrf\":\"", "\"");
+    let challenge = between(&begun, "\"challenge_id\":\"", "\"");
+    let refused = s.post(
+        "/login/finish",
+        &pre,
+        &format!("csrf={csrf}&challenge_id={challenge}&response=valid-assertion"),
+        "",
+    );
     assert_eq!(status(&refused), 503, "{refused}");
     assert!(header_of(&refused, "set-cookie").is_none());
     let a_challenge = between(&a_begin, "\"challenge_id\":\"", "\"");
@@ -1958,15 +1981,17 @@ fn z1_z2_a_login_binds_subject_and_credential_to_the_page_session_and_rotates_th
         "",
     );
     assert_eq!((status(&r), body_of(&r)), (403, "{\"error\":\"refused\"}"));
-    // A forged assertion: the internal code, still unauthenticated.
+    // A forged assertion: the one generic refusal (LOW-6), still unauthenticated.
     let forged = s.post(
         "/login/finish",
         &pre,
         &format!("csrf={pre_csrf}&challenge_id={challenge}&response=forged"),
         "",
     );
-    assert_eq!(status(&forged), 403);
-    assert!(forged.contains("ASSERTION_INVALID"));
+    assert_eq!(
+        (status(&forged), body_of(&forged)),
+        (403, "{\"error\":\"refused\"}")
+    );
     assert_eq!(status(&s.get_as("/request/req-1", &pre)), 404);
     // A new login: success rotates the token and the CSRF token; the old ones are gone.
     let begun = s.post("/login/begin", &pre, "subject=root", "");
@@ -2018,10 +2043,171 @@ fn z1_z2_a_login_binds_subject_and_credential_to_the_page_session_and_rotates_th
     };
     assert_eq!(operator, SubjectId::new("writ-local", "root"));
     assert_eq!(operator_session, page_session);
-    // A login the ledger refuses (unknown subject) is the generic refusal; no session.
-    let r = s.post("/login/begin", "", &format!("subject={UNKNOWN}"), "");
-    assert_eq!((status(&r), body_of(&r)), (403, "{\"error\":\"refused\"}"));
-    assert!(header_of(&r, "set-cookie").is_none());
+}
+
+/// The JSON skeleton of `body`: every string replaced by `""`, every integer by 0, arrays
+/// keeping their length (the shape a probe can observe besides random values).
+fn shape(body: &str) -> Value {
+    fn walk(v: &Value) -> Value {
+        match v {
+            Value::Str(_) => json::s(""),
+            Value::Int(_) => Value::Int(0),
+            Value::Arr(items) => Value::Arr(items.iter().map(walk).collect()),
+            Value::Obj(members) => {
+                Value::Obj(members.iter().map(|(k, v)| (k.clone(), walk(v))).collect())
+            }
+            other => other.clone(),
+        }
+    }
+    walk(&json::parse(body.as_bytes()).unwrap())
+}
+
+/// The header names of a response, without `date`, sorted.
+fn header_names(response: &str) -> Vec<String> {
+    let head = response.split("\r\n\r\n").next().unwrap();
+    let mut names: Vec<String> = head
+        .lines()
+        .skip(1)
+        .filter_map(|l| l.split_once(':').map(|(k, _)| k.to_ascii_lowercase()))
+        .filter(|k| k != "date" && k != "content-length")
+        .collect();
+    names.sort();
+    names
+}
+
+/// The sorted `allowCredentials` ids of a login begin's body.
+fn allowed_ids(body: &str) -> Vec<String> {
+    let v = json::parse(body.as_bytes()).unwrap();
+    let ids: Vec<String> = v
+        .get("options")
+        .and_then(|o| o.get("publicKey"))
+        .and_then(|p| p.get("allowCredentials"))
+        .and_then(Value::as_arr)
+        .unwrap()
+        .iter()
+        .map(|c| c.get("id").and_then(Value::as_str).unwrap().to_string())
+        .collect();
+    ids
+}
+
+/// D-044 review M1: a login begin never tells an enrolled subject from an unknown one.
+#[test]
+fn m1_a_refused_login_begin_is_indistinguishable_from_a_real_one() {
+    let s = Server::start(Limits {
+        login_burst: 100,
+        ..Limits::default()
+    });
+    let real = s.post("/login/begin", "", "subject=bob", "");
+    let decoy = s.post("/login/begin", "", &format!("subject={UNKNOWN}"), "");
+    for r in [&real, &decoy] {
+        assert_eq!(status(r), 200, "{r}");
+        assert!(header_of(r, "set-cookie").unwrap().contains("HttpOnly"));
+        assert!(between(r, "\"challenge_id\":\"", "\"").starts_with("chl-"));
+        assert_eq!(between(r, "\"challenge_id\":\"", "\"").len(), 36);
+    }
+    assert_eq!(header_names(&real), header_names(&decoy));
+    assert_eq!(shape(body_of(&real)), shape(body_of(&decoy)));
+    let (real_ids, decoy_ids) = (allowed_ids(body_of(&real)), allowed_ids(body_of(&decoy)));
+    assert_eq!(real_ids.len(), 4);
+    assert_eq!(decoy_ids.len(), 4);
+    // The real id is among the real begin's ids, padded with decoys; sorted either way.
+    assert!(real_ids.contains(&real_credential("bob")));
+    assert!(real_ids.windows(2).all(|w| w[0] <= w[1]));
+    assert!(decoy_ids.windows(2).all(|w| w[0] <= w[1]));
+    // Repeated probes see the same ids (no fresh randomness to tell a decoy by); the
+    // challenges differ.
+    for (subject, ids) in [("bob", &real_ids), (UNKNOWN, &decoy_ids)] {
+        let again = s.post("/login/begin", "", &format!("subject={subject}"), "");
+        assert_eq!(&allowed_ids(body_of(&again)), ids, "{subject}");
+        assert_ne!(
+            between(&again, "\"challenge\":\"", "\""),
+            between(&real, "\"challenge\":\"", "\"")
+        );
+    }
+    // Another unknown subject gets other decoys.
+    let other = s.post("/login/begin", "", "subject=nobody-else-at-all", "");
+    assert_ne!(allowed_ids(body_of(&other)), decoy_ids);
+    // The decoy's finish fails exactly like a forged assertion on the real one.
+    let finish = |r: &str, response: &str| {
+        let pre = between(r, "writ_session=", ";");
+        s.post(
+            "/login/finish",
+            &pre,
+            &format!(
+                "csrf={}&challenge_id={}&response={response}",
+                between(r, "\"csrf\":\"", "\""),
+                between(r, "\"challenge_id\":\"", "\"")
+            ),
+            "",
+        )
+    };
+    let on_decoy = finish(&decoy, "valid-assertion");
+    let on_real = finish(&real, "forged");
+    assert_eq!(status(&on_decoy), status(&on_real));
+    assert_eq!(body_of(&on_decoy), body_of(&on_real));
+    assert_eq!(header_names(&on_decoy), header_names(&on_real));
+    assert_eq!(body_of(&on_decoy), "{\"error\":\"refused\"}");
+}
+
+/// D-044 review M2: logins have their own bound and rate limit and never take the mutation
+/// slots; a login flood leaves a signed-in approver's begin unaffected.
+#[test]
+fn m2_a_login_flood_never_locks_out_an_approver() {
+    let s = Server::start(Limits {
+        max_logins: 3,
+        login_burst: 50,
+        max_outstanding: 2,
+        ..Limits::default()
+    });
+    let approver = s.view();
+    // The login bound: three live login sessions, then 429.
+    for _ in 0..3 {
+        assert_eq!(status(&s.post("/login/begin", "", "subject=x", "")), 200);
+    }
+    let over = s.post("/login/begin", "", "subject=x", "");
+    assert_eq!(
+        (status(&over), body_of(&over)),
+        (429, "{\"error\":\"pending\"}")
+    );
+    // The approver's mutation slots are untouched by the flood.
+    assert_eq!(status(&begin_in(&s, &approver)), 200);
+    assert_eq!(status(&begin_in(&s, &approver)), 200);
+    assert_eq!(status(&begin_in(&s, &approver)), 429, "its own bound only");
+    // The process-wide rate limit.
+    let r = Server::start(Limits {
+        login_burst: 2,
+        login_per_second: 1,
+        ..Limits::default()
+    });
+    assert_eq!(status(&r.post("/login/begin", "", "subject=x", "")), 200);
+    assert_eq!(status(&r.post("/login/begin", "", "subject=x", "")), 200);
+    let limited = r.post("/login/begin", "", "subject=x", "");
+    assert_eq!(
+        (status(&limited), body_of(&limited)),
+        (429, "{\"error\":\"rate\"}")
+    );
+    thread::sleep(Duration::from_millis(1100));
+    assert_eq!(status(&r.post("/login/begin", "", "subject=x", "")), 200);
+}
+
+/// D-044 review LOW-3: the operator forms need the live permission (the ledger's read);
+/// a roleless or revoked session gets the one 404.
+#[test]
+fn low3_operator_forms_need_the_live_permission() {
+    let s = Server::start(Limits::default());
+    let reference = body_of(&s.get("/revoke", "")).to_string();
+    let (root, _) = s.login("root");
+    let (mallory, _) = s.login(NO_ROLES);
+    let (dave, _) = s.login("dave");
+    s.fake.revoke("dave");
+    for path in ["/revoke", "/role", "/enroll"] {
+        assert_eq!(status(&s.get_as(path, &root)), 200, "{path}");
+        for cookie in [&mallory, &dave] {
+            let r = s.get_as(path, cookie);
+            assert_eq!(status(&r), 404, "{path}");
+            assert_eq!(body_of(&r), reference, "{path}");
+        }
+    }
 }
 
 #[test]
@@ -2152,7 +2338,7 @@ fn z3_every_mutation_is_begun_for_the_signed_in_subject_and_never_by_the_login()
         "",
     );
     assert_eq!(status(&r), 403, "{r}");
-    let login_challenge = format!("login-{}", s.fake.logins.lock().unwrap().len());
+    let login_challenge = format!("chl-{:032x}", s.fake.logins.lock().unwrap().len());
     let r = s.post(
         "/ceremony/finish",
         &cookie,

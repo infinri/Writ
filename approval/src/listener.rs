@@ -99,7 +99,9 @@ use writ_broker::approval_store::{
     OperatorSession, ReadSession, ReadTarget, RecordView, RoleChange, READ_SESSION_MAX_SECONDS,
     REGISTRATION_TTL_SECONDS,
 };
-use writ_broker::human::{PrincipalKind, SubjectId, VerifiedRegistration, VerifierError};
+use writ_broker::human::{
+    Permission, PrincipalKind, SubjectId, VerifiedRegistration, VerifierError,
+};
 use writ_broker::refusal::Refusal;
 use writ_broker::writ_kernel::json::{self, Value};
 
@@ -131,14 +133,38 @@ pub struct Limits {
     pub connection_timeout: Duration,
     /// Page session lifetime (clamped to [`MAX_SESSION_SECONDS`]).
     pub session_ttl: Duration,
-    /// Live page sessions at once (the oldest without a pending ceremony is evicted
-    /// first; a new session is refused when every session has one).
+    /// Live authenticated page sessions at once (the oldest without a pending ceremony is
+    /// evicted first; a new session is refused when every session has one). Login
+    /// (pre-authentication) sessions are bounded separately by `max_logins` and never
+    /// evict an authenticated session.
     pub max_sessions: usize,
     /// Ceremonies pending per session.
     pub max_pending: usize,
-    /// Issued, unexpired challenges begun through this listener, across all sessions.
+    /// Issued, unexpired mutation challenges (and registration rows) begun through this
+    /// listener, across all sessions. Login challenges never count here (M2 of the D-044
+    /// review: a login flood never takes the slots an approver needs).
     pub max_outstanding: usize,
+    /// Live login (pre-authentication) sessions at once, each holding at most one login
+    /// challenge for at most 120 s ([`DEFAULT_MAX_LOGINS`]).
+    pub max_logins: usize,
+    /// Process-wide login-begin token bucket: its capacity ([`DEFAULT_LOGIN_BURST`]).
+    pub login_burst: u32,
+    /// Process-wide login-begin token bucket: tokens added per second
+    /// ([`DEFAULT_LOGIN_PER_SECOND`]).
+    pub login_per_second: u32,
 }
+
+/// Default bound on live login sessions (and so on outstanding login challenges).
+pub const DEFAULT_MAX_LOGINS: usize = 16;
+/// Default login-begin burst (token bucket capacity).
+pub const DEFAULT_LOGIN_BURST: u32 = 10;
+/// Default login-begin refill rate (tokens per second).
+pub const DEFAULT_LOGIN_PER_SECOND: u32 = 2;
+/// The number of `allowCredentials` entries of every login begin (D-044 review M1): real
+/// credential ids padded with decoys, or decoys only for a subject the ledger refuses.
+pub const LOGIN_ALLOW_CREDENTIALS: usize = 4;
+/// The `timeout` (milliseconds) of every login begin's options (the challenge lifetime).
+const LOGIN_TIMEOUT_MS: u64 = 120_000;
 
 impl Default for Limits {
     fn default() -> Limits {
@@ -153,6 +179,9 @@ impl Default for Limits {
             max_sessions: 64,
             max_pending: 4,
             max_outstanding: 32,
+            max_logins: DEFAULT_MAX_LOGINS,
+            login_burst: DEFAULT_LOGIN_BURST,
+            login_per_second: DEFAULT_LOGIN_PER_SECOND,
         }
     }
 }
@@ -189,6 +218,9 @@ pub struct ApprovalListener {
 
 struct Pending {
     op: CeremonyOp,
+    /// A decoy login (the ledger refused the begin; D-044 review M1): its finish is refused
+    /// exactly like a bad assertion, without asking the ledger.
+    decoy: bool,
     idempotency_key: String,
     /// Counted as outstanding until then (L2).
     expires: Instant,
@@ -244,7 +276,12 @@ impl Session {
         !self.pending.is_empty() || !self.registrations.is_empty()
     }
 
+    /// Mutation challenges and registration rows held (L2). A login session's challenge is
+    /// bounded by `max_logins` instead and never counts here (D-044 review M2).
     fn outstanding(&self) -> usize {
+        if self.auth.is_none() {
+            return 0;
+        }
         self.pending.len() + self.registrations.len()
     }
 }
@@ -256,6 +293,11 @@ struct State {
     backend: Arc<dyn Backend>,
     sessions: Mutex<HashMap<String, Session>>,
     active: AtomicUsize,
+    /// Per-process random key of the login decoys (D-044 review M1): decoy credential ids
+    /// are derived from it and the subject, so repeated probes see stable ids.
+    decoy_key: Vec<u8>,
+    /// Process-wide login-begin token bucket: (tokens, last refill).
+    login_bucket: Mutex<(f64, Instant)>,
 }
 
 impl ApprovalListener {
@@ -270,6 +312,7 @@ impl ApprovalListener {
             .session_ttl
             .min(Duration::from_secs(MAX_SESSION_SECONDS));
         config.limits.max_header_bytes = config.limits.max_header_bytes.max(MIN_HEADER_BUFFER);
+        let burst = config.limits.login_burst;
         Ok(ApprovalListener {
             listener,
             state: Arc::new(State {
@@ -279,6 +322,9 @@ impl ApprovalListener {
                 backend,
                 sessions: Mutex::new(HashMap::new()),
                 active: AtomicUsize::new(0),
+                decoy_key: random_bytes(32)
+                    .ok_or_else(|| io::Error::other("random source unavailable"))?,
+                login_bucket: Mutex::new((f64::from(burst), Instant::now())),
             }),
         })
     }
@@ -662,17 +708,18 @@ fn outstanding(sessions: &HashMap<String, Session>) -> usize {
     sessions.values().map(Session::outstanding).sum()
 }
 
-/// Make room for one more session (L2): the oldest session without a pending ceremony or
-/// registration is evicted at the bound; when every session has one, the new session is
-/// refused (fail closed).
+/// Make room for one more authenticated session (L2): at `max_sessions` authenticated
+/// sessions the oldest without a pending ceremony or registration is evicted; when every
+/// one has one, the new session is refused (fail closed). Login sessions are bounded by
+/// `max_logins` instead and are never evicted here, nor counted (D-044 review M2).
 fn make_room(
     sessions: &mut HashMap<String, Session>,
     limits: &Limits,
 ) -> Result<(), Box<Response<Full>>> {
-    while sessions.len() >= limits.max_sessions {
+    while sessions.values().filter(|s| s.auth.is_some()).count() >= limits.max_sessions {
         let Some(oldest) = sessions
             .iter()
-            .filter(|(_, s)| !s.busy())
+            .filter(|(_, s)| s.auth.is_some() && !s.busy())
             .min_by_key(|(_, s)| s.expires)
             .map(|(k, _)| k.clone())
         else {
@@ -790,12 +837,170 @@ fn subject_field(state: &State, value: Option<&str>) -> Option<SubjectId> {
     }
 }
 
+/// `n` random bytes from the operating system's random source.
+fn random_bytes(n: usize) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = vec![0u8; n];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut bytes))
+        .ok()?;
+    Some(bytes)
+}
+
+/// Unpadded base64url (the WebAuthn options' encoding).
+fn base64url(bytes: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |acc, (i, b)| acc | (u32::from(*b) << (16 - 8 * i)));
+        for i in 0..=chunk.len() {
+            out.push(char::from(A[((n >> (18 - 6 * i)) & 63) as usize]));
+        }
+    }
+    out
+}
+
+/// The bytes of a lowercase hex text (`None` when malformed).
+fn unhex(text: &str) -> Option<Vec<u8>> {
+    text.len()
+        .is_multiple_of(2)
+        .then(|| {
+            (0..text.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok())
+                .collect()
+        })
+        .flatten()
+}
+
+/// Decoy credential id `index` of `subject` (D-044 review M1): 16 to 64 bytes derived from
+/// the per-process key and the subject, so repeated probes of one subject see the same ids
+/// and different subjects different ones. A keyed SHA-256 (the kernel's digest; no new
+/// dependency) is enough: the ids authorize nothing and only need to be unpredictable
+/// without the key.
+fn decoy_id(key: &[u8], subject: &SubjectId, index: usize) -> Option<String> {
+    let block = |j: u8| {
+        let mut input = key.to_vec();
+        input.extend_from_slice(b"\0writ-login-decoy-v1\0");
+        input.extend_from_slice(subject.issuer.as_bytes());
+        input.push(0);
+        input.extend_from_slice(subject.subject.as_bytes());
+        input.push(0);
+        input.extend_from_slice(&(index as u64).to_be_bytes());
+        input.push(j);
+        unhex(json::Digest::of_bytes(&input).hex())
+    };
+    let mut bytes = block(0)?;
+    bytes.extend(block(1)?);
+    let len = 16 + usize::from(bytes[0] % 49);
+    Some(base64url(&bytes[..len]))
+}
+
+/// The options of a login begin, in one fixed shape whether the subject is real or not
+/// (D-044 review M1): `{"publicKey":{"allowCredentials":[{"id":..,"type":"public-key"}
+/// x LOGIN_ALLOW_CREDENTIALS],"challenge":..,"rpId":"localhost","timeout":120000,
+/// "userVerification":"required"}}`, the ids sorted. `real` is the verifier's options (its
+/// challenge and credential ids are kept, padded with the subject's decoys); `None` builds a
+/// decoy with a random challenge. Passkey authentication options carry no hints or
+/// extensions; transports and the verifier's timeout are dropped (client hints only).
+fn login_options(key: &[u8], subject: &SubjectId, real: Option<&[u8]>) -> Option<String> {
+    let (challenge, mut ids) = match real {
+        Some(options) => {
+            let v = json::parse(options).ok()?;
+            let pk = v.get("publicKey")?;
+            if pk.get("userVerification")?.as_str()? != "required" {
+                return None;
+            }
+            let ids = pk
+                .get("allowCredentials")?
+                .as_arr()?
+                .iter()
+                .map(|c| c.get("id")?.as_str().map(str::to_string))
+                .collect::<Option<Vec<_>>>()?;
+            (pk.get("challenge")?.as_str()?.to_string(), ids)
+        }
+        None => (base64url(&random_bytes(32)?), Vec::new()),
+    };
+    let mut index = 0;
+    while ids.len() < LOGIN_ALLOW_CREDENTIALS {
+        ids.push(decoy_id(key, subject, index)?);
+        index += 1;
+    }
+    ids.sort();
+    let allow: Vec<String> = ids
+        .iter()
+        .map(|id| {
+            format!(
+                "{{\"id\":\"{}\",\"type\":\"public-key\"}}",
+                page::json_string(id)
+            )
+        })
+        .collect();
+    Some(format!(
+        "{{\"publicKey\":{{\"allowCredentials\":[{}],\"challenge\":\"{}\",\"rpId\":\"{RP_ID}\",\
+         \"timeout\":{LOGIN_TIMEOUT_MS},\"userVerification\":\"required\"}}}}",
+        allow.join(","),
+        page::json_string(&challenge)
+    ))
+}
+
+/// The expiry text of a decoy login challenge: now plus the challenge lifetime, in the
+/// ledger's timestamp format.
+fn decoy_expiry() -> Option<String> {
+    let d = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    let at = writ_broker::clock::timestamp_from_parts(
+        i64::try_from(d.as_secs()).ok()?,
+        d.subsec_nanos(),
+    )?;
+    Some(at.plus_seconds(OUTSTANDING_SECONDS as i64).to_string())
+}
+
+/// Take one token from the process-wide login-begin bucket (D-044 review M2).
+fn login_token(state: &State) -> bool {
+    let limits = &state.config.limits;
+    let mut bucket = state
+        .login_bucket
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let now = Instant::now();
+    let refill = now.duration_since(bucket.1).as_secs_f64() * f64::from(limits.login_per_second);
+    bucket.0 = (bucket.0 + refill).min(f64::from(limits.login_burst));
+    bucket.1 = now;
+    if bucket.0 >= 1.0 {
+        bucket.0 -= 1.0;
+        true
+    } else {
+        false
+    }
+}
+
+/// The one refusal of `/login/finish` (D-044 review LOW-6): every failure (no or another
+/// session, a wrong CSRF token, an unknown, decoy or replayed challenge, a missing field,
+/// every ledger refusal) answers it; the specific code stays in the ledger's audit.
+fn login_refused() -> Response<Full> {
+    refused(StatusCode::FORBIDDEN, "refused")
+}
+
 /// POST `/login/begin` (Z1): a read-session login challenge for the subject named by the
 /// page, in a new pre-authentication session (cookie, CSRF token, page-session id); a
-/// session the request presents is ended first (every login rotates the token). A begin
-/// the ledger refuses (unknown, revoked or service subject, no active credential) is the
-/// one generic `refused` and leaves no session. Answers the challenge, the verifier's
-/// options and the session's CSRF token.
+/// session the request presents is ended first (every login rotates the token).
+///
+/// D-044 review M1: the answer never tells whether the subject is enrolled. A begin the
+/// ledger refuses (unknown, revoked or service subject, no active credential) answers a
+/// decoy of exactly the same shape: status, headers, a session, a CSRF token, a challenge
+/// id in the ledger's format, an expiry and options with [`LOGIN_ALLOW_CREDENTIALS`]
+/// credential ids derived from the per-process key and the subject (stable across probes);
+/// a real begin's ids are padded with the subject's decoys to the same count. The decoy's
+/// pending entry makes `/login/finish` fail exactly like a bad assertion.
+///
+/// D-044 review M2: login begins are bounded by their own `max_logins` live login sessions
+/// and a process-wide token bucket (`login_burst`, `login_per_second`), and never take the
+/// mutation slots (`max_outstanding`) or evict an authenticated session.
 fn login_begin<'a>(
     state: &State,
     presented: Option<&str>,
@@ -804,6 +1009,9 @@ fn login_begin<'a>(
     let Some(subject) = subject_field(state, field("subject")) else {
         return refused(StatusCode::BAD_REQUEST, "subject");
     };
+    if !login_token(state) {
+        return refused(StatusCode::TOO_MANY_REQUESTS, "rate");
+    }
     let (Some(token), Some(csrf), Some(id), Some(key), Some(slot)) = (
         random_token(),
         random_token(),
@@ -822,24 +1030,22 @@ fn login_begin<'a>(
     };
     let ttl = login_ttl(state);
     {
-        let limits = &state.config.limits;
         let mut sessions = sessions(state);
         if let Some(old) = presented {
             sessions.remove(old);
         }
         let now = Instant::now();
         prune(&mut sessions, now);
-        if outstanding(&sessions) >= limits.max_outstanding {
+        let logins = sessions.values().filter(|s| s.auth.is_none()).count();
+        if logins >= state.config.limits.max_logins {
             return refused(StatusCode::TOO_MANY_REQUESTS, "pending");
-        }
-        if let Err(response) = make_room(&mut sessions, limits) {
-            return *response;
         }
         let mut pending = HashMap::new();
         pending.insert(
             reservation.clone(),
             Pending {
                 op: op.clone(),
+                decoy: false,
                 idempotency_key: idempotency_key.clone(),
                 expires: now + Duration::from_secs(OUTSTANDING_SECONDS),
             },
@@ -861,22 +1067,45 @@ fn login_begin<'a>(
         sessions(state).remove(&token);
         response
     };
-    let issued = match state.backend.begin(&op, &subject, &idempotency_key) {
-        Ok(Ok(issued)) => issued,
-        // L1, Z1: one generic refusal; no existence oracle beyond the documented L1
-        // exposure of a successful begin.
-        Ok(Err(_)) => return drop_session(refused(StatusCode::FORBIDDEN, "refused")),
-        Err(Unavailable) => return drop_session(unavailable()),
-    };
+    let (challenge_id, expires_at, options, decoy) =
+        match state.backend.begin(&op, &subject, &idempotency_key) {
+            Ok(Ok(issued)) => {
+                let Some(options) =
+                    login_options(&state.decoy_key, &subject, Some(&issued.client_options))
+                else {
+                    return drop_session(unavailable());
+                };
+                (
+                    issued.challenge_id,
+                    issued.expires_at.to_string(),
+                    options,
+                    false,
+                )
+            }
+            // M1: a decoy of the same shape (the specific code is in the ledger's audit).
+            Ok(Err(_)) => {
+                let (Some(options), Some(hex), Some(expires_at)) = (
+                    login_options(&state.decoy_key, &subject, None),
+                    random_bytes(16),
+                    decoy_expiry(),
+                ) else {
+                    return drop_session(unavailable());
+                };
+                let id: String = hex.iter().map(|b| format!("{b:02x}")).collect();
+                (format!("chl-{id}"), expires_at, options, true)
+            }
+            Err(Unavailable) => return drop_session(unavailable()),
+        };
     {
         let mut sessions = sessions(state);
         let Some(session) = sessions.get_mut(&token) else {
-            return refused(StatusCode::FORBIDDEN, "session");
+            return login_refused();
         };
-        let Some(pending) = session.pending.remove(&reservation) else {
-            return refused(StatusCode::FORBIDDEN, "session");
+        let Some(mut pending) = session.pending.remove(&reservation) else {
+            return login_refused();
         };
-        session.pending.insert(issued.challenge_id.clone(), pending);
+        pending.decoy = decoy;
+        session.pending.insert(challenge_id.clone(), pending);
     }
     with_cookie(
         respond(
@@ -884,10 +1113,10 @@ fn login_begin<'a>(
             "application/json",
             format!(
                 "{{\"challenge_id\":\"{}\",\"expires_at\":\"{}\",\"csrf\":\"{}\",\"options\":{}}}",
-                page::json_string(&issued.challenge_id),
-                page::json_string(&issued.expires_at.to_string()),
+                page::json_string(&challenge_id),
+                page::json_string(&expires_at),
                 page::json_string(&csrf),
-                options_json(&issued.client_options),
+                options,
             ),
         ),
         &token,
@@ -898,29 +1127,32 @@ fn login_begin<'a>(
 /// POST `/login/finish` (Z1, Z2): the assertion for this session's login challenge. On
 /// success the authenticated subject and credential are bound to the page session and the
 /// session token and CSRF token are rotated (the pre-authentication token stops working);
-/// the session expires absolutely with the read session. A refusal keeps the internal code
-/// (O-6) and leaves the session unauthenticated.
+/// the session expires absolutely with the read session. Every failure is the one
+/// [`login_refused`] (LOW-6), a decoy challenge's included (M1), and leaves the session
+/// unauthenticated. A new authenticated session evicts only an idle authenticated one (L2).
 fn login_finish<'a>(
     state: &State,
     token: &str,
     field: &dyn Fn(&str) -> Option<&'a str>,
 ) -> Response<Full> {
-    let Some(challenge_id) = field("challenge_id") else {
-        return refused(StatusCode::BAD_REQUEST, "challenge");
-    };
-    let Some(response) = field("response") else {
-        return refused(StatusCode::BAD_REQUEST, "response");
+    let (Some(challenge_id), Some(response)) = (field("challenge_id"), field("response")) else {
+        return login_refused();
     };
     let (op, key, page_session) = {
         let mut sessions = sessions(state);
         let Some(session) = checked(&mut sessions, token, field("csrf")) else {
-            return refused(StatusCode::FORBIDDEN, "session");
+            return login_refused();
         };
         match session.pending.get(challenge_id) {
+            Some(p) if p.decoy => {
+                // M1: refused exactly like a bad assertion; the decoy is spent.
+                session.pending.remove(challenge_id);
+                return login_refused();
+            }
             Some(p) if matches!(p.op, CeremonyOp::ReadSession { .. }) => {
                 (p.op.clone(), p.idempotency_key.clone(), session.id.clone())
             }
-            _ => return refused(StatusCode::FORBIDDEN, "challenge"),
+            _ => return login_refused(),
         }
     };
     let answer = match state
@@ -940,7 +1172,7 @@ fn login_finish<'a>(
     let ttl = session_ttl(state);
     let mut sessions = sessions(state);
     let Some(mut session) = sessions.remove(token) else {
-        return refused(StatusCode::FORBIDDEN, "session");
+        return login_refused();
     };
     session.pending.remove(challenge_id);
     let read = match answer {
@@ -952,15 +1184,14 @@ fn login_finish<'a>(
         {
             read
         }
-        Ok(_) => {
+        _ => {
             sessions.insert(token.to_string(), session);
-            return refused(StatusCode::FORBIDDEN, "refused");
-        }
-        Err(refusal) => {
-            sessions.insert(token.to_string(), session);
-            return refused(StatusCode::FORBIDDEN, refusal.code());
+            return login_refused();
         }
     };
+    if let Err(response) = make_room(&mut sessions, &state.config.limits) {
+        return *response;
+    }
     let subject = read.subject().subject.clone();
     // Z2: a new token and CSRF token; the old token is gone. Nothing displayed carries over.
     sessions.insert(
@@ -1083,11 +1314,23 @@ fn signoff_view(state: &State, token: Option<&str>, raw_id: &str) -> Response<Fu
 }
 
 /// GET `/revoke`, `/role`, `/enroll`: an operator form in the authenticated session
-/// (nothing displayed yet; the form goes to `/prepare`, whose read checks the permission).
+/// (nothing displayed yet; the form goes to `/prepare`, whose read checks the target's
+/// scoped permission). D-044 review LOW-3: the form itself is served only while the ledger
+/// confirms the live subject, credential and permission over some scope (`revoker` for
+/// `/revoke`, `operator` for `/role` and `/enroll`); otherwise the one 404.
 fn form(state: &State, token: Option<&str>, kind: page::FormKind) -> Response<Full> {
     let Some((read, csrf)) = authed_get(state, token) else {
         return not_found();
     };
+    let permission = match kind {
+        page::FormKind::Revoke => Permission::Revoker,
+        page::FormKind::Role | page::FormKind::Enroll => Permission::Operator,
+    };
+    match state.backend.read(&read, &ReadTarget::Form { permission }) {
+        Ok(Ok(RecordView::Permitted)) => {}
+        Ok(_) => return not_found(),
+        Err(Unavailable) => return unavailable(),
+    }
     html(
         StatusCode::OK,
         page::form_page(kind, &csrf, &read.subject().subject),
@@ -1219,6 +1462,7 @@ fn begin<'a>(
             reservation.clone(),
             Pending {
                 op: op.clone(),
+                decoy: false,
                 idempotency_key: idempotency_key.clone(),
                 expires: now + Duration::from_secs(OUTSTANDING_SECONDS),
             },
@@ -1254,7 +1498,9 @@ fn begin<'a>(
             context.binding.context_fingerprint.as_str().to_string()
         }
         // Z3, L1: one generic refusal.
-        Ok(Err(_)) => return release(refused(StatusCode::FORBIDDEN, "refused")),
+        Ok(Err(_) | Ok(RecordView::Permitted)) => {
+            return release(refused(StatusCode::FORBIDDEN, "refused"))
+        }
         Err(Unavailable) => return release(unavailable()),
     };
     if field("fingerprint") != Some(current.as_str()) {

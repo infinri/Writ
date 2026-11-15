@@ -41,6 +41,9 @@ const secrets = () => {
     ["bare random base64", `bytes ${rawB64}`, [rawB64]],
     ["bare hex fingerprint", `fingerprint mismatch ${fp} vs stored`, [fp]],
     ["bare hex id", `request ${rawHex}`, [rawHex]],
+    // A path-like token with a random segment is not kept as a path (D-044 review LOW-7).
+    ["random segment in a path", `GET /request/${fp}/view`, [fp]],
+    ["credential id after credential:", `credential: ${credId}`, [credId]],
   ];
 };
 
@@ -54,6 +57,15 @@ const kept = [
   "webauthn-authenticator-rs",
   "approved", "denied", "pending", "ASSERTION_INVALID",
   "target/release/examples/browser_fixture",
+  // Known false positives that must be kept (D-044 review LOW-7): tool and temporary paths
+  // and a plain lowercase word as the value of a secret-looking name.
+  "/home/user.name/.local/writ-m1-toolchains/rust-1.99.1/bin/cargo",
+  "/home/user/.local/writ-m1-toolchains/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/webauthn-rs-0.6.2/src/lib.rs",
+  "temporary directory /tmp/writ-browser-suite-SmDejc/chrome-profile removed",
+  "--server /work/Writ/target/release/writ-approval-server --fixture ./target/release/examples/browser_fixture",
+  "credential: ledger",
+  "session: closed",
+  "{\"credential\": \"ledger\"}",
 ];
 
 let failures = 0;

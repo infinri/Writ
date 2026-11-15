@@ -182,22 +182,18 @@ export const flows = [
     requests: [],
     expect: {},
     async run(t) {
-      // D-044 Z3: the registration-start context is an operator read; an approver's
-      // prepare is refused before anything is displayed or begun.
+      // D-044 Z3 and review LOW-3: an approver gets no enrollment form (the one 404), and
+      // its registration-start prepare (an operator read) is refused before anything is
+      // displayed or begun.
       await signIn(t, t.subjects.approver);
       await t.page.navigate(`${t.origin}/enroll`);
-      await t.page.evaluate(`(() => {
-        document.getElementById("result").textContent = "";
-        const f = document.getElementById("prepare");
-        f.elements.subject.value = "browser-nobody";
-        f.requestSubmit();
-      })()`);
-      await until(t, `document.getElementById("result").textContent !== ""`, "the prepare result");
-      const result = await t.page.evaluate(`document.getElementById("result").textContent`);
-      assert(result === "refused", `result ${JSON.stringify(result)}`);
-      const path = await t.page.evaluate("location.pathname");
-      assert(path === "/enroll", `navigated to ${path}`);
-      return `registration start prepared by ${t.subjects.approver} (approver, not operator) answered refused; nothing displayed, no row created`;
+      const shown = await t.page.evaluate("document.body.innerText");
+      assert(/Not found/.test(shown) && !(await t.page.evaluate(`!!document.getElementById("prepare")`)),
+        `approver /enroll: ${shown.slice(0, 120)}`);
+      const s = await httpLogin(t, t.subjects.approver);
+      const r = await t.post("/prepare", { csrf: s.csrf, operation: "registration-start", subject: "browser-nobody" }, { cookie: s.cookie });
+      assert(r.status === 403 && JSON.parse(r.body).error === "refused", `prepare ${r.status} ${r.body}`);
+      return `${t.subjects.approver} (approver, not operator): /enroll the one 404; its registration-start prepare answered refused; no row created`;
     },
   },
   {

@@ -76,8 +76,10 @@ export const flows = [
       const admin = await httpLogin(t, t.subjects.admin);
       assertRefused(await get(t, "/request/req-read", { cookie: admin.cookie }), reference, "operator");
       // An approver's operator page read (prepare) is the generic refusal.
-      const page = await get(t, "/role", { cookie: approver.cookie });
-      const csrf = page.body.match(/data-csrf="([^"]+)"/)[1];
+      // (Its /role form is the one 404 since review LOW-3; the session's CSRF token comes
+      // from the login.)
+      assertRefused(await get(t, "/role", { cookie: approver.cookie }), reference, "approver /role");
+      const csrf = approver.csrf;
       const prepare = await post(t, "/prepare", {
         csrf, operation: "role-grant", target: t.subjects.target, permission: "revoker",
         tenant_id: "t-browser", project_id: "p-browser",
@@ -108,7 +110,8 @@ export const flows = [
       const b = JSON.parse(begun.body);
       const pre = (begun.headers["set-cookie"] || [])[0].split(";")[0];
       const stale = await post(t, "/login/finish", { csrf: b.csrf, challenge_id: b.challenge_id, response: first.response }, { cookie: pre });
-      assert(stale.status === 403 && JSON.parse(stale.body).error === "ASSERTION_INVALID",
+      // LOW-6: every login finish failure is the one generic refusal.
+      assert(stale.status === 403 && JSON.parse(stale.body).error === "refused",
         `old assertion on a new challenge: ${stale.status} ${stale.body}`);
       // That pre-authentication session stays unauthenticated.
       const reference = await refusalReference(t);
@@ -120,7 +123,7 @@ export const flows = [
       const signed = await assertion(t, f.options);
       const cross = await post(t, "/ceremony/finish", { csrf: first.csrf, challenge_id: f.challenge_id, response: signed }, { cookie: first.cookie });
       assert(cross.status === 403, `login challenge finished as a ceremony: ${cross.status} ${cross.body}`);
-      return "the same finish (old and new cookie) answered 403; the old assertion on a new challenge ASSERTION_INVALID; a login challenge as a ceremony 403";
+      return "the same finish (old and new cookie) answered 403; the old assertion on a new challenge 403 refused; a login challenge as a ceremony 403";
     },
   },
   {
@@ -132,10 +135,11 @@ export const flows = [
       // The target signs in and reads.
       const target = await httpLogin(t, t.subjects.target);
       assert((await get(t, "/request/req-read", { cookie: target.cookie })).status === 200, "read before revocation");
-      // Its credential id (hex of the raw id the verifier stores) from its login options.
-      const allowed = target.begun.options.publicKey.allowCredentials || [];
-      assert(allowed.length === 1, `allowCredentials ${allowed.length}`);
-      const credential = Buffer.from(allowed[0].id, "base64url").toString("hex");
+      // Its credential id (hex of the raw id the verifier stores) from its assertion (the
+      // login options list it among decoys, M1).
+      const credential = Buffer.from(JSON.parse(target.response).rawId, "base64url").toString("hex");
+      const allowed = target.begun.options.publicKey.allowCredentials.map((c) => Buffer.from(c.id, "base64url").toString("hex"));
+      assert(allowed.length === 4 && allowed.includes(credential), "the real credential is among the four ids");
       // The administrator revokes that credential through the revoke page's ceremony.
       const admin = await httpLogin(t, t.subjects.admin);
       const form = await get(t, "/revoke", { cookie: admin.cookie });
@@ -152,15 +156,80 @@ export const flows = [
       const response = await assertion(t, b.options);
       const done = await post(t, "/ceremony/finish", { csrf, challenge_id: b.challenge_id, response }, { cookie: admin.cookie });
       assert(done.status === 200 && JSON.parse(done.body).result === "revoked", `revoke ${done.status} ${done.body}`);
-      // The open session reads nothing any more: the one refusal; a new login is refused.
+      // The open session reads nothing any more: the one refusal. A new login gets a decoy
+      // begin (M1: indistinguishable) whose finish is refused.
       assertRefused(await get(t, "/request/req-read", { cookie: target.cookie }), reference, "after revocation");
       const again = await post(t, "/login/begin", { subject: t.subjects.target });
-      assert(again.status === 403 && JSON.parse(again.body).error === "refused", `login after revocation ${again.status}`);
+      assert(again.status === 200, `login begin after revocation ${again.status}`);
+      const a = JSON.parse(again.body);
+      assert(a.options.publicKey.allowCredentials.length === 4, "decoy allowCredentials count");
+      const againPre = (again.headers["set-cookie"] || [])[0].split(";")[0];
+      const fin = await post(t, "/login/finish", { csrf: a.csrf, challenge_id: a.challenge_id, response: target.response }, { cookie: againPre });
+      assert(fin.status === 403 && JSON.parse(fin.body).error === "refused", `login finish after revocation ${fin.status}`);
       // The browser's own session of the target (signed in by an earlier flow) too.
       await t.page.navigate(`${t.origin}/request/req-read`);
       const shown = await pageText(t);
       assert(/Not found/.test(shown), `browser page after revocation: ${shown.slice(0, 200)}`);
-      return `credential ${credential.slice(0, 12)}... revoked by ${t.subjects.admin}; the open session got the one refusal; a new login was refused`;
+      return `the target's credential revoked by ${t.subjects.admin}; the open session got the one refusal; a new login got a decoy begin and a refused finish`;
+    },
+  },
+  {
+    name: "login begin of an unknown subject is indistinguishable from an enrolled one",
+    requests: [],
+    expect: {},
+    async run(t) {
+      // D-044 review M1: status, header names, body shape and allowCredentials count agree;
+      // repeated probes see stable ids; the decoy's finish fails like a bad assertion.
+      const shape = (v) => Array.isArray(v) ? v.map(shape)
+        : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, shape(x)]))
+          : typeof v;
+      const names = (r) => Object.keys(r.headers).filter((h) => h !== "date" && h !== "content-length").sort().join(",");
+      const ids = (r) => JSON.parse(r.body).options.publicKey.allowCredentials.map((c) => c.id).join(",");
+      const real = await post(t, "/login/begin", { subject: t.subjects.approver });
+      const fake = await post(t, "/login/begin", { subject: "browser-nobody-enrolled" });
+      assert(real.status === 200 && fake.status === 200, `status ${real.status} ${fake.status}`);
+      assert(names(real) === names(fake), `headers ${names(real)} vs ${names(fake)}`);
+      assert(JSON.stringify(shape(JSON.parse(real.body))) === JSON.stringify(shape(JSON.parse(fake.body))), "body shape differs");
+      for (const r of [real, fake]) {
+        const b = JSON.parse(r.body);
+        assert(b.options.publicKey.allowCredentials.length === 4, "allowCredentials count");
+        assert(/^chl-[0-9a-f]{32}$/.test(b.challenge_id), "challenge id format");
+      }
+      const realAgain = await post(t, "/login/begin", { subject: t.subjects.approver });
+      const fakeAgain = await post(t, "/login/begin", { subject: "browser-nobody-enrolled" });
+      assert(ids(realAgain) === ids(real) && ids(fakeAgain) === ids(fake), "ids not stable across probes");
+      // Finishing the decoy and finishing the real one with a wrong assertion: one answer.
+      const real2 = JSON.parse(realAgain.body);
+      const fake2 = JSON.parse(fakeAgain.body);
+      const cookie = (r) => (r.headers["set-cookie"] || [])[0].split(";")[0];
+      const bogus = JSON.stringify({ id: "AAAA", rawId: "AAAA", type: "public-key", extensions: {}, response: {} });
+      const onReal = await post(t, "/login/finish", { csrf: real2.csrf, challenge_id: real2.challenge_id, response: bogus }, { cookie: cookie(realAgain) });
+      const onFake = await post(t, "/login/finish", { csrf: fake2.csrf, challenge_id: fake2.challenge_id, response: bogus }, { cookie: cookie(fakeAgain) });
+      assert(onReal.status === onFake.status && onReal.body === onFake.body && names(onReal) === names(onFake),
+        `finish ${onReal.status} ${onReal.body} vs ${onFake.status} ${onFake.body}`);
+      assert(onFake.status === 403 && JSON.parse(onFake.body).error === "refused", "decoy finish answer");
+      return "enrolled and unknown subjects: same status, headers, body shape, four stable credential ids; both finishes 403 refused";
+    },
+  },
+  {
+    name: "operator forms are refused identically to a session without the permission",
+    requests: [],
+    expect: {},
+    async run(t) {
+      // D-044 review LOW-3: /revoke needs revoker, /role and /enroll operator, live.
+      const reference = await refusalReference(t);
+      const reviewer = await httpLogin(t, t.subjects.reviewer);
+      const approver = await httpLogin(t, t.subjects.approver);
+      for (const path of ["/revoke", "/role", "/enroll"]) {
+        assertRefused(await get(t, path, { cookie: reviewer.cookie }), reference, `reviewer ${path}`);
+        assertRefused(await get(t, path, { cookie: approver.cookie }), reference, `approver ${path}`);
+      }
+      const admin = await httpLogin(t, t.subjects.admin);
+      for (const path of ["/revoke", "/role", "/enroll"]) {
+        const r = await get(t, path, { cookie: admin.cookie });
+        assert(r.status === 200, `admin ${path}: ${r.status}`);
+      }
+      return "reviewer and approver sessions got the one 404 on /revoke, /role and /enroll; the administrator got the forms";
     },
   },
 ];

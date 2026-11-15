@@ -9,6 +9,10 @@ import { PAGE_GET, form, request, sleep } from "../lib/harness.mjs";
 
 export const assert = (cond, msg) => { if (!cond) throw new Error(msg); };
 
+/** Pause and attempts for a login begin answered `rate` (refill is 2 tokens per second). */
+const RATE_WAIT_MS = 600;
+const RATE_RETRIES = 40;
+
 /** Wait until `expr` (evaluated in the page) is truthy; navigation in between is tolerated. */
 export async function until(t, expr, what) {
   for (let i = 0; i < 300; i++) {
@@ -26,15 +30,21 @@ export async function until(t, expr, what) {
  * text ("signed in" on success).
  */
 export async function login(t, subject) {
-  await t.page.navigate(`${t.origin}/`);
-  await t.page.evaluate(`(() => {
-    document.getElementById("result").textContent = "";
-    const f = document.getElementById("login");
-    f.elements.subject.value = ${JSON.stringify(subject)};
-    f.requestSubmit();
-  })()`);
-  await until(t, `document.getElementById("result").textContent !== ""`, "the sign-in result");
-  return t.page.evaluate(`document.getElementById("result").textContent`);
+  // The listener rate-limits login begins process-wide (D-044 review M2); like a person,
+  // the flow waits and tries again while the answer is `rate`.
+  for (let attempt = 0; ; attempt++) {
+    await t.page.navigate(`${t.origin}/`);
+    await t.page.evaluate(`(() => {
+      document.getElementById("result").textContent = "";
+      const f = document.getElementById("login");
+      f.elements.subject.value = ${JSON.stringify(subject)};
+      f.requestSubmit();
+    })()`);
+    await until(t, `document.getElementById("result").textContent !== ""`, "the sign-in result");
+    const result = await t.page.evaluate(`document.getElementById("result").textContent`);
+    if (result !== "rate" || attempt >= RATE_RETRIES) return result;
+    await sleep(RATE_WAIT_MS);
+  }
 }
 
 /** `login`, failing the flow unless it signed in. */
@@ -50,14 +60,21 @@ const cookieOf = (r) => ((r.headers["set-cookie"] || [])[0] || "").split(";")[0]
  * session cookie only when one is given (raw HTTP is not a browser: it states the headers a
  * browser would send).
  */
-export function post(t, path, fields, { cookie, origin = t.origin, site = "same-origin" } = {}) {
+export async function post(t, path, fields, { cookie, origin = t.origin, site = "same-origin" } = {}) {
   const body = form(fields);
   const headers = {
     host: `localhost:${t.port}`, origin, "sec-fetch-site": site,
     "content-type": "application/x-www-form-urlencoded", "content-length": Buffer.byteLength(body),
   };
   if (cookie) headers.cookie = cookie;
-  return request(t.port, "POST", path, headers, body);
+  // A login begin answered `rate` (the process-wide login rate limit, D-044 review M2) is
+  // retried after a pause, as a person would.
+  for (let attempt = 0; ; attempt++) {
+    const r = await request(t.port, "POST", path, headers, body);
+    const limited = path === "/login/begin" && r.status === 429 && r.body.includes("\"rate\"");
+    if (!limited || attempt >= RATE_RETRIES) return r;
+    await sleep(RATE_WAIT_MS);
+  }
 }
 
 /** A raw loopback GET as a direct navigation (`Sec-Fetch-Site: none`), with `cookie` if given. */

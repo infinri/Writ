@@ -486,3 +486,66 @@ fn z2_sessions_expire_absolutely_and_revocation_invalidates_open_sessions() {
     m.reopen_with(&other);
     assert_eq!(read(&m, &fresh, req(&id)), Err(ReadRefused));
 }
+
+#[test]
+fn low3_operator_forms_need_the_live_permission_over_some_scope() {
+    let m = M4::new("low3-forms");
+    let form = |p| ReadTarget::Form { permission: p };
+    let root_s = login(&m, &root(), "r");
+    let carol = login(&m, &human("carol"), "c");
+    let alice = login(&m, &human("alice"), "a");
+    // root: operator and revoker (*, *); carol: revoker (T, P); alice: approver only.
+    assert_eq!(
+        read(&m, &root_s, form(Permission::Operator)),
+        Ok(RecordView::Permitted)
+    );
+    assert_eq!(
+        read(&m, &root_s, form(Permission::Revoker)),
+        Ok(RecordView::Permitted)
+    );
+    assert_eq!(
+        read(&m, &carol, form(Permission::Revoker)),
+        Ok(RecordView::Permitted)
+    );
+    assert_eq!(
+        read(&m, &carol, form(Permission::Operator)),
+        Err(ReadRefused)
+    );
+    for p in [Permission::Operator, Permission::Revoker] {
+        assert_eq!(read(&m, &alice, form(p)), Err(ReadRefused));
+    }
+    // Revoking carol's role, then an open session of a revoked subject: refused.
+    let assignment = m
+        .text(
+            "SELECT assignment_id FROM role_assignments WHERE subject = ?1",
+            "carol",
+        )
+        .unwrap();
+    m.ceremony(
+        &root(),
+        &CeremonyOp::RoleChange {
+            change: RoleChange::Revoke {
+                assignment_id: assignment,
+            },
+        },
+        &key("role"),
+    )
+    .unwrap();
+    assert_eq!(
+        read(&m, &carol, form(Permission::Revoker)),
+        Err(ReadRefused)
+    );
+    m.enroll(person("otto", &[(Permission::Operator, "*", "*")], vec![]))
+        .unwrap();
+    let otto = login(&m, &human("otto"), "o");
+    assert_eq!(
+        read(&m, &otto, form(Permission::Operator)),
+        Ok(RecordView::Permitted)
+    );
+    m.revoke(&root(), RevocationTarget::Subject(human("otto")), &key("r"))
+        .unwrap();
+    assert_eq!(
+        read(&m, &otto, form(Permission::Operator)),
+        Err(ReadRefused)
+    );
+}
