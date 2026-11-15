@@ -1081,6 +1081,12 @@ pub trait ApprovalLedger: ExecuteLedger {
         &self,
         read: &RecordRead<'_>,
     ) -> Result<Result<RecordView, ReadRefused>, StoreError>;
+
+    /// The distinct byte lengths of the active credential ids (a read of
+    /// aggregate metadata, no record): the approval listener draws the
+    /// lengths of its login decoys from them (D-044 review M1), so a decoy id
+    /// is not told apart from a real one by its length. Sorted ascending.
+    fn credential_id_lengths(&self) -> Result<Vec<usize>, StoreError>;
 }
 
 /// What a ceremony would bind and display ([`ApprovalLedger::read_record`]).

@@ -63,6 +63,10 @@ pub trait Backend: Send + Sync {
         response: &[u8],
         operator: &OperatorSession,
     ) -> Result<Result<VerifiedRegistration, Refusal>, Unavailable>;
+
+    /// The distinct byte lengths of the active credential ids (the ledger's
+    /// `credential_id_lengths`; aggregate metadata for the login decoys, D-044 review M1).
+    fn credential_id_lengths(&self) -> Result<Vec<usize>, Unavailable>;
 }
 
 /// [`Backend`] over an [`ApprovalLedger`] (opened with its approval channel configured)
@@ -146,6 +150,10 @@ where
                 now,
             })
             .map_err(|_| Unavailable)
+    }
+
+    fn credential_id_lengths(&self) -> Result<Vec<usize>, Unavailable> {
+        self.ledger.credential_id_lengths().map_err(|_| Unavailable)
     }
 
     fn finish_registration(

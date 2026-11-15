@@ -3309,6 +3309,23 @@ impl ApprovalLedger for SqliteLedger {
             _ => unavailable("read", "integrity"),
         })
     }
+
+    fn credential_id_lengths(&self) -> Result<Vec<usize>, StoreError> {
+        let inner = self.lock("read")?;
+        // Credential ids are stored as lowercase hex of the raw id (two characters a byte).
+        let read = || -> rusqlite::Result<Vec<usize>> {
+            inner
+                .conn
+                .prepare(
+                    "SELECT DISTINCT length(credential_id) / 2 FROM credentials \
+                     WHERE status = 'active' ORDER BY 1",
+                )?
+                .query_map([], |r| r.get::<_, i64>(0))?
+                .map(|n| n.map(|n| usize::try_from(n).unwrap_or(0)))
+                .collect()
+        };
+        read().map_err(|e| unavailable("read", code_name(&e)))
+    }
 }
 
 /// Test builds only: the context a ceremony would bind and the pending signoff binding,

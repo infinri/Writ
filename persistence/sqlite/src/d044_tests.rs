@@ -549,3 +549,27 @@ fn low3_operator_forms_need_the_live_permission_over_some_scope() {
         Err(ReadRefused)
     );
 }
+
+#[test]
+fn m1_credential_id_lengths_are_the_active_ones_distinct_and_sorted() {
+    // Re-review item 4: the login decoys draw their id lengths from these (hex ids, two
+    // characters a byte). The test verifier's ids are `cred-<name>`.
+    let m = M4::new("m1-lengths");
+    // root, alice, carol: "cred-root" (9), "cred-alice" and "cred-carol" (10).
+    assert_eq!(m.l().credential_id_lengths().unwrap(), vec![4, 5]);
+    m.enroll(person(
+        "maximilian",
+        &[(Permission::Approver, "*", "*")],
+        vec![],
+    ))
+    .unwrap();
+    assert_eq!(m.l().credential_id_lengths().unwrap(), vec![4, 5, 7]);
+    // A revoked credential no longer counts.
+    m.revoke(
+        &root(),
+        RevocationTarget::Credential("cred-maximilian".into()),
+        &key("r"),
+    )
+    .unwrap();
+    assert_eq!(m.l().credential_id_lengths().unwrap(), vec![4, 5]);
+}

@@ -203,12 +203,15 @@ export const flows = [
       const fake2 = JSON.parse(fakeAgain.body);
       const cookie = (r) => (r.headers["set-cookie"] || [])[0].split(";")[0];
       const bogus = JSON.stringify({ id: "AAAA", rawId: "AAAA", type: "public-key", extensions: {}, response: {} });
-      const onReal = await post(t, "/login/finish", { csrf: real2.csrf, challenge_id: real2.challenge_id, response: bogus }, { cookie: cookie(realAgain) });
-      const onFake = await post(t, "/login/finish", { csrf: fake2.csrf, challenge_id: fake2.challenge_id, response: bogus }, { cookie: cookie(fakeAgain) });
+      // Both finishes are held to the listener's latency floor (100 ms, re-review M1).
+      const timed = async (fn) => { const t0 = process.hrtime.bigint(); const r = await fn(); return [r, Number(process.hrtime.bigint() - t0) / 1e6]; };
+      const [onReal, msReal] = await timed(() => post(t, "/login/finish", { csrf: real2.csrf, challenge_id: real2.challenge_id, response: bogus }, { cookie: cookie(realAgain) }));
+      const [onFake, msFake] = await timed(() => post(t, "/login/finish", { csrf: fake2.csrf, challenge_id: fake2.challenge_id, response: bogus }, { cookie: cookie(fakeAgain) }));
       assert(onReal.status === onFake.status && onReal.body === onFake.body && names(onReal) === names(onFake),
         `finish ${onReal.status} ${onReal.body} vs ${onFake.status} ${onFake.body}`);
       assert(onFake.status === 403 && JSON.parse(onFake.body).error === "refused", "decoy finish answer");
-      return "enrolled and unknown subjects: same status, headers, body shape, four stable credential ids; both finishes 403 refused";
+      assert(msReal >= 99 && msFake >= 99 && Math.abs(msReal - msFake) < 50, `finish latency ${msReal.toFixed(1)} vs ${msFake.toFixed(1)} ms`);
+      return `enrolled and unknown subjects: same status, headers, body shape, four stable credential ids; both finishes 403 refused, held to the floor (${Math.round(msReal)} vs ${Math.round(msFake)} ms)`;
     },
   },
   {

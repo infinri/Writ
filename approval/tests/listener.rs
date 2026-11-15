@@ -155,6 +155,8 @@ struct Fake {
     revoked: Mutex<Vec<String>>,
     /// The login operations begun (kept apart from `calls`).
     logins: Mutex<Vec<CeremonyOp>>,
+    /// The byte lengths of the enrolled credential ids the fake reports.
+    lengths: Mutex<Vec<usize>>,
 }
 
 fn request(action_note: &str) -> ApprovalRequest {
@@ -200,6 +202,7 @@ impl Fake {
             sessions: Mutex::new(Vec::new()),
             revoked: Mutex::new(Vec::new()),
             logins: Mutex::new(Vec::new()),
+            lengths: Mutex::new(vec![20, 32]),
         }
     }
 
@@ -435,6 +438,10 @@ fn real_credential(subject: &str) -> String {
 const NO_ROLES: &str = "mallory";
 /// A subject whose login the fake's ledger refuses (unknown).
 const UNKNOWN: &str = "nobody";
+/// A subject whose login begin meets a verifier outage.
+const OUTAGE: &str = "outage";
+/// A subject the fake reports with five credentials (more than the padded count).
+const MANY: &str = "many";
 
 /// The fake ledger's read sessions and protected read (D-044 Z1, Z3): a session counts only
 /// if this fake's login issued it and its subject is not revoked; `mallory` holds no role;
@@ -499,15 +506,30 @@ impl Backend for Fake {
             return self.begin_op(op, subject, idempotency_key);
         };
         self.logins.lock().unwrap().push(op.clone());
-        if subject.subject == UNKNOWN {
+        if subject.subject.starts_with(UNKNOWN) {
             return Ok(Err(Refusal::Approval(ApprovalCode::PermissionMissing)));
         }
+        if subject.subject == OUTAGE {
+            return Ok(Err(Refusal::Approval(ApprovalCode::AssertionInvalid(
+                VerifierError::Unavailable,
+            ))));
+        }
         let n = self.logins.lock().unwrap().len();
+        let ids = if subject.subject == MANY {
+            (0..5)
+                .map(|i| format!(r#"{{"type":"public-key","id":"many-{i}"}}"#))
+                .collect::<Vec<_>>()
+                .join(",")
+        } else {
+            format!(
+                r#"{{"type":"public-key","id":"{}","transports":["internal"]}}"#,
+                real_credential(&subject.subject)
+            )
+        };
         // The verifier's options as webauthn-rs shapes them (one real credential with a
         // transport, its own timeout); the listener normalizes and pads them (M1).
         let options = format!(
-            r#"{{"publicKey":{{"challenge":"Q2hhbGxlbmdlLW51bWJlci0{n:03}","timeout":300000,"rpId":"localhost","allowCredentials":[{{"type":"public-key","id":"{}","transports":["internal"]}}],"userVerification":"required"}}}}"#,
-            real_credential(&subject.subject)
+            r#"{{"publicKey":{{"challenge":"Q2hhbGxlbmdlLW51bWJlci0{n:03}","timeout":300000,"rpId":"localhost","allowCredentials":[{ids}],"userVerification":"required"}}}}"#
         );
         Ok(Ok(IssuedChallenge {
             challenge_id: format!("chl-{n:032x}"),
@@ -563,6 +585,10 @@ impl Backend for Fake {
         operator: &OperatorSession,
     ) -> Result<Result<VerifiedRegistration, Refusal>, Unavailable> {
         self.finish_registration_op(registration_id, response, operator)
+    }
+
+    fn credential_id_lengths(&self) -> Result<Vec<usize>, Unavailable> {
+        Ok(self.lengths.lock().unwrap().clone())
     }
 }
 
@@ -2160,15 +2186,23 @@ fn m2_a_login_flood_never_locks_out_an_approver() {
         ..Limits::default()
     });
     let approver = s.view();
-    // The login bound: three live login sessions, then 429.
+    // The login bound: three live login sessions; a fourth evicts the oldest (re-review
+    // M2: a lockout needs the full sustained rate), whose finish is then refused.
+    let first = s.post("/login/begin", "", "subject=x", "");
     for _ in 0..3 {
         assert_eq!(status(&s.post("/login/begin", "", "subject=x", "")), 200);
     }
-    let over = s.post("/login/begin", "", "subject=x", "");
-    assert_eq!(
-        (status(&over), body_of(&over)),
-        (429, "{\"error\":\"pending\"}")
+    let evicted = s.post(
+        "/login/finish",
+        &between(&first, "writ_session=", ";"),
+        &format!(
+            "csrf={}&challenge_id={}&response=valid-assertion",
+            between(&first, "\"csrf\":\"", "\""),
+            between(&first, "\"challenge_id\":\"", "\"")
+        ),
+        "",
     );
+    assert_eq!(status(&evicted), 403, "{evicted}");
     // The approver's mutation slots are untouched by the flood.
     assert_eq!(status(&begin_in(&s, &approver)), 200);
     assert_eq!(status(&begin_in(&s, &approver)), 200);
@@ -2367,4 +2401,151 @@ fn z3_every_mutation_is_begun_for_the_signed_in_subject_and_never_by_the_login()
     );
     assert_eq!(status(&done), 200, "{done}");
     assert_eq!(s.fake.calls().len(), 2);
+}
+
+/// D-044 re-review M1 (timing): every login begin and finish answer, success or refusal,
+/// real or decoy, takes at least the latency floor, and the refusals fall in one band.
+#[test]
+fn m1_every_login_answer_is_held_to_the_latency_floor() {
+    let floor = Duration::from_millis(150);
+    let s = Server::start(Limits {
+        login_floor: floor,
+        login_burst: 100,
+        ..Limits::default()
+    });
+    let timed = |path: &str, cookie: &str, body: &str| {
+        let started = Instant::now();
+        let r = s.post(path, cookie, body, "");
+        (r, started.elapsed())
+    };
+    let finish_body = |r: &str, response: &str| {
+        format!(
+            "csrf={}&challenge_id={}&response={response}",
+            between(r, "\"csrf\":\"", "\""),
+            between(r, "\"challenge_id\":\"", "\"")
+        )
+    };
+    let mut refusals = Vec::new();
+    for _ in 0..3 {
+        let (real, t1) = timed("/login/begin", "", "subject=bob");
+        let (decoy, t2) = timed("/login/begin", "", &format!("subject={UNKNOWN}"));
+        let (bad, t3) = timed(
+            "/login/finish",
+            &between(&real, "writ_session=", ";"),
+            &finish_body(&real, "forged"),
+        );
+        let (on_decoy, t4) = timed(
+            "/login/finish",
+            &between(&decoy, "writ_session=", ";"),
+            &finish_body(&decoy, "valid-assertion"),
+        );
+        assert_eq!(body_of(&bad), body_of(&on_decoy));
+        for t in [t1, t2, t3, t4] {
+            assert!(t >= floor, "{t:?} below the floor");
+        }
+        refusals.extend([t3, t4]);
+    }
+    let (good, t5) = timed("/login/begin", "", "subject=bob");
+    let (_, t6) = timed(
+        "/login/finish",
+        &between(&good, "writ_session=", ";"),
+        &finish_body(&good, "valid-assertion"),
+    );
+    assert!(t5 >= floor && t6 >= floor);
+    let (lo, hi) = (
+        refusals.iter().min().unwrap(),
+        refusals.iter().max().unwrap(),
+    );
+    assert!(*hi - *lo < Duration::from_millis(60), "band {lo:?}..{hi:?}");
+}
+
+/// D-044 re-review M2: refused and decoy logins free their slot at once, and at the bound
+/// the oldest login session is evicted, so a burst of decoy begins never blocks a sign-in.
+#[test]
+fn m2_failed_logins_free_their_slot_and_the_bound_evicts_the_oldest() {
+    let s = Server::start(Limits {
+        login_burst: 100,
+        login_floor: Duration::from_millis(1),
+        ..Limits::default()
+    });
+    for _ in 0..16 {
+        assert_eq!(
+            status(&s.post("/login/begin", "", &format!("subject={UNKNOWN}"), "")),
+            200
+        );
+    }
+    // An approver still signs in (begin and finish).
+    let (cookie, _) = s.login("bob");
+    assert_eq!(status(&s.get_as("/request/req-1", &cookie)), 200);
+    // A refused finish ends its login session: the same session cannot try again.
+    let begun = s.post("/login/begin", "", "subject=bob", "");
+    let pre = between(&begun, "writ_session=", ";");
+    let body = |response: &str| {
+        format!(
+            "csrf={}&challenge_id={}&response={response}",
+            between(&begun, "\"csrf\":\"", "\""),
+            between(&begun, "\"challenge_id\":\"", "\"")
+        )
+    };
+    assert_eq!(
+        status(&s.post("/login/finish", &pre, &body("forged"), "")),
+        403
+    );
+    assert_eq!(
+        status(&s.post("/login/finish", &pre, &body("valid-assertion"), "")),
+        403
+    );
+    // A refused finish never ends an authenticated session.
+    let r = s.post(
+        "/login/finish",
+        &cookie,
+        "csrf=x&challenge_id=y&response=z",
+        "",
+    );
+    assert_eq!(status(&r), 403);
+    assert_eq!(status(&s.get_as("/request/req-1", &cookie)), 200);
+}
+
+/// D-044 re-review item 4: decoy ids take the byte lengths of the enrolled credentials
+/// (the default 16 bytes when none is enrolled).
+#[test]
+fn m1_decoy_ids_take_enrolled_credential_lengths() {
+    let s = Server::start(Limits {
+        login_burst: 100,
+        login_floor: Duration::from_millis(1),
+        ..Limits::default()
+    });
+    // Unpadded base64url: 20 bytes are 27 characters, 32 bytes 43, 16 bytes 22.
+    let mut seen = std::collections::BTreeSet::new();
+    for n in 0..8 {
+        let r = s.post("/login/begin", "", &format!("subject={UNKNOWN}-{n}"), "");
+        *s.fake.lengths.lock().unwrap() = vec![20, 32];
+        for id in allowed_ids(body_of(&r)) {
+            seen.insert(id.len());
+        }
+    }
+    assert!(seen.iter().all(|l| [27, 43].contains(l)), "{seen:?}");
+    *s.fake.lengths.lock().unwrap() = vec![];
+    let r = s.post("/login/begin", "", &format!("subject={UNKNOWN}-x"), "");
+    assert!(allowed_ids(body_of(&r)).iter().all(|id| id.len() == 22));
+}
+
+/// D-044 re-review items 3 and 5: a verifier outage is global (503 for every subject for a
+/// while), and options with more credentials than the padded count fail closed.
+#[test]
+fn m1_outage_answers_503_for_every_subject_and_too_many_credentials_fail_closed() {
+    let s = Server::start(Limits {
+        login_burst: 100,
+        login_floor: Duration::from_millis(1),
+        ..Limits::default()
+    });
+    let many = s.post("/login/begin", "", &format!("subject={MANY}"), "");
+    assert_eq!(status(&many), 503, "{many}");
+    let out = s.post("/login/begin", "", &format!("subject={OUTAGE}"), "");
+    assert_eq!(status(&out), 503, "{out}");
+    for subject in [UNKNOWN, "bob"] {
+        let r = s.post("/login/begin", "", &format!("subject={subject}"), "");
+        assert_eq!(status(&r), 503, "{subject}: {r}");
+        assert!(header_of(&r, "set-cookie").is_none());
+    }
 }
