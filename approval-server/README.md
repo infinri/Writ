@@ -118,7 +118,7 @@ Notes: Chrome's singleton socket path must be short, so `TMPDIR` must not be a d
 
 ## Results (worker W-H, D-044 item 3, review and re-review fixes; 2026-11-15, Chrome 150.0.7871.46, Node 22.22.3)
 
-Local results on the worker branch, not yet run in CI on the resulting commit.
+Verified in required CI: commit `8b2057a`, run https://github.com/infinri/Writ/actions/runs/43659759755 (6/6): `browser suite: 40 passed, 0 failed; 25 of 25 flows executed (CDP virtual authenticator, simulated UV)`, Node 22.22.3, Google Chrome 157.0.8103.50, `check-release-binary: PASS` (E-077).
 
 - `WRIT_BROWSER_CI=1 approval/browser-tests/run.sh --results .. --diagnostics ..` (after `source m1/tools/env.sh`), run twice: `check-release-binary: PASS`, and each run reported 40 passed, 0 failed, 25 of 25 flows executed (25 flows, 14 final ledger-status checks, 1 stored-signoff check), all labelled CDP virtual authenticator, simulated UV; the temporary directory was removed each time. Login finishes measured 102 to 104 ms for both the real refusal and the decoy (the 100 ms floor). The flows retry a login begin answered `rate`.
 - `cargo test --locked --workspace` under `run-with-clean-fds.sh`: 572 passed, 0 failed, 4 ignored (the kill tests, then run alone: 4 passed). Property gate (CI profile): 19,796 checks, 0 failed. `cargo fmt --check` and `cargo clippy --workspace --all-targets -D warnings` clean. Closure gate `--repeat 2`: exact 17, adapted 72, approved differences 38, deferred 0, GATE PASS, report verifies. `check_deps.py`: 0 problems. `check-v2-docs.py` passed.

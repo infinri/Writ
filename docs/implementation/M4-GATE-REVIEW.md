@@ -1,6 +1,6 @@
 # M4 gate-review package (M4-14; D-040..D-043)
 
-Status: **prepared for owner review; M4 remains IN PROGRESS until the owner's decision.** ADR-0008 APPROVED IN PRINCIPLE; release and production **NO-GO**. Nothing here claims verified production security or host enforcement.
+Status: **M4 ACCEPTED as scoped development scope (D-044, conditions met, E-077).** Conditions: authenticated scoped reads (Z1..Z4, independently reviewed), browser suite as a required CI step, required CI on the exact SHA (`8b2057a`, run 43659759755, 6/6). Sections 1 to 7 below are the package as reviewed; their limitations and carried obligations remain in force. ADR-0008 APPROVED IN PRINCIPLE; release and production **NO-GO**. Nothing here claims verified production security or host enforcement.
 
 ## 1. What is asked of the owner
 
