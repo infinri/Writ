@@ -64,6 +64,15 @@ fn binary_digest(p: &Path) -> String {
     }
 }
 
+/// The AppArmor profile granting `userns` to the private bubblewrap copy (J-9).
+pub const APPARMOR_PROFILE: &str = "/etc/apparmor.d/writ-bwrap";
+
+fn mode_of(p: &Path) -> String {
+    fs::metadata(p).map_or("absent".into(), |m| {
+        format!("{:04o} {}:{}", m.mode() & 0o7777, m.uid(), m.gid())
+    })
+}
+
 /// Collect the recorded facts for `cfg`.
 pub fn collect(cfg: &Config) -> Vec<(String, String)> {
     let release = read("/proc/sys/kernel/osrelease");
@@ -110,15 +119,26 @@ pub fn collect(cfg: &Config) -> Vec<(String, String)> {
         ("packages".to_string(), pkgs),
         ("systemd".to_string(), cmd(&["systemctl", "--version"])),
         (
-            "bwrap_version".to_string(),
+            "bwrap_private_version".to_string(),
             cmd(&[bwrap.as_str(), "--version"]),
         ),
-        ("bwrap_sha256".to_string(), binary_digest(&cfg.bwrap)),
         (
-            "bwrap_mode".to_string(),
-            fs::metadata(&cfg.bwrap).map_or("absent".into(), |m| {
-                format!("{:04o} uid {}", m.mode() & 0o7777, m.uid())
-            }),
+            "bwrap_private_sha256".to_string(),
+            binary_digest(&cfg.bwrap),
+        ),
+        ("bwrap_private_mode".to_string(), mode_of(&cfg.bwrap)),
+        (
+            "bwrap_system_sha256".to_string(),
+            binary_digest(&cfg.system_bwrap),
+        ),
+        ("bwrap_system_mode".to_string(), mode_of(&cfg.system_bwrap)),
+        (
+            "apparmor_profile_sha256".to_string(),
+            binary_digest(Path::new(APPARMOR_PROFILE)),
+        ),
+        (
+            "filesystems_record".to_string(),
+            read(&cfg.config_dir.join("filesystems").display().to_string()),
         ),
         ("util_linux".to_string(), cmd(&["setsid", "--version"])),
         ("coreutils".to_string(), cmd(&["true", "--version"])),
@@ -139,6 +159,9 @@ pub fn collect(cfg: &Config) -> Vec<(String, String)> {
         "fs/protected_hardlinks",
         "kernel/apparmor_restrict_unprivileged_userns",
         "kernel/apparmor_restrict_unprivileged_unconfined",
+        "fs/suid_dumpable",
+        "kernel/core_pattern",
+        "net/ipv4/ip_unprivileged_port_start",
     ] {
         v.push((
             format!("sysctl.{}", s.replace('/', ".")),

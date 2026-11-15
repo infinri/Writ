@@ -11,8 +11,10 @@ pub const CONTRACT: &str = "writ-readiness/1";
 /// The J-9 probes (plus the optional Landlock report).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ProbeId {
-    /// Bubblewrap runs with every namespace unshared.
+    /// The private bubblewrap copy runs with every namespace unshared.
     Userns,
+    /// The agent uid cannot create a usable user namespace.
+    AgentUserns,
     /// Filesystem confinement inside a job.
     Fs,
     /// Network confinement inside a job.
@@ -33,6 +35,10 @@ pub enum ProbeId {
     Rename,
     /// Target root and stores on an allow-listed local filesystem.
     FsType,
+    /// No access or default ACL on trusted directories and files.
+    Acl,
+    /// `fs.protected_hardlinks = 1` and the agent cannot hard-link a `writ`-owned file.
+    Hardlink,
     /// Unix socket peer credentials.
     Peercred,
     /// The agent identity is denied every trusted path.
@@ -45,8 +51,9 @@ pub enum ProbeId {
 
 impl ProbeId {
     /// Every probe in report order.
-    pub const ALL: [ProbeId; 15] = [
+    pub const ALL: [ProbeId; 18] = [
         ProbeId::Userns,
+        ProbeId::AgentUserns,
         ProbeId::Fs,
         ProbeId::Net,
         ProbeId::Pid,
@@ -57,6 +64,8 @@ impl ProbeId {
         ProbeId::Openat2,
         ProbeId::Rename,
         ProbeId::FsType,
+        ProbeId::Acl,
+        ProbeId::Hardlink,
         ProbeId::Peercred,
         ProbeId::AgentDeny,
         ProbeId::NoSecret,
@@ -67,6 +76,7 @@ impl ProbeId {
     pub fn name(self) -> &'static str {
         match self {
             ProbeId::Userns => "P-USERNS",
+            ProbeId::AgentUserns => "P-AGENT-USERNS",
             ProbeId::Fs => "P-FS",
             ProbeId::Net => "P-NET",
             ProbeId::Pid => "P-PID",
@@ -77,6 +87,8 @@ impl ProbeId {
             ProbeId::Openat2 => "P-OPENAT2",
             ProbeId::Rename => "P-RENAME",
             ProbeId::FsType => "P-FS-TYPE",
+            ProbeId::Acl => "P-ACL",
+            ProbeId::Hardlink => "P-HARDLINK",
             ProbeId::Peercred => "P-PEERCRED",
             ProbeId::AgentDeny => "P-AGENT-DENY",
             ProbeId::NoSecret => "P-NO-SECRET",
@@ -87,6 +99,17 @@ impl ProbeId {
     /// Whether `governed_ready` needs this probe to pass (every J-9 probe; Landlock is optional).
     pub fn required(self) -> bool {
         self != ProbeId::Landlock
+    }
+
+    /// The open decision the probe's agent-side part depends on (J-1 is BLOCKED on C-1: the
+    /// agent uid, and therefore what these probes test, is provisional).
+    pub fn depends_on(self) -> &'static str {
+        match self {
+            ProbeId::AgentUserns | ProbeId::AgentDeny | ProbeId::Hardlink => {
+                "J-1 C-1 (agent uid provisional)"
+            }
+            _ => "",
+        }
     }
 }
 
@@ -316,6 +339,7 @@ pub fn report(ctx: &ReportContext, results: &[ProbeResult]) -> Value {
             json::obj([
                 ("id", s(r.id.name())),
                 ("required", Value::Bool(r.id.required())),
+                ("depends_on", s(r.id.depends_on())),
                 ("status", s(r.status.name())),
                 ("reason", s(&r.reason)),
                 ("observations", pairs(&r.observations)),
@@ -532,7 +556,7 @@ mod tests {
         assert_eq!(r.get("contract").and_then(Value::as_str), Some(CONTRACT));
         assert_eq!(
             r.get("probes").and_then(Value::as_arr).map(<[Value]>::len),
-            Some(15)
+            Some(18)
         );
     }
 }

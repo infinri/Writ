@@ -1,5 +1,5 @@
 {
-  "comment": "Reviewed dependency allow-list for writ-hostsys (hostsys/DEPENDENCIES.md; M5a-03, D-045; M5-DEPENDENCY-REVIEW section 2). The closure covers normal and build dependencies; the workspace path dependency writ-kernel is gated by its own allow-list. rustix 1.1.6 with features std, fs, process only (default features off); no package that is not already in Cargo.lock and approved for writ-broker. 'Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT' is approved for rustix 1.1.6 and linux-raw-sys 0.12.1 only (owner decision 2026-11-12), not as a general licence.",
+  "comment": "Reviewed dependency allow-list for writ-hostsys (hostsys/DEPENDENCIES.md; M5a-03, D-045; M5-DEPENDENCY-REVIEW section 2). The closure covers normal and build dependencies; the workspace path dependency writ-kernel is gated by its own allow-list. rustix 1.1.6 with features std, fs, process, net only (default features off); no package that is not already in Cargo.lock and approved for writ-broker. 'Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT' is approved for rustix 1.1.6 and linux-raw-sys 0.12.1 only (owner decision 2026-11-12), not as a general licence.",
   "approved_licenses": [
     "MIT",
     "MIT OR Apache-2.0",
@@ -20,13 +20,13 @@
     "rustix": {
       "version": "1.1.6",
       "checksum": "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa",
-      "role": "direct runtime (safe openat2 with resolve flags, statx mount id, statfs, renameat_with RENAME_NOREPLACE, lgetxattr ACL detection; getuid, getgid, kill_process_group, test_kill_process); default features off, features std, fs, process; released 2026-10-27; licence approved for this package only (owner decision 2026-11-12), used under its MIT option",
+      "role": "direct runtime (safe openat2 with resolve flags, statx mount id, statfs, renameat_with RENAME_NOREPLACE, lgetxattr ACL detection; getuid, getgid, kill_process_group, test_kill_process); default features off, features std, fs, process, net (SO_PEERCRED; lead decision after M5-INTERFACES revision 2); released 2026-10-27; licence approved for this package only (owner decision 2026-11-12), used under its MIT option",
       "licence_approved": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
     },
     "linux-raw-sys": {
       "version": "0.12.1",
       "checksum": "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53",
-      "role": "transitive (rustix linux_raw backend on Linux; features auxvec, elf, errno, general, ioctl, no_std, prctl); released 2025-12-23; licence approved for this package only (owner decision 2026-11-12), used under its MIT option",
+      "role": "transitive (rustix linux_raw backend on Linux; features auxvec, elf, errno, general, ioctl, no_std, prctl, net, netlink, if_ether, xdp); released 2025-12-23; licence approved for this package only (owner decision 2026-11-12), used under its MIT option",
       "licence_approved": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
     },
     "bitflags": {

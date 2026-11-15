@@ -8,6 +8,7 @@
 //! when the probe runs inside its own delegated systemd unit; without it nothing under
 //! `/sys/fs/cgroup` is written.
 
+use crate::deny;
 use crate::exec::{self, kv, kv_get, Outcome};
 use crate::readiness::{Control, ProbeId, ProbeResult, Status};
 use rustix::fs::{AtFlags, Mode, OFlags, RenameFlags, ResolveFlags, StatxFlags, CWD};
@@ -15,7 +16,7 @@ use rustix::io::Errno;
 use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -23,22 +24,32 @@ use std::time::{Duration, Instant};
 /// Deadline of one sandboxed job.
 const JOB_DEADLINE: Duration = Duration::from_secs(20);
 
-/// Probe configuration (defaults are the J-1 layout of the reference host).
+/// Probe configuration (defaults are the J-1 layout and the J-9 reference image).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     /// Trusted state root (`/var/lib/writ`).
     pub state_root: PathBuf,
     /// Configuration directory (`/etc/writ`).
     pub config_dir: PathBuf,
-    /// Socket directory (`/run/writ`).
+    /// Socket directory (`/run/writ`, `writ:writ-agents` 0750).
     pub run_dir: PathBuf,
-    /// `fs.write` target roots (`/var/lib/writ/targets`).
+    /// `fs.write` target roots (`/srv/writ/targets`, J-1 review M-1).
     pub target_root: PathBuf,
     /// Directory in which private scratch directories are made (`/var/lib/writ/run`, the runner
-    /// work root, so filesystem probes run on the filesystem jobs and stores use).
+    /// work root).
     pub scratch: PathBuf,
-    /// The pinned bubblewrap binary.
+    /// The private bubblewrap copy with the AppArmor `userns` grant
+    /// (`/usr/local/libexec/writ/bwrap`, `root:writ` 0750).
     pub bwrap: PathBuf,
+    /// The system bubblewrap without the grant (`/usr/bin/bwrap`), used as the P-USERNS control.
+    pub system_bwrap: PathBuf,
+    /// Group whose members are the configured agent uids (`writ-agents`; J-1, provisional
+    /// while C-1 is open).
+    pub agents_group: String,
+    /// A directory containing `root/` with a mount point `root/mnt` holding a file `f`, prepared
+    /// by the reference VM trial; when set, P-OPENAT2 tests `RESOLVE_NO_XDEV` against that bind
+    /// mount instead of the `/` to `/proc` boundary.
+    pub xdev_root: Option<PathBuf>,
     /// The probe runs inside its own delegated cgroup (systemd unit with `Delegate=yes`) and may
     /// create cgroups beneath it. Never set on a workstation.
     pub cgroup_delegated: bool,
@@ -48,7 +59,7 @@ pub struct Config {
     pub agent_report: Option<PathBuf>,
     /// File holding the planted canary value (not a real key).
     pub canary_file: Option<PathBuf>,
-    /// Service log files to scan for key material.
+    /// Service log files (and exported journal entries) to scan for key material.
     pub log_files: Vec<PathBuf>,
 }
 
@@ -59,9 +70,12 @@ impl Config {
             state_root: "/var/lib/writ".into(),
             config_dir: "/etc/writ".into(),
             run_dir: "/run/writ".into(),
-            target_root: "/var/lib/writ/targets".into(),
+            target_root: "/srv/writ/targets".into(),
             scratch: "/var/lib/writ/run".into(),
-            bwrap: "/usr/bin/bwrap".into(),
+            bwrap: "/usr/local/libexec/writ/bwrap".into(),
+            system_bwrap: "/usr/bin/bwrap".into(),
+            agents_group: "writ-agents".into(),
+            xdev_root: None,
             cgroup_delegated: false,
             service_pid: None,
             agent_report: None,
@@ -73,6 +87,7 @@ impl Config {
     /// The configuration as report pairs.
     pub fn describe(&self) -> Vec<(String, String)> {
         let p = |x: &Path| x.display().to_string();
+        let opt = |x: Option<&Path>| x.map_or("none".to_string(), p);
         let mut v = vec![
             o("state_root", p(&self.state_root)),
             o("config_dir", p(&self.config_dir)),
@@ -80,6 +95,9 @@ impl Config {
             o("target_root", p(&self.target_root)),
             o("scratch", p(&self.scratch)),
             o("bwrap", p(&self.bwrap)),
+            o("system_bwrap", p(&self.system_bwrap)),
+            o("agents_group", self.agents_group.clone()),
+            o("xdev_root", opt(self.xdev_root.as_deref())),
             o(
                 "mode",
                 if self.cgroup_delegated {
@@ -93,14 +111,8 @@ impl Config {
                 self.service_pid
                     .map_or("none".to_string(), |x| x.to_string()),
             ),
-            o(
-                "agent_report",
-                self.agent_report.as_deref().map_or("none".to_string(), p),
-            ),
-            o(
-                "canary_file",
-                self.canary_file.as_deref().map_or("none".to_string(), p),
-            ),
+            o("agent_report", opt(self.agent_report.as_deref())),
+            o("canary_file", opt(self.canary_file.as_deref())),
         ];
         for (i, f) in self.log_files.iter().enumerate() {
             v.push(o(&format!("log_file_{i}"), p(f)));
@@ -109,16 +121,16 @@ impl Config {
     }
 }
 
-fn o(k: &str, v: impl Into<String>) -> (String, String) {
+pub(crate) fn o(k: &str, v: impl Into<String>) -> (String, String) {
     (k.to_string(), v.into())
 }
 
-fn errno_name(e: Errno) -> String {
+pub(crate) fn errno_name(e: Errno) -> String {
     let io: std::io::Error = e.into();
     format!("{} ({})", io.kind(), e.raw_os_error())
 }
 
-fn res_name(r: &Result<(), Errno>) -> String {
+pub(crate) fn res_name(r: &Result<(), Errno>) -> String {
     match r {
         Ok(()) => "succeeded".to_string(),
         Err(e) => format!("refused: {}", errno_name(*e)),
@@ -165,11 +177,13 @@ pub fn sq(text: &str) -> String {
 /// Bubblewrap arguments of a probe job: every namespace unshared explicitly (the `-try`
 /// variants of `--unshare-all` would continue silently without a user or cgroup namespace),
 /// a read-only `/usr`, private `/proc`, `/dev` and `/tmp`, and the work directory (if any)
-/// bound read-write at `/work`.
+/// bound read-write at `/work`. `unshare_net` and `unshare_pid` false are used only by negative
+/// controls (without a PID namespace the host `/proc` is bound read-only instead).
 pub fn bwrap_args(
     bwrap: &Path,
     work: Option<&Path>,
     unshare_net: bool,
+    unshare_pid: bool,
     extra: &[OsString],
     script: &str,
 ) -> Vec<OsString> {
@@ -178,10 +192,12 @@ pub fn bwrap_args(
     push(&[
         "--unshare-user",
         "--unshare-ipc",
-        "--unshare-pid",
         "--unshare-uts",
         "--unshare-cgroup",
     ]);
+    if unshare_pid {
+        push(&["--unshare-pid"]);
+    }
     if unshare_net {
         push(&["--unshare-net"]);
     }
@@ -210,7 +226,12 @@ pub fn bwrap_args(
     if Path::new("/usr/lib64").is_dir() {
         push(&["--symlink", "usr/lib64", "/lib64"]);
     }
-    push(&["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"]);
+    if unshare_pid {
+        push(&["--proc", "/proc"]);
+    } else {
+        push(&["--ro-bind", "/proc", "/proc"]);
+    }
+    push(&["--dev", "/dev", "--tmpfs", "/tmp"]);
     match work {
         Some(w) => {
             a.extend([
@@ -236,11 +257,12 @@ fn job(
     script: &str,
 ) -> std::io::Result<Outcome> {
     exec::run_argv(
-        &bwrap_args(&cfg.bwrap, work, unshare_net, extra, script),
+        &bwrap_args(&cfg.bwrap, work, unshare_net, true, extra, script),
         JOB_DEADLINE,
     )
 }
 
+#[cfg(test)]
 fn uncontained(script: &str) -> std::io::Result<Outcome> {
     exec::run_argv(&["/bin/sh", "-c", script], JOB_DEADLINE)
 }
@@ -289,11 +311,14 @@ fn sysctl(name: &str) -> String {
         .map_or_else(|_| "absent".to_string(), |v| v.trim().to_string())
 }
 
-/// P-USERNS.
+const NS_SCRIPT: &str = "for n in user pid net ipc uts cgroup mnt; do printf 'ns_%s=' \"$n\"; readlink /proc/self/ns/$n || echo; done";
+
+/// P-USERNS: the service runs the private bubblewrap copy with every namespace. Control: the
+/// system bubblewrap (no AppArmor `userns` grant) must fail where the restriction is set (VM
+/// trial: an unprofiled copy of the private binary must fail too).
 pub fn probe_userns(cfg: &Config) -> ProbeResult {
-    let control = Control::vm_trial(
-        "VM trial: `sysctl -w user.max_user_namespaces=0`, rerun writ-probe, P-USERNS must be missing; restore the value",
-    );
+    let control_text =
+        "the same job through the system bubblewrap (no AppArmor userns grant) must fail";
     let mut obs = vec![
         o("bwrap", cfg.bwrap.display().to_string()),
         o(
@@ -304,10 +329,6 @@ pub fn probe_userns(cfg: &Config) -> ProbeResult {
             "user.max_user_namespaces",
             sysctl("user/max_user_namespaces"),
         ),
-        o(
-            "kernel.unprivileged_userns_clone",
-            sysctl("kernel/unprivileged_userns_clone"),
-        ),
     ];
     let meta = match fs::metadata(&cfg.bwrap) {
         Ok(m) if m.is_file() => m,
@@ -315,9 +336,9 @@ pub fn probe_userns(cfg: &Config) -> ProbeResult {
             return ProbeResult::new(
                 ProbeId::Userns,
                 Status::Missing,
-                "bubblewrap binary not found",
+                "private bubblewrap copy not found",
                 obs,
-                control,
+                Control::runtime_not_run(control_text),
             )
         }
     };
@@ -331,8 +352,7 @@ pub fn probe_userns(cfg: &Config) -> ProbeResult {
             (format!("ns_{n}"), link)
         })
         .collect();
-    let script = "for n in user pid net ipc uts cgroup mnt; do printf 'ns_%s=' \"$n\"; readlink /proc/self/ns/$n || echo; done";
-    let (status, reason) = match job(cfg, None, true, &[], script) {
+    let (status, reason) = match job(cfg, None, true, &[], NS_SCRIPT) {
         Ok(out) => {
             obs.push(o(
                 "job_exit",
@@ -342,6 +362,29 @@ pub fn probe_userns(cfg: &Config) -> ProbeResult {
             eval_userns(out.success(), &out.diagnostic(), &host, &kv(&out.stdout))
         }
         Err(e) => (Status::Error, format!("could not start bubblewrap: {e}")),
+    };
+    let control = if status == Status::Ok {
+        let argv = bwrap_args(&cfg.system_bwrap, None, true, true, &[], NS_SCRIPT);
+        match exec::run_argv(&argv, JOB_DEADLINE) {
+            Ok(c) => {
+                let failed = eval_userns(c.success(), &c.diagnostic(), &host, &kv(&c.stdout)).0
+                    != Status::Ok;
+                Control::runtime(
+                    failed,
+                    format!(
+                        "{control_text}: {}",
+                        if failed {
+                            c.diagnostic()
+                        } else {
+                            "it succeeded".into()
+                        }
+                    ),
+                )
+            }
+            Err(e) => Control::runtime(false, format!("{control_text}: could not start ({e})")),
+        }
+    } else {
+        Control::runtime_not_run(control_text)
     };
     ProbeResult::new(ProbeId::Userns, status, reason, obs, control)
 }
@@ -364,6 +407,7 @@ pub fn eval_fs(
     host_work_written: bool,
 ) -> (Status, String) {
     let must_refuse = [
+        "read_srv",
         "write_usr",
         "read_state",
         "read_keys",
@@ -412,6 +456,7 @@ fn fs_script(cfg: &Config, sentinel_dir: &Path) -> String {
         ),
         ("read_config", format!("ls -a -- {}", p(&cfg.config_dir))),
         ("reach_run", format!("ls -a -- {}", p(&cfg.run_dir))),
+        ("read_srv", format!("ls -a -- {}", p(&cfg.target_root))),
         (
             "reach_cgroup",
             "ls -- /sys/fs/cgroup/cgroup.procs".to_string(),
@@ -535,16 +580,23 @@ pub fn eval_net(job: &[(String, String)]) -> (Status, String) {
     if lo != "refused" {
         return (Status::Missing, format!("host loopback listener: {lo:?}"));
     }
+    if kv_get(job, "host_abstract") != Some("0") {
+        return (
+            Status::Missing,
+            "host abstract socket visible from the job".to_string(),
+        );
+    }
     (
         Status::Ok,
-        "only loopback in a new namespace; host loopback and external routes unreachable"
+        "only loopback in a new namespace; host loopback, host abstract sockets and external routes unreachable"
             .to_string(),
     )
 }
 
-fn net_script(port: u16) -> String {
+fn net_script(port: u16, abstract_name: &str) -> String {
     format!(
-        "echo \"ifaces=$(tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d ' ' | sort | tr '\\n' ',')\"\n\
+        "echo \"host_abstract=$(grep -c ' @{abstract_name}$' /proc/net/unix)\"\n\
+         echo \"ifaces=$(tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d ' ' | sort | tr '\\n' ',')\"\n\
          echo \"routes=$(tail -n +2 /proc/net/route | wc -l)\"\n\
          if bash -c 'exec 3<>/dev/tcp/127.0.0.1/{port}' 2>/dev/null; then echo host_loopback=reachable; else echo host_loopback=refused; fi\n"
     )
@@ -569,7 +621,13 @@ pub fn probe_net(cfg: &Config, userns_ok: bool) -> ProbeResult {
         }
     };
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
-    let script = net_script(port);
+    let abstract_name = format!("writ-probe-net-{}", std::process::id());
+    let abstract_listener = {
+        use std::os::linux::net::SocketAddrExt;
+        std::os::unix::net::SocketAddr::from_abstract_name(abstract_name.as_bytes())
+            .and_then(|a| std::os::unix::net::UnixListener::bind_addr(&a))
+    };
+    let script = net_script(port, &abstract_name);
     let out = match job(cfg, None, true, &[], &script) {
         Ok(o) => o,
         Err(e) => {
@@ -605,6 +663,23 @@ pub fn probe_net(cfg: &Config, userns_ok: bool) -> ProbeResult {
         Control::runtime_not_run(control_text)
     };
     drop(listener);
+    let mut pairs = pairs;
+    pairs.push(o(
+        "host_abstract_listener",
+        if abstract_listener.is_ok() {
+            "bound"
+        } else {
+            "not bound"
+        },
+    ));
+    let (status, reason) = match (&abstract_listener, status) {
+        (Err(e), Status::Ok) => (
+            Status::Error,
+            format!("host abstract listener not bound, so its invisibility proves nothing: {e}"),
+        ),
+        _ => (status, reason),
+    };
+    drop(abstract_listener);
     ProbeResult::new(ProbeId::Net, status, reason, pairs, control)
 }
 
@@ -643,7 +718,8 @@ fn pid_script(pid: i32) -> String {
 
 /// P-PID (target: the service pid if configured, else the probe itself).
 pub fn probe_pid(cfg: &Config, userns_ok: bool) -> ProbeResult {
-    let control_text = "the same check run uncontained must see and signal the target";
+    let control_text =
+        "the same job without PID unsharing (host /proc bound) must see and signal the target";
     if !userns_ok {
         return prerequisite(ProbeId::Pid, "P-USERNS", control_text);
     }
@@ -667,10 +743,11 @@ pub fn probe_pid(cfg: &Config, userns_ok: bool) -> ProbeResult {
     let (status, reason) = eval_pid(&pairs);
     pairs.push(o("target_pid", target.to_string()));
     let control = if status == Status::Ok {
-        match uncontained(&script) {
+        let argv = bwrap_args(&cfg.bwrap, None, true, false, &[], &script);
+        match exec::run_argv(&argv, JOB_DEADLINE) {
             Ok(c) => {
                 let p = kv(&c.stdout);
-                let failed = eval_pid(&p).0 != Status::Ok;
+                let failed = eval_pid(&p).0 == Status::Missing;
                 Control::runtime(
                     failed,
                     format!(
@@ -721,8 +798,7 @@ const FD_SCRIPT: &str =
 
 /// P-FD.
 pub fn probe_fd(cfg: &Config, userns_ok: bool) -> ProbeResult {
-    let control_text =
-        "the same check run uncontained with an inherited descriptor 7 must report it";
+    let control_text = "the same job spawned with an inherited extra descriptor 7 must report it";
     if !userns_ok {
         return prerequisite(ProbeId::Fd, "P-USERNS", control_text);
     }
@@ -741,7 +817,14 @@ pub fn probe_fd(cfg: &Config, userns_ok: bool) -> ProbeResult {
     let pairs = kv(&out.stdout);
     let (status, reason) = eval_fd(&pairs);
     let control = if status == Status::Ok {
-        match uncontained(&format!("exec 7</dev/null; {FD_SCRIPT}")) {
+        let mut argv: Vec<OsString> = vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "exec 7</dev/null; exec \"$@\"".into(),
+            "sh".into(),
+        ];
+        argv.extend(bwrap_args(&cfg.bwrap, None, true, true, &[], FD_SCRIPT));
+        match exec::run_argv(&argv, JOB_DEADLINE) {
             Ok(c) => {
                 let failed = eval_fd(&kv(&c.stdout)).0 == Status::Missing;
                 Control::runtime(
@@ -1187,10 +1270,13 @@ pub fn eval_limits(
     }
 }
 
+/// Fork workload of P-LIMITS: 16 children, then the process count of its own cgroup.
+const FORK_SCRIPT: &str = "i=0; while [ $i -lt 16 ]; do sleep 2 & i=$((i+1)); done; echo \"count=$(wc -l < /sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)/cgroup.procs)\"; wait";
+
 /// P-LIMITS.
 pub fn probe_limits(d: Option<&Delegated>) -> ProbeResult {
     let control_text =
-        "the memory workload in a cgroup without memory.max must complete without an OOM kill";
+        "the fork workload in a cgroup without pids.max must exceed the count (all 16 children alive, no pids.events max)";
     let Some(d) = d else {
         return prerequisite(
             ProbeId::Limits,
@@ -1205,12 +1291,7 @@ pub fn probe_limits(d: Option<&Delegated>) -> ProbeResult {
         &[("memory.max", "33554432"), ("memory.swap.max", "0")],
         mem_script,
     );
-    let pids = limited_run(
-        d,
-        "job-probe-pids",
-        &[("pids.max", "4")],
-        "i=0; while [ $i -lt 16 ]; do sleep 2 & i=$((i+1)); done; wait",
-    );
+    let pids = limited_run(d, "job-probe-pids", &[("pids.max", "4")], FORK_SCRIPT);
     let cpu = limited_run(
         d,
         "job-probe-cpu",
@@ -1243,15 +1324,17 @@ pub fn probe_limits(d: Option<&Delegated>) -> ProbeResult {
     ));
     let (status, reason) = eval_limits(oom, pmax, thr);
     let control = if status == Status::Ok {
-        match limited_run(d, "job-probe-mem-control", &[], mem_script) {
-            Ok((out, events, _, _)) => {
-                let unlimited_ok = out.success() && counter(&events, "oom_kill").unwrap_or(0) == 0;
+        match limited_run(d, "job-probe-pids-control", &[], FORK_SCRIPT) {
+            Ok((out, _, events, _)) => {
+                let count: u32 = kv_get(&kv(&out.stdout), "count")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0);
+                let exceeded = count > 16 && counter(&events, "max").unwrap_or(0) == 0;
                 Control::runtime(
-                    unlimited_ok,
+                    exceeded,
                     format!(
-                        "{control_text}: exit {:?}, oom_kill {:?}",
-                        out.code,
-                        counter(&events, "oom_kill")
+                        "{control_text}: {count} processes, pids.events max {:?}",
+                        counter(&events, "max")
                     ),
                 )
             }
@@ -1276,10 +1359,13 @@ pub struct Openat2Obs {
     pub beneath_escape: Result<(), Errno>,
     /// A symlink component with `RESOLVE_NO_SYMLINKS`.
     pub symlink: Result<(), Errno>,
-    /// A mount crossing (`/` to `proc`) with `RESOLVE_NO_XDEV`.
+    /// A mount crossing with `RESOLVE_NO_XDEV` (a bind mount inside a test root prepared by the
+    /// VM trial, else the `/` to `/proc` boundary).
     pub mount_crossing: Result<(), Errno>,
-    /// `statx` reported a mount id, and `/proc` has a different one.
+    /// `statx` reported a mount id, and the crossed mount has a different one.
     pub mount_id: bool,
+    /// `statx` reported a birth time (`STATX_BTIME`).
+    pub btime: bool,
 }
 
 /// P-OPENAT2 evaluation.
@@ -1321,10 +1407,15 @@ pub fn eval_openat2(x: &Openat2Obs) -> (Status, String) {
             "statx did not report distinguishing mount ids".to_string(),
         );
     }
+    if !x.btime {
+        return (
+            Status::Missing,
+            "statx did not report a birth time".to_string(),
+        );
+    }
     (
         Status::Ok,
-        "RESOLVE_BENEATH, RESOLVE_NO_SYMLINKS, RESOLVE_NO_XDEV honoured; statx mount id reported"
-            .to_string(),
+        "RESOLVE_BENEATH, RESOLVE_NO_SYMLINKS, RESOLVE_NO_XDEV honoured; statx mount id and birth time reported".to_string(),
     )
 }
 
@@ -1339,27 +1430,50 @@ fn open2(dir: &impl rustix::fd::AsFd, path: &str, resolve: ResolveFlags) -> Resu
     .map(drop)
 }
 
+fn statx_of(p: &Path) -> Option<rustix::fs::Statx> {
+    rustix::fs::statx(
+        CWD,
+        p,
+        AtFlags::SYMLINK_NOFOLLOW,
+        StatxFlags::MNT_ID | StatxFlags::BTIME,
+    )
+    .ok()
+}
+
+fn has_mask(st: &rustix::fs::Statx, f: StatxFlags) -> bool {
+    StatxFlags::from_bits_retain(st.stx_mask) & f == f
+}
+
 fn mnt_id(p: &Path) -> Option<u64> {
-    let st = rustix::fs::statx(CWD, p, AtFlags::SYMLINK_NOFOLLOW, StatxFlags::MNT_ID).ok()?;
-    (StatxFlags::from_bits_retain(st.stx_mask) & StatxFlags::MNT_ID == StatxFlags::MNT_ID)
-        .then_some(st.stx_mnt_id)
+    statx_of(p)
+        .filter(|st| has_mask(st, StatxFlags::MNT_ID))
+        .map(|st| st.stx_mnt_id)
+}
+
+fn dir_fd(p: &Path) -> Result<rustix::fd::OwnedFd, Errno> {
+    rustix::fs::open(
+        p,
+        OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
 }
 
 /// P-OPENAT2.
 pub fn probe_openat2(cfg: &Config) -> ProbeResult {
     let control_text =
-        "the same opens without resolve flags must succeed (the mount crossing is the real / to /proc boundary)";
+        "the same opens without resolve flags must succeed (including across the mount)";
+    let fail = |st: Status, why: String| {
+        ProbeResult::new(
+            ProbeId::Openat2,
+            st,
+            why,
+            vec![],
+            Control::runtime_not_run(control_text),
+        )
+    };
     let scratch = match Scratch::new(&cfg.scratch, "openat2") {
         Ok(s) => s,
-        Err(e) => {
-            return ProbeResult::new(
-                ProbeId::Openat2,
-                Status::Missing,
-                format!("scratch root unusable: {e}"),
-                vec![],
-                Control::runtime_not_run(control_text),
-            )
-        }
+        Err(e) => return fail(Status::Missing, format!("scratch root unusable: {e}")),
     };
     let root = scratch.path().join("root");
     let setup = (|| -> std::io::Result<rustix::fd::OwnedFd> {
@@ -1367,63 +1481,59 @@ pub fn probe_openat2(cfg: &Config) -> ProbeResult {
         fs::write(root.join("inner/file"), b"x")?;
         fs::write(scratch.path().join("outside"), b"x")?;
         std::os::unix::fs::symlink("inner", root.join("link"))?;
-        Ok(rustix::fs::open(
-            &root,
-            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?)
+        Ok(dir_fd(&root)?)
     })();
     let rfd = match setup {
         Ok(f) => f,
-        Err(e) => {
-            return ProbeResult::new(
-                ProbeId::Openat2,
-                Status::Error,
-                format!("scratch setup failed: {e}"),
-                vec![],
-                Control::runtime_not_run(control_text),
-            )
-        }
+        Err(e) => return fail(Status::Error, format!("scratch setup failed: {e}")),
     };
-    let slash = match rustix::fs::open(
-        "/",
-        OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
-        Mode::empty(),
-    ) {
+    // The mount crossing: the trial's bind mount `<xdev_root>/root/mnt` (file `f`), else `/proc`.
+    let (cross_dir, cross_path, crossed) = match &cfg.xdev_root {
+        Some(x) => (x.join("root"), "mnt/f", x.join("root/mnt")),
+        None => (
+            PathBuf::from("/"),
+            "proc/self/status",
+            PathBuf::from("/proc"),
+        ),
+    };
+    let cfd = match dir_fd(&cross_dir) {
         Ok(f) => f,
         Err(e) => {
-            return ProbeResult::new(
-                ProbeId::Openat2,
+            return fail(
                 Status::Error,
-                format!("open /: {}", errno_name(e)),
-                vec![],
-                Control::runtime_not_run(control_text),
+                format!("open {}: {}", cross_dir.display(), errno_name(e)),
             )
         }
     };
     let all = ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_XDEV;
-    let scratch_mnt = mnt_id(scratch.path());
-    let proc_mnt = mnt_id(Path::new("/proc"));
+    let st = statx_of(scratch.path());
+    let base_mnt = mnt_id(&cross_dir);
+    let crossed_mnt = mnt_id(&crossed);
     let x = Openat2Obs {
         inside: open2(&rfd, "inner/file", all),
         beneath_escape: open2(&rfd, "../outside", ResolveFlags::BENEATH),
         symlink: open2(&rfd, "link/file", ResolveFlags::NO_SYMLINKS),
-        mount_crossing: open2(&slash, "proc/self/status", ResolveFlags::NO_XDEV),
-        mount_id: matches!((scratch_mnt, proc_mnt), (Some(a), Some(b)) if a != b),
+        mount_crossing: open2(&cfd, cross_path, ResolveFlags::NO_XDEV),
+        mount_id: matches!((base_mnt, crossed_mnt), (Some(a), Some(b)) if a != b),
+        btime: st.as_ref().is_some_and(|s| has_mask(s, StatxFlags::BTIME)),
     };
     let obs = vec![
         o("inside", res_name(&x.inside)),
         o("beneath_escape", res_name(&x.beneath_escape)),
         o("symlink_component", res_name(&x.symlink)),
-        o("mount_crossing", res_name(&x.mount_crossing)),
         o(
-            "scratch_mount_id",
-            scratch_mnt.map_or("unreported".into(), |v| v.to_string()),
+            "mount_crossing",
+            format!("{} ({})", res_name(&x.mount_crossing), crossed.display()),
         ),
         o(
-            "proc_mount_id",
-            proc_mnt.map_or("unreported".into(), |v| v.to_string()),
+            "base_mount_id",
+            base_mnt.map_or("unreported".into(), |v| v.to_string()),
         ),
+        o(
+            "crossed_mount_id",
+            crossed_mnt.map_or("unreported".into(), |v| v.to_string()),
+        ),
+        o("btime", x.btime.to_string()),
     ];
     let (status, reason) = eval_openat2(&x);
     let control = if status == Status::Ok {
@@ -1431,7 +1541,7 @@ pub fn probe_openat2(cfg: &Config) -> ProbeResult {
         let c = [
             open2(&rfd, "../outside", none),
             open2(&rfd, "link/file", none),
-            open2(&slash, "proc/self/status", none),
+            open2(&cfd, cross_path, none),
         ];
         let all_ok = c.iter().all(Result::is_ok);
         Control::runtime(
@@ -1447,104 +1557,143 @@ pub fn probe_openat2(cfg: &Config) -> ProbeResult {
     ProbeResult::new(ProbeId::Openat2, status, reason, obs, control)
 }
 
+/// Observations of P-RENAME.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RenameObs {
+    /// `RENAME_NOREPLACE` onto an existing file.
+    pub over_existing: Result<(), Errno>,
+    /// The existing destination kept its content.
+    pub existing_intact: bool,
+    /// `RENAME_NOREPLACE` onto a new name.
+    pub to_new: Result<(), Errno>,
+    /// `RENAME_EXCHANGE` of two files.
+    pub exchange: Result<(), Errno>,
+    /// Their contents were swapped.
+    pub swapped: bool,
+    /// The test root filesystem is on the allow-list.
+    pub fs_allowed: bool,
+}
+
 /// P-RENAME evaluation.
-pub fn eval_rename(
-    over_existing: Result<(), Errno>,
-    existing_intact: bool,
-    to_new: Result<(), Errno>,
-) -> (Status, String) {
-    match over_existing {
-        Err(e) if e == Errno::INVAL || e == Errno::NOSYS => (
+pub fn eval_rename(x: &RenameObs) -> (Status, String) {
+    if !x.fs_allowed {
+        return (
             Status::Missing,
-            format!("RENAME_NOREPLACE unsupported: {}", errno_name(e)),
-        ),
-        Err(e) if e == Errno::EXIST && existing_intact && to_new.is_ok() => (
+            "test root filesystem is not on the allow-list (ext4 with journal or xfs)".to_string(),
+        );
+    }
+    match x.over_existing {
+        Err(e) if e == Errno::INVAL || e == Errno::NOSYS => {
+            return (
+                Status::Missing,
+                format!("RENAME_NOREPLACE unsupported: {}", errno_name(e)),
+            )
+        }
+        Err(e) if e == Errno::EXIST && x.existing_intact && x.to_new.is_ok() => {}
+        Err(e) if e == Errno::EXIST => {
+            return (
+                Status::Error,
+                format!(
+                    "destination changed or rename to a new name failed: {}",
+                    res_name(&x.to_new)
+                ),
+            )
+        }
+        Err(e) => return (Status::Error, format!("unexpected: {}", errno_name(e))),
+        Ok(()) => {
+            return (
+                Status::Missing,
+                "RENAME_NOREPLACE replaced an existing destination".to_string(),
+            )
+        }
+    }
+    match x.exchange {
+        Ok(()) if x.swapped => (
             Status::Ok,
-            "RENAME_NOREPLACE refuses an existing destination".to_string(),
+            "RENAME_NOREPLACE refuses an existing destination; RENAME_EXCHANGE swaps".to_string(),
         ),
-        Err(e) if e == Errno::EXIST => (
-            Status::Error,
-            format!(
-                "destination changed or rename to a new name failed: {}",
-                res_name(&to_new)
-            ),
-        ),
-        Err(e) => (Status::Error, format!("unexpected: {}", errno_name(e))),
         Ok(()) => (
+            Status::Error,
+            "RENAME_EXCHANGE reported success without swapping".to_string(),
+        ),
+        Err(e) => (
             Status::Missing,
-            "RENAME_NOREPLACE replaced an existing destination".to_string(),
+            format!("RENAME_EXCHANGE unsupported: {}", errno_name(e)),
         ),
     }
 }
 
-/// P-RENAME.
+/// P-RENAME (on the scratch root, which must share the target root's filesystem).
 pub fn probe_rename(cfg: &Config) -> ProbeResult {
-    let control_text = "a plain rename onto the existing destination must replace it";
-    let scratch = match Scratch::new(&cfg.scratch, "rename") {
-        Ok(s) => s,
-        Err(e) => {
-            return ProbeResult::new(
-                ProbeId::Rename,
-                Status::Missing,
-                format!("scratch root unusable: {e}"),
-                vec![],
-                Control::runtime_not_run(control_text),
-            )
-        }
-    };
-    let (a, b, c) = (
-        scratch.path().join("a"),
-        scratch.path().join("b"),
-        scratch.path().join("c"),
-    );
-    if let Err(e) = fs::write(&a, b"A").and_then(|()| fs::write(&b, b"B")) {
-        return ProbeResult::new(
+    let control_text = "a plain rename onto the existing destination must replace it (VM trial: a tmpfs-backed root is reported unsupported)";
+    let fail = |st: Status, why: String| {
+        ProbeResult::new(
             ProbeId::Rename,
-            Status::Error,
-            format!("scratch setup failed: {e}"),
+            st,
+            why,
             vec![],
             Control::runtime_not_run(control_text),
-        );
+        )
+    };
+    let scratch = match Scratch::new(&cfg.scratch, "rename") {
+        Ok(s) => s,
+        Err(e) => return fail(Status::Missing, format!("scratch root unusable: {e}")),
+    };
+    let f = |n: &str| scratch.path().join(n);
+    if let Err(e) = fs::write(f("a"), b"A")
+        .and_then(|()| fs::write(f("b"), b"B"))
+        .and_then(|()| fs::write(f("d"), b"D"))
+    {
+        return fail(Status::Error, format!("scratch setup failed: {e}"));
     }
-    let over = rustix::fs::renameat_with(CWD, &a, CWD, &b, RenameFlags::NOREPLACE);
-    let intact = fs::read(&b).ok().as_deref() == Some(b"B".as_slice());
-    let to_new = rustix::fs::renameat_with(CWD, &a, CWD, &c, RenameFlags::NOREPLACE);
+    let read = |n: &str| fs::read(f(n)).unwrap_or_default();
+    let over = rustix::fs::renameat_with(CWD, f("a"), CWD, f("b"), RenameFlags::NOREPLACE);
+    let intact = read("b") == b"B";
+    let to_new = rustix::fs::renameat_with(CWD, f("a"), CWD, f("c"), RenameFlags::NOREPLACE);
+    let exchange = rustix::fs::renameat_with(CWD, f("c"), CWD, f("d"), RenameFlags::EXCHANGE);
+    let swapped = read("c") == b"D" && read("d") == b"A";
+    let class = classify(scratch.path());
+    let x = RenameObs {
+        over_existing: over,
+        existing_intact: intact,
+        to_new,
+        exchange,
+        swapped,
+        fs_allowed: class.as_ref().is_ok_and(|c| c.allowed().is_ok()),
+    };
     let mut obs = vec![
         o("onto_existing", res_name(&over)),
         o("existing_intact", intact.to_string()),
         o("onto_new_name", res_name(&to_new)),
+        o("exchange", res_name(&exchange)),
+        o("swapped", swapped.to_string()),
         o(
-            "scratch_dev",
-            fs::metadata(scratch.path()).map_or("?".into(), |m| m.dev().to_string()),
+            "test_root_fs",
+            class.as_ref().map_or_else(Clone::clone, FsFacts::describe),
         ),
     ];
     let scratch_dev = fs::metadata(scratch.path()).map(|m| m.dev()).ok();
     let target_dev = fs::metadata(&cfg.target_root).map(|m| m.dev()).ok();
-    if let Some(d) = target_dev {
-        obs.push(o("target_root_dev", d.to_string()));
-    }
+    obs.push(o(
+        "same_device_as_target_root",
+        format!("{:?}", scratch_dev.zip(target_dev).map(|(a, b)| a == b)),
+    ));
     let (status, reason) = match (scratch_dev, target_dev) {
         (Some(a), Some(b)) if a != b => (
             Status::Missing,
             "scratch root is not on the target root's filesystem; observe with --scratch on it"
                 .to_string(),
         ),
-        _ => eval_rename(over, intact, to_new),
+        _ => eval_rename(&x),
     };
     let control = if status == Status::Ok {
-        let plain = rustix::fs::renameat(CWD, &c, CWD, &b);
-        let replaced = plain.is_ok() && fs::read(&b).ok().as_deref() == Some(b"A".as_slice());
+        let plain = rustix::fs::renameat(CWD, f("c"), CWD, f("b"));
+        let replaced = plain.is_ok() && read("b") == b"D";
         Control::runtime(replaced, format!("{control_text}: {}", res_name(&plain)))
     } else {
         Control::runtime_not_run(control_text)
     };
     ProbeResult::new(ProbeId::Rename, status, reason, obs, control)
-}
-
-/// Filesystem allow-list (J-7): ext4 and xfs, by both the statfs magic and the mount table type
-/// (the ext2/3/4 magic is shared).
-pub fn fs_allowed(magic: i64, mount_type: &str) -> bool {
-    matches!((magic, mount_type), (0xEF53, "ext4") | (0x5846_5342, "xfs"))
 }
 
 /// The filesystem type of the mount with id `mnt_id` in `/proc/self/mountinfo` text.
@@ -1559,30 +1708,147 @@ pub fn mount_type(mountinfo: &str, mnt_id: u64) -> Option<String> {
     })
 }
 
-fn classify(p: &Path) -> Result<(i64, String), String> {
+/// Observed facts of the filesystem holding a path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FsFacts {
+    /// statfs magic.
+    pub magic: i64,
+    /// Type in the mount table.
+    pub mount_type: String,
+    /// Block device name (`/sys/dev/block/<major>:<minor>`).
+    pub device: Option<String>,
+    /// ext4 journal observed (`/proc/fs/jbd2/<device>-8`); `None` for other types.
+    pub has_journal: Option<bool>,
+    /// Filesystem UUID observed through `/dev/disk/by-uuid`.
+    pub uuid: Option<String>,
+}
+
+impl FsFacts {
+    /// Allow-list (J-7.2): ext4 with an observed journal, or xfs; never tmpfs, overlay, network
+    /// or FUSE. The ext2/3/4 magic is shared, so the mount table type must agree.
+    pub fn allowed(&self) -> Result<(), String> {
+        match (self.magic, self.mount_type.as_str()) {
+            (0xEF53, "ext4") if self.has_journal == Some(true) => Ok(()),
+            (0xEF53, "ext4") => Err("ext4 without an observed journal".to_string()),
+            (0x5846_5342, "xfs") => Ok(()),
+            (m, t) => Err(format!("{t} ({m:#x}) is not on the allow-list")),
+        }
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "{} ({:#x}) device {} journal {:?} uuid {}",
+            self.mount_type,
+            self.magic,
+            self.device.as_deref().unwrap_or("unknown"),
+            self.has_journal,
+            self.uuid.as_deref().unwrap_or("unobserved")
+        )
+    }
+}
+
+/// Major and minor numbers of a Linux `dev_t`.
+pub fn dev_major_minor(dev: u64) -> (u64, u64) {
+    (
+        ((dev >> 8) & 0xfff) | ((dev >> 32) & !0xfff),
+        (dev & 0xff) | ((dev >> 12) & !0xff),
+    )
+}
+
+fn classify(p: &Path) -> Result<FsFacts, String> {
     let magic = statfs_magic(p).map_err(errno_name)?;
     let id = mnt_id(p).ok_or_else(|| "no mount id".to_string())?;
     let info = fs::read_to_string("/proc/self/mountinfo").map_err(|e| e.to_string())?;
-    Ok((
+    let mount_type = mount_type(&info, id).unwrap_or_else(|| "unknown".into());
+    let (maj, min) = dev_major_minor(fs::metadata(p).map_err(|e| e.to_string())?.dev());
+    let device = fs::read_link(format!("/sys/dev/block/{maj}:{min}"))
+        .ok()
+        .and_then(|t| t.file_name().map(|n| n.to_string_lossy().into_owned()));
+    let has_journal = (mount_type == "ext4").then(|| {
+        device
+            .as_ref()
+            .is_some_and(|d| Path::new(&format!("/proc/fs/jbd2/{d}-8")).exists())
+    });
+    let uuid = device.as_ref().and_then(|d| {
+        fs::read_dir("/dev/disk/by-uuid")
+            .ok()?
+            .flatten()
+            .find_map(|e| {
+                let target = fs::canonicalize(e.path()).ok()?;
+                (target.file_name()?.to_string_lossy() == d.as_str())
+                    .then(|| e.file_name().to_string_lossy().into_owned())
+            })
+    });
+    Ok(FsFacts {
         magic,
-        mount_type(&info, id).unwrap_or_else(|| "unknown".into()),
-    ))
+        mount_type,
+        device,
+        has_journal,
+        uuid,
+    })
+}
+
+/// The operator's filesystem record (`<config>/filesystems`, written by setup from `dumpe2fs -h`
+/// or `xfs_info`): lines `path=<path> uuid=<uuid> features=<comma list>`.
+pub fn fs_record(text: &str, path: &Path) -> Option<(String, Vec<String>)> {
+    let want = path.display().to_string();
+    text.lines().find_map(|l| {
+        let (mut p, mut u, mut f) = (None, None, Vec::new());
+        for field in l.split_whitespace() {
+            if let Some(v) = field.strip_prefix("path=") {
+                p = Some(v);
+            } else if let Some(v) = field.strip_prefix("uuid=") {
+                u = Some(v.to_string());
+            } else if let Some(v) = field.strip_prefix("features=") {
+                f = v
+                    .split(',')
+                    .filter(|x| !x.is_empty())
+                    .map(str::to_string)
+                    .collect();
+            }
+        }
+        (p == Some(want.as_str()))
+            .then_some(u)
+            .flatten()
+            .map(|u| (u, f))
+    })
+}
+
+/// P-FS-TYPE evaluation of one root: observed type allowed, observed UUID equal to the recorded
+/// one, recorded features without `casefold` (and with `has_journal` for ext4).
+pub fn eval_fs_entry(f: &FsFacts, record: Option<&(String, Vec<String>)>) -> Result<(), String> {
+    f.allowed()?;
+    let uuid = f
+        .uuid
+        .as_deref()
+        .ok_or("filesystem UUID not resolvable through /dev/disk/by-uuid")?;
+    let (ru, rf) = record.ok_or("no operator filesystem record")?;
+    if ru != uuid {
+        return Err(format!("UUID {uuid} differs from the recorded {ru}"));
+    }
+    if rf.iter().any(|x| x == "casefold") {
+        return Err("recorded features include casefold".to_string());
+    }
+    if f.mount_type == "ext4" && !rf.iter().any(|x| x == "has_journal") {
+        return Err("recorded ext4 features lack has_journal".to_string());
+    }
+    Ok(())
 }
 
 /// P-FS-TYPE.
 pub fn probe_fs_type(cfg: &Config) -> ProbeResult {
     let control_text = "the same classification of a tmpfs (/dev/shm) must be refused";
-    let mut obs = Vec::new();
-    let mut bad = Vec::new();
+    let record = fs::read_to_string(cfg.config_dir.join("filesystems")).unwrap_or_default();
+    let (mut obs, mut bad) = (Vec::new(), Vec::new());
     for (name, p) in [
         ("state_root", &cfg.state_root),
         ("target_root", &cfg.target_root),
     ] {
         match classify(p) {
-            Ok((m, t)) => {
-                obs.push(o(name, format!("{t} ({m:#x})")));
-                if !fs_allowed(m, &t) {
-                    bad.push(format!("{name} on {t}"));
+            Ok(f) => {
+                obs.push(o(name, f.describe()));
+                if let Err(e) = eval_fs_entry(&f, fs_record(&record, p).as_ref()) {
+                    bad.push(format!("{name}: {e}"));
                 }
             }
             Err(e) => {
@@ -1594,16 +1860,17 @@ pub fn probe_fs_type(cfg: &Config) -> ProbeResult {
     let (status, reason) = if bad.is_empty() {
         (
             Status::Ok,
-            "state and target roots on allow-listed local filesystems".to_string(),
+            "state and target roots on allow-listed local filesystems matching the operator record"
+                .to_string(),
         )
     } else {
         (Status::Missing, bad.join("; "))
     };
     let control = if status == Status::Ok {
         match classify(Path::new("/dev/shm")) {
-            Ok((m, t)) => Control::runtime(
-                !fs_allowed(m, &t),
-                format!("{control_text}: /dev/shm is {t} ({m:#x})"),
+            Ok(f) => Control::runtime(
+                f.allowed().is_err(),
+                format!("{control_text}: {}", f.describe()),
             ),
             Err(e) => Control::runtime(false, format!("{control_text}: {e}")),
         }
@@ -1611,441 +1878,6 @@ pub fn probe_fs_type(cfg: &Config) -> ProbeResult {
         Control::runtime_not_run(control_text)
     };
     ProbeResult::new(ProbeId::FsType, status, reason, obs, control)
-}
-
-/// P-PEERCRED: not observable in this crate's reviewed feature set.
-pub fn probe_peercred() -> ProbeResult {
-    ProbeResult::new(
-        ProbeId::Peercred,
-        Status::Error,
-        "not observable in this build: SO_PEERCRED needs rustix `net` (not in writ-hostsys's reviewed features) or Tokio's peer_cred (writ-rpc, M5a-04); std's peer_cred is unstable on Rust 1.99.1",
-        vec![],
-        Control::none("no probe implemented; the control (a connection from another uid is reported with that uid) belongs with the implementation"),
-    )
-}
-
-// ---------------------------------------------------------------------------------------------
-// Agent denial and secrets
-// ---------------------------------------------------------------------------------------------
-
-/// What a trusted path must look like.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Expect {
-    /// Directory (else a socket or regular file as noted by the caller).
-    pub dir: bool,
-    /// Exact permission bits.
-    pub mode: u32,
-    /// Required owner uid.
-    pub uid: u32,
-    /// Required group, if any.
-    pub gid: Option<u32>,
-}
-
-/// Problems of one path's `lstat` result against its expectation (`None` when it conforms).
-pub fn mode_problem(
-    is_symlink: bool,
-    is_dir: bool,
-    mode: u32,
-    uid: u32,
-    gid: u32,
-    e: Expect,
-) -> Option<String> {
-    if is_symlink {
-        return Some("is a symlink".to_string());
-    }
-    if is_dir != e.dir {
-        return Some(
-            if e.dir {
-                "not a directory"
-            } else {
-                "is a directory"
-            }
-            .to_string(),
-        );
-    }
-    if mode & 0o7777 != e.mode {
-        return Some(format!(
-            "mode {:04o}, required {:04o}",
-            mode & 0o7777,
-            e.mode
-        ));
-    }
-    if uid != e.uid {
-        return Some(format!("owner {uid}, required {}", e.uid));
-    }
-    if let Some(g) = e.gid {
-        if gid != g {
-            return Some(format!("group {gid}, required {g}"));
-        }
-    }
-    None
-}
-
-fn check_path(p: &Path, e: Expect) -> Option<String> {
-    let m = match fs::symlink_metadata(p) {
-        Ok(m) => m,
-        Err(err) => return Some(format!("{}: {err}", p.display())),
-    };
-    if let Some(why) = mode_problem(
-        m.file_type().is_symlink(),
-        m.is_dir(),
-        m.mode(),
-        m.uid(),
-        m.gid(),
-        e,
-    ) {
-        return Some(format!("{}: {why}", p.display()));
-    }
-    match rustix::fs::lgetxattr_query(p, "system.posix_acl_access") {
-        Ok(_) => Some(format!("{}: has a POSIX ACL", p.display())),
-        Err(_) => None,
-    }
-}
-
-/// Ancestors of `p` (excluding `p`) that are not owned by root or `uid`, or are group- or
-/// other-writable.
-fn ancestor_problems(p: &Path, uid: u32) -> Vec<String> {
-    p.ancestors()
-        .skip(1)
-        .filter_map(|a| {
-            let m = fs::symlink_metadata(a).ok()?;
-            let bad = m.file_type().is_symlink()
-                || (m.uid() != 0 && m.uid() != uid)
-                || m.mode() & 0o022 != 0;
-            bad.then(|| {
-                format!(
-                    "{}: ancestor owner {} mode {:04o}",
-                    a.display(),
-                    m.uid(),
-                    m.mode() & 0o7777
-                )
-            })
-        })
-        .collect()
-}
-
-/// Contract of the agent-side report.
-pub const AGENT_CONTRACT: &str = "writ-agent-deny/1";
-
-/// Targets every agent-side report must contain.
-pub const AGENT_TARGETS: [&str; 10] = [
-    "read_state_root",
-    "read_ledger",
-    "read_stores",
-    "read_keys",
-    "write_work_root",
-    "write_target_root",
-    "connect_admin_sock",
-    "read_service_environ",
-    "open_service_mem",
-    "signal_service",
-];
-
-/// Check an agent-side report (strict JSON): produced by a different uid than `service_uid`,
-/// every required target present once and refused. Returns the agent uid.
-pub fn eval_agent_report(bytes: &[u8], service_uid: u32) -> Result<i64, String> {
-    use writ_kernel::json::Value;
-    let v = writ_kernel::json::parse(bytes)
-        .map_err(|e| format!("agent report is not strict JSON: {}", e.code()))?;
-    if v.get("contract").and_then(Value::as_str) != Some(AGENT_CONTRACT) {
-        return Err("agent report contract is not writ-agent-deny/1".to_string());
-    }
-    let agent = v
-        .get("agent_uid")
-        .and_then(Value::as_int)
-        .ok_or("agent_uid missing")?;
-    if agent == i64::from(service_uid) {
-        return Err("agent report was produced by the service uid".to_string());
-    }
-    let attempts = v
-        .get("attempts")
-        .and_then(Value::as_arr)
-        .ok_or("attempts missing")?;
-    for t in AGENT_TARGETS {
-        let found: Vec<&Value> = attempts
-            .iter()
-            .filter(|a| a.get("target").and_then(Value::as_str) == Some(t))
-            .collect();
-        match found.as_slice() {
-            [a] if a.get("outcome").and_then(Value::as_str) == Some("refused") => {}
-            [a] => {
-                return Err(format!(
-                    "{t}: {}",
-                    a.get("outcome").and_then(Value::as_str).unwrap_or("?")
-                ))
-            }
-            [] => return Err(format!("{t}: not attempted")),
-            _ => return Err(format!("{t}: duplicated")),
-        }
-    }
-    Ok(agent)
-}
-
-/// P-AGENT-DENY: the J-1 layout as the service sees it (owner, exact mode, no ACL, safe
-/// ancestors) plus the agent-side report of actual refused attempts.
-pub fn probe_agent_deny(cfg: &Config) -> ProbeResult {
-    let control_text = "the same mode check on a deliberately mis-moded (0644) test key file must report it (VM trial: in the keys directory)";
-    let uid = rustix::process::getuid().as_raw();
-    let gid = rustix::process::getgid().as_raw();
-    let d = |mode| Expect {
-        dir: true,
-        mode,
-        uid,
-        gid: None,
-    };
-    let sr = &cfg.state_root;
-    let layout = [
-        (sr.clone(), d(0o700)),
-        (sr.join("ledger"), d(0o700)),
-        (sr.join("stores"), d(0o700)),
-        (sr.join("keys"), d(0o700)),
-        (sr.join("run"), d(0o700)),
-        (
-            cfg.config_dir.clone(),
-            Expect {
-                dir: true,
-                mode: 0o750,
-                uid: 0,
-                gid: Some(gid),
-            },
-        ),
-        (cfg.run_dir.clone(), d(0o755)),
-    ];
-    let mut problems: Vec<String> = layout
-        .iter()
-        .filter_map(|(p, e)| check_path(p, *e))
-        .collect();
-    problems.extend(ancestor_problems(sr, uid));
-    let admin = cfg.run_dir.join("admin.sock");
-    let mut obs = vec![o("layout_problems", problems.len().to_string())];
-    obs.push(o(
-        "admin_sock",
-        if admin.exists() { "present" } else { "absent" },
-    ));
-    let agent = match &cfg.agent_report {
-        None => Err(
-            "agent-side report not supplied (run `writ-probe agent-deny` as the agent uid)"
-                .to_string(),
-        ),
-        Some(p) => fs::read(p)
-            .map_err(|e| format!("agent report: {e}"))
-            .and_then(|b| eval_agent_report(&b, uid)),
-    };
-    match &agent {
-        Ok(a) => obs.push(o("agent_uid", a.to_string())),
-        Err(e) => obs.push(o("agent_report", e.clone())),
-    }
-    for (i, p) in problems.iter().enumerate() {
-        obs.push(o(&format!("problem_{i}"), p.clone()));
-    }
-    let (status, reason) = match (problems.first(), &agent) {
-        (Some(first), _) => (
-            Status::Missing,
-            format!("trusted layout not as required: {first}"),
-        ),
-        (None, Err(e)) => (Status::Missing, e.clone()),
-        (None, Ok(_)) => (
-            Status::Ok,
-            "layout owned and moded as required; every agent attempt refused".to_string(),
-        ),
-    };
-    let control = if status == Status::Ok {
-        match Scratch::new(&cfg.scratch, "agentdeny") {
-            Ok(s) => {
-                let key = s.path().join("test.key");
-                let made = fs::write(&key, b"not a key")
-                    .and_then(|()| fs::set_permissions(&key, fs::Permissions::from_mode(0o644)));
-                let flagged = made.is_ok()
-                    && check_path(
-                        &key,
-                        Expect {
-                            dir: false,
-                            mode: 0o600,
-                            uid,
-                            gid: None,
-                        },
-                    )
-                    .is_some();
-                Control::runtime(
-                    flagged,
-                    format!(
-                        "{control_text}: {}",
-                        if flagged { "reported" } else { "not reported" }
-                    ),
-                )
-            }
-            Err(e) => Control::runtime(false, format!("{control_text}: {e}")),
-        }
-    } else {
-        Control::runtime_not_run(control_text)
-    };
-    ProbeResult::new(ProbeId::AgentDeny, status, reason, obs, control)
-}
-
-/// What looks like key material in `hay`: the canary, or a run of at least 64 hex digits.
-pub fn find_secret(hay: &[u8], canary: &[u8]) -> Option<&'static str> {
-    if !canary.is_empty() && hay.windows(canary.len()).any(|w| w == canary) {
-        return Some("canary");
-    }
-    let mut run = 0usize;
-    for b in hay {
-        run = if b.is_ascii_hexdigit() { run + 1 } else { 0 };
-        if run >= 64 {
-            return Some("hex run of 64 or more digits");
-        }
-    }
-    None
-}
-
-fn read_bounded(p: &Path) -> std::io::Result<Vec<u8>> {
-    use std::io::Read;
-    let mut v = Vec::new();
-    fs::File::open(p)?
-        .take(16 * 1024 * 1024)
-        .read_to_end(&mut v)?;
-    Ok(v)
-}
-
-/// P-NO-SECRET: scan the service's command line and environment, the configured logs and the
-/// other probe results for the planted canary (and long hex runs, outside the report).
-pub fn probe_no_secret(
-    cfg: &Config,
-    others: &[ProbeResult],
-    versions: &[(String, String)],
-) -> ProbeResult {
-    let control_text = "the scanner applied to a buffer with the planted canary must detect it";
-    let canary = match &cfg.canary_file {
-        None => {
-            return ProbeResult::new(
-                ProbeId::NoSecret,
-                Status::Missing,
-                "no canary planted (--canary-file)",
-                vec![],
-                Control::runtime_not_run(control_text),
-            )
-        }
-        Some(p) => match read_bounded(p) {
-            Ok(b) => String::from_utf8_lossy(&b).trim().as_bytes().to_vec(),
-            Err(e) => {
-                return ProbeResult::new(
-                    ProbeId::NoSecret,
-                    Status::Error,
-                    format!("canary file: {e}"),
-                    vec![],
-                    Control::runtime_not_run(control_text),
-                )
-            }
-        },
-    };
-    if canary.len() < 16 {
-        return ProbeResult::new(
-            ProbeId::NoSecret,
-            Status::Error,
-            "canary shorter than 16 bytes",
-            vec![],
-            Control::runtime_not_run(control_text),
-        );
-    }
-    let Some(pid) = cfg.service_pid else {
-        return ProbeResult::new(
-            ProbeId::NoSecret,
-            Status::Missing,
-            "no service process to scan (--service-pid)",
-            vec![],
-            Control::runtime_not_run(control_text),
-        );
-    };
-    let mut targets: Vec<(String, PathBuf)> = vec![
-        (
-            "service_cmdline".into(),
-            PathBuf::from(format!("/proc/{pid}/cmdline")),
-        ),
-        (
-            "service_environ".into(),
-            PathBuf::from(format!("/proc/{pid}/environ")),
-        ),
-    ];
-    targets.extend(
-        cfg.log_files
-            .iter()
-            .enumerate()
-            .map(|(i, p)| (format!("log_file_{i}"), p.clone())),
-    );
-    let mut obs = Vec::new();
-    let mut found = Vec::new();
-    let mut unreadable = Vec::new();
-    for (name, p) in &targets {
-        match read_bounded(p) {
-            Ok(b) => {
-                let hit = find_secret(&b, &canary);
-                obs.push(o(name, hit.unwrap_or("clean").to_string()));
-                if let Some(h) = hit {
-                    found.push(format!("{name}: {h}"));
-                }
-            }
-            Err(e) => {
-                obs.push(o(name, format!("unreadable: {e}")));
-                unreadable.push(name.clone());
-            }
-        }
-    }
-    let mut report_text = String::new();
-    for r in others {
-        report_text.push_str(&r.reason);
-        for (k, v) in &r.observations {
-            report_text.push_str(k);
-            report_text.push_str(v);
-        }
-    }
-    for (k, v) in versions {
-        report_text.push_str(k);
-        report_text.push_str(v);
-    }
-    let in_report = !canary.is_empty()
-        && report_text
-            .as_bytes()
-            .windows(canary.len())
-            .any(|w| w == canary.as_slice());
-    obs.push(o(
-        "readiness_report",
-        if in_report { "canary" } else { "clean" },
-    ));
-    if in_report {
-        found.push("readiness_report: canary".to_string());
-    }
-    let (status, reason) = if !found.is_empty() {
-        (
-            Status::Missing,
-            format!("key material found: {}", found.join("; ")),
-        )
-    } else if !unreadable.is_empty() {
-        (
-            Status::Error,
-            format!("not scanned: {}", unreadable.join(",")),
-        )
-    } else {
-        (
-            Status::Ok,
-            "no canary or key-shaped material in command line, environment, logs or report"
-                .to_string(),
-        )
-    };
-    let control = if status == Status::Ok {
-        let mut planted = b"prefix ".to_vec();
-        planted.extend_from_slice(&canary);
-        planted.extend_from_slice(b" suffix");
-        let detected = find_secret(&planted, &canary) == Some("canary");
-        Control::runtime(
-            detected,
-            format!(
-                "{control_text}: {}",
-                if detected { "detected" } else { "not detected" }
-            ),
-        )
-    } else {
-        Control::runtime_not_run(control_text)
-    };
-    ProbeResult::new(ProbeId::NoSecret, status, reason, obs, control)
 }
 
 /// P-LANDLOCK (optional): listed among the active LSMs.
@@ -2065,13 +1897,14 @@ pub fn probe_landlock() -> ProbeResult {
     )
 }
 
-/// Run every probe in order.
+/// Run every probe in J-9 order.
 pub fn run_all(cfg: &Config, versions: &[(String, String)]) -> Vec<ProbeResult> {
     let userns = probe_userns(cfg);
     let userns_ok = userns.status == Status::Ok;
     let (cgroup, delegated) = probe_cgroup(cfg);
     let mut v = vec![
         userns,
+        deny::probe_agent_userns(cfg),
         probe_fs(cfg, userns_ok),
         probe_net(cfg, userns_ok),
         probe_pid(cfg, userns_ok),
@@ -2082,10 +1915,12 @@ pub fn run_all(cfg: &Config, versions: &[(String, String)]) -> Vec<ProbeResult> 
         probe_openat2(cfg),
         probe_rename(cfg),
         probe_fs_type(cfg),
-        probe_peercred(),
-        probe_agent_deny(cfg),
+        deny::probe_acl(cfg),
+        deny::probe_hardlink(cfg),
+        deny::probe_peercred(),
+        deny::probe_agent_deny(cfg),
     ];
-    let secret = probe_no_secret(cfg, &v, versions);
+    let secret = deny::probe_no_secret(cfg, &v, versions);
     v.push(secret);
     v.push(probe_landlock());
     v
@@ -2147,12 +1982,13 @@ mod tests {
         };
         let r = probe_userns(&cfg);
         assert_eq!(r.status, Status::Missing);
-        assert_eq!(r.reason, "bubblewrap binary not found");
+        assert_eq!(r.reason, "private bubblewrap copy not found");
     }
 
     #[test]
     fn fs_evaluation() {
         let all_refused = p(&[
+            ("read_srv", "refused"),
             ("write_usr", "refused"),
             ("read_state", "refused"),
             ("read_keys", "refused"),
@@ -2167,42 +2003,46 @@ mod tests {
         assert_eq!(eval_fs(&extra_bind, false, true).0, Status::Missing);
         assert_eq!(eval_fs(&all_refused, true, true).0, Status::Missing);
         assert_eq!(eval_fs(&all_refused, false, false).0, Status::Error);
-        assert_eq!(eval_fs(&all_refused[1..], false, true).0, Status::Missing);
+        assert_eq!(
+            eval_fs(&all_refused[1..], false, true).0,
+            Status::Missing,
+            "/srv/writ check absent"
+        );
     }
 
     #[test]
     fn net_evaluation() {
-        assert_eq!(
-            eval_net(&p(&[
-                ("ifaces", "lo,"),
-                ("routes", "0"),
-                ("host_loopback", "refused")
-            ]))
-            .0,
-            Status::Ok
-        );
+        let ok = [
+            ("ifaces", "lo,"),
+            ("routes", "0"),
+            ("host_loopback", "refused"),
+            ("host_abstract", "0"),
+        ];
+        assert_eq!(eval_net(&p(&ok)).0, Status::Ok);
         assert_eq!(
             eval_net(&p(&[
                 ("ifaces", "eth0,lo,"),
                 ("routes", "2"),
-                ("host_loopback", "reachable")
+                ("host_loopback", "reachable"),
+                ("host_abstract", "1")
             ]))
             .0,
             Status::Missing
         );
+        let mut lo = ok;
+        lo[2].1 = "reachable";
+        assert_eq!(eval_net(&p(&lo)).0, Status::Missing);
+        let mut abs = ok;
+        abs[3].1 = "1";
         assert_eq!(
-            eval_net(&p(&[
-                ("ifaces", "lo,"),
-                ("routes", "0"),
-                ("host_loopback", "reachable")
-            ]))
-            .0,
-            Status::Missing
+            eval_net(&p(&abs)).0,
+            Status::Missing,
+            "host abstract socket visible"
         );
     }
 
     #[test]
-    fn pid_evaluation_and_uncontained_control_discriminates() {
+    fn pid_evaluation_and_uncontained_check_discriminates() {
         assert_eq!(
             eval_pid(&p(&[
                 ("procs", "3"),
@@ -2232,7 +2072,7 @@ mod tests {
     }
 
     #[test]
-    fn fd_evaluation_and_uncontained_control_discriminates() {
+    fn fd_evaluation_and_inherited_descriptor_is_reported() {
         assert_eq!(
             eval_fd(&p(&[
                 ("fd", "0:/dev/null"),
@@ -2248,7 +2088,17 @@ mod tests {
             Status::Missing
         );
         assert_eq!(eval_fd(&[]).0, Status::Error);
-        let out = uncontained(&format!("exec 7</dev/null; {FD_SCRIPT}")).unwrap();
+        // The control's wrapper shape: an exec'd program inherits descriptor 7.
+        let argv = [
+            "/bin/sh",
+            "-c",
+            "exec 7</dev/null; exec \"$@\"",
+            "sh",
+            "/bin/sh",
+            "-c",
+            FD_SCRIPT,
+        ];
+        let out = exec::run_argv(&argv, JOB_DEADLINE).unwrap();
         let (st, why) = eval_fd(&kv(&out.stdout));
         assert_eq!(st, Status::Missing, "{}", out.stdout);
         assert!(why.contains("7->/dev/null"));
@@ -2263,8 +2113,10 @@ mod tests {
         assert_eq!(own_cgroup("12:memory:/x\n"), None, "cgroup v1 only");
         assert!(missing_controllers("cpuset cpu io memory hugetlb pids rdma misc").is_empty());
         assert_eq!(missing_controllers("cpu io memory"), vec!["pids"]);
-        let without_kill = missing_job_files(|f| f != "cgroup.kill");
-        assert_eq!(without_kill, vec!["cgroup.kill"]);
+        assert_eq!(
+            missing_job_files(|f| f != "cgroup.kill"),
+            vec!["cgroup.kill"]
+        );
         assert!(missing_job_files(|_| true).is_empty());
         assert_eq!(populated("populated 0\nfrozen 0\n"), Some(false));
         assert_eq!(populated("populated 1\n"), Some(true));
@@ -2300,168 +2152,160 @@ mod tests {
             symlink: Err(Errno::LOOP),
             mount_crossing: Err(Errno::XDEV),
             mount_id: true,
+            btime: true,
         };
         assert_eq!(eval_openat2(&good).0, Status::Ok);
-        assert_eq!(
-            eval_openat2(&Openat2Obs {
+        for bad in [
+            Openat2Obs {
                 inside: Err(Errno::NOSYS),
                 ..good
-            })
-            .0,
-            Status::Missing
-        );
-        assert_eq!(
-            eval_openat2(&Openat2Obs {
+            },
+            Openat2Obs {
                 inside: Err(Errno::INVAL),
                 ..good
-            })
-            .0,
-            Status::Missing
-        );
-        assert_eq!(
-            eval_openat2(&Openat2Obs {
+            },
+            Openat2Obs {
                 beneath_escape: Ok(()),
                 ..good
-            })
-            .0,
-            Status::Missing
-        );
-        assert_eq!(
-            eval_openat2(&Openat2Obs {
+            },
+            Openat2Obs {
                 symlink: Ok(()),
                 ..good
-            })
-            .0,
-            Status::Missing
-        );
-        let (st, why) = eval_openat2(&Openat2Obs {
-            mount_crossing: Ok(()),
-            ..good
-        });
-        assert_eq!(st, Status::Missing);
-        assert!(why.contains("NO_XDEV"));
-        assert_eq!(
-            eval_openat2(&Openat2Obs {
+            },
+            Openat2Obs {
+                mount_crossing: Ok(()),
+                ..good
+            },
+            Openat2Obs {
                 mount_id: false,
                 ..good
-            })
-            .0,
-            Status::Missing
-        );
+            },
+            Openat2Obs {
+                btime: false,
+                ..good
+            },
+        ] {
+            assert_eq!(eval_openat2(&bad).0, Status::Missing, "{bad:?}");
+        }
+        assert!(eval_openat2(&Openat2Obs {
+            mount_crossing: Ok(()),
+            ..good
+        })
+        .1
+        .contains("NO_XDEV"));
     }
 
     #[test]
     fn rename_evaluation() {
-        assert_eq!(eval_rename(Err(Errno::EXIST), true, Ok(())).0, Status::Ok);
-        assert_eq!(eval_rename(Ok(()), false, Ok(())).0, Status::Missing);
+        let good = RenameObs {
+            over_existing: Err(Errno::EXIST),
+            existing_intact: true,
+            to_new: Ok(()),
+            exchange: Ok(()),
+            swapped: true,
+            fs_allowed: true,
+        };
+        assert_eq!(eval_rename(&good).0, Status::Ok);
         assert_eq!(
-            eval_rename(Err(Errno::INVAL), true, Ok(())).0,
+            eval_rename(&RenameObs {
+                over_existing: Ok(()),
+                existing_intact: false,
+                ..good
+            })
+            .0,
             Status::Missing
         );
         assert_eq!(
-            eval_rename(Err(Errno::EXIST), false, Ok(())).0,
+            eval_rename(&RenameObs {
+                over_existing: Err(Errno::INVAL),
+                ..good
+            })
+            .0,
+            Status::Missing
+        );
+        assert_eq!(
+            eval_rename(&RenameObs {
+                existing_intact: false,
+                ..good
+            })
+            .0,
             Status::Error
+        );
+        assert_eq!(
+            eval_rename(&RenameObs {
+                exchange: Err(Errno::INVAL),
+                ..good
+            })
+            .0,
+            Status::Missing
+        );
+        assert_eq!(
+            eval_rename(&RenameObs {
+                swapped: false,
+                ..good
+            })
+            .0,
+            Status::Error
+        );
+        assert_eq!(
+            eval_rename(&RenameObs {
+                fs_allowed: false,
+                ..good
+            })
+            .0,
+            Status::Missing,
+            "tmpfs-backed root unsupported"
         );
     }
 
+    fn facts(magic: i64, t: &str, journal: Option<bool>, uuid: Option<&str>) -> FsFacts {
+        FsFacts {
+            magic,
+            mount_type: t.into(),
+            device: Some("vda1".into()),
+            has_journal: journal,
+            uuid: uuid.map(str::to_string),
+        }
+    }
+
     #[test]
-    fn filesystem_allow_list() {
-        assert!(fs_allowed(0xEF53, "ext4"));
-        assert!(fs_allowed(0x5846_5342, "xfs"));
-        assert!(!fs_allowed(0xEF53, "ext3"));
-        assert!(!fs_allowed(0x0102_1994, "tmpfs"));
-        assert!(!fs_allowed(0x794C_7630, "overlay"));
-        assert!(!fs_allowed(0x9123_683E, "btrfs"));
+    fn filesystem_allow_list_and_record() {
+        assert!(facts(0xEF53, "ext4", Some(true), None).allowed().is_ok());
+        assert!(
+            facts(0xEF53, "ext4", Some(false), None).allowed().is_err(),
+            "ext4 without a journal"
+        );
+        assert!(facts(0x5846_5342, "xfs", None, None).allowed().is_ok());
+        assert!(facts(0xEF53, "ext3", Some(true), None).allowed().is_err());
+        assert!(facts(0x0102_1994, "tmpfs", None, None).allowed().is_err());
+        assert!(facts(0x794C_7630, "overlay", None, None).allowed().is_err());
+        assert!(facts(0x9123_683E, "btrfs", None, None).allowed().is_err());
         let info = "22 1 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw\n30 22 0:5 / /dev/shm rw - tmpfs tmpfs rw\n";
         assert_eq!(mount_type(info, 22).as_deref(), Some("ext4"));
         assert_eq!(mount_type(info, 30).as_deref(), Some("tmpfs"));
         assert_eq!(mount_type(info, 99), None);
-    }
-
-    #[test]
-    fn mode_checks() {
-        let e = Expect {
-            dir: true,
-            mode: 0o700,
-            uid: 990,
-            gid: None,
-        };
-        assert_eq!(mode_problem(false, true, 0o40700, 990, 990, e), None);
-        assert!(mode_problem(false, true, 0o40750, 990, 990, e).is_some());
-        assert!(mode_problem(false, true, 0o40700, 1000, 990, e).is_some());
-        assert!(mode_problem(true, false, 0o120777, 990, 990, e).is_some());
-        let key = Expect {
-            dir: false,
-            mode: 0o600,
-            uid: 990,
-            gid: None,
-        };
-        assert!(
-            mode_problem(false, false, 0o100644, 990, 990, key).is_some(),
-            "mis-moded key reported"
+        let rec = "path=/var/lib/writ uuid=u-1 features=has_journal,extent\npath=/srv/writ/targets uuid=u-1 features=has_journal,casefold\n";
+        let ok = facts(0xEF53, "ext4", Some(true), Some("u-1"));
+        assert_eq!(
+            eval_fs_entry(&ok, fs_record(rec, Path::new("/var/lib/writ")).as_ref()),
+            Ok(())
         );
-        let etc = Expect {
-            dir: true,
-            mode: 0o750,
-            uid: 0,
-            gid: Some(990),
-        };
-        assert!(mode_problem(false, true, 0o40750, 0, 0, etc).is_some());
-    }
-
-    fn agent_report(uid: i64, outcomes: &[(&str, &str)]) -> Vec<u8> {
-        let attempts: Vec<String> = outcomes
-            .iter()
-            .map(|(t, o)| format!("{{\"outcome\":\"{o}\",\"target\":\"{t}\"}}"))
-            .collect();
-        format!(
-            "{{\"agent_uid\":{uid},\"attempts\":[{}],\"contract\":\"writ-agent-deny/1\"}}",
-            attempts.join(",")
+        assert!(
+            eval_fs_entry(&ok, fs_record(rec, Path::new("/srv/writ/targets")).as_ref()).is_err(),
+            "casefold"
+        );
+        assert!(eval_fs_entry(&ok, None).is_err(), "no record");
+        let other = facts(0xEF53, "ext4", Some(true), Some("u-2"));
+        assert!(
+            eval_fs_entry(&other, fs_record(rec, Path::new("/var/lib/writ")).as_ref()).is_err(),
+            "UUID mismatch"
+        );
+        assert!(eval_fs_entry(
+            &facts(0xEF53, "ext4", Some(true), None),
+            fs_record(rec, Path::new("/var/lib/writ")).as_ref()
         )
-        .into_bytes()
-    }
-
-    #[test]
-    fn agent_report_evaluation() {
-        let all: Vec<(&str, &str)> = AGENT_TARGETS.iter().map(|t| (*t, "refused")).collect();
-        assert_eq!(eval_agent_report(&agent_report(1000, &all), 990), Ok(1000));
-        assert!(
-            eval_agent_report(&agent_report(990, &all), 990).is_err(),
-            "same uid as the service"
-        );
-        let mut allowed = all.clone();
-        allowed[3].1 = "allowed";
-        assert!(eval_agent_report(&agent_report(1000, &allowed), 990)
-            .unwrap_err()
-            .starts_with("read_keys"));
-        assert!(eval_agent_report(&agent_report(1000, &all[1..]), 990).is_err());
-        let mut dup = all.clone();
-        dup.push(all[0]);
-        assert!(eval_agent_report(&agent_report(1000, &dup), 990).is_err());
-        assert!(
-            eval_agent_report(
-                b"{\"contract\":\"writ-agent-deny/1\",\"contract\":\"x\"}",
-                990
-            )
-            .is_err(),
-            "strict parse"
-        );
-    }
-
-    #[test]
-    fn secret_scanner() {
-        let canary = b"WRIT-CANARY-0123456789abcdef";
-        assert_eq!(find_secret(b"PATH=/usr/bin", canary), None);
-        assert_eq!(
-            find_secret(b"x WRIT-CANARY-0123456789abcdef y", canary),
-            Some("canary")
-        );
-        let hex = "a".repeat(64);
-        assert_eq!(
-            find_secret(hex.as_bytes(), canary),
-            Some("hex run of 64 or more digits")
-        );
-        assert_eq!(find_secret("a".repeat(63).as_bytes(), canary), None);
+        .is_err());
+        assert_eq!(dev_major_minor(0x10302), (259, 2));
     }
 
     #[test]
@@ -2472,7 +2316,7 @@ mod tests {
 
     #[test]
     fn job_profile_unshares_every_namespace_explicitly() {
-        let a: Vec<String> = bwrap_args(Path::new("/usr/bin/bwrap"), None, true, &[], "true")
+        let a: Vec<String> = bwrap_args(Path::new("/b"), None, true, true, &[], "true")
             .iter()
             .map(|x| x.to_string_lossy().into_owned())
             .collect();
@@ -2493,21 +2337,27 @@ mod tests {
                 .any(|x| x.ends_with("-try") || x == "--unshare-all"),
             "no silently optional namespaces"
         );
-        let no_net = bwrap_args(
-            Path::new("/usr/bin/bwrap"),
+        let control = bwrap_args(
+            Path::new("/b"),
             Some(Path::new("/w")),
+            false,
             false,
             &[],
             "true",
         );
-        assert!(!no_net.iter().any(|x| x == "--unshare-net"));
-        assert!(no_net
+        assert!(!control
+            .iter()
+            .any(|x| x == "--unshare-net" || x == "--unshare-pid"));
+        assert!(control
+            .windows(3)
+            .any(|w| w[0] == "--ro-bind" && w[1] == "/proc" && w[2] == "/proc"));
+        assert!(control
             .windows(3)
             .any(|w| w[0] == "--bind" && w[1] == "/w" && w[2] == "/work"));
     }
 
     // The in-job scripts run uncontained must report the capability as absent: this checks
-    // their syntax and output format here, and is the shape of each runtime control.
+    // their syntax and output format here.
     #[test]
     fn job_scripts_uncontained_report_absence() {
         let host: Vec<(String, String)> = NAMESPACES
@@ -2521,8 +2371,7 @@ mod tests {
                 )
             })
             .collect();
-        let script = "for n in user pid net ipc uts cgroup mnt; do printf 'ns_%s=' \"$n\"; readlink /proc/self/ns/$n || echo; done";
-        let out = uncontained(script).unwrap();
+        let out = uncontained(NS_SCRIPT).unwrap();
         let (st, why) = eval_userns(true, "", &host, &kv(&out.stdout));
         assert_eq!(st, Status::Missing);
         assert!(why.contains("user"), "{why}");
@@ -2546,8 +2395,12 @@ mod tests {
             Status::Missing
         );
 
+        use std::os::linux::net::SocketAddrExt;
+        let name = format!("writ-probe-unit-{}", std::process::id());
+        let addr = std::os::unix::net::SocketAddr::from_abstract_name(name.as_bytes()).unwrap();
+        let _abs = std::os::unix::net::UnixListener::bind_addr(&addr).unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let out = uncontained(&net_script(listener.local_addr().unwrap().port())).unwrap();
+        let out = uncontained(&net_script(listener.local_addr().unwrap().port(), &name)).unwrap();
         let pairs = kv(&out.stdout);
         assert_eq!(
             kv_get(&pairs, "host_loopback"),
@@ -2555,6 +2408,7 @@ mod tests {
             "{}",
             out.stdout
         );
+        assert_eq!(kv_get(&pairs, "host_abstract"), Some("1"), "{}", out.stdout);
         assert_eq!(eval_net(&pairs).0, Status::Missing);
     }
 }

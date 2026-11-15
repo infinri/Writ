@@ -1,24 +1,27 @@
-# Shared guard and helpers for the Writ M5 reference-VM scripts (M5a-03, D-045 M5-D3, M5-D12).
-# Sourced by setup.sh, teardown.sh and trial.sh; never executed on its own.
+# Shared guard and helpers for the Writ M5 reference-VM scripts (M5a-03; D-045 M5-D3, M5-D12;
+# M5-INTERFACES J-1, J-9 revision 2). Sourced by setup.sh, teardown.sh and trial.sh; never
+# executed on its own.
 #
-# Every script refuses to run unless ALL of these hold:
+# Every script refuses to run (exit 3, before any change) unless ALL of these hold:
 #   1. the marker file /etc/writ-disposable-vm exists, is a regular root-owned file not writable
 #      by group or others, and its first line is exactly "writ-disposable-vm/1";
 #   2. its line "name=<vm name>" equals the value given with --designated-vm <vm name>;
-#   3. the effective user is root (setup, teardown, trial all change system state);
-#   4. systemd-detect-virt reports a virtual machine (not "none", not a container);
-#   5. /etc/os-release says Debian 13 (trixie).
+#   3. the effective user is root;
+#   4. systemd-detect-virt --vm reports a virtual machine;
+#   5. /etc/os-release says Ubuntu 24.04 (the J-9 revision 2 reference image).
 # The owner creates the marker by hand inside the freshly provisioned VM (README step 2); no
 # script creates it. A workstation never has it.
 
 WRIT_VM_MARKER=/etc/writ-disposable-vm
 WRIT_STATE_FILE=/var/lib/writ-reference-vm.state
 WRIT_LIBEXEC=/usr/local/libexec/writ
+WRIT_PRIVATE_BWRAP=$WRIT_LIBEXEC/bwrap
+WRIT_APPARMOR_PROFILE=/etc/apparmor.d/writ-bwrap
 WRIT_EVIDENCE_ROOT=/root/writ-evidence
 
 refuse() {
   echo "REFUSED: $*" >&2
-  echo "These scripts run only inside the owner-designated disposable Debian 13 VM (see m5/reference-vm/README.md)." >&2
+  echo "These scripts run only inside the owner-designated disposable Ubuntu 24.04 VM (see m5/reference-vm/README.md)." >&2
   exit 3
 }
 
@@ -39,12 +42,11 @@ writ_guard() {
   [ -n "$virt" ] && [ "$virt" != none ] || refuse "not a virtual machine (systemd-detect-virt --vm: '${virt:-unknown}')"
   # shellcheck disable=SC1091
   . /etc/os-release
-  [ "${ID:-}" = debian ] && [ "${VERSION_ID:-}" = 13 ] || refuse "not Debian 13 (found ${PRETTY_NAME:-unknown})"
+  [ "${ID:-}" = ubuntu ] && [ "${VERSION_ID:-}" = 24.04 ] || refuse "not Ubuntu 24.04 (found ${PRETTY_NAME:-unknown})"
   echo "guard: designated disposable VM '$designated' ($virt, $PRETTY_NAME)"
 }
 
-# Parse the common --designated-vm option out of "$@"; the remaining arguments are left in
-# WRIT_ARGS (array).
+# Parse --designated-vm out of "$@"; the remaining arguments are left in WRIT_ARGS (array).
 writ_parse_designated() {
   WRIT_DESIGNATED=""
   WRIT_ARGS=()
@@ -54,6 +56,11 @@ writ_parse_designated() {
       *) WRIT_ARGS+=("$1"); shift ;;
     esac
   done
+}
+
+# Value recorded by setup.sh in the state file ("setting <key> <value>").
+state_setting() {
+  awk -v k="$1" '$1 == "setting" && $2 == k { print $3 }' "$WRIT_STATE_FILE" | tail -n 1
 }
 
 evidence_dir() {
@@ -73,18 +80,22 @@ record_versions() {
     echo "kernel_package=$(dpkg-query -W -f '${Package}=${Version}' "linux-image-$(uname -r)" 2>/dev/null || echo unknown)"
     echo "systemd=$(systemctl --version | head -n 1)"
     echo "bwrap=$(bwrap --version 2>/dev/null || echo absent)"
-    echo "bwrap_sha256=$(sha256sum /usr/bin/bwrap 2>/dev/null | cut -d' ' -f1)"
-    echo "bwrap_mode=$(stat -c '%a %U:%G' /usr/bin/bwrap 2>/dev/null)"
-    dpkg-query -W -f 'package ${Package}=${Version}\n' bubblewrap systemd util-linux coreutils libc6 2>/dev/null
+    echo "bwrap_system_sha256=$(sha256sum /usr/bin/bwrap 2>/dev/null | cut -d' ' -f1)"
+    echo "bwrap_private_sha256=$(sha256sum "$WRIT_PRIVATE_BWRAP" 2>/dev/null | cut -d' ' -f1)"
+    echo "bwrap_private_mode=$(stat -c '%a %U:%G' "$WRIT_PRIVATE_BWRAP" 2>/dev/null || echo absent)"
+    echo "apparmor_profile_sha256=$(sha256sum "$WRIT_APPARMOR_PROFILE" 2>/dev/null | cut -d' ' -f1)"
+    echo "apparmor_profile_loaded=$(grep -c '^writ-bwrap ' /sys/kernel/security/apparmor/profiles 2>/dev/null || echo unknown)"
+    dpkg-query -W -f 'package ${Package}=${Version}\n' bubblewrap systemd util-linux coreutils libc6 apparmor 2>/dev/null
     echo "cgroup_fs=$(stat -f -c %T /sys/fs/cgroup)"
     echo "cgroup_controllers=$(cat /sys/fs/cgroup/cgroup.controllers)"
-    for s in kernel.unprivileged_userns_clone user.max_user_namespaces kernel.yama.ptrace_scope \
-             fs.protected_symlinks fs.protected_hardlinks kernel.apparmor_restrict_unprivileged_userns; do
+    for s in kernel.apparmor_restrict_unprivileged_userns kernel.apparmor_restrict_unprivileged_unconfined \
+             user.max_user_namespaces kernel.yama.ptrace_scope fs.protected_symlinks fs.protected_hardlinks \
+             fs.suid_dumpable kernel.core_pattern net.ipv4.ip_unprivileged_port_start; do
       echo "sysctl $s=$(sysctl -n "$s" 2>/dev/null || echo absent)"
     done
-    echo "apparmor=$(cat /sys/module/apparmor/parameters/enabled 2>/dev/null || echo absent)"
     echo "lsm=$(cat /sys/kernel/security/lsm 2>/dev/null || echo unreadable)"
-    echo "var_lib_fs=$(stat -f -c %T /var/lib)"
-    findmnt -no FSTYPE,OPTIONS --target /var/lib
+    for p in /var/lib /srv; do
+      echo "fs $p $(findmnt -no SOURCE,FSTYPE,UUID,OPTIONS --target "$p")"
+    done
   } > "$out"
 }
