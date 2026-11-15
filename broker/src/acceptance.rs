@@ -430,7 +430,9 @@ pub fn verify_record(
     }
     let key = match keys.record_key(key_id).map_err(|_| KeyUnavailable)? {
         KeyStatus::Active(key) => key,
-        KeyStatus::Revoked | KeyStatus::Unknown => return Err(RecordUnauthenticated),
+        KeyStatus::Revoked | KeyStatus::Unknown | KeyStatus::Expired | KeyStatus::NotYetValid => {
+            return Err(RecordUnauthenticated)
+        }
     };
     let bytes = mac_bytes(doc).ok_or(RecordMalformed)?;
     if !mac::verify_hex(key.bytes(), bytes.as_bytes(), tag) {
@@ -577,7 +579,9 @@ pub fn verify_attestation(
         .map_err(|_| AttestationKeyUnavailable)?
     {
         KeyStatus::Active(key) => key,
-        KeyStatus::Revoked | KeyStatus::Unknown => return Err(AttestationUnauthenticated),
+        KeyStatus::Revoked | KeyStatus::Unknown | KeyStatus::Expired | KeyStatus::NotYetValid => {
+            return Err(AttestationUnauthenticated)
+        }
     };
     let bytes = mac_bytes(doc).ok_or(AttestationMalformed)?;
     if !mac::verify_hex(key.bytes(), bytes.as_bytes(), tag) {

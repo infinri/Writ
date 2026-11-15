@@ -1,0 +1,65 @@
+{
+  "comment": "Reviewed dependency allow-list for writ-keys (keys/DEPENDENCIES.md; M5a-05, D-045 M5-D6, M5-INTERFACES J-0/J-3). The closure covers normal and build dependencies; path dependencies on workspace members (writ-broker, and through it writ-kernel) are gated by their own allow-lists. Only rustix 1.1.6 (features std, fs) and its closure, all already approved for writ-broker with the same versions and checksums: no new registry package. 'Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT' is approved for rustix 1.1.6 and linux-raw-sys 0.12.1 only (owner decision 2026-11-12), not as a general licence.",
+  "approved_licenses": [
+    "MIT",
+    "MIT OR Apache-2.0",
+    "MIT/Apache-2.0",
+    "Apache-2.0 OR MIT"
+  ],
+  "forbidden": [
+    "rusqlite",
+    "libsqlite3-sys",
+    "tokio",
+    "reqwest",
+    "hyper",
+    "webauthn-rs"
+  ],
+  "packages": {
+    "rustix": {
+      "version": "1.1.6",
+      "checksum": "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa",
+      "role": "direct runtime (openat2 with RESOLVE_BENEATH|NO_SYMLINKS|NO_MAGICLINKS|NO_XDEV, fstat, flistxattr for the POSIX ACL check, directory listing from a descriptor); default features off, features std and fs only; within the reviewed maximum set of M5-DEPENDENCY-REVIEW section 2; licence approved for this package only (owner decision 2026-11-12), used under its MIT option",
+      "licence_approved": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+    },
+    "linux-raw-sys": {
+      "version": "0.12.1",
+      "checksum": "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53",
+      "role": "transitive (rustix linux_raw backend on Linux); licence approved for this package only (owner decision 2026-11-12), used under its MIT option",
+      "licence_approved": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+    },
+    "bitflags": {
+      "version": "2.13.2",
+      "checksum": "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06",
+      "role": "transitive (rustix); same version as approved for writ-broker"
+    },
+    "libc": {
+      "version": "0.2.191",
+      "role": "transitive, target-specific (rustix and errno libc backend targets); not compiled for writ-keys on x86_64 Linux"
+    },
+    "errno": {
+      "version": "0.3.14",
+      "checksum": "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb",
+      "role": "transitive, target-specific (rustix libc backend); not compiled on x86_64 Linux"
+    },
+    "windows-sys": {
+      "version": "0.61.2",
+      "checksum": "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc",
+      "role": "transitive, Windows targets only (rustix, errno); not compiled on Linux"
+    },
+    "windows-link": {
+      "version": "0.2.1",
+      "checksum": "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5",
+      "role": "transitive, Windows targets only (windows-sys); not compiled on Linux"
+    }
+  },
+  "forbidden_anywhere": [
+    "tokio",
+    "reqwest",
+    "rusqlite",
+    "libsqlite3-sys",
+    "hyper",
+    "hyper-util",
+    "webauthn-rs",
+    "serde_json"
+  ]
+}

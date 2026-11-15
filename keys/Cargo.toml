@@ -1,0 +1,20 @@
+[package]
+name = "writ-keys"
+version = "0.1.0"
+description = "Writ V2 local service-owned key source: writ-key/1 files loaded no-follow from a protected directory (M5a-05, D-045 M5-D6, M5-INTERFACES J-3)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Reviewed allow-list: keys/deps-allowlist.json (keys/DEPENDENCIES.md). J-0 routes rustix through
+# writ-hostsys once that crate exists; until then this crate takes rustix directly with `std, fs`
+# only (no new registry packages).
+[dependencies]
+writ-broker = { path = "../broker" }
+rustix = { version = "=1.1.6", default-features = false, features = ["std", "fs"] }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

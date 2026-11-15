@@ -31,11 +31,33 @@
 //! transaction; D-029 order), so that `LEDGER_UNAVAILABLE` takes precedence
 //! over an invalid permit (D-025 B), and records the permit id as consumed
 //! before applying the effect, all under the same shared hold.
+//!
+//! **Contract `permit/2` (M5 J-3, D-045 M5-D6).** A keyed permit names the
+//! permit key that made it. Wire form: the five members above plus
+//! `"contract_version": "permit/2"` and `"key_id"` (a [`KeyId`] of purpose
+//! `permit`), seven members, all strings. The MAC is HMAC-SHA256 under the
+//! named key over the D-006 canonical bytes of the six non-`mac` members, so
+//! the contract version and the key id are authenticated. The unversioned
+//! form above is `permit/1`. [`Permit::verify`] (one explicit [`PermitKey`])
+//! accepts `permit/1` only; [`Permit::verify_keyed`] (a [`KeySource`] and the
+//! ledger revocation lookup) accepts `permit/2` only, so a service that runs
+//! with the file key source refuses every unversioned permit
+//! (`PERMIT_INVALID`). Keyed verification order: fingerprint differs:
+//! `PERMIT_REQUEST_MISMATCH`; not `permit/2`, or a key id that is not a
+//! permit key id: `PERMIT_INVALID`; trusted time unavailable:
+//! `TIME_UNAVAILABLE` (read once; the key's validity window needs it, so here
+//! it precedes the MAC check); key unknown, revoked (in the source, or in the
+//! ledger by id or by material), expired or not yet valid, or the key source
+//! or the revocation lookup unavailable: `PERMIT_INVALID`; MAC invalid:
+//! `PERMIT_INVALID`; then expiry and staleness as above.
 
 use crate::authorize::Authorized;
 use crate::clock::TrustedClock;
 use crate::ingress::RequestFingerprint;
-use crate::keys::PermitKey;
+use crate::keys::{
+    issuing_key_at_use, key_at_use, KeyId, KeyPurpose, KeyRevocations, KeySource, KeyStatus,
+    PermitKey,
+};
 use crate::mac;
 use crate::policy::SharedPolicy;
 use crate::refusal::Refusal;
@@ -48,6 +70,9 @@ pub const PERMIT_TTL_SECONDS: i64 = 30;
 
 /// Maximum length of a permit id.
 pub const MAX_PERMIT_ID_LEN: usize = 128;
+
+/// `contract_version` of a keyed permit (J-3).
+pub const PERMIT_CONTRACT_V2: &str = "permit/2";
 
 const MEMBERS: [&str; 5] = [
     "expires_at",
@@ -81,6 +106,9 @@ pub enum PermitIssueError {
     Signing,
     /// Trusted time was unavailable (`TIME_UNAVAILABLE`).
     TimeUnavailable,
+    /// No permit key qualifies for issuing, or the key source or the
+    /// revocation lookup is unavailable (J-3: fail closed).
+    KeysUnavailable,
 }
 
 impl fmt::Display for PermitIssueError {
@@ -88,6 +116,7 @@ impl fmt::Display for PermitIssueError {
         f.write_str(match self {
             PermitIssueError::Signing => "permit signing failed",
             PermitIssueError::TimeUnavailable => "trusted time unavailable",
+            PermitIssueError::KeysUnavailable => "no permit key available for issuing",
         })
     }
 }
@@ -102,6 +131,8 @@ pub struct Permit {
     request_fingerprint: String,
     policy_bundle_sha: String,
     expires_at: String,
+    /// `Some` for `permit/2` (the key id as presented), `None` for `permit/1`.
+    key_id: Option<String>,
     mac: String,
 }
 
@@ -116,6 +147,8 @@ pub struct VerifiedPermit {
     pub policy_bundle_sha: String,
     /// Expiry (later than the trusted time of verification).
     pub expires_at: Timestamp,
+    /// The permit key id (`permit/2`); `None` for `permit/1`.
+    pub key_id: Option<String>,
 }
 
 fn signed_bytes(
@@ -123,14 +156,19 @@ fn signed_bytes(
     request_fingerprint: &str,
     policy_bundle_sha: &str,
     expires_at: &str,
+    key_id: Option<&str>,
 ) -> Option<String> {
-    json::canonical(&json::obj([
+    let mut body = json::obj([
         ("permit_id", json::s(permit_id)),
         ("request_fingerprint", json::s(request_fingerprint)),
         ("policy_bundle_sha", json::s(policy_bundle_sha)),
         ("expires_at", json::s(expires_at)),
-    ]))
-    .ok()
+    ]);
+    if let (Some(key_id), Value::Obj(m)) = (key_id, &mut body) {
+        m.insert("contract_version".into(), json::s(PERMIT_CONTRACT_V2));
+        m.insert("key_id".into(), json::s(key_id));
+    }
+    json::canonical(&body).ok()
 }
 
 impl Permit {
@@ -156,10 +194,41 @@ impl Permit {
         key: &PermitKey,
         not_after: Option<Timestamp>,
     ) -> Result<Permit, PermitIssueError> {
-        let ttl = clock
-            .now()
-            .map_err(|_| PermitIssueError::TimeUnavailable)?
-            .plus_seconds(PERMIT_TTL_SECONDS);
+        let now = clock.now().map_err(|_| PermitIssueError::TimeUnavailable)?;
+        Permit::sign(permit_id, authorized, now, key, None, not_after)
+    }
+
+    /// Issue a keyed permit (`permit/2`): as [`Permit::issue_bounded`], with
+    /// the key selected by [`KeySource::issuing_key`] for a
+    /// [`PERMIT_TTL_SECONDS`] lifetime at the trusted time read once from
+    /// `clock` and checked against the ledger revocation lookup
+    /// `revocations`. No qualifying key: [`PermitIssueError::KeysUnavailable`].
+    pub fn issue_keyed(
+        permit_id: &PermitId,
+        authorized: &Authorized<'_>,
+        clock: &dyn TrustedClock,
+        keys: &dyn KeySource,
+        revocations: &dyn KeyRevocations,
+        not_after: Option<Timestamp>,
+    ) -> Result<Permit, PermitIssueError> {
+        let now = clock.now().map_err(|_| PermitIssueError::TimeUnavailable)?;
+        let lifetime = std::time::Duration::from_secs(PERMIT_TTL_SECONDS.unsigned_abs());
+        let (key_id, material) =
+            issuing_key_at_use(keys, revocations, KeyPurpose::Permit, now, lifetime)
+                .map_err(|_| PermitIssueError::KeysUnavailable)?;
+        let key = material.permit().ok_or(PermitIssueError::KeysUnavailable)?;
+        Permit::sign(permit_id, authorized, now, key, Some(&key_id), not_after)
+    }
+
+    fn sign(
+        permit_id: &PermitId,
+        authorized: &Authorized<'_>,
+        now: Timestamp,
+        key: &PermitKey,
+        key_id: Option<&KeyId>,
+        not_after: Option<Timestamp>,
+    ) -> Result<Permit, PermitIssueError> {
+        let ttl = now.plus_seconds(PERMIT_TTL_SECONDS);
         let expires = [authorized.request().deadline_at, not_after]
             .into_iter()
             .flatten()
@@ -167,14 +236,22 @@ impl Permit {
         let fingerprint = authorized.verified().fingerprint().as_str();
         let bundle_sha = authorized.policy_bundle_sha();
         let expires_at = expires.to_string();
-        let body = signed_bytes(permit_id.as_str(), fingerprint, bundle_sha, &expires_at)
-            .ok_or(PermitIssueError::Signing)?;
+        let key_id = key_id.map(|k| k.as_str().to_string());
+        let body = signed_bytes(
+            permit_id.as_str(),
+            fingerprint,
+            bundle_sha,
+            &expires_at,
+            key_id.as_deref(),
+        )
+        .ok_or(PermitIssueError::Signing)?;
         let mac = mac::sign_hex(key.bytes(), body.as_bytes()).ok_or(PermitIssueError::Signing)?;
         Ok(Permit {
             permit_id: permit_id.as_str().to_string(),
             request_fingerprint: fingerprint.to_string(),
             policy_bundle_sha: bundle_sha.to_string(),
             expires_at,
+            key_id,
             mac,
         })
     }
@@ -190,26 +267,78 @@ impl Permit {
         clock: &dyn TrustedClock,
         active: &SharedPolicy<'_>,
     ) -> Result<VerifiedPermit, Refusal> {
+        self.check_fingerprint(request)?;
+        if self.key_id.is_some() {
+            return Err(Refusal::PermitInvalid);
+        }
+        self.check_mac(key)?;
+        let now = clock.now().map_err(|e| e.refusal())?;
+        self.check_time_and_policy(now, active)
+    }
+
+    /// Verify a `permit/2` permit for `request` with the key it names, looked
+    /// up in `keys` at the trusted time read once from `clock` and checked
+    /// against `revocations` (the ledger transaction opened by the
+    /// verification callback, J-3), in the keyed order of the module
+    /// documentation. A `permit/1` permit is [`Refusal::PermitInvalid`].
+    pub fn verify_keyed(
+        &self,
+        request: &Value,
+        keys: &dyn KeySource,
+        revocations: &dyn KeyRevocations,
+        clock: &dyn TrustedClock,
+        active: &SharedPolicy<'_>,
+    ) -> Result<VerifiedPermit, Refusal> {
+        self.check_fingerprint(request)?;
+        let key_id = self
+            .key_id
+            .as_deref()
+            .and_then(KeyId::parse)
+            .filter(|k| k.purpose() == KeyPurpose::Permit)
+            .ok_or(Refusal::PermitInvalid)?;
+        let now = clock.now().map_err(|e| e.refusal())?;
+        let material = match key_at_use(keys, revocations, KeyPurpose::Permit, &key_id, now) {
+            Ok(KeyStatus::Active(m)) => m,
+            _ => return Err(Refusal::PermitInvalid),
+        };
+        self.check_mac(material.permit().ok_or(Refusal::PermitInvalid)?)?;
+        self.check_time_and_policy(now, active)
+    }
+
+    fn check_fingerprint(&self, request: &Value) -> Result<(), Refusal> {
         let presented = RequestFingerprint::of(request);
         if presented.as_ref().map(RequestFingerprint::as_str)
             != Some(self.request_fingerprint.as_str())
         {
             return Err(Refusal::PermitRequestMismatch);
         }
+        Ok(())
+    }
+
+    fn check_mac(&self, key: &PermitKey) -> Result<(), Refusal> {
         let body = signed_bytes(
             &self.permit_id,
             &self.request_fingerprint,
             &self.policy_bundle_sha,
             &self.expires_at,
+            self.key_id.as_deref(),
         )
         .ok_or(Refusal::PermitInvalid)?;
         if !mac::verify_hex(key.bytes(), body.as_bytes(), &self.mac) {
             return Err(Refusal::PermitInvalid);
         }
+        Ok(())
+    }
+
+    fn check_time_and_policy(
+        &self,
+        now: Timestamp,
+        active: &SharedPolicy<'_>,
+    ) -> Result<VerifiedPermit, Refusal> {
         // Signed by this broker, so the expiry is one it wrote; fail closed regardless.
         let expires_at =
             Timestamp::parse_rfc3339(&self.expires_at).ok_or(Refusal::PermitInvalid)?;
-        if clock.now().map_err(|e| e.refusal())? >= expires_at {
+        if now >= expires_at {
             return Err(Refusal::PermitExpired);
         }
         if active.active_bundle_sha() != Some(self.policy_bundle_sha.as_str()) {
@@ -220,28 +349,33 @@ impl Permit {
             request_fingerprint: self.request_fingerprint.clone(),
             policy_bundle_sha: self.policy_bundle_sha.clone(),
             expires_at,
+            key_id: self.key_id.clone(),
         })
     }
 
-    /// The wire form: the four body members plus `mac`, all strings.
+    /// The wire form: the four body members plus `mac`, all strings; for
+    /// `permit/2` also `contract_version` and `key_id`.
     pub fn to_value(&self) -> Value {
-        json::obj([
+        let mut v = json::obj([
             ("permit_id", json::s(&self.permit_id)),
             ("request_fingerprint", json::s(&self.request_fingerprint)),
             ("policy_bundle_sha", json::s(&self.policy_bundle_sha)),
             ("expires_at", json::s(&self.expires_at)),
             ("mac", json::s(&self.mac)),
-        ])
+        ]);
+        if let (Some(key_id), Value::Obj(m)) = (&self.key_id, &mut v) {
+            m.insert("contract_version".into(), json::s(PERMIT_CONTRACT_V2));
+            m.insert("key_id".into(), json::s(key_id));
+        }
+        v
     }
 
-    /// A presented permit from its wire form: exactly the five members, all
-    /// strings. A permit that is not of this shape cannot be verified and is
-    /// [`Refusal::PermitInvalid`].
+    /// A presented permit from its wire form: exactly the five `permit/1`
+    /// members, or exactly those plus `"contract_version": "permit/2"` and
+    /// `key_id` (seven), all strings. Any other shape cannot be verified and
+    /// is [`Refusal::PermitInvalid`].
     pub fn from_value(value: &Value) -> Result<Permit, Refusal> {
         let members = value.as_obj().ok_or(Refusal::PermitInvalid)?;
-        if members.len() != MEMBERS.len() {
-            return Err(Refusal::PermitInvalid);
-        }
         let text = |k: &str| {
             members
                 .get(k)
@@ -249,13 +383,29 @@ impl Permit {
                 .map(str::to_string)
                 .ok_or(Refusal::PermitInvalid)
         };
+        let key_id = match members.len() {
+            n if n == MEMBERS.len() => None,
+            n if n == MEMBERS.len() + 2 => {
+                if text("contract_version")? != PERMIT_CONTRACT_V2 {
+                    return Err(Refusal::PermitInvalid);
+                }
+                Some(text("key_id")?)
+            }
+            _ => return Err(Refusal::PermitInvalid),
+        };
         Ok(Permit {
             permit_id: text("permit_id")?,
             request_fingerprint: text("request_fingerprint")?,
             policy_bundle_sha: text("policy_bundle_sha")?,
             expires_at: text("expires_at")?,
+            key_id,
             mac: text("mac")?,
         })
+    }
+
+    /// The permit key id as presented (`permit/2`); `None` for `permit/1`.
+    pub fn key_id(&self) -> Option<&str> {
+        self.key_id.as_deref()
     }
 
     /// The permit id as presented.
@@ -410,6 +560,7 @@ mod tests {
                 request_fingerprint: p.request_fingerprint().into(),
                 policy_bundle_sha: p.policy_bundle_sha().into(),
                 expires_at: Timestamp::parse_strict("2026-11-05T12:00:30Z").unwrap(),
+                key_id: None,
             }
         );
         assert_eq!(Permit::from_value(&p.to_value()).unwrap(), p);
@@ -679,5 +830,236 @@ mod tests {
         }
         assert_eq!(Permit::from_value(&extra), Err(Refusal::PermitInvalid));
         assert_eq!(Permit::from_value(&wrong_type), Err(Refusal::PermitInvalid));
+    }
+
+    use crate::keys::{
+        KeyPurpose, KeyRegistry, KeyRevocation, Material, MaterialDigest, MemoryKeyRegistry,
+        MemoryKeySource,
+    };
+
+    fn issue_keyed_with(
+        req: &Value,
+        keys: &MemoryKeySource,
+        reg: &MemoryKeyRegistry,
+    ) -> Result<Permit, PermitIssueError> {
+        let active = reference_active();
+        let shared = active.shared();
+        Permit::issue_keyed(
+            &PermitId::new("permit-1").unwrap(),
+            &authorized(&shared, req),
+            &FixedClock::new(now()),
+            keys,
+            reg,
+            None,
+        )
+    }
+
+    fn check_keyed(
+        permit: &Permit,
+        req: &Value,
+        keys: &MemoryKeySource,
+        reg: &MemoryKeyRegistry,
+        at: Timestamp,
+    ) -> Result<VerifiedPermit, Refusal> {
+        permit.verify_keyed(
+            req,
+            keys,
+            reg,
+            &FixedClock::new(at),
+            &reference_active().shared(),
+        )
+    }
+
+    fn revoke(reg: &mut MemoryKeyRegistry, id: &str, material: &[u8]) {
+        reg.revoke(KeyRevocation {
+            key_id: kid(id),
+            material: MaterialDigest::of(material),
+            purpose: KeyPurpose::Permit,
+            revoked_at: now(),
+            actor: "uid:0".into(),
+            reason: "test".into(),
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn keyed_permit_authenticates_its_version_and_key_id() {
+        let req = base_request();
+        let (keys, reg) = (keyed_source(), MemoryKeyRegistry::new());
+        let p = issue_keyed_with(&req, &keys, &reg).unwrap();
+        assert_eq!(p.key_id(), Some("permit/k1"));
+        let wire = p.to_value();
+        assert_eq!(wire.as_obj().unwrap().len(), 7);
+        assert_eq!(
+            wire.get("contract_version").and_then(Value::as_str),
+            Some(PERMIT_CONTRACT_V2)
+        );
+        let body = json::canonical(&wire.without("mac")).unwrap();
+        assert!(body.contains("\"key_id\":\"permit/k1\""));
+        assert_eq!(
+            p.mac,
+            mac::sign_hex(&PERMIT_KEY, body.as_bytes()).unwrap(),
+            "MAC over the canonical six-member body"
+        );
+        assert_eq!(Permit::from_value(&wire).unwrap(), p);
+        let v = check_keyed(&p, &req, &keys, &reg, now()).unwrap();
+        assert_eq!(v.key_id.as_deref(), Some("permit/k1"));
+        assert_eq!(v.expires_at, now().plus_seconds(30));
+    }
+
+    #[test]
+    fn versions_do_not_cross() {
+        let req = base_request();
+        let (keys, reg) = (keyed_source(), MemoryKeyRegistry::new());
+        let v1 = issue(&req);
+        let v2 = issue_keyed_with(&req, &keys, &reg).unwrap();
+        // The keyed path refuses unversioned permits; the unkeyed path refuses permit/2.
+        assert_eq!(
+            check_keyed(&v1, &req, &keys, &reg, now()),
+            Err(Refusal::PermitInvalid)
+        );
+        assert_eq!(check(&v2, &req, now()), Err(Refusal::PermitInvalid));
+        // Downgrade: strip the version and key id from a permit/2. The MAC covered
+        // them, so the result is not a valid permit/1 under the same key.
+        let downgraded =
+            Permit::from_value(&v2.to_value().without("contract_version").without("key_id"))
+                .unwrap();
+        assert_eq!(check(&downgraded, &req, now()), Err(Refusal::PermitInvalid));
+        // Mismatch still decides first on the keyed path.
+        assert_eq!(
+            check_keyed(&v1, &mismatched(&req), &keys, &reg, now()),
+            Err(Refusal::PermitRequestMismatch)
+        );
+    }
+
+    #[test]
+    fn malformed_keyed_permits_are_invalid() {
+        let req = base_request();
+        let (keys, reg) = (keyed_source(), MemoryKeyRegistry::new());
+        let wire = issue_keyed_with(&req, &keys, &reg).unwrap().to_value();
+        let set = |k: &str, v: Value| {
+            let mut w = wire.clone();
+            if let Value::Obj(m) = &mut w {
+                m.insert(k.into(), v);
+            }
+            w
+        };
+        for bad in [
+            set("contract_version", json::s("permit/3")),
+            set("contract_version", json::s("permit/1")),
+            set("key_id", Value::Int(1)),
+            wire.without("contract_version"),
+            wire.without("key_id"),
+            set("extra", json::s("x")),
+        ] {
+            assert_eq!(
+                Permit::from_value(&bad),
+                Err(Refusal::PermitInvalid),
+                "{}",
+                bad.to_json_text()
+            );
+        }
+        // Parsed, but the key id is not a permit key id or is altered: invalid.
+        for key_id in ["ingress/fixture-1", "permit k1", "permit/k2"] {
+            let p = Permit::from_value(&set("key_id", json::s(key_id))).unwrap();
+            assert_eq!(
+                check_keyed(&p, &req, &keys, &reg, now()),
+                Err(Refusal::PermitInvalid),
+                "{key_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn keyed_verification_refuses_unusable_keys() {
+        let req = base_request();
+        let (keys, mut reg) = (keyed_source(), MemoryKeyRegistry::new());
+        let p = issue_keyed_with(&req, &keys, &reg).unwrap();
+        // Key validity is judged at verification time.
+        let mut late = MemoryKeySource::new(60);
+        late.insert(
+            kid("permit/k1"),
+            Material::new(KeyPurpose::Permit, PERMIT_KEY.to_vec()).unwrap(),
+            crate::keys::KeyValidity::new(now().plus_seconds(-3600), now().plus_seconds(10))
+                .unwrap(),
+        );
+        assert!(check_keyed(&p, &req, &late, &reg, now().plus_seconds(9)).is_ok());
+        assert_eq!(
+            check_keyed(&p, &req, &late, &reg, now().plus_seconds(10)),
+            Err(Refusal::PermitInvalid),
+            "key expired before the permit"
+        );
+        let mut revoked_in_source = keyed_source();
+        revoked_in_source.revoke(&kid("permit/k1"));
+        assert_eq!(
+            check_keyed(&p, &req, &revoked_in_source, &reg, now()),
+            Err(Refusal::PermitInvalid)
+        );
+        let mut unavailable = keyed_source();
+        unavailable.set_unavailable(true);
+        assert_eq!(
+            check_keyed(&p, &req, &unavailable, &reg, now()),
+            Err(Refusal::PermitInvalid)
+        );
+        assert_eq!(
+            check_keyed(&p, &req, &MemoryKeySource::new(60), &reg, now()),
+            Err(Refusal::PermitInvalid),
+            "unknown key"
+        );
+        // Ledger revocation of the material under another id refuses the permit.
+        revoke(&mut reg, "permit/elsewhere", &PERMIT_KEY);
+        assert_eq!(
+            check_keyed(&p, &req, &keys, &reg, now()),
+            Err(Refusal::PermitInvalid)
+        );
+        let mut down = MemoryKeyRegistry::new();
+        down.set_unavailable(true);
+        assert_eq!(
+            check_keyed(&p, &req, &keys, &down, now()),
+            Err(Refusal::PermitInvalid)
+        );
+        // Expiry and staleness still apply after the key checks.
+        let fresh = MemoryKeyRegistry::new();
+        assert_eq!(
+            check_keyed(&p, &req, &keys, &fresh, now().plus_seconds(30)),
+            Err(Refusal::PermitExpired)
+        );
+        assert_eq!(
+            p.verify_keyed(
+                &req,
+                &keys,
+                &fresh,
+                &FixedClock::new(now()),
+                &replacement_active().shared()
+            ),
+            Err(Refusal::PermitStale)
+        );
+    }
+
+    #[test]
+    fn keyed_issue_fails_closed_without_a_qualifying_key() {
+        let req = base_request();
+        let mut reg = MemoryKeyRegistry::new();
+        assert_eq!(
+            issue_keyed_with(&req, &MemoryKeySource::new(60), &reg).err(),
+            Some(PermitIssueError::KeysUnavailable)
+        );
+        // A key that ends within lifetime + margin is not selected.
+        let mut short = MemoryKeySource::new(60);
+        short.insert(
+            kid("permit/short"),
+            Material::new(KeyPurpose::Permit, PERMIT_KEY.to_vec()).unwrap(),
+            crate::keys::KeyValidity::new(now().plus_seconds(-10), now().plus_seconds(89)).unwrap(),
+        );
+        assert_eq!(
+            issue_keyed_with(&req, &short, &reg).err(),
+            Some(PermitIssueError::KeysUnavailable)
+        );
+        revoke(&mut reg, "permit/k1", &PERMIT_KEY);
+        assert_eq!(
+            issue_keyed_with(&req, &keyed_source(), &reg).err(),
+            Some(PermitIssueError::KeysUnavailable),
+            "selected key revoked in the ledger"
+        );
     }
 }

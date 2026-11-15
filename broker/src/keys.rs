@@ -7,9 +7,17 @@
 //! scope here (M5, M9). Key bytes are never printed: `Debug` is redacted.
 //! Ingress keys and the permit key are distinct types so one cannot be used
 //! in place of the other.
+//!
+//! M5 (J-3, D-045 M5-D6) adds the key-source contract in [`source`]
+//! (re-exported here): purposes, key ids, validity windows, purpose-tagged
+//! [`Material`], the [`KeySource`] trait and the ledger's [`KeyRegistry`].
+//! The file implementation lives in `writ-keys`, outside this crate.
 
 use std::collections::BTreeMap;
 use std::fmt;
+
+mod source;
+pub use source::*;
 
 /// Minimum key length in bytes (the HMAC-SHA256 output length).
 pub const MIN_KEY_BYTES: usize = 32;
@@ -34,11 +42,31 @@ impl std::error::Error for KeyError {}
 struct Secret(Vec<u8>);
 
 impl Secret {
-    fn new(bytes: Vec<u8>) -> Result<Secret, KeyError> {
+    fn new(mut bytes: Vec<u8>) -> Result<Secret, KeyError> {
         if bytes.len() < MIN_KEY_BYTES {
+            overwrite(&mut bytes);
             return Err(KeyError::TooShort);
         }
         Ok(Secret(bytes))
+    }
+}
+
+/// Best-effort zeroization (M5 J-3, lead decision 3 of 2026-11-15): key
+/// buffers are overwritten with zeros when dropped. This covers the final
+/// buffer only; copies made earlier (reallocation, parsing, the caller's own
+/// buffers) are not reached, and the compiler is only discouraged, not
+/// prevented, from eliding the writes. Recorded as a limitation until a
+/// reviewed `zeroize` dependency replaces it.
+pub fn overwrite(bytes: &mut [u8]) {
+    for b in bytes.iter_mut() {
+        *b = 0;
+    }
+    std::hint::black_box(&*bytes);
+}
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        overwrite(&mut self.0);
     }
 }
 
@@ -136,6 +164,12 @@ pub enum KeyStatus<'a, K> {
     Revoked,
     /// No key with this id.
     Unknown,
+    /// The key's validity window ended (`not_after` at or before trusted
+    /// time); refused like [`KeyStatus::Revoked`] (M5 J-3).
+    Expired,
+    /// The key's validity window has not begun (`not_before` after trusted
+    /// time); refused like [`KeyStatus::Revoked`] (M5 J-3).
+    NotYetValid,
 }
 
 /// The key ring could not be consulted (fail closed).
