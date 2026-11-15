@@ -1,0 +1,24 @@
+[package]
+name = "writ-hostsys"
+version = "0.1.0"
+description = "Writ V2 host readiness: OS capability probes, the writ-readiness/1 report and the writ-probe operator binary (M5a-03)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Reviewed allow-list: hostsys/deps-allowlist.json (M5-DEPENDENCY-REVIEW section 2). rustix
+# features: std, fs (openat2, statx, statfs, renameat_with, lgetxattr), process (getuid,
+# getgid, kill_process_group, test_kill_process). No new registry package.
+[dependencies]
+writ-kernel = { path = "../kernel" }
+rustix = { version = "=1.1.6", default-features = false, features = ["std", "fs", "process"] }
+
+[[bin]]
+name = "writ-probe"
+path = "src/bin/writ-probe.rs"
+test = false
+bench = false
+
+[lints]
+workspace = true

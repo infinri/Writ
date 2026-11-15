@@ -42,7 +42,8 @@ def locked(lock_path: Path) -> list[dict]:
 MEMBERS = {"writ-kernel": "kernel/deps-allowlist.json", "writ-broker": "broker/deps-allowlist.json",
            "writ-ledger-sqlite": "persistence/sqlite/deps-allowlist.json",
            "writ-approval": "approval/deps-allowlist.json",
-           "writ-approval-server": "approval-server/deps-allowlist.json"}
+           "writ-approval-server": "approval-server/deps-allowlist.json",
+           "writ-hostsys": "hostsys/deps-allowlist.json"}
 
 
 def entry_for(allowed: dict, name: str, ver: str):
