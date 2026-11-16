@@ -181,7 +181,7 @@ use crate::grants::{
     ReserveRequest, Revalidation, StoredGrant,
 };
 use crate::ingress::VerifiedRequest;
-use crate::keys::PermitKey;
+use crate::keys::{KeyId, KeyRevocations, KeySource, MaterialDigest, PermitKey};
 use crate::permit::{Permit, PermitId, PermitIssueError};
 use crate::policy::{ActivePolicy, SharedPolicy};
 use crate::refusal::Refusal;
@@ -239,6 +239,7 @@ impl ReceiptRef<'_> {
 pub struct DispatchIntent<'a> {
     receipt: ReceiptRef<'a>,
     grant: Option<&'a GrantUse>,
+    seal_key: Option<(&'a KeyId, &'a MaterialDigest)>,
 }
 
 impl<'a> DispatchIntent<'a> {
@@ -250,7 +251,14 @@ impl<'a> DispatchIntent<'a> {
                 fingerprint: request.fingerprint(),
             },
             grant: request.grant(),
+            seal_key: request.seal_key(),
         }
+    }
+
+    /// The seal key of the request (see [`ReserveRequest::seal_key`]),
+    /// looked up again inside T-dispatch (J-3).
+    pub fn seal_key(&self) -> Option<(&'a KeyId, &'a MaterialDigest)> {
+        self.seal_key
     }
 
     /// Tenant of the receipt.
@@ -663,6 +671,60 @@ where
     }
 }
 
+/// How a [`Broker`] issues and verifies permits.
+#[derive(Clone, Copy)]
+pub enum PermitKeys<'a> {
+    /// One explicit permit key, `permit/1` (M3 and M4 tests, the M3 closure
+    /// adapter and the development entry points).
+    Static(&'a PermitKey),
+    /// The service key source, `permit/2` only (M5 J-3): issuing selects the
+    /// key with [`KeySource::issuing_key`] checked against `revocations`;
+    /// verification looks the named key up in `source` and its id and
+    /// material in `revocations` (the ledger) from inside the verification
+    /// callback, so inside the adapter transaction. A `permit/1` permit is
+    /// `PERMIT_INVALID`.
+    Keyed {
+        /// The key source.
+        source: &'a (dyn KeySource + Sync),
+        /// The ledger's revocation lookup (no cache).
+        revocations: &'a (dyn KeyRevocations + Sync),
+    },
+}
+
+impl PermitKeys<'_> {
+    fn issue(
+        &self,
+        id: &PermitId,
+        authorized: &Authorized<'_>,
+        clock: &dyn TrustedClock,
+        not_after: Option<Timestamp>,
+    ) -> Result<Permit, PermitIssueError> {
+        match self {
+            PermitKeys::Static(key) => Permit::issue_bounded(id, authorized, clock, key, not_after),
+            PermitKeys::Keyed {
+                source,
+                revocations,
+            } => Permit::issue_keyed(id, authorized, clock, *source, *revocations, not_after),
+        }
+    }
+
+    fn verify(
+        &self,
+        permit: &Permit,
+        request: &Value,
+        clock: &dyn TrustedClock,
+        hold: &SharedPolicy<'_>,
+    ) -> Result<crate::permit::VerifiedPermit, Refusal> {
+        match self {
+            PermitKeys::Static(key) => permit.verify(request, key, clock, hold),
+            PermitKeys::Keyed {
+                source,
+                revocations,
+            } => permit.verify_keyed(request, *source, *revocations, clock, hold),
+        }
+    }
+}
+
 /// The broker's execute lifecycle over one shared ledger and one effect
 /// adapter (module documentation). Shared by every thread of the owning
 /// process; it owns the process's per-key locks (through its
@@ -672,7 +734,7 @@ pub struct Broker<'a, L: ?Sized, A: ?Sized> {
     adapter: &'a A,
     /// The runner adapter for [`RUNNER_EFFECT_KIND`] requests (M3-07), if any.
     runner: Option<&'a dyn EffectAdapter>,
-    permit_key: &'a PermitKey,
+    permit_keys: PermitKeys<'a>,
     /// Per-workflow locks (M3-05): a promotion, and an execution whose
     /// request names a workflow, hold their workflow's lock from validation
     /// to commit (effect prerequisites, D-036). Taken after the gate and
@@ -695,11 +757,29 @@ where
         adapter: &'a A,
         permit_key: &'a PermitKey,
     ) -> Broker<'a, L, A> {
+        Broker::with_permit_keys(
+            active,
+            clock,
+            ledger,
+            adapter,
+            PermitKeys::Static(permit_key),
+        )
+    }
+
+    /// A broker as [`Broker::new`] whose permits are issued and verified with
+    /// `permit_keys` ([`PermitKeys::Keyed`] in the service, J-3).
+    pub fn with_permit_keys(
+        active: &'a ActivePolicy,
+        clock: &'a (dyn EffectiveClock + Sync),
+        ledger: &'a L,
+        adapter: &'a A,
+        permit_keys: PermitKeys<'a>,
+    ) -> Broker<'a, L, A> {
         Broker {
             grants: GrantService::new(active, clock, ledger),
             adapter,
             runner: None,
-            permit_key,
+            permit_keys,
             workflow_locks: KeyLocks::new(),
         }
     }
@@ -816,17 +896,15 @@ where
         };
         // From here on the receipt is `dispatched`: every failure leaves it so.
         let id = permit_id_for(dispatched.permit_number).ok_or(Refusal::PermitInvalid)?;
-        let issued = Permit::issue_bounded(
-            &id,
-            &authorized,
-            &observed,
-            self.permit_key,
-            dispatched.grant_expires_at,
-        )
-        .map_err(|e| match e {
-            PermitIssueError::TimeUnavailable => Refusal::TimeUnavailable,
-            PermitIssueError::Signing | PermitIssueError::KeysUnavailable => Refusal::PermitInvalid,
-        })?;
+        let issued = self
+            .permit_keys
+            .issue(&id, &authorized, &observed, dispatched.grant_expires_at)
+            .map_err(|e| match e {
+                PermitIssueError::TimeUnavailable => Refusal::TimeUnavailable,
+                PermitIssueError::Signing | PermitIssueError::KeysUnavailable => {
+                    Refusal::PermitInvalid
+                }
+            })?;
         *permit = Some(issued.clone());
         let result = match self.adapt(authorized.hold(), &issued, verified.request()) {
             Err(f) => return Err(evidence.failed(TxName::Adapter, &f)),
@@ -865,9 +943,9 @@ where
         request: &Value,
     ) -> Result<Result<EffectResult, Refusal>, TxFailure> {
         let clock = self.floor_clock();
-        let key = self.permit_key;
+        let keys = self.permit_keys;
         let mut verify = || {
-            let verified = permit.verify(request, key, &clock, hold)?;
+            let verified = keys.verify(permit, request, &clock, hold)?;
             VerifiedEffect::new(verified, request)
         };
         match (is_runner(request), self.runner) {
@@ -891,9 +969,9 @@ where
         let refusal = {
             let shared = self.grants.active.shared();
             let clock = self.floor_clock();
-            let key = self.permit_key;
+            let keys = self.permit_keys;
             let mut verify = || {
-                let verified = permit.verify(request, key, &clock, &shared)?;
+                let verified = keys.verify(permit, request, &clock, &shared)?;
                 VerifiedEffect::new(verified, request)
             };
             let inspected = match (is_runner(request), self.runner) {

@@ -99,6 +99,7 @@ use crate::authorize::{authorize, Authorized, UseTimeStatus};
 use crate::clock::{observe, EffectiveClock, ObservedTime};
 use crate::human::SubjectId;
 use crate::ingress::VerifiedRequest;
+use crate::keys::{KeyId, MaterialDigest};
 use crate::policy::ActivePolicy;
 use crate::refusal::Refusal;
 use crate::store::{GrantLedger, LedgerStore};
@@ -880,6 +881,7 @@ pub struct ReserveRequest<'a> {
     fingerprint: &'a str,
     grant: Option<GrantUse>,
     effect: EffectContext<'a>,
+    seal_key: Option<(&'a KeyId, &'a MaterialDigest)>,
 }
 
 /// What an effect's prerequisites are checked against (D-019 N-3, M3-05):
@@ -962,7 +964,16 @@ impl<'a> ReserveRequest<'a> {
                 promotion_receipt_id: attr("promotion_receipt_id"),
                 authorization_bundle_sha: authorized.policy_bundle_sha(),
             },
+            seal_key: authorized.verified().seal_key(),
         })
+    }
+
+    /// The ingress key id and material digest of a `seal/2` request (`None` for
+    /// `seal/1`). The store looks both up in its revocations inside T-reserve
+    /// and T-dispatch (J-3) and refuses `INGRESS_UNAUTHENTICATED` when either
+    /// was revoked.
+    pub fn seal_key(&self) -> Option<(&'a KeyId, &'a MaterialDigest)> {
+        self.seal_key
     }
 
     /// The effect context (kind, project, promotion attributes).

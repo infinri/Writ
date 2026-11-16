@@ -151,11 +151,15 @@ pub use writ_broker::store::{ExecuteLedger, GrantLedger, LedgerStore, StoreError
 
 mod approval_store;
 mod effects;
+mod keys;
 mod runner_store;
 mod snapshots;
 mod workflow;
 pub use approval_store::BootstrapSession;
 pub use effects::{SqliteEffectStore, EFFECTS_SCHEMA, EFFECTS_SCHEMA_VERSION};
+pub use keys::{
+    OsActor, RevocationRow, RevocationScope, RevokeRefusal, MAX_REVOCATION_REASON_BYTES,
+};
 pub use runner_store::{SqliteRunnerStore, RUNNER_SCHEMA, RUNNER_SCHEMA_VERSION};
 pub use snapshots::{
     snapshot_id_for, Committed, DeploymentProof, IngestSession, SnapshotError, SnapshotLimits,
@@ -1002,6 +1006,13 @@ impl GrantLedger for SqliteLedger {
     ) -> Result<Result<ReserveOutcome, Refusal>, TxFailure> {
         let key = (request.tenant_id(), request.idempotency_key());
         self.transact("reserve", |tx| {
+            // J-3: the seal key of the consumed request is looked up inside T-reserve (no
+            // cache); a revoked id or material refuses before anything is read or written.
+            if let Some((id, digest)) = request.seal_key() {
+                if keys::revoked_in(tx, id, digest)? {
+                    return Ok(End::Rollback(Err(Refusal::IngressUnauthenticated)));
+                }
+            }
             let found: Option<(String, Option<String>, String)> = tx
                 .query_row(
                     "SELECT fingerprint, grant_label, status FROM receipts \
@@ -1132,6 +1143,12 @@ impl ExecuteLedger for SqliteLedger {
     ) -> Result<Result<Dispatched, Refusal>, TxFailure> {
         let key = (intent.tenant_id(), intent.idempotency_key());
         self.transact("dispatch", |tx| {
+            // J-3: and again inside T-dispatch; the receipt stays `reserved`.
+            if let Some((id, digest)) = intent.seal_key() {
+                if keys::revoked_in(tx, id, digest)? {
+                    return Ok(End::Rollback(Err(Refusal::IngressUnauthenticated)));
+                }
+            }
             let receipt: Option<(String, Option<String>, String)> = tx
                 .query_row(
                     "SELECT fingerprint, grant_label, status FROM receipts \
@@ -1449,6 +1466,9 @@ mod d042_tests;
 
 #[cfg(test)]
 mod snapshot_tests;
+
+#[cfg(test)]
+mod key_tests;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
