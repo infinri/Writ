@@ -1,0 +1,22 @@
+[package]
+name = "writ-fs-effects"
+version = "0.1.0"
+description = "Writ V2 fs.write effect adapter: snapshot-to-target writes under the J-7 recovery contract with the writ-fseffects-1 journal (M5a-09, D-045 M5-D8)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Reviewed allow-list: fs-effects/deps-allowlist.json. J-0: broker, persistence (the journal) and
+# writ-hostsys only; rustix only through writ-hostsys; no network.
+[dependencies]
+writ-broker = { path = "../broker" }
+writ-hostsys = { path = "../hostsys" }
+writ-ledger-sqlite = { path = "../persistence/sqlite" }
+
+[dev-dependencies]
+# Journal fault injection (FsJournal::inject) for the ambiguous-commit and I/O-error tests.
+writ-ledger-sqlite = { path = "../persistence/sqlite", features = ["test-faults"] }
+
+[lints]
+workspace = true

@@ -2554,6 +2554,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "writ-fs-effects"
+version = "0.1.0"
+dependencies = [
+ "writ-broker",
+ "writ-hostsys",
+ "writ-ledger-sqlite",
+]
+
+[[package]]
 name = "writ-hostsys"
 version = "0.1.0"
 dependencies = [
