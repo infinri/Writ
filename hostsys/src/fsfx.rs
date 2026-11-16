@@ -10,11 +10,9 @@
 //!
 //! This module holds no policy: callers compare identities, owners, modes and mounts.
 
-use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, OwnedFd};
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
@@ -366,11 +364,6 @@ pub fn process_start(pid: u32) -> Option<u64> {
     let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let rest = text.get(text.rfind(')')? + 2..)?;
     rest.split(' ').nth(19)?.parse().ok()
-}
-
-/// `name` as an OS string (helper for callers building paths from component names).
-pub fn os(name: &str) -> &OsStr {
-    OsStr::from_bytes(name.as_bytes())
 }
 
 #[cfg(test)]

@@ -9,7 +9,7 @@
 | Crate | Pin | Features | Purpose |
 |---|---|---|---|
 | `writ-kernel` | path | none | strict JSON parser, D-006 canonical form, SHA-256 digest of the bubblewrap binary |
-| `rustix` | `=1.1.6` | default off; `std`, `fs`, `process`, `net` | safe `openat2` with resolve flags, `statx` mount id and birth time, `statfs`, `renameat_with(RENAME_NOREPLACE, RENAME_EXCHANGE)`, `lgetxattr` and `setxattr` (ACL detection and the planted-ACL control); `getuid`, `getgid`, `kill_process_group`, `test_kill_process`; `socket_peercred` (`SO_PEERCRED`, P-PEERCRED; lead decision after M5-INTERFACES revision 2) |
+| `rustix` | `=1.1.6` | default off; `std`, `fs`, `process`, `net` | safe `openat2` with resolve flags, `statx` mount id and birth time, `statfs`, `renameat_with(RENAME_NOREPLACE, RENAME_EXCHANGE)`, `lgetxattr` and `setxattr` (ACL detection and the planted-ACL control); `getuid`, `getgid`, `kill_process_group`, `test_kill_process`; `socket_peercred` (`SO_PEERCRED`, P-PEERCRED; lead decision after M5-INTERFACES revision 2); module `fsfx` for `writ-fs-effects` (M5a-09, J-7.2): `openat2` with `RESOLVE_NO_XDEV`, `statx` with `STATX_BTIME` and `STATX_MNT_ID`, `unlinkat`, `fsync`, `flock`, `flistxattr`, `fstatfs`, `ioctl_getflags` (casefold), `Dir`, `geteuid`; `writ-fs-effects` reaches `rustix` only through this module |
 
 No new registry package: the closure (`rustix`, `linux-raw-sys`, `bitflags`, `errno`, `libc`, `windows-sys`, `windows-link`) is already locked and approved for `writ-broker`, with the same versions and checksums ([M5-DEPENDENCY-REVIEW](../docs/implementation/M5-DEPENDENCY-REVIEW.md) section 2). J-0 allows `std, fs, process, thread, event, pipe, net` for this crate; `thread`, `event` and `pipe` are not used.
 
