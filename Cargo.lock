@@ -2572,6 +2572,26 @@ version = "0.1.0"
 dependencies = [
  "rusqlite",
  "writ-broker",
+ "writ-hostsys",
+]
+
+[[package]]
+name = "writ-rpc"
+version = "0.1.0"
+dependencies = [
+ "writ-kernel",
+]
+
+[[package]]
+name = "writ-service"
+version = "0.1.0"
+dependencies = [
+ "writ-approval",
+ "writ-broker",
+ "writ-hostsys",
+ "writ-keys",
+ "writ-ledger-sqlite",
+ "writ-rpc",
 ]
 
 [[package]]

@@ -590,3 +590,5 @@ The review (no CRITICAL) answered the twelve revision-4 questions; every finding
 | N11 verify-in-VM additions | J-11.10 |
 
 Remaining before launcher integration: the verify-in-VM list (J-11.10) and a re-review of the launcher implementation (M5a-13).
+
+**Lead decisions after M5a-04 (2026-11-16):** (1) J-6 breadth confirmed: until a trusted session binding exists (M5b-06), every grant consumption through the service is refused `IDENTITY_UNVERIFIED`, because every M4 grant is bound to an exact agent (D-042 X2) and host-asserted labels confer no authority (D-045 M5-D7). (2) Socket activation under `unsafe_code = forbid` (J-8): take over inherited descriptors with `rustix::process::pidfd_getfd` on the service's own pidfd, adopted in M5a-11; until then the service binds its own sockets (recorded deviation, fails closed: the agent cannot reach `host.sock`). (3) `IDENTITY_UNVERIFIED` moves into `broker::refusal` with the generic external mapping when M5b-01 versions the request contract (which also brings `host_asserted` inside the MAC).

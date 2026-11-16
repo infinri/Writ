@@ -2015,6 +2015,8 @@ fn the_upgrade_from_writ_ledger_5_marks_every_pre_m4_grant_and_keeps_all_history
     // Turn it into an exact writ-ledger-5 ledger (drop the writ-ledger-6 tables).
     let c = rusqlite::Connection::open(&path).unwrap();
     for t in [
+        "key_revocations",
+        "key_registry",
         "approval_events",
         "consumed_signoffs",
         "signoff_requests",

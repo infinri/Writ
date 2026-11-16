@@ -29,7 +29,13 @@ done
 tac "$WRIT_STATE_FILE" | while read -r kind path _; do
   case "$kind" in
     setting) ;;
-    file) rm -f -- "$path" ;;
+    file) rm -f -- "$path"
+          case "$path" in /etc/systemd/system/*) systemctl daemon-reload || true ;; esac ;;
+    unit) # service-install.sh (M5a-04): stop the service before its files go.
+          case "$path" in
+            writ.service) systemctl disable --now "$path" 2>/dev/null || true ;;
+            *) echo "refusing to stop unexpected unit $path" >&2 ;;
+          esac ;;
     apparmor)
       if [ -f "$path" ]; then apparmor_parser -R "$path" || true; fi
       rm -f -- "$path" ;;
@@ -50,7 +56,7 @@ done
 rm -f -- "$WRIT_STATE_FILE"
 
 {
-  for p in /var/lib/writ /etc/writ /run/writ /srv/writ /etc/tmpfiles.d/writ.conf "$WRIT_LIBEXEC" "$WRIT_APPARMOR_PROFILE"; do
+  for p in /var/lib/writ /etc/writ /run/writ /srv/writ /etc/tmpfiles.d/writ.conf "$WRIT_LIBEXEC" "$WRIT_APPARMOR_PROFILE" /etc/systemd/system/writ.service; do
     if [ -e "$p" ]; then echo "LEFT $p"; else echo "removed $p"; fi
   done
   if grep -q '^writ-bwrap ' /sys/kernel/security/apparmor/profiles 2>/dev/null; then echo "LEFT apparmor profile writ-bwrap"; else echo "removed apparmor profile writ-bwrap"; fi

@@ -151,11 +151,15 @@ pub use writ_broker::store::{ExecuteLedger, GrantLedger, LedgerStore, StoreError
 
 mod approval_store;
 mod effects;
+mod keys;
 mod runner_store;
 mod snapshots;
 mod workflow;
 pub use approval_store::BootstrapSession;
 pub use effects::{SqliteEffectStore, EFFECTS_SCHEMA, EFFECTS_SCHEMA_VERSION};
+pub use keys::{
+    OsActor, RevocationRow, RevocationScope, RevokeRefusal, MAX_REVOCATION_REASON_BYTES,
+};
 pub use runner_store::{SqliteRunnerStore, RUNNER_SCHEMA, RUNNER_SCHEMA_VERSION};
 pub use snapshots::{
     snapshot_id_for, Committed, DeploymentProof, IngestSession, SnapshotError, SnapshotLimits,
@@ -873,6 +877,25 @@ impl SqliteLedger {
         u64::try_from(n).map_err(|_| unavailable("read", "schema"))
     }
 
+    /// The status of receipt `(tenant_id, idempotency_key)`, if any (`status.receipt`,
+    /// J-2: the service derives the key from the connection's OS principal and binding, so
+    /// a caller only reaches its own receipts).
+    pub fn receipt_status(
+        &self,
+        tenant_id: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<String>, StoreError> {
+        self.lock("read")?
+            .conn
+            .query_row(
+                "SELECT status FROM receipts WHERE tenant_id = ?1 AND idempotency_key = ?2",
+                (tenant_id, idempotency_key),
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| unavailable("read", code_name(&e)))
+    }
+
     /// The linked SQLite engine version (D-023 check).
     pub fn engine_version(&self) -> Result<String, StoreError> {
         self.lock("read")?
@@ -1002,6 +1025,13 @@ impl GrantLedger for SqliteLedger {
     ) -> Result<Result<ReserveOutcome, Refusal>, TxFailure> {
         let key = (request.tenant_id(), request.idempotency_key());
         self.transact("reserve", |tx| {
+            // J-3: the seal key of the consumed request is looked up inside T-reserve (no
+            // cache); a revoked id or material refuses before anything is read or written.
+            if let Some((id, digest)) = request.seal_key() {
+                if keys::revoked_in(tx, id, digest)? {
+                    return Ok(End::Rollback(Err(Refusal::IngressUnauthenticated)));
+                }
+            }
             let found: Option<(String, Option<String>, String)> = tx
                 .query_row(
                     "SELECT fingerprint, grant_label, status FROM receipts \
@@ -1132,6 +1162,12 @@ impl ExecuteLedger for SqliteLedger {
     ) -> Result<Result<Dispatched, Refusal>, TxFailure> {
         let key = (intent.tenant_id(), intent.idempotency_key());
         self.transact("dispatch", |tx| {
+            // J-3: and again inside T-dispatch; the receipt stays `reserved`.
+            if let Some((id, digest)) = intent.seal_key() {
+                if keys::revoked_in(tx, id, digest)? {
+                    return Ok(End::Rollback(Err(Refusal::IngressUnauthenticated)));
+                }
+            }
             let receipt: Option<(String, Option<String>, String)> = tx
                 .query_row(
                     "SELECT fingerprint, grant_label, status FROM receipts \
@@ -1449,6 +1485,9 @@ mod d042_tests;
 
 #[cfg(test)]
 mod snapshot_tests;
+
+#[cfg(test)]
+mod key_tests;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

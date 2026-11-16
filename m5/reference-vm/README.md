@@ -76,3 +76,11 @@ From `/root/writ-evidence/<time>-trial/`: `baseline.json` (the `writ-readiness/1
 From `/root/writ-evidence/<time>-teardown/`: `after.txt` (no `LEFT` line).
 
 Never record key material, the canary value, or credentials in evidence or chat.
+
+## Service (M5a-04; PREPARED, NOT RUN)
+
+`service-install.sh` (after `setup.sh` with `--job-user writ-job`, and a disposable test human user for `--desktop-user`) installs `writ-serviced` (`root:root` 0755), `/etc/writ/service.json` (`root:writ` 0640, no secret), provisions `ingress/vm-1` and `permit/vm-1` as `writ` (OS random source, temporary file, `fsync`, rename, directory `fsync`; material never printed), runs `writ-serviced --init` as `writ` and installs `writ.service` with the J-1 hardening (not started). Build it with `cargo build --release --locked -p writ-service` (`target/release/writ-serviced`).
+
+Then, inside the VM: start it with `systemctl start writ.service`; `journalctl -u writ.service` must show `serving (unverified)` (no deployment plan configured yet: the snapshot store is not immutable and governed work refuses). To bind a deployment proof: add a `deployment` member with the fact plan to the configuration, run `runuser -u writ -- writ-serviced --print-static-facts --config /etc/writ/service.json`, merge the printed object into the `writ-probe` report as `static_facts`, record the report's D-006 digest as `deployment.report_digest`, restart. VM checks to record: the agent uid cannot connect `admin.sock` or read `/var/lib/writ` (P-AGENT-DENY); `keys.revoke` as root over `admin.sock` records `uid:0`; a second `writ-serviced` or `writ-approval-server` on the same ledger exits with `OWNED_ELSEWHERE`.
+
+Recorded limitation: until socket activation (J-8, M5a-11) the service binds `host.sock` itself with mode 0700, so the agent cannot connect (fails closed). `writ.service` adds `/run/writ` to `ReadWritePaths` for that reason; it goes away with the socket units. `teardown.sh` stops and disables `writ.service` and removes every file `service-install.sh` recorded.

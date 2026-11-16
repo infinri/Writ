@@ -15,7 +15,7 @@ CREATE TABLE ledger_sequence (
   seq        INTEGER PRIMARY KEY AUTOINCREMENT,
   kind       TEXT NOT NULL CHECK (kind IN ('promotion', 'administration', 'revocation',
                'decision', 'signoff', 'enrollment', 'bootstrap', 'expiry', 'registration',
-               'read_session')),
+               'read_session', 'key_revocation')),
   reference  TEXT NOT NULL
 ) STRICT;
 
@@ -297,5 +297,55 @@ CREATE TABLE approval_events (
   provenance_version  TEXT NOT NULL,
   ledger_seq          INTEGER REFERENCES ledger_sequence (seq)
 ) STRICT;
+
+-- M5 J-3 and J-11.8 (D-045 M5-D6, D-046 Q-3): the key registry and key revocations.
+-- `key_registry` records every key id ever loaded with its purpose and the digest of its
+-- material (`sha256:` over a domain-separation prefix, never the material). Ids are never
+-- reused: an id presented again with other material or purpose, a material digest already
+-- registered under another id or purpose, and an id or digest that was ever revoked are
+-- refused at load. Both tables are append-only (triggers refuse UPDATE and DELETE).
+CREATE TABLE key_registry (
+  key_id          TEXT PRIMARY KEY CHECK (key_id <> '' AND length(key_id) <= 64),
+  purpose         TEXT NOT NULL CHECK (purpose IN
+                    ('ingress', 'permit', 'acceptance-record', 'runner-attestation')),
+  material_digest TEXT NOT NULL UNIQUE CHECK (length(material_digest) = 71
+                    AND substr(material_digest, 1, 7) = 'sha256:'),
+  CHECK (substr(key_id, 1, length(purpose) + 1) = purpose || '/')
+) STRICT;
+
+-- One row per revocation (J-11.8): explicit scope only (one key id, or one material digest,
+-- of one purpose). For scope `key_id` the digest is the registered one, never a request
+-- value; for scope `material` the key id is the registered id of that digest, or NULL for a
+-- pre-emptive revocation of an unregistered digest. `actor` is the canonical JSON of the
+-- authenticated OS peer ({principal_kind, os_principal, verified_by, endpoint, pid}); the
+-- reason is bounded untrusted text. Each revocation commits one `ledger_sequence` row
+-- (kind `key_revocation`) in the same BEGIN IMMEDIATE transaction; a repeated identical
+-- revocation (same scope, same digest) returns the existing row.
+CREATE TABLE key_revocations (
+  revocation_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+  scope           TEXT NOT NULL CHECK (scope IN ('key_id', 'material')),
+  key_id          TEXT CHECK (key_id IS NULL OR (key_id <> '' AND length(key_id) <= 64)),
+  material_digest TEXT NOT NULL CHECK (length(material_digest) = 71
+                    AND substr(material_digest, 1, 7) = 'sha256:'),
+  purpose         TEXT NOT NULL CHECK (purpose IN
+                    ('ingress', 'permit', 'acceptance-record', 'runner-attestation')),
+  revoked_at      TEXT NOT NULL,
+  actor           TEXT NOT NULL CHECK (actor <> ''),
+  reason          TEXT NOT NULL CHECK (reason <> '' AND length(CAST(reason AS BLOB)) <= 512),
+  ledger_seq      INTEGER NOT NULL UNIQUE REFERENCES ledger_sequence (seq),
+  CHECK (scope = 'material' OR key_id IS NOT NULL),
+  UNIQUE (scope, material_digest)
+) STRICT;
+
+CREATE INDEX key_revocations_by_id ON key_revocations (key_id);
+
+CREATE TRIGGER key_registry_no_update BEFORE UPDATE ON key_registry
+BEGIN SELECT RAISE(ABORT, 'key_registry is append-only'); END;
+CREATE TRIGGER key_registry_no_delete BEFORE DELETE ON key_registry
+BEGIN SELECT RAISE(ABORT, 'key_registry is append-only'); END;
+CREATE TRIGGER key_revocations_no_update BEFORE UPDATE ON key_revocations
+BEGIN SELECT RAISE(ABORT, 'key_revocations is append-only'); END;
+CREATE TRIGGER key_revocations_no_delete BEFORE DELETE ON key_revocations
+BEGIN SELECT RAISE(ABORT, 'key_revocations is append-only'); END;
 
 UPDATE meta SET value = 'writ-ledger-6' WHERE key = 'schema_version';

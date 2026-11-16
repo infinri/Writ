@@ -13,6 +13,10 @@
 //! - [`facts`]: recorded host facts and versions.
 //! - [`agent`]: the agent-side attempts (`writ-probe agent-deny`).
 //! - [`exec`]: bounded child-process execution.
+//! - [`sock`]: peer credentials, a receive path that refuses ancillary data, the service
+//!   process identity check (M5a-04, J-1, J-2).
+//! - [`deployment`]: `VerifiedDeployment`, the static start-time check bound to the
+//!   operator-run report (M5a-04, J-9).
 //!
 //! J-0 lists `writ-containment` as a dependency of `writ-probe`; that crate does not exist yet
 //! (M5a-07), so the probe binary lives in this crate for now. This crate opens no trusted state
@@ -21,10 +25,12 @@
 
 pub mod agent;
 pub mod deny;
+pub mod deployment;
 pub mod exec;
 pub mod facts;
 pub mod probes;
 pub mod readiness;
+pub mod sock;
 
 pub use probes::Config;
 pub use readiness::{report, verdict, ProbeId, ProbeResult, Status, Verdict};
