@@ -60,6 +60,8 @@ ev=$(evidence_dir service-install)
 
 uid_of() { id -u "$1"; }
 writ_uid=$(uid_of writ); writ_gid=$(getent group writ | cut -d: -f3)
+agents_gid=$(getent group writ-agents | cut -d: -f3)
+[ -n "$agents_gid" ] || { echo "group writ-agents missing" >&2; exit 3; }
 agent_uid=$(uid_of "$agent_user"); job_uid=$(uid_of "$job_user"); desktop_uid=$(uid_of "$desktop_user")
 
 # 1. Binary (root-owned; writ cannot replace it).
@@ -76,7 +78,7 @@ cat > /etc/writ/service.json <<EOF
  "ledger":"/var/lib/writ/ledger/ledger.db",
  "snapshots":"/var/lib/writ/stores/snapshots.db",
  "keys":{"dir":"/var/lib/writ/keys"},
- "sockets":{"host":"/run/writ/host.sock","admin":"/run/writ/admin.sock","activation":"systemd"},
+ "sockets":{"host":"/run/writ/host.sock","admin":"/run/writ/admin.sock","activation":"systemd","host_gid":$agents_gid},
  "shutdown":{"drain_seconds":10},
  "containment":{"run_root":"/var/lib/writ/run","jobs_cgroup_events":"/sys/fs/cgroup/writ.slice/writ-jobs.slice/cgroup.events","sweep_wait_seconds":10},
  "host_bindings":[{"uid":$agent_uid,"tenant_id":"$tenant","project_id":"$project","principal_id":"agent:$agent_user","roles":["agent"],"adapter_id":"writ-host-adapter:cli","ingress_key_id":"ingress/vm-1"}]$approval}
