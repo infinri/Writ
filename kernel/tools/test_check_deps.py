@@ -246,6 +246,37 @@ class SpawnReachability(unittest.TestCase):
         self.assertEqual(self.run_rule(files), [])
 
 
+
+class MemoryKeys(unittest.TestCase):
+    """M5a-13 L9: the in-memory key types stay out of production sources."""
+
+    def run_rule(self, files: dict) -> list:
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            root = fake_workspace(Path(d), files)
+            return check_deps.no_memory_keys(root)
+
+    def test_this_repository_passes(self):
+        self.assertEqual(check_deps.no_memory_keys(check_deps.ROOT), [])
+
+    def test_production_use_is_refused_and_test_use_is_not(self):
+        for name, files in {
+            "service source": {"service/src/daemon.rs": "use writ_broker::keys::MemoryKeySource;\n"},
+            "hostsys module": {"hostsys/src/sock.rs": "fn f() { let r = MemoryKeyRing::new(); }\n"},
+            "nested module": {"service/src/daemon.rs": "mod inner;\n",
+                              "service/src/daemon/inner.rs": "type K = MemoryKeys<u8>;\n"},
+            "binary": {"service/src/bin/tool.rs": "fn main() { MemoryKeyRegistry::new(); }\n"},
+        }.items():
+            with self.subTest(case=name):
+                self.assertNotEqual(self.run_rule(files), [], name)
+        self.assertEqual(self.run_rule({
+            "service/src/daemon.rs": "#[cfg(test)]\nmod tests { use writ_broker::keys::MemoryKeySource; }\n"
+                                     "#[cfg(test)]\nmod fixtures;\n// MemoryKeyRing in a comment\n",
+            "service/src/daemon/fixtures.rs": "use writ_broker::keys::MemoryKeys;\n",
+            "service/tests/t.rs": "use writ_broker::keys::MemoryKeySource;\n",
+            "service/examples/e.rs": "use writ_broker::keys::MemoryKeyRing;\n",
+        }), [])
+
 if __name__ == "__main__":
     unittest.main()
 

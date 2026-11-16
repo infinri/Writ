@@ -1095,6 +1095,18 @@ impl Conn<'_> {
                             "writ-serviced: key revocation {} by uid {} reason {:?}",
                             row.revocation_id, actor.uid, row.reason
                         );
+                        // M5a-13 L9: the loaded key source stops using the revoked key, so
+                        // issuing falls back to a valid older key.
+                        if self
+                            .service
+                            .keys
+                            .sync_revocations(&*self.service.ledger)
+                            .is_err()
+                        {
+                            eprintln!(
+                                "writ-serviced: key source not synchronized with the revocation"
+                            );
+                        }
                         Next::Continue(Some(revocation_reply(&row)))
                     }
                     Ok(Err(r)) => Next::Continue(Some(refused(match r {

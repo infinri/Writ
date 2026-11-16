@@ -302,9 +302,15 @@ fn trait_revoke_requires_the_registered_binding() {
         material: digest(b),
         purpose: KeyPurpose::Permit,
         revoked_at: now(),
-        actor: "operator".into(),
+        actor: actor().document().unwrap(),
         reason: "r".into(),
     };
+    // M5a-13 L9: free-text provenance is refused; only the structured OS actor is recorded.
+    let free_text = KeyRevocation {
+        actor: "operator".into(),
+        ..revocation(5)
+    };
+    assert!(reg.revoke(free_text).is_err());
     assert!(reg.revoke(revocation(6)).is_err());
     assert!(reg.revoke(revocation(5)).is_ok());
     assert!(reg.revoke(revocation(5)).is_ok());
@@ -620,4 +626,37 @@ fn the_keyed_path_refuses_permit_1() {
         w.broker().present_permit(&stripped, &req),
         Refusal::PermitInvalid
     );
+}
+
+/// M5a-13 L9: a material-scope revocation naming another purpose than an existing
+/// revocation of the same digest refuses (it never "succeeds" by returning the other row).
+#[test]
+fn a_material_revocation_naming_another_purpose_refuses() {
+    let dir = tmp("material-purpose");
+    let l = SqliteLedger::create(&dir.join("ledger.db")).unwrap();
+    let scope = |purpose| RevocationScope::Material {
+        purpose,
+        digest: digest(7),
+    };
+    // Pre-emptive revocation of an unregistered digest as a permit key.
+    let first = l
+        .revoke_key(&scope(KeyPurpose::Permit), "leaked", &actor(), now())
+        .unwrap()
+        .unwrap();
+    assert!(first.created);
+    // The same digest named as an ingress key: refused, nothing recorded.
+    assert_eq!(
+        l.revoke_key(&scope(KeyPurpose::Ingress), "leaked", &actor(), now())
+            .unwrap(),
+        Err(RevokeRefusal::PurposeMismatch)
+    );
+    assert_eq!(count(&l, "SELECT count(*) FROM key_revocations"), 1);
+    // The identical revocation still returns the existing row.
+    let again = l
+        .revoke_key(&scope(KeyPurpose::Permit), "again", &actor(), now())
+        .unwrap()
+        .unwrap();
+    assert!(!again.created);
+    assert_eq!(again.revocation_id, first.revocation_id);
+    assert!(writ_broker::keys::OsActor::from_document(&again.actor).is_some());
 }

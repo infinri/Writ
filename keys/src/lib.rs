@@ -55,7 +55,11 @@
 //! `now + lifetime + margin`). The authoritative revocation lookup is the
 //! ledger's, inside the transaction that consumes the authenticated object
 //! ([`writ_broker::keys::key_at_use`]). [`FileKeySource::revoke`] records a
-//! revocation in the ledger first and then stops using the key here.
+//! revocation in the ledger first (with the structured [`OsActor`] provenance)
+//! and then stops using the key here. A revocation recorded elsewhere (the
+//! service's `admin.sock` `keys.revoke`) reaches this source through
+//! [`FileKeySource::sync_revocations`], so issuing falls back to a valid
+//! older key instead of selecting the revoked one (M5a-13 L9).
 //!
 //! **Limitation (recorded, J-3 lead decision 3):** key material is
 //! overwritten on drop on a best-effort basis (read buffer, hex text and the
@@ -71,10 +75,11 @@ use std::fmt;
 use std::io::Read as _;
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 use writ_broker::keys::{
     lookup, overwrite, select_issuing, Admission, KeyId, KeyPurpose, KeyRegistry, KeyRevocation,
-    KeySource, KeyStatus, KeyValidity, KeysUnavailable, Material,
+    KeyRevocations, KeySource, KeyStatus, KeyValidity, KeysUnavailable, Material, OsActor,
 };
 use writ_broker::writ_kernel::json::{self, Value};
 use writ_broker::writ_kernel::time::Timestamp;
@@ -556,7 +561,7 @@ pub enum RevokeError {
 #[derive(Debug)]
 pub struct FileKeySource {
     keys: BTreeMap<KeyId, (Material, KeyValidity)>,
-    revoked: BTreeSet<KeyId>,
+    revoked: Mutex<BTreeSet<KeyId>>,
     margin_seconds: i64,
     diagnostics: Vec<Diagnostic>,
 }
@@ -587,7 +592,7 @@ impl FileKeySource {
         names.sort();
         let mut source = FileKeySource {
             keys: BTreeMap::new(),
-            revoked: BTreeSet::new(),
+            revoked: Mutex::new(BTreeSet::new()),
             margin_seconds: config.margin_seconds,
             diagnostics: Vec::new(),
         };
@@ -645,14 +650,15 @@ impl FileKeySource {
     }
 
     /// Revoke loaded key `id`: record the revocation (id, material digest,
-    /// purpose) in `registry` first, then stop using the key here. Revoked
-    /// material stays refused under any id at every later load.
+    /// purpose, the structured actor `actor`) in `registry` first, then stop
+    /// using the key here. Revoked material stays refused under any id at every
+    /// later load.
     pub fn revoke(
-        &mut self,
+        &self,
         registry: &mut dyn KeyRegistry,
         id: &KeyId,
         revoked_at: Timestamp,
-        actor: &str,
+        actor: &OsActor,
         reason: &str,
     ) -> Result<KeyRevocation, RevokeError> {
         let (material, _) = self.keys.get(id).ok_or(RevokeError::Unknown)?;
@@ -661,14 +667,47 @@ impl FileKeySource {
             material: material.digest().clone(),
             purpose: material.purpose(),
             revoked_at,
-            actor: actor.to_string(),
+            actor: actor.document().ok_or(RevokeError::Unavailable)?,
             reason: reason.to_string(),
         };
         registry
             .revoke(revocation.clone())
             .map_err(|_| RevokeError::Unavailable)?;
-        self.revoked.insert(id.clone());
+        self.mark_revoked(id);
         Ok(revocation)
+    }
+
+    /// Stop using every loaded key whose id or material `revocations` (the
+    /// ledger) reports revoked; returns how many were newly marked. Called
+    /// after a revocation recorded elsewhere (`admin.sock` `keys.revoke`). An
+    /// unavailable ledger marks nothing and reports [`KeysUnavailable`] (the
+    /// in-transaction lookups still refuse every use of a revoked key).
+    pub fn sync_revocations(
+        &self,
+        revocations: &dyn KeyRevocations,
+    ) -> Result<usize, KeysUnavailable> {
+        let mut newly = 0;
+        for (id, (m, _)) in &self.keys {
+            if !self.is_marked(id) && revocations.is_revoked(id, m.digest())? {
+                self.mark_revoked(id);
+                newly += 1;
+            }
+        }
+        Ok(newly)
+    }
+
+    fn mark_revoked(&self, id: &KeyId) {
+        self.revoked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id.clone());
+    }
+
+    fn is_marked(&self, id: &KeyId) -> bool {
+        self.revoked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(id)
     }
 }
 
@@ -681,7 +720,7 @@ impl KeySource for FileKeySource {
     ) -> Result<KeyStatus<'_, Material>, KeysUnavailable> {
         Ok(lookup(
             self.keys.get(id).map(|(m, v)| (m, v)),
-            self.revoked.contains(id),
+            self.is_marked(id),
             purpose,
             now,
         ))
@@ -696,12 +735,31 @@ impl KeySource for FileKeySource {
         select_issuing(
             self.keys
                 .iter()
-                .map(|(id, (m, v))| (id, m, v, self.revoked.contains(id))),
+                .map(|(id, (m, v))| (id, m, v, self.is_marked(id))),
             purpose,
             now,
             lifetime,
             self.margin_seconds,
         )
+    }
+
+    fn issuing_named_key(
+        &self,
+        purpose: KeyPurpose,
+        id: &KeyId,
+        now: Timestamp,
+        lifetime: Duration,
+    ) -> Result<&Material, KeysUnavailable> {
+        select_issuing(
+            self.keys
+                .get_key_value(id)
+                .map(|(id, (m, v))| (id, m, v, self.is_marked(id))),
+            purpose,
+            now,
+            lifetime,
+            self.margin_seconds,
+        )
+        .map(|(_, m)| m)
     }
 }
 

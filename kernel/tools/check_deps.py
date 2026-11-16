@@ -448,6 +448,56 @@ def spawn_reachability(root: Path, service: str = "writ_service", sources: dict 
     return problems
 
 
+def production_files(crate_dir: Path, sources: dict | None = None) -> list:
+    """The `.rs` files of `crate_dir/src` compiled outside tests: reached from `lib.rs`,
+    `main.rs` or `src/bin/*.rs` through `mod name;` declarations that are not test-only."""
+    sources = sources or {}
+    src = crate_dir / "src"
+    roots = [p for p in (src / "lib.rs", src / "main.rs") if p.exists()]
+    roots += sorted((src / "bin").glob("*.rs")) if (src / "bin").is_dir() else []
+    out, todo = [], list(roots)
+    while todo:
+        f = todo.pop()
+        if f in out or not f.exists():
+            continue
+        out.append(f)
+        text = sources.get(f)
+        code, skipped = blank_test_items(strip_rust(f.read_text() if text is None else text))
+        base = f.parent if f.name in ("lib.rs", "main.rs", "mod.rs") or f.parent.name == "bin" and f.parent.parent == src \
+            else f.parent / f.stem
+        for m in re.finditer(r"(?:^|[;}\s])(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+([A-Za-z_]\w*)\s*;", code):
+            name = m.group(1)
+            if name in skipped:
+                continue
+            for cand in (base / f"{name}.rs", base / name / "mod.rs"):
+                if cand.exists():
+                    todo.append(cand)
+                    break
+    return sorted(out)
+
+
+# M5a-13 L9: the in-memory key types are test and harness tools. Outside their definitions
+# (broker::keys), no production source of a workspace crate may name them (tests, examples,
+# benches and `#[cfg(test)]` code may).
+MEMORY_KEY_TYPES = r"\bMemory(?:Keys|KeyRing|KeySource|KeyRegistry)\b"
+MEMORY_KEY_DEFINITIONS = {"broker/src/keys.rs", "broker/src/keys/source.rs"}
+
+
+def no_memory_keys(root: Path, sources: dict | None = None) -> list[str]:
+    out = []
+    for crate, d in sorted(crate_dirs(root).items()):
+        for f in production_files(d, sources):
+            rel = str(f.relative_to(root))
+            if rel in MEMORY_KEY_DEFINITIONS:
+                continue
+            text = (sources or {}).get(f)
+            code, _ = blank_test_items(strip_rust(f.read_text() if text is None else text))
+            for m in re.finditer(MEMORY_KEY_TYPES, code):
+                out.append(f"{rel}:{code.count(chr(10), 0, m.start()) + 1}: {m.group(0)} in production source "
+                           "(in-memory keys are for tests and harnesses only)")
+    return out
+
+
 def manifest_features(toml_text: str, dep: str, allowed: set) -> list[str]:
     """`dep` in `[dependencies]` must have default features off and only `allowed` features."""
     spec = tomllib.loads(toml_text).get("dependencies", {}).get(dep)
@@ -482,6 +532,7 @@ def source_rules(root: Path) -> list[str]:
         for path in sorted(p for p in base.rglob("*.rs") if "target" not in p.relative_to(base).parts):
             out += [f"source rule {path.relative_to(root)}: {x}" for x in no_path_or_include(path.read_text())]
     out += [f"source rule: {x}" for x in spawn_reachability(root)]
+    out += [f"source rule: {x}" for x in no_memory_keys(root)]
     for member, dep, rule, allowed in SOURCE_RULES:
         base = root / member
         files = sorted(p for p in base.rglob("*.rs") if "target" not in p.relative_to(base).parts)
