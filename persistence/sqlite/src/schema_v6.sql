@@ -1,7 +1,8 @@
 -- Writ production SQLite ledger, schema writ-ledger-6 additions (M4: authenticated approval,
 -- revocation, signoff and enrollment; D-040, M4-INTERFACES I-7 and I-8), applied after
 -- schema_v5.sql to a new ledger, or by the explicit operator upgrade (SqliteLedger::upgrade)
--- from writ-ledger-3, -4 or -5, which keeps every existing row. Only new tables.
+-- from writ-ledger-3, -4 or -5, which keeps every existing row. New tables, plus one rebuilt
+-- table (failure_records, at the end: its stage CHECK gains 'effect').
 -- Timestamps are the kernel's RFC 3339 UTC text. No credential secret is ever stored: only
 -- public passkey material, credential ids and references to consumed challenges.
 
@@ -347,5 +348,29 @@ CREATE TRIGGER key_revocations_no_update BEFORE UPDATE ON key_revocations
 BEGIN SELECT RAISE(ABORT, 'key_revocations is append-only'); END;
 CREATE TRIGGER key_revocations_no_delete BEFORE DELETE ON key_revocations
 BEGIN SELECT RAISE(ABORT, 'key_revocations is append-only'); END;
+
+-- M5a-09 / M5a-11 (lead schema change, writ-ledger-6 unreleased, amended in place): an
+-- effect-stage failure (a non-transactional effect failed after its durable intent, outcome
+-- unknown) is stored with stage 'effect' instead of 'body'. SQLite cannot alter a CHECK, so
+-- the table is rebuilt with every row kept; the definition is otherwise the writ-ledger-4 one.
+CREATE TABLE failure_records_v6 (
+  audit_seq         INTEGER PRIMARY KEY REFERENCES audit_refusals (seq),
+  transaction_name  TEXT NOT NULL CHECK (transaction_name IN
+                      ('reserve', 'dispatch', 'adapter', 'observe')),
+  stage             TEXT NOT NULL CHECK (stage IN ('begin', 'body', 'commit', 'effect')),
+  category          TEXT NOT NULL,
+  code              TEXT NOT NULL,
+  progress          TEXT NOT NULL CHECK (progress IN ('no_change', 'reserved',
+                      'dispatched_without_effect', 'dispatched_with_effect', 'observed')),
+  possible_progress TEXT NOT NULL CHECK (possible_progress IN ('no_change', 'reserved',
+                      'dispatched_without_effect', 'dispatched_with_effect', 'observed')),
+  outcome_unknown   INTEGER NOT NULL CHECK (outcome_unknown IN (0, 1))
+) STRICT;
+INSERT INTO failure_records_v6 (audit_seq, transaction_name, stage, category, code, progress,
+  possible_progress, outcome_unknown)
+  SELECT audit_seq, transaction_name, stage, category, code, progress, possible_progress,
+    outcome_unknown FROM failure_records ORDER BY audit_seq;
+DROP TABLE failure_records;
+ALTER TABLE failure_records_v6 RENAME TO failure_records;
 
 UPDATE meta SET value = 'writ-ledger-6' WHERE key = 'schema_version';

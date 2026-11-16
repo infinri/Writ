@@ -1374,3 +1374,68 @@ fn every_refusal_is_audited_after_the_locks_are_released() {
     w.active.activate(PolicyState::loaded(reference()));
     assert_eq!(b.grants().key_locks().held(), 0);
 }
+
+/// An adapter whose non-transactional effect fails after its durable intent (M5a-09):
+/// [`TxStage::Effect`] with an unknown outcome.
+struct EffectLost<'a>(&'a SqliteEffectStore);
+
+impl EffectAdapter for EffectLost<'_> {
+    fn apply(&self, verify: &mut Verify<'_>) -> Result<Result<EffectResult, Refusal>, TxFailure> {
+        let _ = self.0.apply(verify)?;
+        Err(TxFailure::effect_unknown(StoreError::Unavailable {
+            category: "effect fs.write".into(),
+            code: "ENOSPC".into(),
+        }))
+    }
+
+    fn inspect(
+        &self,
+        verify: &mut Verify<'_>,
+    ) -> Result<Result<Option<EffectEvidence>, Refusal>, TxFailure> {
+        self.0.inspect(verify)
+    }
+
+    fn evidence(&self, permit_id: &str) -> Result<Option<EffectEvidence>, TxFailure> {
+        self.0.evidence(permit_id)
+    }
+}
+
+#[test]
+fn an_effect_stage_failure_is_stored_with_stage_effect() {
+    // Lead schema change after M5a-09: `failure_records.stage` accepts `effect`, and an
+    // effect-stage failure is stored with it (no longer as `body`).
+    let w = World::new("effect-stage");
+    let lost = EffectLost(&w.effects);
+    let b = w.hooked_any(&lost);
+    let e = exec(&b, &file_write("k1"), None);
+    assert!(matches!(e.result, Err(Refusal::LedgerUnavailable(_))));
+    let record = e.evidence.failure_record().unwrap();
+    assert_eq!((record.stage(), record.outcome_unknown()), ("effect", true));
+    let stored: (String, String, String, i64) = w
+        .ledger
+        .db()
+        .conn
+        .query_row(
+            "SELECT transaction_name, stage, category, outcome_unknown FROM failure_records",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        stored,
+        (
+            "adapter".to_string(),
+            "effect".to_string(),
+            "effect fs.write".to_string(),
+            1
+        )
+    );
+    // The CHECK still refuses any other stage.
+    let bogus = w.ledger.db().conn.execute(
+        "INSERT INTO failure_records (audit_seq, transaction_name, stage, category, code, \
+         progress, possible_progress, outcome_unknown) SELECT seq, 'adapter', 'other', 'c', \
+         'x', 'no_change', 'no_change', 0 FROM audit_refusals LIMIT 1",
+        [],
+    );
+    assert!(bogus.is_err());
+}

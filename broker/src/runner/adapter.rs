@@ -770,7 +770,8 @@ impl<'a, S: RunnerStore + ?Sized> RunnerAdapter<'a, S> {
             private_dir(&dir).map_err(|_| D::WorkdirUnavailable)?;
             let work = WorkDir(dir);
             let program = work.0.join(PROGRAM_NAME);
-            new_file(&program, &command.program, PROGRAM_MODE).map_err(|_| D::WorkdirUnavailable)?;
+            new_file(&program, &command.program, PROGRAM_MODE)
+                .map_err(|_| D::WorkdirUnavailable)?;
             let readback = materialize(&work.0, &content)?;
             if snapshot_digest(&readback).as_deref() != Some(workflow.artifact_digest.as_str()) {
                 return Err(D::ArtifactIntegrityViolation);

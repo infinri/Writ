@@ -573,15 +573,11 @@ impl Evidence {
         };
         Some(FailureRecord {
             transaction: name,
-            // The ledger's `failure_records.stage` accepts `begin`, `body` and
-            // `commit` (`writ-ledger-6`); an effect-stage failure (M5a-09) is
-            // stored as `body` with its `effect ...` category and
-            // `outcome_unknown` set, until a lead-owned schema change adds the
-            // value. `Evidence::diagnostics` names the stage exactly.
-            stage: match failure.stage {
-                TxStage::Effect => TxStage::Body.as_str(),
-                other => other.as_str(),
-            },
+            // `writ-ledger-6` `failure_records.stage` accepts `effect` (lead
+            // schema change after M5a-09): an effect-stage failure is stored
+            // with its own stage, its `effect ...` category and
+            // `outcome_unknown` set.
+            stage: failure.stage.as_str(),
             category,
             code,
             progress: self.progress(),
@@ -633,7 +629,7 @@ impl FailureRecord {
         self.transaction.as_str()
     }
 
-    /// `begin`, `body` or `commit`.
+    /// `begin`, `body`, `commit` or `effect`.
     pub fn stage(&self) -> &'static str {
         self.stage
     }

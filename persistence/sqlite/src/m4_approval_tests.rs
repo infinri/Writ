@@ -2037,6 +2037,24 @@ fn the_upgrade_from_writ_ledger_5_marks_every_pre_m4_grant_and_keeps_all_history
     ] {
         c.execute_batch(&format!("DROP TABLE {t};")).unwrap();
     }
+    // writ-ledger-6 rebuilds failure_records (stage `effect`); restore the writ-ledger-5
+    // definition with every row kept.
+    let v5_failure_records: String = {
+        let mem = rusqlite::Connection::open_in_memory().unwrap();
+        mem.execute_batch(SCHEMA_V5).unwrap();
+        mem.query_row(
+            "SELECT sql FROM sqlite_master WHERE name = 'failure_records'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    c.execute_batch(&format!(
+        "ALTER TABLE failure_records RENAME TO failure_records_v6; {v5_failure_records}; \
+         INSERT INTO failure_records SELECT * FROM failure_records_v6; \
+         DROP TABLE failure_records_v6;"
+    ))
+    .unwrap();
     c.execute(
         "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
         [SCHEMA_VERSION_V5],
