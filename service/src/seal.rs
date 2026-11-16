@@ -35,7 +35,7 @@ use std::fs::File;
 use std::io::{self, Read};
 
 use writ_broker::ingress::{verify_ingress_keyed, IngressBindings, Seal, VerifiedRequest};
-use writ_broker::keys::{KeyPurpose, KeySource, KeyStatus};
+use writ_broker::keys::{issuing_named_key_at_use, KeyPurpose, KeyRevocations, KeySource};
 use writ_broker::writ_kernel::contracts::ActionRequest;
 use writ_broker::writ_kernel::json::{self, Digest, Map, Value};
 use writ_broker::writ_kernel::time::Timestamp;
@@ -259,20 +259,34 @@ pub fn build_request(
     Ok((request, asserted))
 }
 
+/// The lifetime a seal is issued for (J-3 issuing rule): the sealed request is consumed by
+/// this service at once (T-reserve and T-dispatch), so like a permit it must not outlive
+/// its key within this bound plus the margin.
+pub const SEAL_LIFETIME_SECONDS: u64 = 30;
+
 /// Build, seal (`seal/2`) and verify the request for `proposal` on `conn` with the
-/// binding's ingress key from `keys` at trusted time `now`.
+/// binding's ingress key from `keys` at trusted time `now`. M5a-13 L9: the key is chosen by
+/// the J-3 issuing rule for the binding's key id ([`KeySource::issuing_named_key`]: valid,
+/// not revoked, `not_after` at least `now` + [`SEAL_LIFETIME_SECONDS`] + margin) and is
+/// checked against the ledger's revocations (`revocations`).
 pub fn seal(
     conn: &ConnectionIdentity,
     proposal: &Value,
     keys: &dyn KeySource,
+    revocations: &dyn KeyRevocations,
     now: Timestamp,
 ) -> Result<Sealed, SealRefusal> {
     let (request, asserted) = build_request(conn, proposal)?;
     let b = &conn.binding;
-    let material = match keys.key(KeyPurpose::Ingress, &b.ingress_key_id, now) {
-        Ok(KeyStatus::Active(m)) => m,
-        _ => return Err(SealRefusal::KeysUnavailable),
-    };
+    let material = issuing_named_key_at_use(
+        keys,
+        revocations,
+        KeyPurpose::Ingress,
+        &b.ingress_key_id,
+        now,
+        std::time::Duration::from_secs(SEAL_LIFETIME_SECONDS),
+    )
+    .map_err(|_| SealRefusal::KeysUnavailable)?;
     let key = material.ingress().ok_or(SealRefusal::KeysUnavailable)?;
     let seal = Seal::create_keyed(&request, &b.adapter_id, &b.ingress_key_id, key)
         .ok_or(SealRefusal::SchemaInvalid)?
@@ -303,7 +317,7 @@ pub fn seal(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use writ_broker::keys::{KeyId, KeyValidity, Material, MemoryKeySource};
+    use writ_broker::keys::{KeyId, KeyValidity, Material, MemoryKeyRegistry, MemoryKeySource};
 
     fn ts(s: &str) -> Timestamp {
         Timestamp::parse_rfc3339(s).unwrap()
@@ -354,10 +368,60 @@ mod tests {
         ts("2026-11-16T12:00:00Z")
     }
 
+    /// M5a-13 L9: sealing applies the J-3 issuing rule to the binding's key (valid, not
+    /// revoked in the ledger, `not_after` at least now + lifetime + margin).
+    #[test]
+    fn sealing_applies_the_issuing_rule_and_the_ledger_revocations() {
+        use writ_broker::keys::{KeyRegistry, KeyRevocation, MaterialDigest, OsActor};
+        let c = conn(1001);
+        // The key ends 2027-01-01T00:00:00Z: 30 s + 60 s margin before it still seals.
+        assert!(seal(
+            &c,
+            &proposal(&[]),
+            &keys(),
+            &MemoryKeyRegistry::new(),
+            ts("2026-12-31T23:58:30Z")
+        )
+        .is_ok());
+        assert_eq!(
+            seal(
+                &c,
+                &proposal(&[]),
+                &keys(),
+                &MemoryKeyRegistry::new(),
+                ts("2026-12-31T23:58:31Z")
+            )
+            .err(),
+            Some(SealRefusal::KeysUnavailable)
+        );
+        let mut ledger = MemoryKeyRegistry::new();
+        ledger
+            .revoke(KeyRevocation {
+                key_id: KeyId::parse("ingress/k1").unwrap(),
+                material: MaterialDigest::of(&[0x11; 32]),
+                purpose: KeyPurpose::Ingress,
+                revoked_at: now(),
+                actor: OsActor { uid: 0, pid: 1 }.document().unwrap(),
+                reason: "r".into(),
+            })
+            .unwrap();
+        assert_eq!(
+            seal(&c, &proposal(&[]), &keys(), &ledger, now()).err(),
+            Some(SealRefusal::KeysUnavailable)
+        );
+    }
+
     #[test]
     fn identity_comes_from_configuration_and_the_connection_only() {
         let c = conn(1001);
-        let s = seal(&c, &proposal(&[]), &keys(), now()).unwrap();
+        let s = seal(
+            &c,
+            &proposal(&[]),
+            &keys(),
+            &MemoryKeyRegistry::new(),
+            now(),
+        )
+        .unwrap();
         let r = s.verified.request().as_obj().unwrap();
         let p = r["principal"].as_obj().unwrap();
         assert_eq!(p["id"], json::s("agent:writ-agent"));
@@ -387,14 +451,14 @@ mod tests {
         for member in IDENTITY_MEMBERS {
             let p = proposal(&[(member, json::s("forged"))]);
             assert_eq!(
-                seal(&conn(1001), &p, &keys(), now()).err(),
+                seal(&conn(1001), &p, &keys(), &MemoryKeyRegistry::new(), now()).err(),
                 Some(SealRefusal::IdentityUnverified),
                 "{member}"
             );
         }
         let p = proposal(&[("grant", json::s("approval/g1"))]);
         assert_eq!(
-            seal(&conn(1001), &p, &keys(), now()).err(),
+            seal(&conn(1001), &p, &keys(), &MemoryKeyRegistry::new(), now()).err(),
             Some(SealRefusal::IdentityUnverified)
         );
         assert_eq!(
@@ -415,7 +479,7 @@ mod tests {
             ("tool_name", json::s("Write")),
         ]);
         let p = proposal(&[("host_asserted", asserted.clone())]);
-        let s = seal(&conn(1001), &p, &keys(), now()).unwrap();
+        let s = seal(&conn(1001), &p, &keys(), &MemoryKeyRegistry::new(), now()).unwrap();
         let r = s.verified.request().as_obj().unwrap();
         assert_eq!(r["agent_id"], Value::Null);
         assert_eq!(r["parent_session_id"], Value::Null);
@@ -432,7 +496,7 @@ mod tests {
         ] {
             let p = proposal(&[("host_asserted", bad)]);
             assert_eq!(
-                seal(&conn(1001), &p, &keys(), now()).err(),
+                seal(&conn(1001), &p, &keys(), &MemoryKeyRegistry::new(), now()).err(),
                 Some(SealRefusal::SchemaInvalid)
             );
         }
@@ -443,8 +507,22 @@ mod tests {
         let k = |p: &str, t: &str| scoped_idempotency_key(p, t, "web", "k1").unwrap();
         assert_ne!(k("uid:1001", "acme"), k("uid:1002", "acme"));
         assert_ne!(k("uid:1001", "acme"), k("uid:1001", "other"));
-        let a = seal(&conn(1001), &proposal(&[]), &keys(), now()).unwrap();
-        let b = seal(&conn(1002), &proposal(&[]), &keys(), now()).unwrap();
+        let a = seal(
+            &conn(1001),
+            &proposal(&[]),
+            &keys(),
+            &MemoryKeyRegistry::new(),
+            now(),
+        )
+        .unwrap();
+        let b = seal(
+            &conn(1002),
+            &proposal(&[]),
+            &keys(),
+            &MemoryKeyRegistry::new(),
+            now(),
+        )
+        .unwrap();
         let key = |s: &Sealed| s.verified.request().as_obj().unwrap()["idempotency_key"].clone();
         assert_ne!(key(&a), key(&b));
         assert_ne!(key(&a), json::s("k1"));
@@ -454,16 +532,23 @@ mod tests {
     fn unknown_members_bad_requests_and_inactive_keys_are_refused() {
         let p = proposal(&[("policy_bundle_sha", json::s("x"))]);
         assert_eq!(
-            seal(&conn(1001), &p, &keys(), now()).err(),
+            seal(&conn(1001), &p, &keys(), &MemoryKeyRegistry::new(), now()).err(),
             Some(SealRefusal::SchemaInvalid)
         );
         let p = proposal(&[("action", json::s("not an action"))]);
         assert_eq!(
-            seal(&conn(1001), &p, &keys(), now()).err(),
+            seal(&conn(1001), &p, &keys(), &MemoryKeyRegistry::new(), now()).err(),
             Some(SealRefusal::SchemaInvalid)
         );
         assert_eq!(
-            seal(&conn(1001), &json::s("x"), &keys(), now()).err(),
+            seal(
+                &conn(1001),
+                &json::s("x"),
+                &keys(),
+                &MemoryKeyRegistry::new(),
+                now()
+            )
+            .err(),
             Some(SealRefusal::SchemaInvalid)
         );
         // The key is outside its validity window: no seal.
@@ -472,6 +557,7 @@ mod tests {
                 &conn(1001),
                 &proposal(&[]),
                 &keys(),
+                &MemoryKeyRegistry::new(),
                 ts("2027-06-01T00:00:00Z")
             )
             .err(),
@@ -480,7 +566,14 @@ mod tests {
         let mut revoked = keys();
         revoked.revoke(&KeyId::parse("ingress/k1").unwrap());
         assert_eq!(
-            seal(&conn(1001), &proposal(&[]), &revoked, now()).err(),
+            seal(
+                &conn(1001),
+                &proposal(&[]),
+                &revoked,
+                &MemoryKeyRegistry::new(),
+                now()
+            )
+            .err(),
             Some(SealRefusal::KeysUnavailable)
         );
     }

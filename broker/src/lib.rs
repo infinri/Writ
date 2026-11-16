@@ -68,6 +68,7 @@ pub mod grants;
 pub mod human;
 pub mod ingress;
 pub mod keys;
+pub mod lifecycle;
 mod mac;
 pub mod permit;
 pub mod policy;

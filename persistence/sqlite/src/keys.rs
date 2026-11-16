@@ -13,7 +13,9 @@
 //!   no cache; every call reads the ledger. The broker calls it inside the transaction that
 //!   consumes the authenticated object (permits: from the verification callback inside the
 //!   adapter transaction). Seals are additionally checked by T-reserve and T-dispatch
-//!   themselves ([`writ_broker::grants::ReserveRequest::seal_key`]).
+//!   themselves ([`writ_broker::grants::ReserveRequest::seal_key`]); the keys of the
+//!   acceptance record and runner attestations by the promotion transaction
+//!   ([`writ_broker::workflow::PromotionIntent::signing_keys`], M5a-13 M2).
 //! - **Revocation** ([`SqliteLedger::revoke_key`], transaction `key_revoke`): explicit scope
 //!   only ([`RevocationScope`]); for a key id the purpose must equal the registered purpose
 //!   and the recorded digest is the registered one; for a material digest a registered
@@ -28,7 +30,6 @@ use writ_broker::keys::{
     Admission, KeyId, KeyPurpose, KeyRegistry, KeyRevocation, KeyRevocations, KeysUnavailable,
     MaterialDigest,
 };
-use writ_broker::writ_kernel::json::{self, Value};
 use writ_broker::writ_kernel::time::Timestamp;
 
 use crate::{BodyError, End, SqliteLedger, StoreError};
@@ -73,29 +74,7 @@ impl RevocationScope {
     }
 }
 
-/// The authenticated OS peer that asked for a revocation (J-11.8 audit provenance). It
-/// proves an OS principal only (M5-D7), never a human. The pid is recorded for audit only.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct OsActor {
-    /// The peer uid from `SO_PEERCRED`.
-    pub uid: u32,
-    /// The peer pid from `SO_PEERCRED` (audit only).
-    pub pid: i32,
-}
-
-impl OsActor {
-    /// The canonical actor document recorded in `key_revocations.actor`.
-    pub fn document(&self) -> Option<String> {
-        json::canonical(&json::obj([
-            ("principal_kind", json::s("os")),
-            ("os_principal", json::s(&format!("uid:{}", self.uid))),
-            ("verified_by", json::s("so_peercred")),
-            ("endpoint", json::s("admin.sock")),
-            ("pid", Value::Int(i64::from(self.pid))),
-        ]))
-        .ok()
-    }
-}
+pub use writ_broker::keys::OsActor;
 
 /// Why a revocation request was refused (nothing was recorded).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,6 +133,29 @@ pub(crate) fn revoked_in(
     digest: &MaterialDigest,
 ) -> Result<bool, BodyError> {
     Ok(revoked(tx, Some(id.as_str()), digest.as_str())?)
+}
+
+/// As [`revoked_in`] for a key id in its text form (acceptance records and runner
+/// attestations name keys by string; an id that is not a [`KeyId`] still matches a
+/// revocation of its material). Used by the promotion transaction (J-3).
+pub(crate) fn revoked_text_in(
+    tx: &Transaction<'_>,
+    id: &str,
+    digest: &MaterialDigest,
+) -> Result<bool, BodyError> {
+    Ok(revoked(tx, Some(id), digest.as_str())?)
+}
+
+fn other_purpose_revoked(
+    tx: &Transaction<'_>,
+    digest: &str,
+    purpose: &str,
+) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM key_revocations WHERE material_digest = ?1 AND purpose <> ?2)",
+        (digest, purpose),
+        |r| r.get(0),
+    )
 }
 
 fn registered_by_id(tx: &Transaction<'_>, id: &str) -> rusqlite::Result<Option<(String, String)>> {
@@ -284,6 +286,12 @@ impl SqliteLedger {
                     }
                 }
             };
+            // M5a-13 L9: material already revoked under another purpose (a pre-emptive
+            // revocation of an unregistered digest, or any earlier row) refuses; an identical
+            // revocation returns the existing row.
+            if other_purpose_revoked(tx, &digest, purpose)? {
+                return Ok(End::Rollback(Err(RevokeRefusal::PurposeMismatch)));
+            }
             if let Some(existing) = read_row(tx, scope.name(), &digest)? {
                 return Ok(End::Rollback(Ok(existing)));
             }
@@ -377,10 +385,13 @@ impl KeyRegistry for &SqliteLedger {
 
     /// Record `revocation` of a registered key by id (the `FileKeySource::revoke` path):
     /// the id must be registered with the revocation's purpose and material, otherwise the
-    /// registry is reported unavailable and nothing is recorded. `actor` is recorded as
-    /// given; the `admin.sock` path is [`SqliteLedger::revoke_key`].
+    /// registry is reported unavailable and nothing is recorded. `actor` must be an
+    /// [`OsActor`] document (M5a-13 L9); the `admin.sock` path is
+    /// [`SqliteLedger::revoke_key`].
     fn revoke(&mut self, revocation: KeyRevocation) -> Result<(), KeysUnavailable> {
-        if !reason_valid(&revocation.reason) || revocation.actor.is_empty() {
+        // M5a-13 L9: the actor is the structured OS-peer document, never free text.
+        if !reason_valid(&revocation.reason) || OsActor::from_document(&revocation.actor).is_none()
+        {
             return Err(KeysUnavailable);
         }
         let at = revocation.revoked_at.to_string();
@@ -391,6 +402,13 @@ impl KeyRegistry for &SqliteLedger {
                         if p == revocation.purpose.as_str()
                             && d == revocation.material.as_str() => {}
                     _ => return Ok(End::Rollback(false)),
+                }
+                if other_purpose_revoked(
+                    tx,
+                    revocation.material.as_str(),
+                    revocation.purpose.as_str(),
+                )? {
+                    return Ok(End::Rollback(false));
                 }
                 if read_row(tx, "key_id", revocation.material.as_str())?.is_some() {
                     return Ok(End::Rollback(true));

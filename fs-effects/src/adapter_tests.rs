@@ -1018,3 +1018,130 @@ fn release_refuses_while_an_op_on_the_target_is_unresolved() {
         Some(Refusal::DispositionPrecondition)
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// M5a-13 (L2 and the lead-flagged items of M5a-09).
+
+/// Lead-flagged item 5: recovery with a missing parent directory treats the target as
+/// absent. That is sound by the table: with no file step it is R1a, with only the staged
+/// file it is R5 (the staged file is still under its recorded identity), and after a rename
+/// whose parent then vanished (the renamed file with it) it is R7 (unknown, tainted); a
+/// missing parent never completes an op and never fails one whose rename happened.
+#[test]
+fn recovery_with_a_missing_parent_directory_never_invents_progress() {
+    let env = Env::new("noparent");
+    let s = env.stores();
+    let a = env.adapter(&s).unwrap();
+    let b = broker(&s, &a);
+    let busy = FaultCode::Busy;
+    for d in ["g1", "g2", "g3"] {
+        mkdir(&env.tree(d), 0o755);
+    }
+    // Intent only, then the parent is removed: R1a (failed, nothing happened).
+    a.journal()
+        .inject(fault("fs_intent", FaultStage::CommitDone, busy));
+    let e1 = exec(&b, &env.create("m1", "g1/x.txt", "a.txt"));
+    std::fs::remove_dir(env.tree("g1")).unwrap();
+    // Staged (T-staged committed), then the parent is removed: R5.
+    a.journal()
+        .inject(fault("fs_staged", FaultStage::CommitDone, busy));
+    let e2 = exec(&b, &env.create("m2", "g2/x.txt", "a.txt"));
+    std::fs::remove_dir(env.tree("g2")).unwrap();
+    // Renamed and verified but T-outcome lost, then the parent and the file are removed: R7.
+    a.journal()
+        .inject(fault("fs_outcome", FaultStage::CommitLost, busy));
+    let e3 = exec(&b, &env.create("m3", "g3/x.txt", "a.txt"));
+    assert!(env.tree("g3/x.txt").exists());
+    std::fs::remove_dir_all(env.tree("g3")).unwrap();
+    let mut rows = a.recover().unwrap();
+    rows.sort();
+    let mut want = vec![
+        (format!("fsop-{}", permit(&e1)), "R1a"),
+        (format!("fsop-{}", permit(&e2)), "R5"),
+        (format!("fsop-{}", permit(&e3)), "R7"),
+    ];
+    want.sort();
+    assert_eq!(rows, want);
+    assert_eq!(journal_of(&a, &permit(&e3)).1.unwrap().result, "unknown");
+    assert!(target_row(&a, "g3/x.txt").unwrap().tainted);
+    assert_eq!(journal_of(&a, &permit(&e2)).1.unwrap().result, "failed");
+}
+
+/// Lead-flagged item 7: a non-regular target is recorded with its file type for audit.
+#[test]
+fn a_non_regular_target_is_recorded_with_its_type() {
+    let env = Env::new("othertype");
+    let s = env.stores();
+    let a = env.adapter(&s).unwrap();
+    let b = broker(&s, &a);
+    let t = env.tree("sub/o.txt");
+    // After the rename, the target is replaced by a directory: R7 records `other:dir`.
+    hook(&a, Boundary::B8, move || {
+        std::fs::remove_file(&t).unwrap();
+        std::fs::create_dir(&t).unwrap();
+    });
+    let e = exec(&b, &env.create("o1", "sub/o.txt", "a.txt"));
+    a.set_hook(None);
+    let outcome = journal_of(&a, &permit(&e)).1.unwrap();
+    let after = outcome.target_identity_after.unwrap();
+    assert!(after.starts_with("other:dir uid="), "{after}");
+}
+
+/// L2: an existing mark file is rewritten with the current boot id (a mark of an earlier
+/// boot that outlived it never hides a mark of this boot), atomically.
+#[test]
+fn an_existing_mark_file_is_rewritten_with_the_current_boot_id() {
+    let env = Env::new("remark");
+    let mark = env
+        .cfg
+        .state_dir
+        .join(format!("fs-unrecoverable-{}", env.cfg.root_id));
+    std::fs::write(&mark, "boot-of-yesterday\nold\n").unwrap();
+    assert_eq!(
+        crate::mark_file_boot(&env.cfg).as_deref(),
+        Some("boot-of-yesterday")
+    );
+    let s = env.stores();
+    // A mark of another boot does not refuse the open.
+    let a = env.adapter(&s).unwrap();
+    drop(a);
+    let now = writ_hostsys::fsfx::boot_id().unwrap();
+    crate::write_mark_file(&env.cfg, &now, "lost\u{7}").unwrap();
+    assert_eq!(
+        crate::mark_file_boot(&env.cfg).as_deref(),
+        Some(now.as_str())
+    );
+    assert_eq!(
+        std::fs::read_to_string(&mark).unwrap(),
+        format!("{now}\nlost\n")
+    );
+    let names: Vec<String> = std::fs::read_dir(&env.cfg.state_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, vec![format!("fs-unrecoverable-{}", env.cfg.root_id)]);
+    assert_eq!(
+        env.adapter(&s).err().map(|e| e.code().to_string()),
+        Some(crate::ROOT_UNRECOVERABLE.to_string())
+    );
+}
+
+/// L2: the state directory's boot scope is checked and, when it is not a tmpfs under
+/// `/run`, the reason is kept for audit.
+#[test]
+fn the_state_directory_boot_scope_is_recorded() {
+    use std::path::Path;
+    const TMPFS: u64 = 0x0102_1994;
+    assert_eq!(crate::boot_scope(Path::new("/run/writ/state"), TMPFS), None);
+    assert!(crate::boot_scope(Path::new("/run/writ/state"), 0xEF53)
+        .unwrap()
+        .contains("not on tmpfs"));
+    assert!(crate::boot_scope(Path::new("/tmp/state"), TMPFS)
+        .unwrap()
+        .contains("outside /run"));
+    let env = Env::new("scope");
+    let s = env.stores();
+    let a = env.adapter(&s).unwrap();
+    // The test state directory lives under the temporary directory, never /run.
+    assert!(a.state_dir_not_boot_scoped().is_some());
+}

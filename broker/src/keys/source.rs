@@ -15,6 +15,7 @@ use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::Duration;
+use writ_kernel::json::{self, Value};
 use writ_kernel::time::Timestamp;
 
 /// Longest key id in bytes.
@@ -342,6 +343,18 @@ pub trait KeySource {
         now: Timestamp,
         lifetime: Duration,
     ) -> Result<(KeyId, &Material), KeysUnavailable>;
+
+    /// The J-3 issuing rule for one configured key `id` (a seal's binding
+    /// names its ingress key, J-6): `id` must be of `purpose`, not revoked,
+    /// valid at `now`, and its `not_after` at least `now + lifetime + margin`;
+    /// otherwise [`KeysUnavailable`] (M5a-13 L9).
+    fn issuing_named_key(
+        &self,
+        purpose: KeyPurpose,
+        id: &KeyId,
+        now: Timestamp,
+        lifetime: Duration,
+    ) -> Result<&Material, KeysUnavailable>;
 }
 
 /// What the key registry says about a key presented at load.
@@ -373,6 +386,48 @@ pub struct KeyRevocation {
     pub actor: String,
     /// Free-text reason (never material).
     pub reason: String,
+}
+
+/// The authenticated OS peer that recorded a key revocation (J-11.8 audit
+/// provenance). It proves an OS principal only (M5-D7), never a human; the pid
+/// is recorded for audit only. M5a-13 L9: every revocation path records this
+/// structured actor, never free text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OsActor {
+    /// The peer uid from `SO_PEERCRED`.
+    pub uid: u32,
+    /// The peer pid from `SO_PEERCRED` (audit only).
+    pub pid: i32,
+}
+
+impl OsActor {
+    /// The canonical actor document recorded in `key_revocations.actor`.
+    pub fn document(&self) -> Option<String> {
+        json::canonical(&json::obj([
+            ("principal_kind", json::s("os")),
+            ("os_principal", json::s(&format!("uid:{}", self.uid))),
+            ("verified_by", json::s("so_peercred")),
+            ("endpoint", json::s("admin.sock")),
+            ("pid", Value::Int(i64::from(self.pid))),
+        ]))
+        .ok()
+    }
+
+    /// The actor a canonical document records; `None` unless `text` is exactly
+    /// [`OsActor::document`] of some actor.
+    pub fn from_document(text: &str) -> Option<OsActor> {
+        let v = json::parse(text.as_bytes()).ok()?;
+        let m = v.as_obj()?;
+        let uid = m
+            .get("os_principal")?
+            .as_str()?
+            .strip_prefix("uid:")?
+            .parse()
+            .ok()?;
+        let pid = i32::try_from(m.get("pid")?.as_int()?).ok()?;
+        let actor = OsActor { uid, pid };
+        (actor.document()?.as_str() == text).then_some(actor)
+    }
 }
 
 /// The revocation lookup used at use time, inside the ledger transaction that
@@ -431,6 +486,22 @@ pub fn issuing_key_at_use<'a>(
         return Err(KeysUnavailable);
     }
     Ok((id, m))
+}
+
+/// [`KeySource::issuing_named_key`] followed by the ledger revocation lookup.
+pub fn issuing_named_key_at_use<'a>(
+    source: &'a dyn KeySource,
+    revocations: &dyn KeyRevocations,
+    purpose: KeyPurpose,
+    id: &KeyId,
+    now: Timestamp,
+    lifetime: Duration,
+) -> Result<&'a Material, KeysUnavailable> {
+    let m = source.issuing_named_key(purpose, id, now, lifetime)?;
+    if revocations.is_revoked(id, m.digest())? {
+        return Err(KeysUnavailable);
+    }
+    Ok(m)
 }
 
 /// An in-memory [`KeyRegistry`] with the ledger's semantics. Test and harness
@@ -700,6 +771,28 @@ impl KeySource for MemoryKeySource {
             self.margin_seconds,
         )
     }
+
+    fn issuing_named_key(
+        &self,
+        purpose: KeyPurpose,
+        id: &KeyId,
+        now: Timestamp,
+        lifetime: Duration,
+    ) -> Result<&Material, KeysUnavailable> {
+        if self.unavailable {
+            return Err(KeysUnavailable);
+        }
+        select_issuing(
+            self.keys
+                .get_key_value(id)
+                .map(|(id, (m, v))| (id, m, v, self.revoked.contains(id))),
+            purpose,
+            now,
+            lifetime,
+            self.margin_seconds,
+        )
+        .map(|(_, m)| m)
+    }
 }
 
 #[cfg(test)]
@@ -944,6 +1037,23 @@ mod tests {
         ));
         assert!(s.issuing_key(KeyPurpose::Ingress, now, ttl).is_err());
         assert_eq!(whole_seconds_up(Duration::from_millis(30_001)), 31);
+    }
+
+    #[test]
+    fn os_actor_documents_round_trip_and_free_text_is_refused() {
+        let a = OsActor { uid: 0, pid: 42 };
+        let doc = a.document().unwrap();
+        assert_eq!(OsActor::from_document(&doc), Some(a));
+        for bad in [
+            "uid:0",
+            "operator",
+            "{}",
+            r#"{"os_principal":"uid:0","pid":1}"#,
+            &doc.replace("admin.sock", "host.sock"),
+            &doc.replace("\"os\"", "\"human\""),
+        ] {
+            assert_eq!(OsActor::from_document(bad), None, "{bad}");
+        }
     }
 
     #[test]

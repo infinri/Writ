@@ -12,6 +12,8 @@ use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use writ_broker::keys::{MaterialDigest, MemoryKeyRegistry};
 
+const ACTOR: OsActor = OsActor { uid: 0, pid: 1 };
+
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 const NB: &str = "2026-11-01T00:00:00Z";
@@ -447,10 +449,10 @@ fn revoked_ids_and_revoked_material_are_refused_at_load() {
     let m = canary(1);
     f.key("permit/k1", &m);
     let mut reg = MemoryKeyRegistry::new();
-    let mut s = FileKeySource::load(&f.config(), &mut reg).unwrap();
+    let s = FileKeySource::load(&f.config(), &mut reg).unwrap();
     assert!(active(&s, "permit/k1"));
     let r = s
-        .revoke(&mut reg, &id("permit/k1"), now(), "uid:0", "rotation test")
+        .revoke(&mut reg, &id("permit/k1"), now(), &ACTOR, "rotation test")
         .unwrap();
     assert_eq!(r.material, MaterialDigest::of(&m));
     assert!(matches!(
@@ -458,7 +460,7 @@ fn revoked_ids_and_revoked_material_are_refused_at_load() {
         Ok(KeyStatus::Revoked)
     ));
     assert_eq!(
-        s.revoke(&mut reg, &id("permit/zz"), now(), "uid:0", "x")
+        s.revoke(&mut reg, &id("permit/zz"), now(), &ACTOR, "x")
             .err(),
         Some(RevokeError::Unknown)
     );
@@ -509,12 +511,12 @@ fn unavailable_registry_fails_the_load() {
         FileKeySource::load(&f.config(), &mut reg).err(),
         Some(DirRefusal::Registry)
     );
-    let mut s = {
+    let s = {
         let mut ok = MemoryKeyRegistry::new();
         FileKeySource::load(&f.config(), &mut ok).unwrap()
     };
     assert_eq!(
-        s.revoke(&mut reg, &id("permit/k1"), now(), "uid:0", "x")
+        s.revoke(&mut reg, &id("permit/k1"), now(), &ACTOR, "x")
             .err(),
         Some(RevokeError::Unavailable)
     );
@@ -817,12 +819,12 @@ fn rotation_overlap_and_issuing_selection() {
     );
     // A revoked key is never selected.
     let mut reg = MemoryKeyRegistry::new();
-    let mut s = FileKeySource::load(&f.config(), &mut reg).unwrap();
+    let s = FileKeySource::load(&f.config(), &mut reg).unwrap();
     s.revoke(
         &mut reg,
         &id("permit/2026-11-b"),
         t("2026-11-16T00:00:00Z"),
-        "uid:0",
+        &ACTOR,
         "x",
     )
     .unwrap();
@@ -901,4 +903,95 @@ fn material_never_appears_in_debug_or_diagnostics() {
         );
     }
     assert!(out.contains("redacted"));
+}
+
+/// M5a-13 L9: a revocation recorded in the ledger by another path (`admin.sock`) reaches
+/// the loaded source, so issuing falls back to a valid older key instead of selecting the
+/// revoked one (which `issuing_key_at_use` would refuse).
+#[test]
+fn ledger_revocations_reach_the_source_and_issuing_falls_back() {
+    use writ_broker::keys::{issuing_key_at_use, KeyRegistry, KeyRevocation, KeyRevocations};
+    let f = Fixture::new("sync");
+    let (a, b) = (canary(1), canary(2));
+    f.key_window(
+        "permit/old",
+        "2026-01-01T00:00:00Z",
+        "2027-01-01T00:00:00Z",
+        &a,
+    );
+    f.key_window(
+        "permit/new",
+        "2026-06-01T00:00:00Z",
+        "2027-01-01T00:00:00Z",
+        &b,
+    );
+    let mut reg = MemoryKeyRegistry::new();
+    let s = FileKeySource::load(&f.config(), &mut reg).unwrap();
+    let at = t("2026-11-16T00:00:00Z");
+    let ttl = Duration::from_secs(30);
+    assert_eq!(
+        s.issuing_key(KeyPurpose::Permit, at, ttl).map(|(k, _)| k),
+        Ok(id("permit/new"))
+    );
+    // The ledger records the revocation without this source (as admin.sock does).
+    reg.revoke(KeyRevocation {
+        key_id: id("permit/new"),
+        material: MaterialDigest::of(&b),
+        purpose: KeyPurpose::Permit,
+        revoked_at: at,
+        actor: ACTOR.document().unwrap(),
+        reason: "compromised".into(),
+    })
+    .unwrap();
+    assert!(reg
+        .is_revoked(&id("permit/new"), &MaterialDigest::of(&b))
+        .unwrap());
+    // Before the sync: the revoked key is still selected and issuing refuses.
+    assert!(issuing_key_at_use(&s, &reg, KeyPurpose::Permit, at, ttl).is_err());
+    assert_eq!(s.sync_revocations(&reg), Ok(1));
+    assert_eq!(s.sync_revocations(&reg), Ok(0));
+    assert_eq!(
+        issuing_key_at_use(&s, &reg, KeyPurpose::Permit, at, ttl).map(|(k, _)| k),
+        Ok(id("permit/old"))
+    );
+    assert!(matches!(
+        s.key(KeyPurpose::Permit, &id("permit/new"), at),
+        Ok(KeyStatus::Revoked)
+    ));
+    // An unavailable ledger marks nothing.
+    reg.set_unavailable(true);
+    assert!(s.sync_revocations(&reg).is_err());
+}
+
+/// M5a-13 L9: the J-3 issuing rule for one named key (seals).
+#[test]
+fn a_named_key_issues_only_within_its_window_and_margin() {
+    let f = Fixture::new("named");
+    f.key_window(
+        "ingress/k1",
+        "2026-01-01T00:00:00Z",
+        "2026-11-16T00:02:00Z",
+        &canary(4),
+    );
+    let s = f.load_ok();
+    let ttl = Duration::from_secs(30);
+    let k = id("ingress/k1");
+    // not_after must be at least now + 30 s + 60 s.
+    assert!(s
+        .issuing_named_key(KeyPurpose::Ingress, &k, t("2026-11-16T00:00:30Z"), ttl)
+        .is_ok());
+    assert!(s
+        .issuing_named_key(KeyPurpose::Ingress, &k, t("2026-11-16T00:00:31Z"), ttl)
+        .is_err());
+    assert!(s
+        .issuing_named_key(KeyPurpose::Permit, &k, t("2026-11-16T00:00:00Z"), ttl)
+        .is_err());
+    assert!(s
+        .issuing_named_key(
+            KeyPurpose::Ingress,
+            &id("ingress/k2"),
+            t("2026-11-16T00:00:00Z"),
+            ttl
+        )
+        .is_err());
 }

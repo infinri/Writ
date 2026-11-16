@@ -108,7 +108,7 @@ impl Env {
             "service":{{"uid":{svc},"gid":{gid}}},
             "identities":{{"agent_uids":[{OTHER_UID}],"desktop_uids":[4000100],"job_uid":4000200}},
             "ledger":"{ledger}","snapshots":"{snaps}","keys":{{"dir":"{keys}"}},
-            "sockets":{{"host":"{host}","admin":"{adm}","activation":"{activation}"}},
+            "sockets":{{"host":"{host}","admin":"{adm}","activation":"{activation}","host_gid":{gid}}},
             "host_bindings":[{{"uid":{OTHER_UID},"tenant_id":"acme","project_id":"web","principal_id":"agent:writ-agent","roles":["agent"],"adapter_id":"writ-host-adapter:cli","ingress_key_id":"ingress/k1"}}],
             "admin_uids":[0],
             "shutdown":{{"drain_seconds":{drain}}},

@@ -156,7 +156,7 @@ use crate::execute::Broker;
 use crate::grants::{GrantLabel, ReserveRequest};
 use crate::human::SubjectId;
 use crate::ingress::VerifiedRequest;
-use crate::keys::{AcceptanceKeyRing, RunnerKeyRing};
+use crate::keys::{AcceptanceKeyRing, MaterialDigest, RunnerKeyRing};
 use crate::refusal::{ConflictStage, Refusal};
 use crate::store::{ExecuteLedger, LedgerStore, StoreError, TxFailure, TxStage};
 
@@ -400,6 +400,32 @@ impl<'a> PromotionIntent<'a> {
         self.protected
             .as_ref()
             .map_or_else(Vec::new, |p| p.record.signoff_ids())
+    }
+
+    /// The keys that authenticated the protected inputs, as `(key id,
+    /// material digest, refusal)`: the record's key first, then each
+    /// attestation's (J-3). The ledger looks every one up in `key_revocations`
+    /// inside the promotion transaction (no cache) and refuses with the given
+    /// code when the id or material was revoked, so a revocation recorded over
+    /// `admin.sock` stops promotion at once even though the in-memory key
+    /// source still holds the key.
+    pub fn signing_keys(&self) -> Vec<(&str, &MaterialDigest, Refusal)> {
+        let Some(p) = &self.protected else {
+            return Vec::new();
+        };
+        let mut keys = vec![(
+            p.record.key_id(),
+            p.record.key_digest(),
+            acceptance(AcceptanceCode::RecordUnauthenticated),
+        )];
+        for a in p.attestations {
+            keys.push((
+                a.key_id(),
+                a.key_digest(),
+                acceptance(AcceptanceCode::AttestationUnauthenticated),
+            ));
+        }
+        keys
     }
 
     /// The promotion's requester and agent (excluded signers, O-7).

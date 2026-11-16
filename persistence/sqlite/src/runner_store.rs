@@ -34,7 +34,7 @@ use std::sync::Mutex;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior};
 use writ_broker::effects::{VerifiedEffect, Verify};
-use writ_broker::process::OwnerLock;
+use writ_broker::lifecycle::OwnerLock;
 use writ_broker::refusal::Refusal;
 use writ_broker::runner::{RunOutcome, RunRecord, RunState, RunnerState, RunnerStore};
 use writ_broker::store::{StoreError, TxFailure};

@@ -90,7 +90,7 @@ use writ_ledger_sqlite::{
     SqliteSnapshotStore,
 };
 use writ_rpc::admission::{AdmissionTable, Endpoint, PeerCred};
-use writ_rpc::frame::{read_frame, write_control, Frame, FrameError, FrameLimits};
+use writ_rpc::frame::{read_frame_timed, write_control, Frame, FrameError, FrameLimits, TimedRead};
 use writ_rpc::ConnectionCaps;
 
 use crate::config::{HostBinding, ServiceConfig};
@@ -245,9 +245,11 @@ impl Service {
         self.sweep.as_ref()
     }
 
-    /// `true` while the deployment proof exists and holds (rechecked here).
+    /// `true` while the deployment proof exists, holds (rechecked here) and is current.
     pub fn deployment_verified(&self) -> bool {
-        self.deployment.as_ref().is_some_and(|d| d.recheck())
+        self.deployment
+            .as_ref()
+            .is_some_and(|d| d.recheck() && d.is_current())
     }
 
     /// Trusted time now (raises the ledger floor; D-021).
@@ -417,6 +419,9 @@ impl Service {
                 "an approval socket was received but no approval listener is configured".into(),
             ));
         }
+        if let Some(proof) = &service.deployment {
+            threads.push(recheck_timer(Arc::clone(proof), Arc::clone(&stop)));
+        }
         for (listener, table, endpoint) in [
             (host, host_table, Endpoint::Host),
             (admin, admin_table, Endpoint::Admin),
@@ -443,6 +448,31 @@ impl Service {
             bound_self,
         })
     }
+}
+
+/// The periodic deployment recheck (J-9; M5a-13 M5): every configured interval the proof is
+/// rechecked; a difference withdraws it for good. The proof is current only while its last
+/// passed check is no older than the interval ([`VerifiedDeployment::is_current`]), so the
+/// timer runs at half the interval and a stalled timer fails closed. The thread holds the
+/// proof only, never a store handle, and ends at the stop flag.
+fn recheck_timer(proof: Arc<VerifiedDeployment>, stop: Arc<AtomicBool>) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let period = (proof.recheck_interval() / 2).max(Duration::from_millis(10));
+        let mut next = Instant::now() + period;
+        while !stop.load(Ordering::SeqCst) {
+            if Instant::now() >= next {
+                if !proof.recheck() {
+                    eprintln!(
+                        "writ-serviced: deployment proof withdrawn: {:?}",
+                        proof.withdrawn_because()
+                    );
+                    return;
+                }
+                next = Instant::now() + period;
+            }
+            thread::sleep(Duration::from_millis(50).min(period));
+        }
+    })
 }
 
 /// Where the service's sockets come from (J-8).
@@ -498,8 +528,10 @@ impl Inherited {
                     check_listening(&fd, ListenKind::UnixStream)
                         .map_err(|e| refused(format!("{name}: {:?}", e.kind())))?;
                     let l = UnixListener::from(fd);
+                    // M5a-13 L10: the received host.sock's group is verified too (J-1:
+                    // `writ:writ-agents` 0660; `sockets.host_gid` is required with activation).
                     let (path, mode, gid) = if name == "host" {
-                        (&config.host_socket, 0o660, None)
+                        (&config.host_socket, 0o660, config.host_socket_gid)
                     } else {
                         (&config.admin_socket, 0o600, Some(config.service_gid))
                     };
@@ -544,7 +576,7 @@ fn verify_unix(
     }
     if m.mode() & 0o7777 != mode || m.uid() != uid || gid.is_some_and(|g| m.gid() != g) {
         return Err(format!(
-            "owner {}:{} mode {:o}, required uid {uid} mode {mode:o}",
+            "owner {}:{} mode {:o}, required uid {uid} gid {gid:?} mode {mode:o}",
             m.uid(),
             m.gid(),
             m.mode() & 0o7777
@@ -831,6 +863,22 @@ impl Acceptor {
     }
 }
 
+/// The receive side of an admitted connection: no ancillary data ([`PlainReader`]) and a
+/// settable read timeout ([`TimedRead`]).
+struct Peer<'a>(&'a UnixStream);
+
+impl io::Read for Peer<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        PlainReader(self.0).read(buf)
+    }
+}
+
+impl TimedRead for Peer<'_> {
+    fn set_read_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+        self.0.set_read_timeout(Some(timeout))
+    }
+}
+
 /// What a handled request does to its connection.
 enum Next {
     Continue(Option<Value>),
@@ -874,9 +922,6 @@ fn serve_connection(
     let limits = service.config.limits;
     if stream.set_nonblocking(false).is_err()
         || stream
-            .set_read_timeout(Some(Duration::from_secs(limits.idle_seconds)))
-            .is_err()
-        || stream
             .set_write_timeout(Some(Duration::from_secs(limits.request_seconds)))
             .is_err()
     {
@@ -893,8 +938,12 @@ fn serve_connection(
         ingest: None,
     };
     let mut writer = &stream;
+    let idle = Duration::from_secs(limits.idle_seconds);
+    let request = Duration::from_secs(limits.request_seconds);
     loop {
-        let frame = read_frame(&mut PlainReader(&stream), &frame_limits);
+        // J-2 (M5a-13 L10): the idle deadline between frames and a per-request deadline
+        // for the whole frame, so a slow-drip peer cannot hold a cap slot.
+        let frame = read_frame_timed(&mut Peer(&stream), &frame_limits, idle, request);
         if matches!(frame, Err(FrameError::Closed)) {
             return;
         }
@@ -1065,6 +1114,18 @@ impl Conn<'_> {
                             "writ-serviced: key revocation {} by uid {} reason {:?}",
                             row.revocation_id, actor.uid, row.reason
                         );
+                        // M5a-13 L9: the loaded key source stops using the revoked key, so
+                        // issuing falls back to a valid older key.
+                        if self
+                            .service
+                            .keys
+                            .sync_revocations(&*self.service.ledger)
+                            .is_err()
+                        {
+                            eprintln!(
+                                "writ-serviced: key source not synchronized with the revocation"
+                            );
+                        }
                         Next::Continue(Some(revocation_reply(&row)))
                     }
                     Ok(Err(r)) => Next::Continue(Some(refused(match r {
@@ -1116,4 +1177,103 @@ fn revocation_reply(row: &RevocationRow) -> Value {
             ]),
         ),
     ])
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use writ_broker::writ_kernel::json::Digest;
+    use writ_hostsys::deployment::{
+        observe, static_facts_value, DeploymentConfig, FactPlan, IdentityPlan, REQUIRED_SYSCTLS,
+    };
+
+    /// M5a-13 L10: a received Unix socket is verified for its group too.
+    #[test]
+    fn a_received_socket_with_another_group_is_refused() {
+        let d = std::env::temp_dir().join(format!("writ-service-gid-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let path = d.join("host.sock");
+        let l = UnixListener::bind(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660)).unwrap();
+        let m = std::fs::symlink_metadata(&path).unwrap();
+        assert_eq!(
+            verify_unix(&l, &path, 0o660, m.uid(), Some(m.gid())),
+            Ok(())
+        );
+        let wrong = verify_unix(&l, &path, 0o660, m.uid(), Some(m.gid().wrapping_add(1)));
+        assert!(wrong.unwrap_err().contains("owner"));
+        drop(l);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// M5a-13 M5: the recheck timer keeps a holding proof current past its interval, and a
+    /// changed fact is withdrawn by the timer without any request.
+    #[test]
+    fn the_recheck_timer_keeps_the_proof_current_and_withdraws_on_change() {
+        let d = std::env::temp_dir().join(format!("writ-service-timer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("state")).unwrap();
+        let state = d.join("state");
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(d.join("helper"), b"x").unwrap();
+        std::fs::write(
+            d.join("passwd"),
+            "human:x:1000:1000::/:/bin/sh\nwrit:x:990:990::/:/bin/false\n\
+             agent:x:1001:1001::/:/bin/sh\nwrit-job:x:992:992::/:/bin/false\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("group"),
+            "human:x:1000:\nwrit:x:990:\nagent:x:1001:\nwrit-agents:x:991:agent\nwrit-job:x:992:\n",
+        )
+        .unwrap();
+        let plan = FactPlan {
+            paths: vec![state.clone()],
+            sysctls: REQUIRED_SYSCTLS.iter().map(|s| s.to_string()).collect(),
+            binaries: vec![d.join("helper")],
+            groups: vec!["writ".into(), "writ-agents".into(), "writ-job".into()],
+            own_identity: true,
+            group_file: Some(d.join("group")),
+            identity: Some(IdentityPlan {
+                service_uid: 990,
+                service_gid: 990,
+                agent_uids: vec![1001],
+                job_uid: 992,
+                desktop_uids: vec![1000],
+                passwd_file: Some(d.join("passwd")),
+            }),
+            required_paths: vec![state.clone()],
+        };
+        let mut m = json::Map::new();
+        m.insert("contract".into(), json::s("writ-readiness/1"));
+        m.insert("governed_ready".into(), Value::Bool(true));
+        m.insert("blocking".into(), Value::Arr(vec![]));
+        m.insert(
+            "probes".into(),
+            Value::Arr(vec![json::obj([("status", json::s("ok"))])]),
+        );
+        m.insert("static_facts".into(), static_facts_value(&observe(&plan)));
+        let bytes = json::canonical(&Value::Obj(m)).unwrap().into_bytes();
+        std::fs::write(d.join("readiness.json"), &bytes).unwrap();
+        let proof = VerifiedDeployment::issue(DeploymentConfig {
+            report: d.join("readiness.json"),
+            report_digest: Digest::of_bytes(&bytes).to_string(),
+            plan,
+            recheck_interval: Duration::from_millis(200),
+        })
+        .unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let timer = recheck_timer(Arc::clone(&proof), Arc::clone(&stop));
+        thread::sleep(Duration::from_millis(700));
+        assert!(proof.is_current(), "rechecked by the timer");
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
+        thread::sleep(Duration::from_millis(400));
+        assert!(!proof.is_verified(), "withdrawn by the timer");
+        stop.store(true, Ordering::SeqCst);
+        timer.join().unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

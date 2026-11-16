@@ -137,9 +137,23 @@ class ThroughMembers(unittest.TestCase):
         self.assertEqual(check_deps.no_tokio_signal(ok), [])
         for bad in ("tokio::signal::ctrl_c()", "use tokio::signal::unix::{signal, SignalKind};",
                     "use tokio::{net, signal};", "use tokio::{\n  signal::unix,\n};", "use tokio::*;",
-                    "use ::tokio :: signal;", "use tokio as t;"):
+                    "use ::tokio :: signal;", "use tokio as t;",
+                    # M5a-13 L11: renames, globs and `self` inside a group would hide a later use.
+                    "use tokio::{self as t};", "use tokio::{net, self as rt};", "use tokio::{self};",
+                    "use tokio::{net::{self as n}};", "use tokio::{*};", "extern crate tokio as t;"):
             with self.subTest(bad=bad):
                 self.assertNotEqual(check_deps.no_tokio_signal(bad), [])
+
+    # M5a-13 L11: a scanned crate may not take code from outside its scanned tree.
+    def test_path_attributes_and_include_are_refused(self):
+        ok = ('let s = include_str!("x.txt"); let b = include_bytes!("y");\n'
+              '// #[path = "elsewhere.rs"] in a comment; include!("x") too\nlet t = "#[path = \\"a\\"]";\n')
+        self.assertEqual(check_deps.no_path_or_include(ok), [])
+        for bad in ('#[path = "../other/x.rs"]\nmod x;', "#![path = \"y\"]", 'include!("gen.rs");',
+                    "include ! (concat!(env!(\"OUT_DIR\"), \"/g.rs\"));"):
+            with self.subTest(bad=bad):
+                self.assertNotEqual(check_deps.no_path_or_include(bad), [])
+
 
     def test_manifest_features_are_checked_per_member(self):
         good = '[dependencies]\nrustix = { version = "=1.1.6", default-features = false, features = ["time"] }\n'
@@ -152,6 +166,116 @@ class ThroughMembers(unittest.TestCase):
     def test_this_repository_passes_the_source_rules(self):
         self.assertEqual(check_deps.source_rules(check_deps.ROOT), [])
 
+
+def fake_workspace(tmp: Path, files: dict) -> Path:
+    """A minimal workspace: `writ-service` (lib and main) depending on `writ-hostsys` and
+    `writ-broker`, with the given extra source files (path -> text)."""
+    base = {
+        "Cargo.toml": '[workspace]\nmembers = ["service", "hostsys", "broker"]\n',
+        "service/Cargo.toml": '[package]\nname = "writ-service"\n[dependencies]\n'
+                              'writ-hostsys = { path = "../hostsys" }\nwrit-broker = { path = "../broker" }\n',
+        "hostsys/Cargo.toml": '[package]\nname = "writ-hostsys"\n',
+        "broker/Cargo.toml": '[package]\nname = "writ-broker"\n',
+        "service/src/lib.rs": "pub mod daemon;\n",
+        "service/src/daemon.rs": "use writ_hostsys::sock::peer;\n",
+        "service/src/main.rs": "fn main() { writ_service::daemon::run(); }\n",
+        "hostsys/src/lib.rs": "pub mod sock;\npub mod exec;\npub mod deny;\npub mod probes;\n",
+        "hostsys/src/sock.rs": "pub fn peer() {}\n",
+        "hostsys/src/exec.rs": "use std::process::Command;\npub fn run() { Command::new(\"x\"); }\n",
+        "hostsys/src/probes.rs": "use crate::exec;\npub fn o() {}\n",
+        "hostsys/src/deny.rs": "use crate::probes::o;\npub fn acls() {}\n",
+        "broker/src/lib.rs": "pub mod lifecycle;\npub mod process;\npub mod util;\n",
+        "broker/src/lifecycle.rs": "pub struct OwnerLock;\n",
+        "broker/src/process.rs": "pub use crate::lifecycle::OwnerLock;\npub fn spawn() { std::process::Command::new(\"x\"); }\n",
+        "broker/src/util.rs": "pub fn f() {}\n",
+    }
+    base.update(files)
+    for rel, text in base.items():
+        path = tmp / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    return tmp
+
+
+class SpawnReachability(unittest.TestCase):
+    """M5a-13 M3: writ-serviced spawns no child processes (lead decision after M5a-11)."""
+
+    def run_rule(self, files: dict) -> list:
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            root = fake_workspace(Path(d), files)
+            return check_deps.spawn_reachability(root)
+
+    def test_a_clean_service_passes(self):
+        self.assertEqual(self.run_rule({}), [])
+
+    def test_this_repository_passes(self):
+        self.assertEqual(check_deps.spawn_reachability(check_deps.ROOT), [])
+
+    def test_spawn_primitives_and_forbidden_modules_are_refused_wherever_reachable(self):
+        cases = {
+            "direct Command in the service": {"service/src/daemon.rs": "use std::process::Command;\n"},
+            "Command::new by path": {"service/src/main.rs": "fn main() { std::process::Command::new(\"sh\"); }\n"},
+            "grouped import": {"service/src/daemon.rs": "use std::{io, process::{Command, Stdio}};\n"},
+            "CommandExt": {"service/src/daemon.rs": "use std::os::unix::process::CommandExt;\n"},
+            "rustix fork": {"service/src/daemon.rs": "fn f() { let _ = rustix::runtime::kernel_fork(); }\n"},
+            "hostsys exec module": {"service/src/daemon.rs": "use writ_hostsys::exec;\n"},
+            "hostsys exec through a group": {"service/src/daemon.rs": "use writ_hostsys::{sock, exec::run};\n"},
+            "through deny and probes": {"service/src/daemon.rs": "use writ_hostsys::deny::acls;\n"},
+            "broker process spawn": {"service/src/daemon.rs": "fn f() { writ_broker::process::spawn(); }\n"},
+            "transitive through another module": {
+                "broker/src/util.rs": "use super::process;\npub fn f() {}\n",
+                "service/src/daemon.rs": "use writ_broker::util::f;\n"},
+            "hidden in a submodule of the service": {
+                "service/src/daemon.rs": "mod inner;\n", "service/src/daemon/inner.rs": "use crate::x; fn g() { libc::fork(); }\n"},
+            "renamed import": {"service/src/daemon.rs": "use writ_hostsys::exec as e;\n"},
+        }
+        for name, files in cases.items():
+            with self.subTest(case=name):
+                self.assertNotEqual(self.run_rule(files), [], name)
+
+    def test_test_only_code_and_the_lock_module_are_not_counted(self):
+        files = {
+            "service/src/daemon.rs": "use writ_broker::lifecycle::OwnerLock;\n"
+                                     "#[cfg(test)]\nmod tests { use std::process::Command; use writ_hostsys::exec; }\n"
+                                     "#[cfg(test)]\nmod more;\n"
+                                     "// std::process::Command::new in a comment\nconst S: &str = \"Command::new\";\n",
+            "service/src/daemon/more.rs": "use std::process::Command;\n",
+            "broker/src/util.rs": "fn f(x: Vec<u8>) { let _ = x.clone(); let p = RegisteredCommand::new(); }\n",
+        }
+        self.assertEqual(self.run_rule(files), [])
+
+
+
+class MemoryKeys(unittest.TestCase):
+    """M5a-13 L9: the in-memory key types stay out of production sources."""
+
+    def run_rule(self, files: dict) -> list:
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            root = fake_workspace(Path(d), files)
+            return check_deps.no_memory_keys(root)
+
+    def test_this_repository_passes(self):
+        self.assertEqual(check_deps.no_memory_keys(check_deps.ROOT), [])
+
+    def test_production_use_is_refused_and_test_use_is_not(self):
+        for name, files in {
+            "service source": {"service/src/daemon.rs": "use writ_broker::keys::MemoryKeySource;\n"},
+            "hostsys module": {"hostsys/src/sock.rs": "fn f() { let r = MemoryKeyRing::new(); }\n"},
+            "nested module": {"service/src/daemon.rs": "mod inner;\n",
+                              "service/src/daemon/inner.rs": "type K = MemoryKeys<u8>;\n"},
+            "binary": {"service/src/bin/tool.rs": "fn main() { MemoryKeyRegistry::new(); }\n"},
+        }.items():
+            with self.subTest(case=name):
+                self.assertNotEqual(self.run_rule(files), [], name)
+        self.assertEqual(self.run_rule({
+            "service/src/daemon.rs": "#[cfg(test)]\nmod tests { use writ_broker::keys::MemoryKeySource; }\n"
+                                     "#[cfg(test)]\nmod fixtures;\n// MemoryKeyRing in a comment\n",
+            "service/src/daemon/fixtures.rs": "use writ_broker::keys::MemoryKeys;\n",
+            "service/tests/t.rs": "use writ_broker::keys::MemoryKeySource;\n",
+            "service/examples/e.rs": "use writ_broker::keys::MemoryKeyRing;\n",
+        }), [])
 
 if __name__ == "__main__":
     unittest.main()

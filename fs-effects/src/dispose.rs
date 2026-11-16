@@ -26,7 +26,6 @@ use std::sync::PoisonError;
 use writ_broker::refusal::Refusal;
 use writ_broker::store::TxFailure;
 use writ_broker::writ_kernel::json::{self, Value};
-use writ_hostsys::fsfx;
 use writ_ledger_sqlite::{DispositionRow, FsEnd, FsTx, FsTxError, OpState, OwnerRecord, TargetRow};
 
 use crate::{FsWriteAdapter, Parent, Slot};
@@ -46,6 +45,70 @@ pub struct WorkerGone {
     pub cgroup_only_self: bool,
     /// Current boot id.
     pub boot_id: String,
+}
+
+/// What `/proc/<pid>/stat` says about a process (M5a-13 L1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProcStart {
+    /// The process runs with this start time (clock ticks since boot, never 0 here).
+    Running(u64),
+    /// No such process: `/proc/<pid>` does not exist.
+    NoProcess,
+    /// `/proc/<pid>/stat` could not be read or parsed, or its start time is 0: nothing can
+    /// be concluded (fail closed).
+    Unknown,
+}
+
+/// Read the start time of `pid` (three states; module documentation of [`ProcStart`]).
+pub(crate) fn proc_start(pid: u32) -> ProcStart {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound || e.raw_os_error() == Some(3) => {
+            ProcStart::NoProcess
+        }
+        Err(_) => ProcStart::Unknown,
+        Ok(text) => text
+            .rfind(')')
+            .and_then(|i| text.get(i + 2..))
+            .and_then(|rest| rest.split(' ').nth(19))
+            .and_then(|f| f.parse::<u64>().ok())
+            .filter(|n| *n != 0)
+            .map_or(ProcStart::Unknown, ProcStart::Running),
+    }
+}
+
+/// Whether the journal owner before this instance is gone (J-11.9 worker-gone evidence;
+/// M5a-13 L1: fail closed). Gone: no previous owner; another boot; this same process (same
+/// pid and start time; the lead-flagged case of M5a-09, kept and recorded in the evidence);
+/// or, with `/proc` readable for this process, no process with that pid or one with another
+/// start time (pid reuse). **Not** gone: a recorded start time of 0 (the owner's start was
+/// unknown when it opened the journal), an unreadable or unparsable `/proc/<pid>/stat`, or a
+/// `/proc` that does not show this process itself (not mounted, or hidden).
+pub(crate) fn previous_owner_gone(
+    previous: Option<&OwnerRecord>,
+    boot_id: &str,
+    pid: u32,
+    probe: impl Fn(u32) -> ProcStart,
+) -> bool {
+    let Some(p) = previous else {
+        return true;
+    };
+    if p.boot_id != boot_id {
+        return true;
+    }
+    if p.start == 0 {
+        return false;
+    }
+    let ProcStart::Running(own) = probe(pid) else {
+        return false;
+    };
+    if p.pid == pid {
+        return p.start == own;
+    }
+    match probe(p.pid) {
+        ProcStart::NoProcess => true,
+        ProcStart::Running(start) => start != p.start,
+        ProcStart::Unknown => false,
+    }
 }
 
 /// What an Operator decides on for one target (J-11.9 binding inputs).
@@ -185,14 +248,8 @@ impl FsWriteAdapter<'_> {
     fn worker_gone(&self, ops: &[(String, u64, OpState)]) -> WorkerGone {
         let pid = std::process::id();
         let previous = self.journal.previous_owner().cloned();
-        let previous_owner_gone = match &previous {
-            None => true,
-            Some(p) => {
-                p.boot_id != self.boot_id
-                    || (p.pid == pid && Some(p.start) == fsfx::process_start(pid))
-                    || fsfx::process_start(p.pid) != Some(p.start)
-            }
-        };
+        let previous_owner_gone =
+            previous_owner_gone(previous.as_ref(), &self.boot_id, pid, proc_start);
         let cgroup_only_self = self
             .cfg
             .service_cgroup_procs
@@ -319,5 +376,109 @@ impl FsWriteAdapter<'_> {
             out.push((d.disposition_id, done));
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    fn owner(pid: u32, start: u64, boot: &str) -> OwnerRecord {
+        OwnerRecord {
+            pid,
+            start,
+            boot_id: boot.into(),
+        }
+    }
+
+    /// M5a-13 L1: an unreadable `/proc/<pid>/stat` or a start time of 0 is not "gone".
+    #[test]
+    fn previous_owner_gone_fails_closed() {
+        let me = 100;
+        let probe = |table: Vec<(u32, ProcStart)>| {
+            move |pid: u32| {
+                table
+                    .iter()
+                    .find(|(p, _)| *p == pid)
+                    .map_or(ProcStart::NoProcess, |(_, s)| *s)
+            }
+        };
+        let normal = || {
+            probe(vec![
+                (me, ProcStart::Running(500)),
+                (7, ProcStart::Running(9)),
+            ])
+        };
+        assert!(previous_owner_gone(None, "b", me, normal()));
+        assert!(previous_owner_gone(
+            Some(&owner(7, 9, "old")),
+            "b",
+            me,
+            normal()
+        ));
+        // Running with the recorded start time: not gone.
+        assert!(!previous_owner_gone(
+            Some(&owner(7, 9, "b")),
+            "b",
+            me,
+            normal()
+        ));
+        // Pid reused (another start time) or no such process: gone.
+        assert!(previous_owner_gone(
+            Some(&owner(7, 8, "b")),
+            "b",
+            me,
+            normal()
+        ));
+        assert!(previous_owner_gone(
+            Some(&owner(8, 8, "b")),
+            "b",
+            me,
+            normal()
+        ));
+        // This same process.
+        assert!(previous_owner_gone(
+            Some(&owner(me, 500, "b")),
+            "b",
+            me,
+            normal()
+        ));
+        assert!(!previous_owner_gone(
+            Some(&owner(me, 499, "b")),
+            "b",
+            me,
+            normal()
+        ));
+        // Fail closed: recorded start 0, unreadable stat, /proc not showing this process.
+        assert!(!previous_owner_gone(
+            Some(&owner(8, 0, "b")),
+            "b",
+            me,
+            normal()
+        ));
+        assert!(!previous_owner_gone(
+            Some(&owner(me, 0, "b")),
+            "b",
+            me,
+            normal()
+        ));
+        let unreadable = probe(vec![(me, ProcStart::Running(500)), (7, ProcStart::Unknown)]);
+        assert!(!previous_owner_gone(
+            Some(&owner(7, 9, "b")),
+            "b",
+            me,
+            unreadable
+        ));
+        let no_proc = probe(vec![]);
+        assert!(!previous_owner_gone(
+            Some(&owner(7, 9, "b")),
+            "b",
+            me,
+            no_proc
+        ));
+        // The real reader: this process runs; a pid beyond pid_max does not exist.
+        assert!(matches!(proc_start(std::process::id()), ProcStart::Running(n) if n > 0));
+        assert_eq!(proc_start(u32::MAX), ProcStart::NoProcess);
     }
 }
