@@ -22,6 +22,8 @@ options:
   --xdev-root DIR    (VM trial: DIR/root/mnt is a bind mount holding file f)
   --cgroup-delegated (reference VM only: the probe runs in its own delegated systemd unit)
   --service-pid N    --agent-report FILE  --canary-file FILE  --log-file FILE (repeatable)
+  --launcher-reports DIR (VM trial: job-identity.txt, job-deny.txt, launcher-admit.txt,
+                     job-serial.txt, fd-status.txt written through the job launcher)
 agent-deny only:
   --service-unit NAME (default writ.service)  --hardlink-source FILE  --extra-read FILE (repeatable)
   --desktop-uid N (C-1 option (a) only)";
@@ -63,6 +65,7 @@ fn parse(args: &[String]) -> Result<(String, Config, AgentOptions), String> {
             "--agent-report" => cfg.agent_report = Some(PathBuf::from(val()?)),
             "--canary-file" => cfg.canary_file = Some(PathBuf::from(val()?)),
             "--log-file" => cfg.log_files.push(PathBuf::from(val()?)),
+            "--launcher-reports" => cfg.launcher_reports = Some(PathBuf::from(val()?)),
             "--service-unit" => opt.service_unit = val()?,
             "--hardlink-source" => opt.hardlink_source = Some(PathBuf::from(val()?)),
             "--extra-read" => opt.extra_read.push(PathBuf::from(val()?)),

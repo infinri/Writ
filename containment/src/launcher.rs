@@ -101,6 +101,16 @@ fn timespec(deadline: Instant) -> Timespec {
     }
 }
 
+/// Whether the connection has data or EOF pending right now.
+pub fn readable_now(conn: &UnixStream) -> bool {
+    let mut fds = [PollFd::new(conn, PollFlags::IN)];
+    let zero = Timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    matches!(poll(&mut fds, Some(&zero)), Ok(n) if n > 0)
+}
+
 /// Write `bytes` to a non-blocking connection before `deadline`.
 pub fn send_all(conn: &mut UnixStream, mut bytes: &[u8], deadline: Instant) -> io::Result<()> {
     while !bytes.is_empty() {
@@ -329,6 +339,11 @@ pub fn serve(paths: &Paths) -> Exit {
             return Exit::Unavailable;
         }
     };
+    // Nothing may arrive before `hello` (P-LAUNCHER-ADMIT "request before hello").
+    if readable_now(&conn) {
+        log("bytes before hello: closed");
+        return Exit::Ok;
+    }
     let now = Instant::now();
     if send_control(&mut conn, &h.to_value(), now + cfg.deadlines.request).is_err() {
         return Exit::Ok;
@@ -635,6 +650,12 @@ impl Job<'_> {
                 let verified = cg.job_procs().map_err(|e| e.to_string()).and_then(|procs| {
                     identity::verify_job_set(&self.view(), &procs, direct, Some(pid), &expect)
                 });
+                if verified.is_ok() {
+                    // The trial records this line as P-JOB-IDENTITY `pre_verified=1`.
+                    log(&format!(
+                        "pre-gate verified: job {job_id} direct {direct} sandbox child {pid}"
+                    ));
+                }
                 match verified {
                     Err(why) => {
                         log(&format!("verification: {why}"));
@@ -948,6 +969,17 @@ mod tests {
         let (a, b) = UnixStream::pair().unwrap();
         drop(b);
         assert!(read_request(&a, Instant::now() + Duration::from_secs(2)).is_err());
+    }
+
+    #[test]
+    fn bytes_before_hello_are_detected() {
+        let (a, mut b) = UnixStream::pair().unwrap();
+        assert!(!readable_now(&a));
+        b.write_all(b"x").unwrap();
+        assert!(readable_now(&a));
+        let (a, b) = UnixStream::pair().unwrap();
+        drop(b);
+        assert!(readable_now(&a), "EOF before hello counts");
     }
 
     #[test]

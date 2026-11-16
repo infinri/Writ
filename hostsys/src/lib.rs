@@ -12,6 +12,8 @@
 //!   peer credentials, agent denial, secrets) and the J-1 layout facts.
 //! - [`facts`]: recorded host facts and versions.
 //! - [`agent`]: the agent-side attempts (`writ-probe agent-deny`).
+//! - [`jobprobes`]: the job-launcher probes (P-JOB-IDENTITY, P-JOB-DENY, P-LAUNCHER-ADMIT,
+//!   P-JOB-SERIAL, P-FD status pipe) evaluated from reference-VM trial reports.
 //! - [`exec`]: bounded child-process execution.
 //! - [`socket`]: peer credentials and receives that refuse ancillary data (J-2, J-11.2).
 //!
@@ -24,6 +26,7 @@ pub mod agent;
 pub mod deny;
 pub mod exec;
 pub mod facts;
+pub mod jobprobes;
 pub mod probes;
 pub mod readiness;
 pub mod socket;

@@ -61,6 +61,9 @@ pub struct Config {
     pub canary_file: Option<PathBuf>,
     /// Service log files (and exported journal entries) to scan for key material.
     pub log_files: Vec<PathBuf>,
+    /// Directory of the launcher probe reports written by the reference VM trial
+    /// ([`crate::jobprobes`]); without it the launcher probes are `missing`.
+    pub launcher_reports: Option<PathBuf>,
 }
 
 impl Config {
@@ -81,6 +84,7 @@ impl Config {
             agent_report: None,
             canary_file: None,
             log_files: Vec::new(),
+            launcher_reports: None,
         }
     }
 
@@ -113,6 +117,7 @@ impl Config {
             ),
             o("agent_report", opt(self.agent_report.as_deref())),
             o("canary_file", opt(self.canary_file.as_deref())),
+            o("launcher_reports", opt(self.launcher_reports.as_deref())),
         ];
         for (i, f) in self.log_files.iter().enumerate() {
             v.push(o(&format!("log_file_{i}"), p(f)));
@@ -814,8 +819,27 @@ pub fn probe_fd(cfg: &Config, userns_ok: bool) -> ProbeResult {
             )
         }
     };
-    let pairs = kv(&out.stdout);
-    let (status, reason) = eval_fd(&pairs);
+    let mut pairs = kv(&out.stdout);
+    let (mut status, mut reason) = eval_fd(&pairs);
+    // Revision 6 (N4): the status-pipe part runs through the launcher in the reference VM.
+    let status_pipe = crate::jobprobes::fd_status(cfg);
+    match &status_pipe {
+        Some(e) => {
+            pairs.push(o("status_pipe", e.reason.clone()));
+            if status == Status::Ok && e.status != Status::Ok {
+                status = e.status;
+                reason = format!("status pipe (N4): {}", e.reason);
+            }
+        }
+        None => {
+            pairs.push(o("status_pipe", "not run (launcher report not supplied)"));
+            if status == Status::Ok {
+                status = Status::Missing;
+                reason = "status-pipe check (N4) requires the launcher in the reference VM".into();
+            }
+        }
+    }
+    let status_control = status_pipe.as_ref().is_none_or(|e| e.controls_detected);
     let control = if status == Status::Ok {
         let mut argv: Vec<OsString> = vec![
             "/bin/sh".into(),
@@ -828,10 +852,15 @@ pub fn probe_fd(cfg: &Config, userns_ok: bool) -> ProbeResult {
             Ok(c) => {
                 let failed = eval_fd(&kv(&c.stdout)).0 == Status::Missing;
                 Control::runtime(
-                    failed,
+                    failed && status_control,
                     format!(
-                        "{control_text}: {}",
-                        if failed { "reported" } else { "not reported" }
+                        "{control_text}: {}; status-pipe trusting build {}",
+                        if failed { "reported" } else { "not reported" },
+                        if status_control {
+                            "detected"
+                        } else {
+                            "not detected"
+                        }
                     ),
                 )
             }
@@ -1920,6 +1949,14 @@ pub fn run_all(cfg: &Config, versions: &[(String, String)]) -> Vec<ProbeResult> 
         deny::probe_peercred(),
         deny::probe_agent_deny(cfg),
     ];
+    for id in [
+        ProbeId::JobIdentity,
+        ProbeId::JobDeny,
+        ProbeId::LauncherAdmit,
+        ProbeId::JobSerial,
+    ] {
+        v.push(crate::jobprobes::probe(cfg, id));
+    }
     let secret = deny::probe_no_secret(cfg, &v, versions);
     v.push(secret);
     v.push(probe_landlock());
