@@ -33,7 +33,9 @@ pub use admission::{
     os_principal, verify_server, AdmissionRefused, AdmissionTable, Endpoint, PeerCred,
 };
 pub use caps::{CapSlot, ConnectionCaps};
-pub use frame::{read_frame, write_frame, Frame, FrameError, FrameLimits, FrameType};
+pub use frame::{
+    read_frame, read_frame_timed, write_frame, Frame, FrameError, FrameLimits, FrameType, TimedRead,
+};
 
 /// The generic error answered before closing on any transport violation (INV-18).
 pub const GENERIC_ERROR: &str = "REQUEST_REFUSED";

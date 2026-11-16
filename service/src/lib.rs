@@ -90,7 +90,7 @@ use writ_ledger_sqlite::{
     SqliteSnapshotStore,
 };
 use writ_rpc::admission::{AdmissionTable, Endpoint, PeerCred};
-use writ_rpc::frame::{read_frame, write_control, Frame, FrameError, FrameLimits};
+use writ_rpc::frame::{read_frame_timed, write_control, Frame, FrameError, FrameLimits, TimedRead};
 use writ_rpc::ConnectionCaps;
 
 use crate::config::{HostBinding, ServiceConfig};
@@ -528,8 +528,10 @@ impl Inherited {
                     check_listening(&fd, ListenKind::UnixStream)
                         .map_err(|e| refused(format!("{name}: {:?}", e.kind())))?;
                     let l = UnixListener::from(fd);
+                    // M5a-13 L10: the received host.sock's group is verified too (J-1:
+                    // `writ:writ-agents` 0660; `sockets.host_gid` is required with activation).
                     let (path, mode, gid) = if name == "host" {
-                        (&config.host_socket, 0o660, None)
+                        (&config.host_socket, 0o660, config.host_socket_gid)
                     } else {
                         (&config.admin_socket, 0o600, Some(config.service_gid))
                     };
@@ -574,7 +576,7 @@ fn verify_unix(
     }
     if m.mode() & 0o7777 != mode || m.uid() != uid || gid.is_some_and(|g| m.gid() != g) {
         return Err(format!(
-            "owner {}:{} mode {:o}, required uid {uid} mode {mode:o}",
+            "owner {}:{} mode {:o}, required uid {uid} gid {gid:?} mode {mode:o}",
             m.uid(),
             m.gid(),
             m.mode() & 0o7777
@@ -861,6 +863,22 @@ impl Acceptor {
     }
 }
 
+/// The receive side of an admitted connection: no ancillary data ([`PlainReader`]) and a
+/// settable read timeout ([`TimedRead`]).
+struct Peer<'a>(&'a UnixStream);
+
+impl io::Read for Peer<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        PlainReader(self.0).read(buf)
+    }
+}
+
+impl TimedRead for Peer<'_> {
+    fn set_read_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+        self.0.set_read_timeout(Some(timeout))
+    }
+}
+
 /// What a handled request does to its connection.
 enum Next {
     Continue(Option<Value>),
@@ -904,9 +922,6 @@ fn serve_connection(
     let limits = service.config.limits;
     if stream.set_nonblocking(false).is_err()
         || stream
-            .set_read_timeout(Some(Duration::from_secs(limits.idle_seconds)))
-            .is_err()
-        || stream
             .set_write_timeout(Some(Duration::from_secs(limits.request_seconds)))
             .is_err()
     {
@@ -923,8 +938,12 @@ fn serve_connection(
         ingest: None,
     };
     let mut writer = &stream;
+    let idle = Duration::from_secs(limits.idle_seconds);
+    let request = Duration::from_secs(limits.request_seconds);
     loop {
-        let frame = read_frame(&mut PlainReader(&stream), &frame_limits);
+        // J-2 (M5a-13 L10): the idle deadline between frames and a per-request deadline
+        // for the whole frame, so a slow-drip peer cannot hold a cap slot.
+        let frame = read_frame_timed(&mut Peer(&stream), &frame_limits, idle, request);
         if matches!(frame, Err(FrameError::Closed)) {
             return;
         }
@@ -1169,6 +1188,26 @@ mod tests {
     use writ_hostsys::deployment::{
         observe, static_facts_value, DeploymentConfig, FactPlan, IdentityPlan, REQUIRED_SYSCTLS,
     };
+
+    /// M5a-13 L10: a received Unix socket is verified for its group too.
+    #[test]
+    fn a_received_socket_with_another_group_is_refused() {
+        let d = std::env::temp_dir().join(format!("writ-service-gid-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let path = d.join("host.sock");
+        let l = UnixListener::bind(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660)).unwrap();
+        let m = std::fs::symlink_metadata(&path).unwrap();
+        assert_eq!(
+            verify_unix(&l, &path, 0o660, m.uid(), Some(m.gid())),
+            Ok(())
+        );
+        let wrong = verify_unix(&l, &path, 0o660, m.uid(), Some(m.gid().wrapping_add(1)));
+        assert!(wrong.unwrap_err().contains("owner"));
+        drop(l);
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     /// M5a-13 M5: the recheck timer keeps a holding proof current past its interval, and a
     /// changed fact is withdrawn by the timer without any request.

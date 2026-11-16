@@ -1,6 +1,7 @@
 //! Frames (J-2): `u32` big-endian payload length, one frame-type byte, the payload.
 
 use std::io::{self, Read, Write};
+use std::time::{Duration, Instant};
 
 use writ_kernel::json::{self, Value};
 
@@ -144,6 +145,66 @@ pub fn read_frame<R: Read + ?Sized>(r: &mut R, limits: &FrameLimits) -> Result<F
     if !fill(r, &mut header, true)? {
         return Err(FrameError::Closed);
     }
+    frame_after_header(r, header, limits)
+}
+
+/// A reader whose blocking-read timeout can be set before each read (a socket with
+/// `SO_RCVTIMEO`), for [`read_frame_timed`].
+pub trait TimedRead: Read {
+    /// Make the next reads time out after `timeout` (never zero).
+    fn set_read_timeout(&mut self, timeout: Duration) -> io::Result<()>;
+}
+
+/// Reads under an absolute deadline: each read gets the time left as its timeout.
+struct Bounded<'r, R: TimedRead + ?Sized> {
+    inner: &'r mut R,
+    deadline: Instant,
+}
+
+impl<R: TimedRead + ?Sized> Read for Bounded<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(io::Error::from(io::ErrorKind::TimedOut));
+        }
+        self.inner.set_read_timeout(left)?;
+        self.inner.read(buf)
+    }
+}
+
+/// [`read_frame`] with the J-2 deadlines (M5a-13 L10): at most `idle` waiting for the first
+/// byte of a frame, then the **whole** frame (rest of the header and the payload) within
+/// `request` of that byte, whatever the per-read progress. A peer that drips one byte at a
+/// time cannot hold a connection (and its cap slot) beyond `idle + request` per frame. A
+/// timeout is [`FrameError::Io`] (`TimedOut` or `WouldBlock`) and closes the connection.
+pub fn read_frame_timed<R: TimedRead + ?Sized>(
+    r: &mut R,
+    limits: &FrameLimits,
+    idle: Duration,
+    request: Duration,
+) -> Result<Frame, FrameError> {
+    if idle.is_zero() || request.is_zero() {
+        return Err(FrameError::Io(io::ErrorKind::InvalidInput));
+    }
+    r.set_read_timeout(idle)
+        .map_err(|e| FrameError::Io(e.kind()))?;
+    let mut header = [0u8; HEADER_BYTES];
+    if !fill(r, &mut header[..1], true)? {
+        return Err(FrameError::Closed);
+    }
+    let mut bounded = Bounded {
+        inner: r,
+        deadline: Instant::now() + request,
+    };
+    fill(&mut bounded, &mut header[1..], false)?;
+    frame_after_header(&mut bounded, header, limits)
+}
+
+fn frame_after_header<R: Read + ?Sized>(
+    r: &mut R,
+    header: [u8; HEADER_BYTES],
+    limits: &FrameLimits,
+) -> Result<Frame, FrameError> {
     let len = u32::from_be_bytes([header[0], header[1], header[2], header[3]]);
     let kind = FrameType::of(header[4]).ok_or(FrameError::UnknownType(header[4]))?;
     let max = limits.max(kind).ok_or(FrameError::TypeNotAccepted(kind))?;
@@ -351,5 +412,120 @@ mod tests {
         assert!(FrameLimits::new(1, Some(MAX_DATA_BYTES + 1)).is_none());
         assert!(encode(FrameType::Control, &vec![0; MAX_CONTROL_BYTES as usize + 1]).is_none());
         assert!(encode(FrameType::Data, &vec![0; MAX_DATA_BYTES as usize]).is_some());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod deadline_tests {
+    use super::*;
+    use std::os::unix::net::UnixStream;
+    use std::thread;
+
+    struct Timed(UnixStream);
+
+    impl Read for Timed {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.0.read(buf)
+        }
+    }
+
+    impl TimedRead for Timed {
+        fn set_read_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+            self.0.set_read_timeout(Some(timeout))
+        }
+    }
+
+    /// Send `frame` one byte every `gap`.
+    fn drip(frame: Vec<u8>, gap: Duration) -> (Timed, thread::JoinHandle<()>) {
+        let (a, mut b) = UnixStream::pair().unwrap();
+        let t = thread::spawn(move || {
+            for byte in frame {
+                if b.write_all(&[byte]).is_err() {
+                    return;
+                }
+                thread::sleep(gap);
+            }
+            thread::sleep(Duration::from_millis(500));
+        });
+        (Timed(a), t)
+    }
+
+    /// M5a-13 L10: a slow-drip peer whose every read arrives within the idle timeout is
+    /// still cut off at the per-request deadline (the plain reader would wait it out).
+    #[test]
+    fn a_slow_drip_frame_is_cut_off_at_the_request_deadline() {
+        let frame = encode(FrameType::Control, br#"{"op":"readiness"}"#).unwrap();
+        let gap = Duration::from_millis(40);
+        let (mut r, t) = drip(frame.clone(), gap);
+        let started = Instant::now();
+        let got = read_frame_timed(
+            &mut r,
+            &FrameLimits::admin(),
+            Duration::from_secs(5),
+            Duration::from_millis(200),
+        );
+        assert!(
+            matches!(
+                got,
+                Err(FrameError::Io(
+                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                ))
+            ),
+            "{got:?}"
+        );
+        assert!(started.elapsed() < Duration::from_millis(600));
+        drop(r);
+        t.join().unwrap();
+        // The same drip read without the request deadline completes (the old behaviour:
+        // every single read is within the idle timeout).
+        let (mut r, t) = drip(frame, gap);
+        r.0.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        assert!(matches!(
+            read_frame(&mut r, &FrameLimits::admin()),
+            Ok(Frame::Control(_))
+        ));
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn a_prompt_frame_and_an_idle_close_behave_as_before() {
+        let frame = encode(FrameType::Control, br#"{"op":"readiness"}"#).unwrap();
+        let (mut r, t) = drip(frame, Duration::ZERO);
+        assert!(matches!(
+            read_frame_timed(
+                &mut r,
+                &FrameLimits::admin(),
+                Duration::from_secs(1),
+                Duration::from_secs(1)
+            ),
+            Ok(Frame::Control(_))
+        ));
+        t.join().unwrap();
+        // Nothing arrives within the idle timeout.
+        let (a, _b) = UnixStream::pair().unwrap();
+        let mut r = Timed(a);
+        assert!(matches!(
+            read_frame_timed(
+                &mut r,
+                &FrameLimits::admin(),
+                Duration::from_millis(100),
+                Duration::from_secs(1)
+            ),
+            Err(FrameError::Io(_))
+        ));
+        // A clean close between frames is still Closed.
+        let (a, b) = UnixStream::pair().unwrap();
+        drop(b);
+        let mut r = Timed(a);
+        assert_eq!(
+            read_frame_timed(
+                &mut r,
+                &FrameLimits::admin(),
+                Duration::from_secs(1),
+                Duration::from_secs(1)
+            ),
+            Err(FrameError::Closed)
+        );
     }
 }

@@ -338,6 +338,52 @@ fn the_per_uid_cap_closes_extra_connections_unread() {
     run.shutdown().unwrap();
 }
 
+/// M5a-13 L10: a peer that drips a frame one byte at a time (each byte within the idle
+/// deadline) is closed at the per-request deadline, which frees its cap slot.
+#[test]
+fn a_slow_drip_peer_cannot_hold_its_cap_slot() {
+    use std::io::Write as _;
+    let env = Env::new("drip");
+    let run = env.start(env.config(me(), 0, 1));
+    let frame = writ_rpc::frame::encode(
+        writ_rpc::FrameType::Control,
+        br#"{"op":"snapshot.ingest.begin"}"#,
+    )
+    .unwrap();
+    let mut slow = connect(&env.host());
+    let started = Instant::now();
+    let mut closed_after = None;
+    for byte in &frame {
+        if slow.write_all(&[*byte]).is_err() {
+            closed_after = Some(started.elapsed());
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(400));
+    }
+    // request_seconds is 2: the server closed before the drip (about 14 s) completed.
+    let elapsed = closed_after.unwrap_or_else(|| started.elapsed());
+    assert!(
+        closed_after.is_some() || closed_unanswered(&mut slow),
+        "the slow peer was served"
+    );
+    assert!(elapsed < Duration::from_secs(6), "{elapsed:?}");
+    drop(slow);
+    // The slot is free again.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let mut again = connect(&env.host());
+        if write_control(&mut again, &op("snapshot.ingest.begin")).is_ok() {
+            if let Ok(Frame::Control(v)) = read_frame(&mut again, &FrameLimits::host()) {
+                assert!(ok(&v));
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "slot never released");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    run.shutdown().unwrap();
+}
+
 #[test]
 fn keys_revoke_over_admin_sock_records_os_peer_provenance_and_refuses_the_key_at_next_load() {
     let env = Env::new("revoke");

@@ -134,6 +134,9 @@ pub struct ServiceConfig {
     /// none is ever bound by the service; `"bind"` (default, development): the service binds
     /// its Unix sockets and the approval port itself.
     pub socket_activation: bool,
+    /// `sockets.host_gid`: the group (`writ-agents`) the received `host.sock` must have
+    /// (M5a-13 L10); required with `activation = "systemd"`.
+    pub host_socket_gid: Option<u32>,
     /// The drain period of the graceful shutdown (J-8; `shutdown.drain_seconds`, default
     /// 10, at most 30).
     pub drain: std::time::Duration,
@@ -351,9 +354,13 @@ impl ServiceConfig {
         let sockets = members(
             m.get("sockets").unwrap_or(&Value::Null),
             &["host", "admin"],
-            &["activation"],
+            &["activation", "host_gid"],
             "sockets",
         )?;
+        let host_socket_gid = match sockets.get("host_gid") {
+            None => None,
+            some => Some(uid(some, "sockets.host_gid")?),
+        };
         let socket_activation = match sockets.get("activation") {
             None => false,
             Some(Value::Str(t)) if t == "bind" => false,
@@ -508,6 +515,7 @@ impl ServiceConfig {
             approval,
             deployment,
             socket_activation,
+            host_socket_gid,
             drain,
             sweep,
         };
@@ -618,14 +626,23 @@ impl ServiceConfig {
         if self.host_socket == self.admin_socket {
             return err("host and admin socket paths equal");
         }
+        match self.host_socket_gid {
+            None if self.socket_activation => {
+                return err("sockets.host_gid is required with socket activation")
+            }
+            // That it is `writ-agents` (not `writ`) is the static identity check's (J-1).
+            Some(g) if g == 0 || g == OVERFLOW_ID => return err("sockets.host_gid is 0 or 65534"),
+            _ => {}
+        }
         Ok(())
     }
 
     /// The installation label (J-1): `governed` only with a desktop uid configured, no agent
-    /// uid equal to a desktop uid, and a verified deployment (which includes a passed
-    /// P-AGENT-DESKTOP in the operator report); otherwise `advisory-shared-user` (no desktop
-    /// uid, or an agent uid that is a desktop uid) or `unverified`. Governed jobs and writes
-    /// refuse unless `governed` (M5-D2).
+    /// uid equal to a desktop uid, socket activation (M5a-13 L10: the development `bind` mode,
+    /// where the service creates its own sockets, never carries the governed label), and a
+    /// verified deployment (which includes a passed P-AGENT-DESKTOP in the operator report);
+    /// otherwise `advisory-shared-user` (no desktop uid, or an agent uid that is a desktop
+    /// uid) or `unverified`. Governed jobs and writes refuse unless `governed` (M5-D2).
     pub fn label(&self, deployment_verified: bool) -> &'static str {
         if self.desktop_uids.is_empty()
             || self
@@ -634,7 +651,7 @@ impl ServiceConfig {
                 .any(|a| self.desktop_uids.contains(a))
         {
             "advisory-shared-user"
-        } else if deployment_verified {
+        } else if deployment_verified && self.socket_activation {
             "governed"
         } else {
             "unverified"
@@ -692,6 +709,15 @@ mod tests {
         assert_eq!(c.limits, Limits::DEFAULT);
         assert_eq!(c.binding(1001).unwrap().tenant_id, "acme");
         assert!(c.binding(1002).is_none());
+        assert_eq!(c.label(false), "unverified");
+        // M5a-13 L10: bind mode (the default) never carries the governed label.
+        assert_eq!(c.label(true), "unverified");
+        let c = parse(&[(
+            "sockets",
+            r#"{"host":"/run/writ/host.sock","admin":"/run/writ/admin.sock","activation":"systemd","host_gid":991}"#,
+        )])
+        .unwrap();
+        assert_eq!(c.host_socket_gid, Some(991));
         assert_eq!(c.label(false), "unverified");
         assert_eq!(c.label(true), "governed");
     }
@@ -841,7 +867,7 @@ mod tests {
         let c = parse(&[
             (
                 "sockets",
-                r#"{"host":"/run/writ/host.sock","admin":"/run/writ/admin.sock","activation":"systemd"}"#,
+                r#"{"host":"/run/writ/host.sock","admin":"/run/writ/admin.sock","activation":"systemd","host_gid":991}"#,
             ),
             ("shutdown", r#"{"drain_seconds":3}"#),
             (
@@ -859,6 +885,19 @@ mod tests {
             (
                 "sockets",
                 r#"{"host":"/run/writ/host.sock","admin":"/run/writ/admin.sock","activation":"inetd"}"#,
+            ),
+            // M5a-13 L10: activation without the host.sock group, or a bad group.
+            (
+                "sockets",
+                r#"{"host":"/run/writ/host.sock","admin":"/run/writ/admin.sock","activation":"systemd"}"#,
+            ),
+            (
+                "sockets",
+                r#"{"host":"/run/writ/host.sock","admin":"/run/writ/admin.sock","activation":"systemd","host_gid":0}"#,
+            ),
+            (
+                "sockets",
+                r#"{"host":"/run/writ/host.sock","admin":"/run/writ/admin.sock","activation":"systemd","host_gid":65534}"#,
             ),
             ("shutdown", r#"{"drain_seconds":0}"#),
             ("shutdown", r#"{"drain_seconds":31}"#),
