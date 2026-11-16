@@ -19,8 +19,16 @@
 //! `writ-job`; `CAP_CHOWN` dropped from the permitted and effective sets; cgroup (supervisor,
 //! controllers, `job` with limits); descriptor plumbing and the helper spawn. **After the spawn
 //! no `refused` is ever sent.** Start (status pipe), verification with the gate closed, release,
-//! `started`, the running loop, then always: `cgroup.kill`, `populated 0`, and only then the
-//! gate writer is closed; cleanup as `writ-job` through the helper's self-exec; `finished`.
+//! `started`, the running loop, then always ([`Cgroups::terminate`], every wait bounded):
+//! `cgroup.kill`, `SIGKILL` of the direct child through its pidfd and its reaping, `cgroup.kill`
+//! again, `populated 0` of `job` and `supervisor` holding only the launcher, and only then the
+//! gate writer is closed; cleanup as `writ-job` through the helper's self-exec under fixed
+//! launcher-owned limits; `finished`. If the kill cannot be verified, `job` is frozen and the
+//! instance exits non-zero (`finished` with `populated_zero: false`).
+//!
+//! Before `hello` the launcher checks itself ([`self_check`]): `NoNewPrivs`, the bounding and
+//! ambient sets, its groups, the unit's actual `MemoryMax` and its descriptor limit; a release
+//! build refuses `WRIT_TEST_FAULT`, and `hello` reports the build mode.
 
 use crate::bwrap;
 use crate::cgroup::{unit_from_proc_cgroup, Cgroups, KillProof, Terminated, UnitPath};
