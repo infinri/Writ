@@ -2572,6 +2572,7 @@ version = "0.1.0"
 dependencies = [
  "rusqlite",
  "writ-broker",
+ "writ-hostsys",
 ]
 
 [[package]]

@@ -60,9 +60,10 @@
 //! ([`DeploymentProof`]) attached with [`SqliteSnapshotStore::with_deployment`] reports a
 //! currently verified deployment (J-9 `VerifiedDeployment`, which can be withdrawn at a
 //! recheck). [`DeploymentProof`] is sealed: no caller outside this crate can implement it,
-//! and no flag or constructor argument sets `immutable`. In this revision the only
-//! implementation is a test-only proof compiled into this crate's unit tests; the service
-//! integration (M5a-04) implements it for `writ_hostsys::VerifiedDeployment`. Without a
+//! and no flag or constructor argument sets `immutable`. The implementations are
+//! `writ_hostsys::deployment::VerifiedDeployment` (M5a-04: issued only when the operator
+//! report's digest, verdict and static facts match what the service observes; withdrawn by
+//! a failing recheck) and a test-only proof compiled into this crate's unit tests. Without a
 //! current proof, `content` and `check` refuse ([`SourceUnavailable`]), so neither the
 //! runner nor a promotion accepts a snapshot from an unverified deployment.
 //!
@@ -1099,6 +1100,17 @@ impl std::fmt::Debug for IngestSession {
 impl Drop for IngestSession {
     fn drop(&mut self) {
         self.finish();
+    }
+}
+
+impl sealed::Sealed for writ_hostsys::deployment::VerifiedDeployment {}
+
+/// The service's proof (M5a-04, J-9): verified while the static start-time checks bound to
+/// the operator-run readiness report hold; a recheck that finds any difference withdraws
+/// it for good, and `immutable()` turns false.
+impl DeploymentProof for writ_hostsys::deployment::VerifiedDeployment {
+    fn verified(&self) -> bool {
+        self.is_verified()
     }
 }
 

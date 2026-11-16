@@ -834,3 +834,78 @@ pub(super) fn after_snapshot_kill(dir: &Path, mode: &str) {
     );
     assert_eq!(count(&s, "snapshots"), 1);
 }
+
+/// M5a-04 (J-9, J-4): the service's real proof type. Issued only from an operator report
+/// whose digest, verdict and static facts match; a changed fact withdraws it at the next
+/// recheck and `immutable()` turns false. Without a matching report (this workstation) no
+/// proof is issued and the store stays untrusted.
+#[test]
+fn the_verified_deployment_proof_controls_immutable() {
+    use std::os::unix::fs::PermissionsExt;
+    use writ_broker::writ_kernel::json::{self, Value};
+    use writ_hostsys::deployment::{
+        observe, static_facts_value, DeploymentConfig, DeploymentRefused, FactPlan,
+        VerifiedDeployment,
+    };
+    let dir = scratch("verified-deployment");
+    let state = dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let plan = FactPlan {
+        paths: vec![state.clone()],
+        own_identity: true,
+        ..FactPlan::default()
+    };
+    let report = |facts: Option<Value>| {
+        let mut m = json::Map::new();
+        m.insert("contract".into(), json::s("writ-readiness/1"));
+        m.insert("governed_ready".into(), Value::Bool(true));
+        m.insert("blocking".into(), Value::Arr(vec![]));
+        m.insert(
+            "probes".into(),
+            Value::Arr(vec![json::obj([("status", json::s("ok"))])]),
+        );
+        if let Some(f) = facts {
+            m.insert("static_facts".into(), f);
+        }
+        json::canonical(&Value::Obj(m)).unwrap().into_bytes()
+    };
+    let config = |bytes: &[u8]| {
+        let path = dir.join("readiness.json");
+        std::fs::write(&path, bytes).unwrap();
+        DeploymentConfig {
+            report: path,
+            report_digest: Digest::of_bytes(bytes).to_string(),
+            plan: plan.clone(),
+        }
+    };
+    // A report without static facts (what writ-probe produces today) issues nothing.
+    assert_eq!(
+        VerifiedDeployment::issue(config(&report(None))).err(),
+        Some(DeploymentRefused::NoStaticFacts)
+    );
+    let unproven = SqliteSnapshotStore::create(
+        &dir.join("snapshots.db"),
+        &ledger(),
+        SnapshotLimits::REFERENCE,
+    )
+    .unwrap();
+    assert!(!unproven.immutable());
+    drop(unproven);
+    let proof =
+        VerifiedDeployment::issue(config(&report(Some(static_facts_value(&observe(&plan))))))
+            .unwrap();
+    let s = SqliteSnapshotStore::open(
+        &dir.join("snapshots.db"),
+        &ledger(),
+        SnapshotLimits::REFERENCE,
+    )
+    .unwrap()
+    .with_deployment(proof.clone());
+    assert!(s.immutable());
+    std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!proof.recheck());
+    assert!(!s.immutable());
+    drop(s);
+    let _ = std::fs::remove_dir_all(&dir);
+}

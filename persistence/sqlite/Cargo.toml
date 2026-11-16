@@ -11,6 +11,9 @@ publish.workspace = true
 # static library (D-023; SQLITE3_LIB_DIR, SQLITE3_INCLUDE_DIR, SQLITE3_STATIC from m1/tools/env.sh).
 [dependencies]
 writ-broker = { path = "../../broker" }
+# J-0: the deployment proof type only (snapshots.rs implements DeploymentProof for
+# writ_hostsys::deployment::VerifiedDeployment; M5a-04).
+writ-hostsys = { path = "../../hostsys" }
 rusqlite = { version = "=0.41.1", default-features = false }
 
 [dev-dependencies]
