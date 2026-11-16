@@ -251,7 +251,7 @@ struct StagingLock {
 impl StagingLock {
     fn acquire(staging: &OwnedFd) -> Result<StagingLock, StoreError> {
         let fd = staging.try_clone().map_err(|_| refused("LOCK"))?;
-        writ_broker::process::ownership_change(|| {
+        writ_broker::lifecycle::ownership_change(|| {
             if fsfx::try_lock_exclusive(&fd).map_err(|_| refused("LOCK"))? {
                 Ok(StagingLock { fd: Some(fd) })
             } else {
@@ -264,7 +264,7 @@ impl StagingLock {
 impl Drop for StagingLock {
     fn drop(&mut self) {
         if let Some(fd) = self.fd.take() {
-            writ_broker::process::ownership_change(|| {
+            writ_broker::lifecycle::ownership_change(|| {
                 // If the unlock fails, closing still releases it once every duplicate is gone.
                 let _ = fsfx::unlock(&fd);
                 drop(fd);

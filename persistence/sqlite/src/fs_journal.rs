@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior};
-use writ_broker::process::OwnerLock;
+use writ_broker::lifecycle::OwnerLock;
 use writ_broker::store::{StoreError, TxFailure, TxStage};
 
 use crate::{

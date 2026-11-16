@@ -30,8 +30,17 @@ use std::sync::Arc;
 
 use writ_kernel::json::{self, Digest, Value};
 
-use crate::deny::acls;
 use crate::sock::process_identity;
+
+/// The ACL extended attributes present on `p` (not following a final symlink). A copy of
+/// `deny::acls`: `writ-serviced` reaches this module, and `deny` names the probe modules that
+/// spawn processes (M5a-13 M3: the dependency gate refuses them in the service's reach).
+fn acls(p: &Path) -> Vec<&'static str> {
+    ["system.posix_acl_access", "system.posix_acl_default"]
+        .into_iter()
+        .filter(|n| rustix::fs::lgetxattr_query(p, *n).is_ok())
+        .collect()
+}
 
 /// The static facts contract inside a readiness report.
 pub const STATIC_FACTS_CONTRACT: &str = "writ-static-facts/1";

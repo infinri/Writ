@@ -5,7 +5,8 @@
 
 use super::*;
 use crate::runner::{Limits, RunnerRequirements};
-use std::path::PathBuf;
+use std::fs::OpenOptions;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 

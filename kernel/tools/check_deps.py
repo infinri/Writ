@@ -23,7 +23,10 @@ Source rules (M5-INTERFACES J-0 feature-unification note; M5a-11): Cargo builds 
 `rustix` and `tokio` per target with the union of the features of every member built
 together, so "the broker uses rustix `time` only" and "`writ-approval` never uses
 `tokio::signal`" are checked on the members' sources and manifests (`source_rules`), not as
-forbidden features of the unified resolve.
+forbidden features of the unified resolve. M5a-13 adds: "writ-serviced spawns no child
+processes" (`spawn_reachability`: no process-creation primitive and no process-creating module
+reachable from service/ sources through the service's Writ dependency closure), and `#[path]` and
+`include!` are refused in every scanned crate (the service closure, broker and approval).
 
   python3 kernel/tools/check_deps.py [--osv] [--release] [--sbom kernel-sbom.json]
 """
@@ -208,12 +211,241 @@ def no_tokio_signal(text: str) -> list[str]:
             while j < len(after) and depth:
                 depth += {"{": 1, "}": -1}.get(after[j], 0)
                 j += 1
-            bad = re.search(r"\bsignal\b", after[group.end():j]) is not None
+            # M5a-13 L11: `use tokio::{self as t}` (or any rename or glob in the group) would
+            # hide a later `t::signal`, so a group may not rename, glob or import `self`.
+            bad = re.search(r"\bsignal\b|\bself\b|\bas\b|\*", after[group.end():j]) is not None
         else:
             bad = re.match(r"\s*::\s*(signal\b|\*)|\s+as\b", after) is not None
         if bad:
             out.append(f"tokio::signal (or a glob or rename of tokio): {code[m.start():m.end() + 24].splitlines()[0]!r}")
     return out
+
+
+def no_path_or_include(text: str) -> list[str]:
+    """M5a-13 L11: a scanned crate may not take source from outside its scanned tree, so the
+    source rules see every line it compiles: `#[path = ...]` on a module and `include!` are
+    refused (`include_str!` and `include_bytes!` bring data, not code, and stay allowed)."""
+    code, out = strip_rust(text), []
+    for m in re.finditer(r"#\s*!?\s*\[\s*path\b|\binclude\s*!", code):
+        out.append(f"`#[path]` or `include!` refused in a scanned crate: {code[m.start():m.end() + 16].splitlines()[0]!r}")
+    return out
+
+
+# --- M5a-13 M3: "writ-serviced spawns no child processes" (lead decision after M5a-11). ---
+#
+# The inherited activation descriptors 3 to 5 stay open in writ-serviced for its lifetime, so any
+# child process would inherit admin.sock and host.sock. The rule: from the service's own sources
+# (every non-test module of service/), follow module references (`use` trees and qualified paths:
+# `crate::`, `super::`, `self::`, a child module, or another Writ crate) through the service's
+# whole Writ dependency closure; no reachable module may be one of FORBIDDEN_SPAWN_MODULES, and no
+# reachable module may contain a process-creation primitive (SPAWN_PRIMITIVES). Test-only code
+# (`#[cfg(test)]` items and modules, a `cfg` naming a test feature) is skipped.
+# Limits (recorded): the analysis is per module, not per item (a reachable module counts entirely,
+# which over-approximates and fails closed); it does not expand macros; the primitive scan covers
+# each reachable module whatever path reached it, so a type reached only through inference is
+# still covered when the module defining its methods is named anywhere on a reachable path.
+
+FORBIDDEN_SPAWN_MODULES = {
+    ("writ_hostsys", ("exec",)), ("writ_hostsys", ("probes",)), ("writ_hostsys", ("facts",)),
+    ("writ_hostsys", ("agent",)), ("writ_hostsys", ("jobprobes",)), ("writ_broker", ("process",)),
+}
+
+SPAWN_PRIMITIVES = [
+    (r"\bprocess\s*::\s*(?:\{[^}]*\b)?(?:Command|Child)\b", "std::process::Command"),
+    (r"(?<![\w.])Command\s*::\s*new\b", "Command::new"),
+    (r"\bCommandExt\b", "CommandExt"),
+    (r"\brustix\s*::\s*(?:runtime|process\s*::\s*(?:fork|exec\w*|pidfd_spawn\w*))\b", "rustix fork/exec"),
+    (r"\blibc\s*::\s*(?:fork|vfork|exec\w*|posix_spawn\w*|clone\w*|system)\b", "libc fork/exec"),
+    (r"(?<![\w.:])(?:fork|vfork|execve|execveat|fexecve|posix_spawnp?|pidfd_spawnp?)\s*\(", "fork/exec call"),
+]
+
+
+def blank_test_items(code: str) -> tuple[str, set]:
+    """`code` (already stripped) with every item under a test-only `cfg` blanked, and the names of
+    modules declared test-only with `mod name;` (their files are skipped)."""
+    out, skipped, i = code, set(), 0
+    pat = re.compile(r"#\s*\[\s*cfg\s*\(([^\]]*)\)\s*\]")
+    while True:
+        m = pat.search(out, i)
+        if not m:
+            return out, skipped
+        if not re.search(r"\btest\b|test-|test_", m.group(1)) or re.search(r"\bnot\s*\(", m.group(1)):
+            i = m.end()
+            continue
+        j = m.end()
+        while True:
+            a = re.match(r"\s*#\s*\[[^\]]*\]", out[j:])
+            if not a:
+                break
+            j += a.end()
+        decl = re.match(r"\s*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+([A-Za-z_]\w*)\s*;", out[j:])
+        if decl:
+            skipped.add(decl.group(1))
+        semi, brace = out.find(";", j), out.find("{", j)
+        if brace < 0 or (0 <= semi < brace):
+            end = len(out) if semi < 0 else semi + 1
+        else:
+            depth, end = 0, brace
+            while end < len(out):
+                depth += {"{": 1, "}": -1}.get(out[end], 0)
+                end += 1
+                if depth == 0:
+                    break
+        out = out[:m.start()] + re.sub(r"[^\n]", " ", out[m.start():end]) + out[end:]
+        i = m.start() + 1
+
+
+def use_paths(code: str) -> list[list[str]]:
+    """Every path a module names: expanded `use` trees and qualified paths in code."""
+    paths = []
+
+    def expand(tree: str, prefix: list[str]):
+        tree = tree.strip()
+        if not tree:
+            return
+        if tree.startswith("{") and tree.endswith("}"):
+            depth, parts, cur = 0, [], ""
+            for ch in tree[1:-1]:
+                if ch == "," and depth == 0:
+                    parts.append(cur)
+                    cur = ""
+                    continue
+                depth += {"{": 1, "}": -1}.get(ch, 0)
+                cur += ch
+            parts.append(cur)
+            for part in parts:
+                expand(part, prefix)
+            return
+        head = re.match(r"((?:[A-Za-z_]\w*|\*)(?:\s*::\s*(?:[A-Za-z_]\w*|\*))*)(\s*::\s*)?(.*)$", tree, re.S)
+        if not head:
+            return
+        segs = [x.strip() for x in head.group(1).split("::") if x.strip() not in ("", "*")]
+        rest = head.group(3).strip() if head.group(2) else ""
+        if rest.startswith("{"):
+            expand(rest, prefix + segs)
+        else:
+            paths.append(prefix + [x for x in segs if x != "self"] if segs and segs[-1] == "self" else prefix + segs)
+
+    for m in re.finditer(r"\buse\s+(?:::)?([^;]*);", code):
+        expand(re.sub(r"\s+as\s+\w+", "", m.group(1)), [])
+    for m in re.finditer(r"(?<![\w:])((?:crate|super|self|[a-z_][a-z0-9_]*)(?:\s*::\s*[A-Za-z_]\w*)+)", code):
+        paths.append([x.strip() for x in m.group(1).split("::")])
+    return paths
+
+
+def crate_dirs(root: Path) -> dict:
+    """{crate ident: directory} of the workspace members (from their manifests)."""
+    out = {}
+    for member in tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["members"]:
+        manifest = tomllib.loads((root / member / "Cargo.toml").read_text())
+        name = manifest.get("lib", {}).get("name") or manifest["package"]["name"].replace("-", "_")
+        out[name] = root / member
+    return out
+
+
+def writ_closure(root: Path, start: str) -> list[str]:
+    """Crate idents of `start` and every workspace crate it depends on (normal dependencies)."""
+    dirs = crate_dirs(root)
+    by_dir = {d.resolve(): n for n, d in dirs.items()}
+    seen, todo = [], [start]
+    while todo:
+        name = todo.pop()
+        if name in seen:
+            continue
+        seen.append(name)
+        for spec in tomllib.loads((dirs[name] / "Cargo.toml").read_text()).get("dependencies", {}).values():
+            if isinstance(spec, dict) and "path" in spec:
+                todo.append(by_dir[(dirs[name] / spec["path"]).resolve()])
+    return seen
+
+
+def module_file(crate_dir: Path, mod: tuple):
+    src = crate_dir / "src"
+    if not mod:
+        return src / "lib.rs" if (src / "lib.rs").exists() else None
+    for cand in (src.joinpath(*mod).with_suffix(".rs"), src.joinpath(*mod) / "mod.rs"):
+        if cand.exists():
+            return cand
+    return None
+
+
+def module_of(crate_dir: Path, path: Path) -> tuple:
+    parts = path.relative_to(crate_dir / "src").with_suffix("").parts
+    return tuple(parts[:-1]) if parts[-1] in ("lib", "main", "mod") else tuple(parts)
+
+
+def spawn_reachability(root: Path, service: str = "writ_service", sources: dict | None = None) -> list[str]:
+    """M5a-13 M3 (see the block comment above). `sources` maps a path to replacement text (tests)."""
+    dirs = crate_dirs(root)
+    closure = writ_closure(root, service)
+    sources = sources or {}
+    cache = {}
+
+    def load(path: Path):
+        if path not in cache:
+            text = sources.get(path)
+            cache[path] = blank_test_items(strip_rust(path.read_text() if text is None else text))
+        return cache[path]
+
+    def resolve(crate: str, mod: tuple, segs: list[str]):
+        """The (crate, longest existing module) that a path written in `crate::mod` names."""
+        head = segs[0]
+        if head == "crate":
+            c, cur, rest = crate, (), segs[1:]
+        elif head == "super":
+            c, cur, rest = crate, mod[:-1], segs[1:]
+            while rest and rest[0] == "super":
+                cur, rest = cur[:-1], rest[1:]
+        elif head == "self":
+            c, cur, rest = crate, mod, segs[1:]
+        elif module_file(dirs[crate], mod + (head,)) is not None:
+            c, cur, rest = crate, mod, segs
+        elif head in closure:
+            c, cur, rest = head, (), segs[1:]
+        else:
+            return None
+        best = (c, cur) if module_file(dirs[c], cur) is not None else None
+        for seg in rest:
+            if module_file(dirs[c], cur + (seg,)) is not None:
+                cur = cur + (seg,)
+                best = (c, cur)
+            elif cur == () and seg in closure:
+                c, cur, best = seg, (), (seg, ())  # a re-exported crate (`writ_broker::writ_kernel`)
+            else:
+                break
+        return best
+
+    service_src = dirs[service] / "src"
+    todo = []
+    for path in sorted(service_src.rglob("*.rs")):
+        todo.append((service, module_of(dirs[service], path), path))
+    problems, seen = [], set()
+    while todo:
+        crate, mod, f = todo.pop()
+        if f is None or f in seen or not f.exists():
+            continue
+        seen.add(f)
+        if mod:
+            parent = module_file(dirs[crate], mod[:-1])
+            if crate == service and not mod[:-1]:
+                parents = [service_src / "lib.rs", service_src / "main.rs"]
+            else:
+                parents = [parent] if parent else []
+            if any(mod[-1] in load(p)[1] for p in parents if p.exists()):
+                continue
+        code, _ = load(f)
+        rel = f.relative_to(root)
+        if (crate, mod) in FORBIDDEN_SPAWN_MODULES:
+            problems.append(f"{rel}: module {crate}::{'::'.join(mod)} (process creation) reachable from writ-serviced")
+        for pat, what in SPAWN_PRIMITIVES:
+            for m in re.finditer(pat, code):
+                problems.append(f"{rel}:{code.count(chr(10), 0, m.start()) + 1}: {what} reachable from writ-serviced "
+                                "(it spawns no child processes)")
+        for segs in use_paths(code):
+            target = resolve(crate, mod, segs)
+            if target:
+                todo.append((target[0], target[1], module_file(dirs[target[0]], target[1])))
+    return problems
 
 
 def manifest_features(toml_text: str, dep: str, allowed: set) -> list[str]:
@@ -242,6 +474,14 @@ def source_rules(root: Path) -> list[str]:
     uncheckable per member (M5-INTERFACES J-0; M5a-11): every `.rs` file of the member
     (sources, tests, examples, benches, build script) and its manifest."""
     out = []
+    closure = writ_closure(root, "writ_service")
+    scanned = {m for m, _, _, _ in SOURCE_RULES} | {str(d.relative_to(root)) for n, d in crate_dirs(root).items()
+                                                    if n in closure}
+    for member in sorted(scanned):
+        base = root / member
+        for path in sorted(p for p in base.rglob("*.rs") if "target" not in p.relative_to(base).parts):
+            out += [f"source rule {path.relative_to(root)}: {x}" for x in no_path_or_include(path.read_text())]
+    out += [f"source rule: {x}" for x in spawn_reachability(root)]
     for member, dep, rule, allowed in SOURCE_RULES:
         base = root / member
         files = sorted(p for p in base.rglob("*.rs") if "target" not in p.relative_to(base).parts)

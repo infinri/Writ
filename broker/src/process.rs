@@ -67,92 +67,23 @@
 //!   ([`crate::runner::JobFailure::Unavailable`]). The check runs again under the spawn
 //!   guard before every job.
 
-use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{self, Read};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use crate::runner::{Job, JobFailure, JobOutput, Sandbox, SandboxGuarantees, SandboxUnavailable};
 use writ_kernel::json::{self, Value};
 
-/// The process-wide lifecycle gate (module documentation).
-static GATE: RwLock<()> = RwLock::new(());
-
-/// Run `f` under the shared spawn guard.
-fn spawning<T>(f: impl FnOnce() -> T) -> T {
-    let _guard = GATE.read().unwrap_or_else(PoisonError::into_inner);
-    f()
-}
+pub use crate::lifecycle::{ownership_change, OwnerLock, OwnerLockError};
+use crate::lifecycle::spawning;
 
 /// Spawn `command` under the shared guard of the lifecycle gate: no ownership lock of
 /// this process is acquired or released while the child can still hold duplicates of
 /// this process's descriptors.
 pub fn spawn(command: &mut Command) -> io::Result<Child> {
     spawning(|| command.spawn())
-}
-
-/// Run `change` (acquiring or releasing an ownership lock) under the exclusive guard of
-/// the lifecycle gate, so that it never overlaps a spawn. `change` must not spawn or call
-/// this function.
-pub fn ownership_change<T>(change: impl FnOnce() -> T) -> T {
-    let _guard = GATE.write().unwrap_or_else(PoisonError::into_inner);
-    change()
-}
-
-/// Why an ownership lock was not acquired.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OwnerLockError {
-    /// Another open file description holds the lock (another owner).
-    Held,
-    /// The lock file could not be opened or locked.
-    Io,
-}
-
-/// An exclusive OS lock (`File::try_lock`) on an ownership lock file, acquired and
-/// released under the exclusive guard of the lifecycle gate. Held until dropped; a store
-/// keeps it as its last field so that its connection closes first.
-#[derive(Debug)]
-pub struct OwnerLock {
-    file: Option<File>,
-}
-
-impl OwnerLock {
-    /// Open (creating it if needed, never truncating) and lock `path` without waiting.
-    pub fn acquire(path: &Path) -> Result<OwnerLock, OwnerLockError> {
-        ownership_change(|| {
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(path)
-                .map_err(|_| OwnerLockError::Io)?;
-            match file.try_lock() {
-                Ok(()) => Ok(OwnerLock { file: Some(file) }),
-                Err(TryLockError::WouldBlock) => Err(OwnerLockError::Held),
-                Err(TryLockError::Error(_)) => Err(OwnerLockError::Io),
-            }
-        })
-    }
-}
-
-impl Drop for OwnerLock {
-    fn drop(&mut self) {
-        if let Some(file) = self.file.take() {
-            ownership_change(|| {
-                // Unlock before closing: a `flock` lock belongs to the open file
-                // description, so this releases it even while a child that has not yet
-                // finished exec still holds a duplicate (module documentation). If it
-                // fails, closing still releases it once every duplicate is gone.
-                let _ = file.unlock();
-                drop(file);
-            });
-        }
-    }
 }
 
 /// The profile name bound by [`LocalProcessSandbox::environment_digest`].

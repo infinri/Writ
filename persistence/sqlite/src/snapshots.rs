@@ -365,7 +365,7 @@ pub struct SqliteSnapshotStore {
     sessions: Mutex<Sessions>,
     next_session: AtomicU64,
     deployment: Option<Arc<dyn DeploymentProof>>,
-    _lock: writ_broker::process::OwnerLock,
+    _lock: writ_broker::lifecycle::OwnerLock,
 }
 
 fn snap_unavailable(code: &str) -> StoreError {
@@ -428,7 +428,7 @@ fn verify_store(conn: &Connection, ledger: &LedgerId) -> Result<(), StoreError> 
 /// row left by an earlier owner (fenced).
 fn ready(
     mut conn: Connection,
-    lock: writ_broker::process::OwnerLock,
+    lock: writ_broker::lifecycle::OwnerLock,
     limits: SnapshotLimits,
 ) -> Result<SqliteSnapshotStore, StoreError> {
     conn.execute_batch("PRAGMA synchronous = FULL;")

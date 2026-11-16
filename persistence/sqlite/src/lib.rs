@@ -13,7 +13,7 @@
 //!
 //! **Single-owner coordination:** the ownership lock is an exclusive OS lock
 //! (`File::try_lock`) on `<canonical path>.owner`, acquired and released under the
-//! exclusive guard of the process lifecycle gate ([`writ_broker::process::OwnerLock`];
+//! exclusive guard of the process lifecycle gate ([`writ_broker::lifecycle::OwnerLock`];
 //! no child spawn of this process overlaps it, and it is unlocked before close so a
 //! child's inherited duplicate never keeps it alive, E-066), held for the lifetime of the
 //! [`SqliteLedger`]; a second instance (broker or reconciler) fails closed with
@@ -144,7 +144,7 @@ use writ_broker::grants::{
     StoredGrant, StoredProvenance, StoredReceipt,
 };
 use writ_broker::policy::ExclusiveHold;
-use writ_broker::process::{OwnerLock, OwnerLockError};
+use writ_broker::lifecycle::{OwnerLock, OwnerLockError};
 use writ_broker::refusal::Refusal;
 use writ_broker::store::Timestamp;
 pub use writ_broker::store::{ExecuteLedger, GrantLedger, LedgerStore, StoreError};
