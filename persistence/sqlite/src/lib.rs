@@ -877,6 +877,25 @@ impl SqliteLedger {
         u64::try_from(n).map_err(|_| unavailable("read", "schema"))
     }
 
+    /// The status of receipt `(tenant_id, idempotency_key)`, if any (`status.receipt`,
+    /// J-2: the service derives the key from the connection's OS principal and binding, so
+    /// a caller only reaches its own receipts).
+    pub fn receipt_status(
+        &self,
+        tenant_id: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<String>, StoreError> {
+        self.lock("read")?
+            .conn
+            .query_row(
+                "SELECT status FROM receipts WHERE tenant_id = ?1 AND idempotency_key = ?2",
+                (tenant_id, idempotency_key),
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| unavailable("read", code_name(&e)))
+    }
+
     /// The linked SQLite engine version (D-023 check).
     pub fn engine_version(&self) -> Result<String, StoreError> {
         self.lock("read")?

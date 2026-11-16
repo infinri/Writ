@@ -1,0 +1,28 @@
+[package]
+name = "writ-service"
+version = "0.1.0"
+description = "Writ V2 trusted service writ-serviced: the single ledger owner composing the stores, key source, approval listener and local RPC (M5a-04, M5-INTERFACES J-1, J-2, J-6)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Reviewed allow-list: service/deps-allowlist.json. Workspace path dependencies only (J-0:
+# all trusted crates and writ-approval); no registry package of its own. Tokio `signal` is not
+# adopted here yet (graceful shutdown is M5a-11).
+[dependencies]
+writ-approval = { path = "../approval" }
+writ-broker = { path = "../broker" }
+writ-hostsys = { path = "../hostsys" }
+writ-keys = { path = "../keys" }
+writ-ledger-sqlite = { path = "../persistence/sqlite" }
+writ-rpc = { path = "../rpc" }
+
+[[bin]]
+name = "writ-serviced"
+path = "src/main.rs"
+test = false
+bench = false
+
+[lints]
+workspace = true

@@ -68,6 +68,35 @@ impl<F: AsFd> Read for PlainReader<'_, F> {
     }
 }
 
+/// Send `bytes` with one descriptor attached (`SCM_RIGHTS`). Used by the probes and tests to
+/// check that a receiver refuses ancillary data (J-2); the service never sends descriptors.
+pub fn send_with_descriptor(
+    socket: impl AsFd,
+    bytes: &[u8],
+    fd: std::os::fd::BorrowedFd<'_>,
+) -> io::Result<usize> {
+    use rustix::net::{sendmsg, SendAncillaryBuffer, SendAncillaryMessage, SendFlags};
+    let mut space = [MaybeUninit::<u8>::uninit(); CONTROL_BYTES];
+    let mut control = SendAncillaryBuffer::new(&mut space);
+    let fds = [fd];
+    if !control.push(SendAncillaryMessage::ScmRights(&fds)) {
+        return Err(io::Error::from(io::ErrorKind::InvalidInput));
+    }
+    sendmsg(
+        socket,
+        &[io::IoSlice::new(bytes)],
+        &mut control,
+        SendFlags::empty(),
+    )
+    .map_err(io::Error::from)
+}
+
+/// Set the process umask to 0077 (J-2: the service never creates group- or
+/// other-accessible files itself) and return the previous mask's bits.
+pub fn restrict_umask() -> u32 {
+    rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o077)).as_raw_mode()
+}
+
 /// The identity of this process.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessIdentity {

@@ -2583,6 +2583,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "writ-service"
+version = "0.1.0"
+dependencies = [
+ "writ-approval",
+ "writ-broker",
+ "writ-hostsys",
+ "writ-keys",
+ "writ-ledger-sqlite",
+ "writ-rpc",
+]
+
+[[package]]
 name = "writeable"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
