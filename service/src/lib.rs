@@ -245,9 +245,11 @@ impl Service {
         self.sweep.as_ref()
     }
 
-    /// `true` while the deployment proof exists and holds (rechecked here).
+    /// `true` while the deployment proof exists, holds (rechecked here) and is current.
     pub fn deployment_verified(&self) -> bool {
-        self.deployment.as_ref().is_some_and(|d| d.recheck())
+        self.deployment
+            .as_ref()
+            .is_some_and(|d| d.recheck() && d.is_current())
     }
 
     /// Trusted time now (raises the ledger floor; D-021).
@@ -417,6 +419,9 @@ impl Service {
                 "an approval socket was received but no approval listener is configured".into(),
             ));
         }
+        if let Some(proof) = &service.deployment {
+            threads.push(recheck_timer(Arc::clone(proof), Arc::clone(&stop)));
+        }
         for (listener, table, endpoint) in [
             (host, host_table, Endpoint::Host),
             (admin, admin_table, Endpoint::Admin),
@@ -443,6 +448,31 @@ impl Service {
             bound_self,
         })
     }
+}
+
+/// The periodic deployment recheck (J-9; M5a-13 M5): every configured interval the proof is
+/// rechecked; a difference withdraws it for good. The proof is current only while its last
+/// passed check is no older than the interval ([`VerifiedDeployment::is_current`]), so the
+/// timer runs at half the interval and a stalled timer fails closed. The thread holds the
+/// proof only, never a store handle, and ends at the stop flag.
+fn recheck_timer(proof: Arc<VerifiedDeployment>, stop: Arc<AtomicBool>) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let period = (proof.recheck_interval() / 2).max(Duration::from_millis(10));
+        let mut next = Instant::now() + period;
+        while !stop.load(Ordering::SeqCst) {
+            if Instant::now() >= next {
+                if !proof.recheck() {
+                    eprintln!(
+                        "writ-serviced: deployment proof withdrawn: {:?}",
+                        proof.withdrawn_because()
+                    );
+                    return;
+                }
+                next = Instant::now() + period;
+            }
+            thread::sleep(Duration::from_millis(50).min(period));
+        }
+    })
 }
 
 /// Where the service's sockets come from (J-8).
@@ -1116,4 +1146,83 @@ fn revocation_reply(row: &RevocationRow) -> Value {
             ]),
         ),
     ])
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use writ_broker::writ_kernel::json::Digest;
+    use writ_hostsys::deployment::{
+        observe, static_facts_value, DeploymentConfig, FactPlan, IdentityPlan, REQUIRED_SYSCTLS,
+    };
+
+    /// M5a-13 M5: the recheck timer keeps a holding proof current past its interval, and a
+    /// changed fact is withdrawn by the timer without any request.
+    #[test]
+    fn the_recheck_timer_keeps_the_proof_current_and_withdraws_on_change() {
+        let d = std::env::temp_dir().join(format!("writ-service-timer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("state")).unwrap();
+        let state = d.join("state");
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(d.join("helper"), b"x").unwrap();
+        std::fs::write(
+            d.join("passwd"),
+            "human:x:1000:1000::/:/bin/sh\nwrit:x:990:990::/:/bin/false\n\
+             agent:x:1001:1001::/:/bin/sh\nwrit-job:x:992:992::/:/bin/false\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("group"),
+            "human:x:1000:\nwrit:x:990:\nagent:x:1001:\nwrit-agents:x:991:agent\nwrit-job:x:992:\n",
+        )
+        .unwrap();
+        let plan = FactPlan {
+            paths: vec![state.clone()],
+            sysctls: REQUIRED_SYSCTLS.iter().map(|s| s.to_string()).collect(),
+            binaries: vec![d.join("helper")],
+            groups: vec!["writ".into(), "writ-agents".into(), "writ-job".into()],
+            own_identity: true,
+            group_file: Some(d.join("group")),
+            identity: Some(IdentityPlan {
+                service_uid: 990,
+                service_gid: 990,
+                agent_uids: vec![1001],
+                job_uid: 992,
+                desktop_uids: vec![1000],
+                passwd_file: Some(d.join("passwd")),
+            }),
+            required_paths: vec![state.clone()],
+        };
+        let mut m = json::Map::new();
+        m.insert("contract".into(), json::s("writ-readiness/1"));
+        m.insert("governed_ready".into(), Value::Bool(true));
+        m.insert("blocking".into(), Value::Arr(vec![]));
+        m.insert(
+            "probes".into(),
+            Value::Arr(vec![json::obj([("status", json::s("ok"))])]),
+        );
+        m.insert("static_facts".into(), static_facts_value(&observe(&plan)));
+        let bytes = json::canonical(&Value::Obj(m)).unwrap().into_bytes();
+        std::fs::write(d.join("readiness.json"), &bytes).unwrap();
+        let proof = VerifiedDeployment::issue(DeploymentConfig {
+            report: d.join("readiness.json"),
+            report_digest: Digest::of_bytes(&bytes).to_string(),
+            plan,
+            recheck_interval: Duration::from_millis(200),
+        })
+        .unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let timer = recheck_timer(Arc::clone(&proof), Arc::clone(&stop));
+        thread::sleep(Duration::from_millis(700));
+        assert!(proof.is_current(), "rechecked by the timer");
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
+        thread::sleep(Duration::from_millis(400));
+        assert!(!proof.is_verified(), "withdrawn by the timer");
+        stop.store(true, Ordering::SeqCst);
+        timer.join().unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

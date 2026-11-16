@@ -1107,10 +1107,12 @@ impl sealed::Sealed for writ_hostsys::deployment::VerifiedDeployment {}
 
 /// The service's proof (M5a-04, J-9): verified while the static start-time checks bound to
 /// the operator-run readiness report hold; a recheck that finds any difference withdraws
-/// it for good, and `immutable()` turns false.
+/// it for good, and `immutable()` turns false. M5a-13 M5: `immutable()` also needs a passed
+/// recheck no older than the configured interval (`is_current`): a stalled recheck timer
+/// fails closed.
 impl DeploymentProof for writ_hostsys::deployment::VerifiedDeployment {
     fn verified(&self) -> bool {
-        self.is_verified()
+        self.is_current()
     }
 }
 

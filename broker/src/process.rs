@@ -76,8 +76,8 @@ use std::time::{Duration, Instant};
 use crate::runner::{Job, JobFailure, JobOutput, Sandbox, SandboxGuarantees, SandboxUnavailable};
 use writ_kernel::json::{self, Value};
 
-pub use crate::lifecycle::{ownership_change, OwnerLock, OwnerLockError};
 use crate::lifecycle::spawning;
+pub use crate::lifecycle::{ownership_change, OwnerLock, OwnerLockError};
 
 /// Spawn `command` under the shared guard of the lifecycle gate: no ownership lock of
 /// this process is acquired or released while the child can still hold duplicates of

@@ -17,13 +17,17 @@ use std::path::{Path, PathBuf};
 
 use writ_broker::keys::{KeyId, KeyPurpose};
 use writ_broker::writ_kernel::json::{self, Map, Value};
-use writ_hostsys::deployment::{DeploymentConfig, FactPlan};
+use writ_hostsys::deployment::{DeploymentConfig, FactPlan, IdentityPlan};
 use writ_rpc::admission::OVERFLOW_ID;
 
 /// The configuration contract.
 pub const CONFIG_CONTRACT: &str = "writ-service-config/1";
 /// Largest configuration file in bytes.
 pub const MAX_CONFIG_BYTES: u64 = 256 * 1024;
+/// Default deployment recheck interval in seconds (M5a-13 M5; `deployment.recheck_seconds`).
+pub const DEFAULT_RECHECK_SECONDS: u64 = 300;
+/// Largest configurable deployment recheck interval in seconds.
+pub const MAX_RECHECK_SECONDS: i64 = 3600;
 /// Longest tenant, project, principal, role or adapter id in bytes.
 pub const MAX_ID_BYTES: usize = 128;
 
@@ -287,6 +291,8 @@ fn plan(v: &Value) -> Result<FactPlan, ConfigError> {
         groups: names("groups")?,
         own_identity: matches!(m.get("own_identity"), Some(Value::Bool(true))),
         group_file: None,
+        identity: None,
+        required_paths: Vec::new(),
     })
 }
 
@@ -447,7 +453,12 @@ impl ServiceConfig {
         let deployment = match m.get("deployment") {
             None => None,
             Some(d) => {
-                let d = members(d, &["report", "report_digest", "plan"], &[], "deployment")?;
+                let d = members(
+                    d,
+                    &["report", "report_digest", "plan"],
+                    &["recheck_seconds"],
+                    "deployment",
+                )?;
                 let digest = match d.get("report_digest").and_then(Value::as_str) {
                     Some(t)
                         if t.len() == 71
@@ -464,10 +475,19 @@ impl ServiceConfig {
                     report: abs_path(d.get("report"), "deployment.report")?,
                     report_digest: digest,
                     plan: plan(d.get("plan").unwrap_or(&Value::Null))?,
+                    recheck_interval: std::time::Duration::from_secs(
+                        match d.get("recheck_seconds") {
+                            None => DEFAULT_RECHECK_SECONDS,
+                            some => {
+                                positive(some, MAX_RECHECK_SECONDS, "deployment.recheck_seconds")?
+                                    as u64
+                            }
+                        },
+                    ),
                 })
             }
         };
-        let config = ServiceConfig {
+        let mut config = ServiceConfig {
             service_uid,
             service_gid,
             agent_uids,
@@ -492,7 +512,49 @@ impl ServiceConfig {
             sweep,
         };
         config.validate()?;
+        config.complete_plan()?;
         Ok(config)
+    }
+
+    /// M5a-13 M4: the deployment plan carries the J-1 identity rules from `identities` and
+    /// requires the layout paths this configuration names (key directory, ledger and store
+    /// directories, socket directories); a plan that is not the full static fact set
+    /// ([`FactPlan::missing`]) refuses the configuration, so `"plan":{}` never loads.
+    fn complete_plan(&mut self) -> Result<(), ConfigError> {
+        let Some(d) = &mut self.deployment else {
+            return Ok(());
+        };
+        d.plan.identity = Some(IdentityPlan {
+            service_uid: self.service_uid,
+            service_gid: self.service_gid,
+            agent_uids: self.agent_uids.clone(),
+            job_uid: self.job_uid,
+            desktop_uids: self.desktop_uids.clone(),
+            passwd_file: None,
+        });
+        let mut required = vec![self.key_dir.clone()];
+        for p in [
+            &self.ledger,
+            &self.snapshots,
+            &self.host_socket,
+            &self.admin_socket,
+        ] {
+            if let Some(parent) = p.parent() {
+                if !required.iter().any(|r| r == parent) {
+                    required.push(parent.to_path_buf());
+                }
+            }
+        }
+        d.plan.required_paths = required;
+        let missing = d.plan.missing();
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(ConfigError(format!(
+                "deployment.plan is not the full static fact set; missing {}",
+                missing.join(", ")
+            )))
+        }
     }
 
     /// Read and parse the configuration file at `path` (bounded).
@@ -632,6 +694,75 @@ mod tests {
         assert!(c.binding(1002).is_none());
         assert_eq!(c.label(false), "unverified");
         assert_eq!(c.label(true), "governed");
+    }
+
+    /// M5a-13 M4: a deployment plan that is not the full static fact set never loads;
+    /// the full plan receives the identity rules and the layout paths from the
+    /// configuration. M5: `recheck_seconds` defaults to 300 and is bounded.
+    #[test]
+    fn the_deployment_plan_must_be_the_full_static_fact_set() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let sysctls: Vec<String> = writ_hostsys::deployment::REQUIRED_SYSCTLS
+            .iter()
+            .map(|s| format!("\"{s}\""))
+            .collect();
+        let full_plan = format!(
+            r#"{{"paths":["/var/lib/writ/keys","/var/lib/writ/ledger","/var/lib/writ/stores","/run/writ"],"sysctls":[{}],"binaries":["/usr/local/libexec/writ/writ-cgroup-exec"],"groups":["writ","writ-agents","writ-job"],"own_identity":true}}"#,
+            sysctls.join(",")
+        );
+        let deployment = |plan: &str, extra: &str| {
+            format!(
+                r#"{{"report":"/etc/writ/readiness.json","report_digest":"{digest}","plan":{plan}{extra}}}"#
+            )
+        };
+        let refused = parse(&[("deployment", &deployment("{}", ""))]).unwrap_err();
+        assert!(
+            refused.0.contains("not the full static fact set"),
+            "{refused}"
+        );
+        for drop in [
+            r#""/run/writ""#,
+            r#""writ-job""#,
+            r#""own_identity":true"#,
+            r#""/usr/local/libexec/writ/writ-cgroup-exec""#,
+            r#""fs.suid_dumpable""#,
+        ] {
+            let partial = full_plan
+                .replace(&format!("{drop},"), "")
+                .replace(&format!(",{drop}"), "")
+                .replace(drop, "");
+            assert_ne!(partial, full_plan, "{drop}");
+            assert!(
+                parse(&[("deployment", &deployment(&partial, ""))]).is_err(),
+                "{drop}"
+            );
+        }
+        let c = parse(&[("deployment", &deployment(&full_plan, ""))]).unwrap();
+        let d = c.deployment.unwrap();
+        assert_eq!(d.recheck_interval, std::time::Duration::from_secs(300));
+        let identity = d.plan.identity.unwrap();
+        assert_eq!(
+            (
+                identity.service_uid,
+                identity.agent_uids,
+                identity.job_uid,
+                identity.desktop_uids
+            ),
+            (990, vec![1001], 992, vec![1000])
+        );
+        assert_eq!(d.plan.required_paths.len(), 4);
+        let c = parse(&[(
+            "deployment",
+            &deployment(&full_plan, r#","recheck_seconds":60"#),
+        )])
+        .unwrap();
+        assert_eq!(
+            c.deployment.unwrap().recheck_interval,
+            std::time::Duration::from_secs(60)
+        );
+        for bad in [r#","recheck_seconds":0"#, r#","recheck_seconds":3601"#] {
+            assert!(parse(&[("deployment", &deployment(&full_plan, bad))]).is_err());
+        }
     }
 
     #[test]

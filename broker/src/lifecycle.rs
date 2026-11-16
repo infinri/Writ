@@ -77,4 +77,3 @@ impl Drop for OwnerLock {
         }
     }
 }
-

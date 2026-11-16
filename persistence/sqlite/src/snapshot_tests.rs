@@ -844,18 +844,47 @@ fn the_verified_deployment_proof_controls_immutable() {
     use std::os::unix::fs::PermissionsExt;
     use writ_broker::writ_kernel::json::{self, Value};
     use writ_hostsys::deployment::{
-        observe, static_facts_value, DeploymentConfig, DeploymentRefused, FactPlan,
-        VerifiedDeployment,
+        observe, static_facts_value, DeploymentConfig, DeploymentRefused, FactPlan, IdentityPlan,
+        VerifiedDeployment, REQUIRED_SYSCTLS,
     };
     let dir = scratch("verified-deployment");
     let state = dir.join("state");
     std::fs::create_dir_all(&state).unwrap();
     std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // The full static fact set (M5a-13 M4) over a reference-shaped account database.
+    let passwd = dir.join("passwd");
+    std::fs::write(
+        &passwd,
+        "human:x:1000:1000::/home/human:/bin/bash\nwrit:x:990:990::/:/bin/false\n\
+         agent:x:1001:1001::/home/agent:/bin/bash\nwrit-job:x:992:992::/:/bin/false\n",
+    )
+    .unwrap();
+    let group = dir.join("group");
+    std::fs::write(
+        &group,
+        "human:x:1000:\nwrit:x:990:\nagent:x:1001:\nwrit-agents:x:991:agent\nwrit-job:x:992:\n",
+    )
+    .unwrap();
+    let helper = dir.join("helper");
+    std::fs::write(&helper, b"helper").unwrap();
     let plan = FactPlan {
         paths: vec![state.clone()],
+        sysctls: REQUIRED_SYSCTLS.iter().map(|s| s.to_string()).collect(),
+        binaries: vec![helper],
+        groups: vec!["writ".into(), "writ-agents".into(), "writ-job".into()],
         own_identity: true,
-        ..FactPlan::default()
+        group_file: Some(group),
+        identity: Some(IdentityPlan {
+            service_uid: 990,
+            service_gid: 990,
+            agent_uids: vec![1001],
+            job_uid: 992,
+            desktop_uids: vec![1000],
+            passwd_file: Some(passwd),
+        }),
+        required_paths: vec![state.clone()],
     };
+    let interval = std::cell::Cell::new(std::time::Duration::from_secs(300));
     let report = |facts: Option<Value>| {
         let mut m = json::Map::new();
         m.insert("contract".into(), json::s("writ-readiness/1"));
@@ -877,6 +906,7 @@ fn the_verified_deployment_proof_controls_immutable() {
             report: path,
             report_digest: Digest::of_bytes(bytes).to_string(),
             plan: plan.clone(),
+            recheck_interval: interval.get(),
         }
     };
     // A report without static facts (what writ-probe produces today) issues nothing.
@@ -903,6 +933,40 @@ fn the_verified_deployment_proof_controls_immutable() {
     .unwrap()
     .with_deployment(proof.clone());
     assert!(s.immutable());
+    // M5a-13 M5: a proof whose last passed recheck is older than the interval does not make
+    // the store immutable (fails closed) until a recheck passes again.
+    interval.set(std::time::Duration::from_millis(150));
+    let short =
+        VerifiedDeployment::issue(config(&report(Some(static_facts_value(&observe(&plan))))))
+            .unwrap();
+    let t = SqliteSnapshotStore::open(
+        &dir.join("snapshots.db"),
+        &ledger(),
+        SnapshotLimits::REFERENCE,
+    );
+    assert!(t.is_err(), "one owner at a time");
+    drop(s);
+    let s = SqliteSnapshotStore::open(
+        &dir.join("snapshots.db"),
+        &ledger(),
+        SnapshotLimits::REFERENCE,
+    )
+    .unwrap()
+    .with_deployment(short.clone());
+    assert!(s.immutable());
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    assert!(short.is_verified());
+    assert!(!s.immutable(), "a stale proof is not trusted");
+    assert!(short.recheck());
+    assert!(s.immutable());
+    drop(s);
+    let s = SqliteSnapshotStore::open(
+        &dir.join("snapshots.db"),
+        &ledger(),
+        SnapshotLimits::REFERENCE,
+    )
+    .unwrap()
+    .with_deployment(proof.clone());
     std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert!(!proof.recheck());
     assert!(!s.immutable());

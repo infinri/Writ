@@ -143,8 +143,8 @@ use writ_broker::grants::{
     GrantCheck, GrantInsert, NewGrant, ReceiptStatus, ReserveOutcome, ReserveRequest, Revalidation,
     StoredGrant, StoredProvenance, StoredReceipt,
 };
-use writ_broker::policy::ExclusiveHold;
 use writ_broker::lifecycle::{OwnerLock, OwnerLockError};
+use writ_broker::policy::ExclusiveHold;
 use writ_broker::refusal::Refusal;
 use writ_broker::store::Timestamp;
 pub use writ_broker::store::{ExecuteLedger, GrantLedger, LedgerStore, StoreError};
