@@ -123,6 +123,7 @@ pub(crate) fn reconciled(observed_success: u64, observed_failure: u64, unknown: 
         observed_success,
         observed_failure,
         unknown,
+        ..Reconciled::default()
     }
 }
 

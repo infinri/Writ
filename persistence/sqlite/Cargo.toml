@@ -16,6 +16,11 @@ writ-broker = { path = "../../broker" }
 writ-hostsys = { path = "../../hostsys" }
 rusqlite = { version = "=0.41.1", default-features = false }
 
+[features]
+# Test-only: compiles `FsJournal::inject` (one-shot journal faults, M5a-09). Enabled only by
+# writ-fs-effects' dev-dependency on this crate; never by a normal build.
+test-faults = []
+
 [dev-dependencies]
 writ-broker = { path = "../../broker", features = ["uncontained-test-runner"] }
 rusqlite = { version = "=0.41.1", default-features = false }

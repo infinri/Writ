@@ -185,6 +185,7 @@ impl RunRecord {
             idempotency_key: self.idempotency_key.clone(),
             request_fingerprint: self.request_fingerprint.clone(),
             result,
+            reason: None,
         })
     }
 }

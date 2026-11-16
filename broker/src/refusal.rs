@@ -132,6 +132,16 @@ pub enum Refusal {
     /// Effect prerequisite: the promotion's artifact or policies are no
     /// longer current.
     PromotionStale,
+    /// An operator disposition (`fs_target_release`, `run_abandon`; D-046
+    /// Q-3, M5-INTERFACES J-11.9): the context recomputed at finish differs
+    /// from the one decided, or the state digest differs at the journal step.
+    DispositionStale,
+    /// An operator disposition: worker-gone evidence is missing or an op on
+    /// the target is unresolved, or the root is marked unrecoverable (J-11.9).
+    DispositionPrecondition,
+    /// An operator disposition for a target that is neither blocked nor
+    /// tainted, or for an unknown target (J-11.9).
+    DispositionNotApplicable,
     /// An M4 approval, challenge, revocation or signoff refusal (I-6). The
     /// [`ApprovalCode`] is the internal code; externally always the kernel's
     /// generic refusal.
@@ -179,6 +189,9 @@ impl Refusal {
             Refusal::EffectPrerequisiteUnmet => "EFFECT_PREREQUISITE_UNMET",
             Refusal::EffectArtifactMismatch => "EFFECT_ARTIFACT_MISMATCH",
             Refusal::PromotionStale => "PROMOTION_STALE",
+            Refusal::DispositionStale => "DISPOSITION_STALE",
+            Refusal::DispositionPrecondition => "DISPOSITION_PRECONDITION",
+            Refusal::DispositionNotApplicable => "DISPOSITION_NOT_APPLICABLE",
             Refusal::Approval(code) => code.code(),
         }
     }
@@ -385,6 +398,26 @@ mod tests {
         assert_eq!(kernel.code(), "STATE_REVISION_CONFLICT");
         assert_eq!(kernel.diagnostic(), None);
         assert_eq!(Refusal::WorkflowUnknown.diagnostic(), None);
+    }
+
+    #[test]
+    fn disposition_codes_use_the_kernel_generic_mapping() {
+        // M5a-09, J-11.9: internal codes, generic external mapping (INV-44, O-6).
+        for (refusal, code) in [
+            (Refusal::DispositionStale, "DISPOSITION_STALE"),
+            (Refusal::DispositionPrecondition, "DISPOSITION_PRECONDITION"),
+            (
+                Refusal::DispositionNotApplicable,
+                "DISPOSITION_NOT_APPLICABLE",
+            ),
+        ] {
+            assert_eq!(refusal.code(), code);
+            assert!(!writ_kernel::refusal::PASS_THROUGH.contains(&code));
+            assert_eq!(
+                refusal.external_code(),
+                writ_kernel::refusal::PROMOTION_REFUSED
+            );
+        }
     }
 
     #[test]

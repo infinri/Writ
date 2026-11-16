@@ -136,7 +136,7 @@
 //! process is refused by the single-owner ledger (M3-01).
 //!
 //! **Runner routing** (M3-07): a broker built with [`Broker::with_runner`]
-//! sends requests of kind [`RUNNER_EFFECT_KIND`] to the runner adapter (in
+//! sends requests of kind [`crate::runner::RUNNER_EFFECT_KIND`] to the runner adapter (in
 //! T-adapter and `present_permit`) and every other kind to the controlled
 //! effect adapter; reconciliation reads the evidence of both (a permit id
 //! with a record in both is an integrity failure). Without a runner, a runner
@@ -148,6 +148,25 @@
 //! keeps the attested state from changing during the run (D-036). A failure
 //! of either store makes reconciliation fail closed for every receipt, since
 //! the evidence of both is read.
+//!
+//! **`fs.write` routing** (M5a-09, M5-INTERFACES J-7.7): a broker built with
+//! [`Broker::with_fs_root`] sends `fs.write` requests to the adapter of the
+//! root named by the request's resource (`file:<tenant>/<project>/<root
+//! id>/<path>`, [`crate::effects::FsWriteRequest`]); a malformed `fs.write`
+//! request or one naming a root without an adapter is `REQUEST_SCOPE_MISMATCH`
+//! before anything is reserved, so an `fs.write` request never reaches the
+//! controlled adapter. Reconciliation asks every adapter (controlled, runner,
+//! every root) for a permit's evidence; a record in more than one is an
+//! integrity failure. When one `fs.write` journal cannot be read, a receipt
+//! with evidence elsewhere is still resolved (the skipped duplicate check is
+//! counted in [`Reconciled::duplicate_check_skipped`] and audited), and a
+//! receipt without evidence cannot be ruled out of that journal (the ledger
+//! keeps no bound request): it stays uncertain and is counted in
+//! [`Reconciled::not_ruled_out`] and audited as `LEDGER_UNAVAILABLE` until the
+//! root is readable. A failure of the controlled store or the runner still
+//! fails the whole reconciliation closed. An `fs.write` effect failure after
+//! the adapter's durable intent is `TxStage::Effect` with an unknown outcome:
+//! the receipt stays `dispatched` like any other ambiguous adapter outcome.
 //!
 //! **Restart** (D-020): all of the above state is in the ledger and the effect
 //! store; a new broker over the reopened ledger resumes a `reserved` receipt
@@ -175,7 +194,7 @@
 use crate::approval_store::approval_request_for;
 use crate::authorize::{authorize, Authorized};
 use crate::clock::{observe, ClockError, EffectiveClock, TrustedClock};
-use crate::effects::{EffectAdapter, EffectEvidence, EffectResult, VerifiedEffect};
+use crate::effects::{EffectAdapter, EffectEvidence, EffectResult, EffectRoute, VerifiedEffect};
 use crate::grants::{
     GrantLabel, GrantService, GrantUse, KeyLocks, ReceiptStatus, Replay, ReserveOutcome,
     ReserveRequest, Revalidation, StoredGrant,
@@ -185,20 +204,17 @@ use crate::keys::{KeyId, KeyRevocations, KeySource, MaterialDigest, PermitKey};
 use crate::permit::{Permit, PermitId, PermitIssueError};
 use crate::policy::{ActivePolicy, SharedPolicy};
 use crate::refusal::Refusal;
-use crate::runner::RUNNER_EFFECT_KIND;
-use crate::store::{ExecuteLedger, LedgerStore, StoreError, TxFailure};
+use crate::store::{ExecuteLedger, LedgerStore, StoreError, TxFailure, TxStage};
 use writ_kernel::contracts::StateRevision;
 use writ_kernel::json::Value;
 use writ_kernel::time::Timestamp;
 
-/// `true` when `request` is a runner evaluation ([`RUNNER_EFFECT_KIND`]),
-/// which only the runner adapter may apply.
-fn is_runner(request: &Value) -> bool {
-    request
-        .get("action")
-        .and_then(|a| a.get("kind"))
-        .and_then(Value::as_str)
-        == Some(RUNNER_EFFECT_KIND)
+/// The adapter a request is routed to ([`EffectRoute`]).
+enum Routed<'a, A: ?Sized> {
+    /// The controlled effect adapter.
+    Controlled(&'a A),
+    /// The runner or an `fs.write` root's adapter.
+    Other(&'a dyn EffectAdapter),
 }
 
 /// The permit id of permit number `n` (`permit-<n>`).
@@ -391,6 +407,15 @@ pub struct Reconciled {
     pub observed_failure: u64,
     /// `dispatched` receipts marked `unknown_reconcile` (no evidence).
     pub unknown: u64,
+    /// Receipts resolved from another adapter's evidence while at least one
+    /// `fs.write` journal was unreadable: the duplicate check against that
+    /// journal was skipped (J-7.7; audited).
+    pub duplicate_check_skipped: u64,
+    /// Receipts without evidence that could not be ruled out of an
+    /// unreadable `fs.write` journal (the ledger keeps no bound request): left
+    /// uncertain, refused `LEDGER_UNAVAILABLE` in the audit until the root is
+    /// readable (J-7.7).
+    pub not_ruled_out: u64,
 }
 
 impl Reconciled {
@@ -548,7 +573,15 @@ impl Evidence {
         };
         Some(FailureRecord {
             transaction: name,
-            stage: failure.stage.as_str(),
+            // The ledger's `failure_records.stage` accepts `begin`, `body` and
+            // `commit` (`writ-ledger-6`); an effect-stage failure (M5a-09) is
+            // stored as `body` with its `effect ...` category and
+            // `outcome_unknown` set, until a lead-owned schema change adds the
+            // value. `Evidence::diagnostics` names the stage exactly.
+            stage: match failure.stage {
+                TxStage::Effect => TxStage::Body.as_str(),
+                other => other.as_str(),
+            },
             category,
             code,
             progress: self.progress(),
@@ -732,8 +765,10 @@ impl PermitKeys<'_> {
 pub struct Broker<'a, L: ?Sized, A: ?Sized> {
     grants: GrantService<'a, L>,
     adapter: &'a A,
-    /// The runner adapter for [`RUNNER_EFFECT_KIND`] requests (M3-07), if any.
+    /// The runner adapter for [`crate::runner::RUNNER_EFFECT_KIND`] requests (M3-07), if any.
     runner: Option<&'a dyn EffectAdapter>,
+    /// The `fs.write` adapters by root id (M5a-09, J-7.7).
+    fs_roots: Vec<(String, &'a dyn EffectAdapter)>,
     permit_keys: PermitKeys<'a>,
     /// Per-workflow locks (M3-05): a promotion, and an execution whose
     /// request names a workflow, hold their workflow's lock from validation
@@ -779,18 +814,53 @@ where
             grants: GrantService::new(active, clock, ledger),
             adapter,
             runner: None,
+            fs_roots: Vec::new(),
             permit_keys,
             workflow_locks: KeyLocks::new(),
         }
     }
 
-    /// The same broker with `runner` as the adapter of [`RUNNER_EFFECT_KIND`]
+    /// The same broker with `runner` as the adapter of [`crate::runner::RUNNER_EFFECT_KIND`]
     /// requests (M3-07). Requests of every other kind still go to the
     /// controlled effect adapter; without a runner, a runner request is
     /// refused before anything is reserved (`REQUEST_SCOPE_MISMATCH`).
     pub fn with_runner(mut self, runner: &'a dyn EffectAdapter) -> Broker<'a, L, A> {
         self.runner = Some(runner);
         self
+    }
+
+    /// The same broker with `adapter` as the `fs.write` adapter of root
+    /// `root_id` (M5a-09, J-7.7). An `fs.write` request naming a root without
+    /// an adapter is refused before anything is reserved
+    /// (`REQUEST_SCOPE_MISMATCH`); a second adapter for the same root id
+    /// replaces nothing and is ignored (the first one stays).
+    pub fn with_fs_root(
+        mut self,
+        root_id: &str,
+        adapter: &'a dyn EffectAdapter,
+    ) -> Broker<'a, L, A> {
+        if self.fs_root(root_id).is_none() {
+            self.fs_roots.push((root_id.to_string(), adapter));
+        }
+        self
+    }
+
+    fn fs_root(&self, root_id: &str) -> Option<&'a dyn EffectAdapter> {
+        self.fs_roots
+            .iter()
+            .find(|(id, _)| id == root_id)
+            .map(|(_, a)| *a)
+    }
+
+    /// The adapter `request` is routed to, or `None` when no adapter may
+    /// apply it (`REQUEST_SCOPE_MISMATCH`).
+    fn route(&self, request: &Value) -> Option<Routed<'a, A>> {
+        match EffectRoute::of(request) {
+            EffectRoute::Controlled => Some(Routed::Controlled(self.adapter)),
+            EffectRoute::Runner => self.runner.map(Routed::Other),
+            EffectRoute::FsRoot(id) => self.fs_root(&id).map(Routed::Other),
+            EffectRoute::Malformed => None,
+        }
     }
 
     /// Approval issuance and the per-key locks (shared with execution).
@@ -850,7 +920,7 @@ where
             }
             other => other?,
         };
-        if is_runner(verified.request()) && self.runner.is_none() {
+        if self.route(verified.request()).is_none() {
             return Err(Refusal::RequestScopeMismatch);
         }
         // A request naming a workflow holds the workflow lock from its
@@ -948,10 +1018,10 @@ where
             let verified = keys.verify(permit, request, &clock, hold)?;
             VerifiedEffect::new(verified, request)
         };
-        match (is_runner(request), self.runner) {
-            (false, _) => self.adapter.apply(&mut verify),
-            (true, Some(runner)) => runner.apply(&mut verify),
-            (true, None) => Ok(Err(Refusal::RequestScopeMismatch)),
+        match self.route(request) {
+            Some(Routed::Controlled(a)) => a.apply(&mut verify),
+            Some(Routed::Other(a)) => a.apply(&mut verify),
+            None => Ok(Err(Refusal::RequestScopeMismatch)),
         }
     }
 
@@ -974,10 +1044,10 @@ where
                 let verified = keys.verify(permit, request, &clock, &shared)?;
                 VerifiedEffect::new(verified, request)
             };
-            let inspected = match (is_runner(request), self.runner) {
-                (false, _) => self.adapter.inspect(&mut verify),
-                (true, Some(runner)) => runner.inspect(&mut verify),
-                (true, None) => Ok(Err(Refusal::RequestScopeMismatch)),
+            let inspected = match self.route(request) {
+                Some(Routed::Controlled(a)) => a.inspect(&mut verify),
+                Some(Routed::Other(a)) => a.inspect(&mut verify),
+                None => Ok(Err(Refusal::RequestScopeMismatch)),
             };
             match inspected {
                 Err(f) => Refusal::LedgerUnavailable(f.error),
@@ -1008,40 +1078,82 @@ where
         let unavailable = |f: TxFailure| Refusal::LedgerUnavailable(f.error);
         let pending = ledger.pending_receipts(hold).map_err(unavailable)?;
         let mut resolutions = Vec::with_capacity(pending.len());
+        let (mut skipped, mut not_ruled_out) = (0u64, 0u64);
         for receipt in pending {
-            let evidence = match receipt.permit_number.and_then(permit_id_for) {
-                None => None,
+            let (evidence, unreadable) = match receipt.permit_number.and_then(permit_id_for) {
+                None => (None, false),
                 Some(id) => self.evidence(id.as_str()).map_err(unavailable)?,
             };
             let observed = match evidence {
-                None => None,
-                Some(e) => Some(Self::bound(&receipt, &e)?),
+                None => {
+                    // No evidence in any readable adapter: with an unreadable
+                    // `fs.write` journal the receipt cannot be ruled out of it
+                    // (the ledger keeps no bound request), so it stays
+                    // uncertain (J-7.7).
+                    if unreadable {
+                        not_ruled_out += 1;
+                    }
+                    None
+                }
+                Some(e) => {
+                    if unreadable {
+                        skipped += 1;
+                    }
+                    Some(Self::bound(&receipt, &e)?)
+                }
             };
             resolutions.push(Resolution { receipt, observed });
         }
-        ledger.reconcile(hold, &resolutions).map_err(unavailable)
+        let mut out = ledger.reconcile(hold, &resolutions).map_err(unavailable)?;
+        out.duplicate_check_skipped = skipped;
+        out.not_ruled_out = not_ruled_out;
+        if skipped + not_ruled_out > 0 {
+            // The reconciliation audit records the skipped duplicate checks
+            // and the receipts refused until the root is readable; an audit
+            // failure does not change the result (storage rule 2).
+            let record = FailureRecord {
+                transaction: TxName::Adapter,
+                stage: TxStage::Begin.as_str(),
+                category: "reconcile evidence".into(),
+                code: format!("fs_root_unreadable skipped={skipped} not_ruled_out={not_ruled_out}"),
+                progress: Progress::DispatchedWithoutEffect,
+                possible_progress: Progress::DispatchedWithEffect,
+                outcome_unknown: false,
+            };
+            let _ = ledger.record_failure(StoreError::EXTERNAL_CODE, &record);
+        }
+        Ok(out)
     }
 
-    /// The evidence for `permit_id` held by the controlled effect adapter or
-    /// the runner (permit ids are unique per ledger, so at most one holds a
-    /// record; a record in both is an integrity failure).
-    fn evidence(&self, permit_id: &str) -> Result<Option<EffectEvidence>, TxFailure> {
-        let controlled = self.adapter.evidence(permit_id)?;
-        let runner = match self.runner {
-            Some(runner) => runner.evidence(permit_id)?,
-            None => None,
-        };
-        match (controlled, runner) {
-            (Some(_), Some(_)) => Err(TxFailure::new(
-                crate::store::TxStage::Body,
+    /// The evidence for `permit_id` held by the controlled effect adapter,
+    /// the runner or any `fs.write` journal (permit ids are unique per
+    /// ledger, so at most one holds a record; a record in more than one is an
+    /// integrity failure), and whether an `fs.write` journal could not be read
+    /// (J-7.7: its duplicate check is skipped; a failure of the controlled
+    /// store or the runner fails the whole reconciliation closed).
+    fn evidence(&self, permit_id: &str) -> Result<(Option<EffectEvidence>, bool), TxFailure> {
+        let mut found = Vec::new();
+        found.extend(self.adapter.evidence(permit_id)?);
+        if let Some(runner) = self.runner {
+            found.extend(runner.evidence(permit_id)?);
+        }
+        let mut unreadable = false;
+        for (_, root) in &self.fs_roots {
+            match root.evidence(permit_id) {
+                Ok(e) => found.extend(e),
+                Err(_) => unreadable = true,
+            }
+        }
+        if found.len() > 1 {
+            return Err(TxFailure::new(
+                TxStage::Body,
                 StoreError::Unavailable {
                     category: "reconcile evidence".into(),
                     code: "integrity".into(),
                 },
-            )),
-            (Some(e), None) | (None, Some(e)) => Ok(Some(e)),
-            (None, None) => Ok(None),
+            ));
         }
+        Ok((found.pop(), unreadable))
     }
 
     /// The observed status `evidence` establishes for `receipt`; evidence

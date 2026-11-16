@@ -68,17 +68,26 @@ pub enum TxStage {
     /// A statement or check between begin and end failed (including the
     /// fencing check and state conflicts); rolled back.
     Body,
-    /// `COMMIT` (or `ROLLBACK`) failed; nothing of the transaction is kept.
+    /// `COMMIT` (or `ROLLBACK`) failed; nothing of the transaction is kept,
+    /// unless `outcome_unknown` says an issued `COMMIT` may have succeeded.
     Commit,
+    /// A failure after durable intent, in a non-transactional effect (M5a-09,
+    /// M5-INTERFACES J-7.5): the `fs.write` adapter committed its intent (the
+    /// permit is consumed) and then failed in the filesystem effect, its
+    /// verification or a re-observation without a definitive row.
+    /// `outcome_unknown` is always `true` for this stage: the effect may or may
+    /// not have happened, and only the adapter's recovery may conclude.
+    Effect,
 }
 
 impl TxStage {
-    /// `begin`, `body` or `commit`.
+    /// `begin`, `body`, `commit` or `effect`.
     pub fn as_str(self) -> &'static str {
         match self {
             TxStage::Begin => "begin",
             TxStage::Body => "body",
             TxStage::Commit => "commit",
+            TxStage::Effect => "effect",
         }
     }
 }
@@ -90,6 +99,16 @@ impl TxStage {
 /// success: the transaction may or may not be durable (D-035 item 4: an
 /// ambiguous commit is never assumed to have committed nothing). A failure
 /// at begin, in the body, or of a `ROLLBACK` never committed anything.
+///
+/// **Non-transactional adapters (M5a-09 amendment, M5-INTERFACES J-7.5).** An
+/// effect adapter whose effect is not inside its store's transaction (the
+/// `fs.write` adapter) reports [`TxStage::Effect`] with `outcome_unknown`
+/// `true` for every failure after its durable intent committed (the permit is
+/// consumed; the effect may or may not have happened). Commit failures of its
+/// own journal transactions keep [`TxStage::Commit`] (`outcome_unknown` true
+/// for an issued commit). A root that its adapter disabled until reboot
+/// answers [`TxStage::Begin`] with code `ROOT_UNRECOVERABLE` before any permit
+/// check (externally `LEDGER_UNAVAILABLE`, D-025 B); nothing is consumed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TxFailure {
     /// Where it failed.
@@ -114,6 +133,16 @@ impl TxFailure {
     pub fn commit_unknown(error: StoreError) -> TxFailure {
         TxFailure {
             stage: TxStage::Commit,
+            error,
+            outcome_unknown: true,
+        }
+    }
+
+    /// A failure after durable intent in a non-transactional effect
+    /// ([`TxStage::Effect`]): the outcome is always unknown.
+    pub fn effect_unknown(error: StoreError) -> TxFailure {
+        TxFailure {
+            stage: TxStage::Effect,
             error,
             outcome_unknown: true,
         }
