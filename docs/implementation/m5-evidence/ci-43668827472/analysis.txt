@@ -1,0 +1,75 @@
+Required CI failure 43668827472: probes::tests::job_scripts_uncontained_report_absence
+Investigated under D-046 (preserve the failing evidence, reproduce the cause, show why the
+correction is valid; no skip, no weakened readiness check or negative control).
+
+1. Failing evidence (failing-job-log-excerpt.txt, this directory)
+   Run 43668827472, job 132674107174 "Production Rust workspace", commit 77e04bb, 2026-11-15.
+   hostsys/src/probes.rs:2392 assert_eq!(kv_get(&pairs, "read_sentinel"), Some("reachable"))
+   left: Some("refused"), right: Some("reachable"). The other 31 writ-hostsys unit tests passed.
+   This was the first CI run containing writ-hostsys (added in 7e1979e..edc8d83).
+
+2. CI job environment (from the workflow .github/workflows/v2-docs.yml job m2-kernel and the log)
+   runs-on: ubuntu-latest, resolved to image ubuntu-26.04 version 20261111.196.1 (Ubuntu 26.04.1
+   LTS, Azure centralus hosted runner 2.338.2). Unprivileged runner user, no container.
+   Checkout working directory: /home/runner/work/Writ/Writ (log line 56).
+   Step: cargo fmt --all --check; cargo clippy --workspace --all-targets --locked -- -D warnings;
+   cargo build --workspace --locked; m3/tools/run-with-clean-fds.sh cargo test --workspace --locked.
+   CARGO_TARGET_DIR not set (default target/ in the checkout); no umask or permission change in
+   the workflow; step env only SQLITE3_INCLUDE_DIR, SQLITE3_LIB_DIR, SQLITE3_STATIC=1,
+   PKG_CONFIG_LIBDIR. Test binary: target/debug/deps/writ_hostsys-952a40f4ba9c645e.
+
+3. Root cause
+   The test builds the P-FS job script with fs_script(&cfg, &sentinel), where the sentinel is
+   <CARGO_MANIFEST_DIR>/../target/writ-probe-<pid>-unit-fs/sentinel/secret, and then, to run it
+   outside bubblewrap, rewrote the job's own write ": > /work/.writ-probe" with a blanket
+   .replace("/work/", "<scratch>/"). On the runner CARGO_MANIFEST_DIR is
+   /home/runner/work/Writ/Writ/hostsys, so the sentinel path itself contains "/work/" and was
+   rewritten to /home/runner<scratch>/Writ/Writ/target/.../sentinel/secret, a path that does not
+   exist. cat failed, and the script correctly reported read_sentinel=refused. Locally the
+   checkout is under /home/<user>/workspaces/..., which contains "/workspaces/" but not
+   "/work/", so the defect was invisible.
+
+   Hypotheses ruled out by the reproduction below: user or uid differences, 0700 scratch
+   directories, cleared environment and PATH, umask, inherited descriptors, deadline, coreutils
+   implementation (the runner image ships coreutils 9.5-1ubuntu2+0.0.0~ubuntu25, the uutils
+   transition package; the failure reproduces with GNU coreutils 9.4, so the cat implementation
+   is not the cause).
+
+4. Reproduction (2026-11-16, workstation, unprivileged, Ubuntu 24.04, Rust 1.99.1 pinned)
+   A local clone of commit 0ad2c3a placed at <scratchpad>/repro/work/Writ (a path containing
+   "/work/", as on the runner), then
+   m3/tools/run-with-clean-fds.sh cargo test --locked -p writ-hostsys --lib job_scripts_uncontained
+   result: FAILED at hostsys/src/probes.rs:2392, left: Some("refused"), right: Some("reachable"),
+   identical to CI. The same commit in the worktree path (no "/work/") passes.
+
+5. Correction (test only; hostsys/src/probes.rs, inside #[cfg(test)] mod tests)
+   The test now replaces only the exact line ": > /work/.writ-probe\n" (asserting it occurs
+   exactly once) with a write to the shell-quoted scratch path, asserts that the shell-quoted
+   sentinel path appears verbatim in the script it runs, and prints the job stdout when the
+   read_sentinel assertion fails. No production function, readiness rule, probe script,
+   evaluation or negative control changed; git diff of non-test code is empty.
+
+   Why it is valid: the assertion's purpose is that the P-FS script, run without containment,
+   reaches a readable sentinel (so a "refused" in the real job means containment, not a broken
+   script). The old test silently ran a different script from the one under test whenever the
+   host path contained "/work/"; the new test runs fs_script's output unchanged apart from the
+   single job-local write, and fails loudly if that line or the sentinel path is not present.
+
+   Verification of the correction:
+   - In the "/work/" clone: writ-hostsys lib tests 32 passed, three runs, plus one run under
+     env -i with umask 077 (32 passed).
+   - Mutation: in the clone, fs_script's sentinel read pointed at a missing file
+     ("secret-missing"); the corrected test fails (the sentinel-path assertion), so the check
+     still discriminates.
+   - Worktree: see TEST-EVIDENCE entry for fmt, clippy -D warnings, workspace tests, check_deps.
+
+6. Production probes and security implications
+   Production probe_fs uses fs_script output verbatim inside bubblewrap; there is no path
+   rewriting outside the test, so the runner path cannot alter a production job. A production
+   sentinel path that were somehow unreadable would make the job report read_sentinel=refused
+   (a potential false ok), but probe_fs only reports ok after its negative control: the same
+   script with an extra read-only bind of the sentinel directory must report
+   read_sentinel=reachable, otherwise the control fails and readiness blocks (readiness test
+   control_that_did_not_fail_turns_ok_into_error_and_blocks). A false missing is fail-closed.
+   No other test or production code performs a substring rewrite of job scripts (grep of
+   hostsys/src for .replace( finds only this test and a sysctl key mapping in facts.rs).
