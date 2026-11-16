@@ -12,7 +12,7 @@ use crate::procfs::{key_users_has, parse_status, ProcView};
 use std::path::Path;
 
 /// One finding.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Finding {
     /// A process with a `writ-job` uid (real, effective, saved or filesystem).
     JobProcess(i32),
@@ -93,6 +93,8 @@ pub fn slice(slice_dir: &Path, own_unit: &str) -> Vec<Finding> {
             Err(err) => out.push(Finding::Unreadable(format!("{name}/cgroup.events: {err}"))),
         }
     }
+    // Directory order differs between filesystems; report findings in a fixed order.
+    out.sort();
     out
 }
 
@@ -115,6 +117,7 @@ pub fn jobs_fs(jobs_root: &Path) -> Vec<Finding> {
             Err(err) => out.push(Finding::Unreadable(format!("jobs filesystem entry: {err}"))),
         }
     }
+    out.sort();
     out
 }
 
@@ -192,15 +195,17 @@ mod tests {
         )
         .unwrap();
         fs::create_dir(slice_dir.join(own).join("job")).unwrap();
+        let mut expected = vec![
+            Finding::PopulatedInstance("writ-job-launcher@1.service".into()),
+            Finding::LeftoverJobCgroup,
+        ];
+        expected.sort();
         assert_eq!(
             slice(&slice_dir, own),
-            vec![
-                Finding::PopulatedInstance("writ-job-launcher@1.service".into()),
-                Finding::LeftoverJobCgroup
-            ]
-            .into_iter()
-            .filter(|f| slice(&slice_dir, own).contains(f))
-            .collect::<Vec<_>>()
+            expected
+                .into_iter()
+                .filter(|f| slice(&slice_dir, own).contains(f))
+                .collect::<Vec<_>>()
         );
         assert_eq!(slice(&slice_dir, own).len(), 2);
 

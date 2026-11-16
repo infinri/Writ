@@ -101,6 +101,7 @@ impl ProcView for HostProc {
                 out.push(pid);
             }
         }
+        out.sort_unstable();
         Ok(out)
     }
 
