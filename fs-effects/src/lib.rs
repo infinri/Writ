@@ -224,6 +224,8 @@ pub struct FsWriteAdapter<'s> {
     /// Marked unrecoverable for this boot (N3).
     pub(crate) disabled: AtomicBool,
     pub(crate) boot_id: String,
+    /// Why the mark directory is not boot-scoped (`None`: tmpfs under `/run`; M5a-13 L2).
+    state_scope: Option<String>,
     pub(crate) staging_prefix: String,
     pub(crate) gc_kept: Mutex<Vec<String>>,
     #[cfg(test)]
@@ -378,11 +380,35 @@ impl Slot {
         }
     }
 
-    /// The recorded-state text of this slot (`absent`, an identity, or `other`).
+    /// The recorded-state text of this slot (`absent`, an identity, or `other:<type>`).
+    /// M5a-13 (lead-flagged item 7): a non-regular file, or a regular file too large to
+    /// digest, is recorded with its file type, uid, mode, inode and link count for audit
+    /// (never as evidence: `other` matches no identity).
     pub(crate) fn text(&self, fs_uuid: &str) -> String {
         match self {
             Slot::Absent => "absent".into(),
-            s => s.identity(fs_uuid).map_or("other".into(), |i| i.text()),
+            Slot::Present { o, .. } => self.identity(fs_uuid).map_or_else(
+                || {
+                    let kind = match o.mode & 0o170_000 {
+                        0o040_000 => "dir",
+                        0o120_000 => "symlink",
+                        0o010_000 => "fifo",
+                        0o140_000 => "socket",
+                        0o020_000 => "chardev",
+                        0o060_000 => "blockdev",
+                        0o100_000 => "file-undigested",
+                        _ => "unknown",
+                    };
+                    format!(
+                        "other:{kind} uid={} mode={:o} ino={} nlink={}",
+                        o.uid,
+                        o.perm(),
+                        o.ino,
+                        o.nlink
+                    )
+                },
+                |i| i.text(),
+            ),
         }
     }
 }
@@ -419,7 +445,7 @@ impl<'s> FsWriteAdapter<'s> {
         {
             return Err(refused(ROOT_UNRECOVERABLE));
         }
-        check_state_dir(cfg)?;
+        let state_scope = check_state_dir(cfg)?;
         if mark_file_boot(cfg).as_deref() == Some(boot_id.as_str()) {
             return Err(refused(ROOT_UNRECOVERABLE));
         }
@@ -492,6 +518,7 @@ impl<'s> FsWriteAdapter<'s> {
             dirty: AtomicBool::new(false),
             disabled: AtomicBool::new(false),
             boot_id,
+            state_scope,
             staging_prefix: ledger.as_str().get(..12).unwrap_or("ledger").to_string(),
             gc_kept: Mutex::new(Vec::new()),
             #[cfg(test)]
@@ -531,6 +558,12 @@ impl<'s> FsWriteAdapter<'s> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+
+    /// Why the mark directory is not boot-scoped, recorded at open (M5a-13 L2); `None` when
+    /// it is a tmpfs under `/run`.
+    pub fn state_dir_not_boot_scoped(&self) -> Option<&str> {
+        self.state_scope.as_deref()
     }
 
     /// `true` once the root is disabled until reboot (N3).
@@ -811,13 +844,36 @@ impl<'s> FsWriteAdapter<'s> {
     }
 }
 
-fn check_state_dir(cfg: &RootConfig) -> Result<(), StoreError> {
+/// `TMPFS_MAGIC` (`statfs` `f_type`).
+const TMPFS_MAGIC: u64 = 0x0102_1994;
+
+/// Check the mark directory (owner, mode) and whether it is boot-scoped (M5a-13 L2): `None`
+/// when it is a tmpfs under `/run`, otherwise why not. A directory that is not boot-scoped is
+/// accepted (every mark carries its boot id, compared with the current one) and the reason is
+/// kept for audit ([`FsWriteAdapter::state_dir_not_boot_scoped`]).
+fn check_state_dir(cfg: &RootConfig) -> Result<Option<String>, StoreError> {
     let fd = fsfx::open_dir_path(&cfg.state_dir).map_err(|_| refused("STATE_DIR"))?;
     let o = fsfx::observe(&fd).map_err(|_| refused("STATE_DIR"))?;
     if !o.is_dir() || o.uid != cfg.owner_uid || o.perm() & 0o077 != 0 {
         return Err(refused("STATE_DIR"));
     }
-    Ok(())
+    Ok(boot_scope(
+        &cfg.state_dir,
+        fsfx::fs_magic(&fd).map_err(|_| refused("STATE_DIR"))?,
+    ))
+}
+
+/// Why a mark directory at `path` with filesystem magic `magic` is not boot-scoped.
+fn boot_scope(path: &Path, magic: u64) -> Option<String> {
+    if magic != TMPFS_MAGIC {
+        Some(format!(
+            "state directory is not on tmpfs (f_type {magic:#x}); marks rely on their boot id"
+        ))
+    } else if !path.starts_with("/run") {
+        Some("state directory is a tmpfs outside /run; marks rely on their boot id".into())
+    } else {
+        None
+    }
 }
 
 fn mark_name(cfg: &RootConfig) -> String {
@@ -835,17 +891,31 @@ fn mark_file_boot(cfg: &RootConfig) -> Option<String> {
     }
 }
 
-/// Write `<boot id>\n<reason>\n` to the mark file and `fsync` it and its directory.
+/// Write `<boot id>\n<reason>\n` to the mark file and `fsync` it and its directory. An
+/// existing mark file (M5a-13 L2: possibly of an earlier boot, when the directory outlived
+/// it) is replaced atomically: a fresh file under a temporary name is exchanged with it
+/// (`RENAME_EXCHANGE`, so a mark file exists at every instant) and the old one removed.
 fn write_mark_file(cfg: &RootConfig, boot_id: &str, reason: &str) -> Result<(), FxError> {
     let dir = fsfx::open_dir_path(&cfg.state_dir)?;
-    let fd = match fsfx::create_exclusive(&dir, &mark_name(cfg)) {
-        Ok(fd) => fd,
-        Err(e) if e.is_exists() => return Ok(()),
-        Err(e) => return Err(e),
-    };
+    let name = mark_name(cfg);
     let reason: String = reason.chars().filter(|c| !c.is_control()).collect();
-    fsfx::write_all(&fd, format!("{boot_id}\n{reason}\n").as_bytes())?;
-    fsfx::fsync(&fd)?;
+    let body = format!("{boot_id}\n{reason}\n");
+    match fsfx::create_exclusive(&dir, &name) {
+        Ok(fd) => {
+            fsfx::write_all(&fd, body.as_bytes())?;
+            fsfx::fsync(&fd)?;
+        }
+        Err(e) if e.is_exists() => {
+            let tmp = format!("{name}.new");
+            let _ = fsfx::unlink_at(&dir, &tmp);
+            let fd = fsfx::create_exclusive(&dir, &tmp)?;
+            fsfx::write_all(&fd, body.as_bytes())?;
+            fsfx::fsync(&fd)?;
+            fsfx::rename_exchange(&dir, &tmp, &dir, &name)?;
+            let _ = fsfx::unlink_at(&dir, &tmp);
+        }
+        Err(e) => return Err(e),
+    }
     fsfx::fsync(&dir)
 }
 
