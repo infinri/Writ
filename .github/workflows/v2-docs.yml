@@ -42,6 +42,8 @@ jobs:
           m3/tools/run-with-clean-fds.sh cargo test --workspace --locked
       - name: Process-kill crash tests (M3-04), run alone and single-threaded
         run: m3/tools/run-with-clean-fds.sh cargo test -p writ-ledger-sqlite --locked --lib kill_tests -- --ignored --test-threads=1
+      - name: fs.write adapter SIGKILL recovery at every J-7 boundary (M5a-09), run alone and single-threaded
+        run: m3/tools/run-with-clean-fds.sh cargo test -p writ-fs-effects --locked --lib kill_tests -- --ignored --test-threads=1
       - name: M3-08 oracle-only broker property gate against the production adapter (seeded CI profile)
         run: |
           cargo build --release --locked -p writ-ledger-sqlite --example m3_line_adapter

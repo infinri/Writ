@@ -134,6 +134,20 @@ pub(crate) struct Env {
     pub(crate) dir: PathBuf,
     pub(crate) cfg: RootConfig,
     pub(crate) snaps: MemSnapshots,
+    /// Remove the directory when dropped (the creating process only).
+    owned: bool,
+}
+
+impl Drop for Env {
+    fn drop(&mut self) {
+        if self.owned {
+            let _ = std::fs::set_permissions(
+                &self.cfg.state_dir,
+                std::fs::Permissions::from_mode(0o700),
+            );
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
 }
 
 /// The ledger side of a test.
@@ -197,6 +211,7 @@ impl Env {
             dir: dir.to_path_buf(),
             cfg,
             snaps: MemSnapshots::new(),
+            owned: fresh,
         };
         if fresh {
             let ledger = SqliteLedger::create(&dir.join("ledger.db")).unwrap();
