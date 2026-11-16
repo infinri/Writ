@@ -223,6 +223,84 @@ pub struct ListenerConfig {
     pub limits: Limits,
 }
 
+/// Lifecycle of a serving listener for the bounded graceful shutdown (M5-INTERFACES J-8;
+/// M5a-11). The listener never handles signals itself: the process entry point does, and
+/// drives this control.
+///
+/// - [`ServeControl::stop_accepting_work`]: the listener keeps accepting connections and
+///   answers every request that arrives from now on with `503` `{"error":"stopping"}`; no new
+///   ceremony, login or decision begins. A request already in progress finishes normally.
+///   Ceremonies not finished are left (their challenges stay issued and expire).
+/// - [`ServeControl::in_flight`] / [`ServeControl::wait_idle`]: the requests in progress (the
+///   drain).
+/// - [`ServeControl::exit`]: the accept loop ends and [`ApprovalListener::serve`] returns;
+///   connections still open are dropped with the runtime.
+///
+/// A request counts itself in flight **before** it checks `stopping` (both sequentially
+/// consistent), so a drain that observes zero after setting `stopping` cannot miss a request
+/// that will still run.
+#[derive(Debug, Default)]
+pub struct ServeControl {
+    stopping: AtomicBool,
+    exit: AtomicBool,
+    in_flight: AtomicUsize,
+}
+
+impl ServeControl {
+    /// Answer every new request `503` from now on (J-8 step 1).
+    pub fn stop_accepting_work(&self) {
+        self.stopping.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether [`ServeControl::stop_accepting_work`] was called.
+    pub fn is_stopping(&self) -> bool {
+        self.stopping.load(Ordering::SeqCst)
+    }
+
+    /// Requests in progress now.
+    pub fn in_flight(&self) -> usize {
+        self.in_flight.load(Ordering::SeqCst)
+    }
+
+    /// Wait until no request is in progress, or `deadline`; `true` when idle.
+    pub fn wait_idle(&self, deadline: Instant) -> bool {
+        loop {
+            if self.in_flight() == 0 {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// End the accept loop (checked at least every 50 ms).
+    pub fn exit(&self) {
+        self.exit.store(true, Ordering::SeqCst);
+    }
+
+    fn exiting(&self) -> bool {
+        self.exit.load(Ordering::SeqCst)
+    }
+
+    /// Count a request in flight, or `None` while stopping.
+    fn enter(self: &Arc<Self>) -> Option<InFlight> {
+        self.in_flight.fetch_add(1, Ordering::SeqCst);
+        let guard = InFlight(Arc::clone(self));
+        (!self.is_stopping()).then_some(guard)
+    }
+}
+
+/// One counted request in flight.
+struct InFlight(Arc<ServeControl>);
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// A bound, not yet serving, approval listener.
 pub struct ApprovalListener {
     listener: StdListener,
@@ -306,6 +384,8 @@ struct State {
     backend: Arc<dyn Backend>,
     sessions: Mutex<HashMap<String, Session>>,
     active: AtomicUsize,
+    /// Shutdown control (J-8).
+    control: Arc<ServeControl>,
     /// Per-process random key of the login decoys (D-044 review M1): decoy credential ids
     /// are derived from it and the subject, so repeated probes see stable ids.
     decoy_key: Vec<u8>,
@@ -319,6 +399,32 @@ impl ApprovalListener {
     /// Bind `127.0.0.1:<port>` (loopback only).
     pub fn bind(config: ListenerConfig, backend: Arc<dyn Backend>) -> io::Result<ApprovalListener> {
         let listener = StdListener::bind((Ipv4Addr::LOCALHOST, config.port))?;
+        ApprovalListener::new(listener, config, backend)
+    }
+
+    /// Serve an already bound listening socket (systemd socket activation, J-8). It must be
+    /// bound to `127.0.0.1` on exactly the configured, nonzero port; anything else is refused
+    /// with `InvalidInput`.
+    pub fn from_std(
+        listener: StdListener,
+        config: ListenerConfig,
+        backend: Arc<dyn Backend>,
+    ) -> io::Result<ApprovalListener> {
+        let addr = listener.local_addr()?;
+        if config.port == 0
+            || addr.port() != config.port
+            || addr.ip() != std::net::IpAddr::V4(Ipv4Addr::LOCALHOST)
+        {
+            return Err(io::Error::from(io::ErrorKind::InvalidInput));
+        }
+        ApprovalListener::new(listener, config, backend)
+    }
+
+    fn new(
+        listener: StdListener,
+        config: ListenerConfig,
+        backend: Arc<dyn Backend>,
+    ) -> io::Result<ApprovalListener> {
         listener.set_nonblocking(true)?;
         let port = listener.local_addr()?.port();
         let mut config = config;
@@ -337,6 +443,7 @@ impl ApprovalListener {
                 backend,
                 sessions: Mutex::new(HashMap::new()),
                 active: AtomicUsize::new(0),
+                control: Arc::new(ServeControl::default()),
                 decoy_key: random_bytes(32)
                     .ok_or_else(|| io::Error::other("random source unavailable"))?,
                 login_bucket: Mutex::new((f64::from(burst), Instant::now())),
@@ -360,8 +467,13 @@ impl ApprovalListener {
         RP_ID
     }
 
-    /// Serve until `stop` is set (checked at least every 50 ms), on a current-thread
-    /// Tokio runtime owned by this call.
+    /// The shutdown control of this listener (J-8).
+    pub fn control(&self) -> Arc<ServeControl> {
+        Arc::clone(&self.state.control)
+    }
+
+    /// Serve until `stop` is set or [`ServeControl::exit`] is called (checked at least every
+    /// 50 ms), on a current-thread Tokio runtime owned by this call.
     pub fn serve(self, stop: Arc<AtomicBool>) -> io::Result<()> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_io()
@@ -372,7 +484,7 @@ impl ApprovalListener {
             loop {
                 let mut tick = Box::pin(tokio::time::sleep(Duration::from_millis(50)));
                 let accepted = poll_fn(|cx| {
-                    if stop.load(Ordering::SeqCst) {
+                    if stop.load(Ordering::SeqCst) || self.state.control.exiting() {
                         return Poll::Ready(None);
                     }
                     if let Poll::Ready(r) = listener.poll_accept(cx) {
@@ -438,7 +550,13 @@ async fn connection(state: Arc<State>, stream: tokio::net::TcpStream, slot: Slot
         .half_close(false);
     let service = hyper::service::service_fn(move |req| {
         let state = Arc::clone(&state);
-        async move { Ok::<_, Infallible>(handle(&state, req).await) }
+        async move {
+            // J-8: counted in flight before `stopping` is checked (ServeControl).
+            let Some(_in_flight) = state.control.enter() else {
+                return Ok::<_, Infallible>(refused(StatusCode::SERVICE_UNAVAILABLE, "stopping"));
+            };
+            Ok::<_, Infallible>(handle(&state, req).await)
+        }
     });
     let conn = builder.serve_connection(TokioIo::new(stream), service);
     let _ = tokio::time::timeout(limits.connection_timeout, conn).await;

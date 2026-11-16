@@ -13,7 +13,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use writ_approval::backend::{Backend, Unavailable};
-use writ_approval::listener::{ApprovalListener, Limits, ListenerConfig, MAX_SESSION_SECONDS};
+use writ_approval::listener::{
+    ApprovalListener, Limits, ListenerConfig, ServeControl, MAX_SESSION_SECONDS,
+};
 use writ_broker::approval::{
     context_fingerprint, ApprovalCode, ApprovalRequest, ApprovalStatus, ChallengeBinding,
     ChallengeOperation, NewApprovalRequest, NewSignoff, RevocationTarget, SignoffExclusions,
@@ -597,6 +599,7 @@ struct Server {
     port: u16,
     origin: String,
     stop: Arc<AtomicBool>,
+    control: Arc<ServeControl>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -619,12 +622,14 @@ impl Server {
         assert_eq!(origin, format!("http://localhost:{}", addr.port()));
         let stop = Arc::new(AtomicBool::new(false));
         let s = Arc::clone(&stop);
+        let control = listener.control();
         let thread = thread::spawn(move || listener.serve(s).unwrap());
         Server {
             fake,
             port: addr.port(),
             origin,
             stop,
+            control,
             thread: Some(thread),
         }
     }
@@ -2548,4 +2553,74 @@ fn m1_outage_answers_503_for_every_subject_and_too_many_credentials_fail_closed(
         assert_eq!(status(&r), 503, "{subject}: {r}");
         assert!(header_of(&r, "set-cookie").is_none());
     }
+}
+
+/// J-8 (M5a-11): while stopping, the listener keeps accepting and answers every new request
+/// 503 `stopping`; a request already in progress finishes normally; the drain observes it;
+/// exit then ends the accept loop.
+#[test]
+fn stopping_refuses_new_requests_with_503_and_lets_in_flight_requests_finish() {
+    let limits = Limits {
+        login_floor: Duration::from_millis(800),
+        ..Limits::default()
+    };
+    let mut s = Server::start(limits);
+    assert_eq!(status(&s.get("/", "")), 200);
+    assert_eq!(s.control.in_flight(), 0);
+    thread::scope(|scope| {
+        // A login begin is held to the latency floor: in progress across the stop.
+        let held = scope.spawn(|| s.post("/login/begin", "", "subject=bob", ""));
+        let until = Instant::now() + Duration::from_secs(5);
+        while s.control.in_flight() == 0 && Instant::now() < until {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(s.control.in_flight(), 1, "the login begin is in progress");
+        s.control.stop_accepting_work();
+        assert!(s.control.is_stopping());
+        // New connections are still accepted and answered 503 (no new ceremony begins).
+        for (path, post) in [("/", false), ("/login/begin", true)] {
+            let r = if post {
+                s.post(path, "", "subject=carol", "")
+            } else {
+                s.get(path, "")
+            };
+            assert_eq!(status(&r), 503, "{r}");
+            assert!(r.contains("\"error\":\"stopping\""), "{r}");
+        }
+        assert!(!s
+            .control
+            .wait_idle(Instant::now() + Duration::from_millis(20)));
+        assert!(s.control.wait_idle(Instant::now() + Duration::from_secs(5)));
+        let done = held.join().unwrap();
+        assert_eq!(status(&done), 200, "the in-flight request finished: {done}");
+    });
+    s.control.exit();
+    s.thread.take().unwrap().join().unwrap();
+}
+
+/// J-8 socket activation: an inherited listening socket is served only when it is bound to
+/// 127.0.0.1 on exactly the configured port (a non-loopback address is refused by the same
+/// check; this file never binds one).
+#[test]
+fn an_inherited_socket_must_be_loopback_on_the_configured_port() {
+    let config = |port| ListenerConfig {
+        port,
+        subject_issuer: "writ-local".into(),
+        limits: Limits::default(),
+    };
+    let backend = || Arc::new(Fake::new()) as Arc<dyn Backend>;
+    let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = held.local_addr().unwrap().port();
+    let other = if port == 65535 { port - 1 } else { port + 1 };
+    for bad in [0, other] {
+        let l = held.try_clone().unwrap();
+        let e = ApprovalListener::from_std(l, config(bad), backend()).err();
+        assert_eq!(
+            e.map(|e| e.kind()),
+            Some(std::io::ErrorKind::InvalidInput),
+            "{bad}"
+        );
+    }
+    let l = ApprovalListener::from_std(held, config(port), backend()).unwrap();
+    assert_eq!(l.origin(), format!("http://localhost:{port}"));
 }

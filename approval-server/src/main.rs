@@ -12,17 +12,33 @@
 //! 4. start the trusted host clock against the ledger's persisted floor (a blocked startup
 //!    rollback is refused);
 //! 5. bind the loopback listener on `127.0.0.1:<port>`, check that its fixed origin and RP
-//!    id are the configured ones, announce readiness on standard output and serve until the
-//!    process is terminated (ownership is released by the operating system at exit).
+//!    id are the configured ones, announce readiness on standard output and serve.
+//!
+//! `SIGTERM` and `SIGINT` are registered before step 3 ([`shutdown::signals`]). The bounded
+//! graceful shutdown (M5-INTERFACES J-8; M5a-11), at the first signal:
+//! 1. **stop accepting work:** the listening socket stays open and every new request is
+//!    answered `503` `stopping`; no ceremony, login or decision begins;
+//! 2. **drain** (`--drain-seconds`, default 10, at most 30): requests in progress finish;
+//!    ceremonies not finished are left (their challenges stay issued and expire);
+//! 3. **release:** the accept loop ends, the listener's runtime (and with it every
+//!    remaining connection) is dropped, the serving thread is joined, then the backend, the
+//!    clock and the ledger are dropped (the ownership lock is unlocked before close under
+//!    the lifecycle gate); exit 0;
+//! 4. a **second signal** exits at once with status 4, the **hard deadline** (drain plus
+//!    5 s) with status 5; the operating system releases the lock and nothing committed is
+//!    rewritten.
 
 use std::io::Write;
 use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use writ_approval::backend::LedgerBackend;
 use writ_approval::listener::{ApprovalListener, Limits, ListenerConfig};
 use writ_approval::verifier::PasskeyVerifier;
+use writ_approval_server::shutdown::{self, Stop};
 use writ_approval_server::{ServerConfig, USAGE};
 use writ_broker::clock::{Boottime, HostClock, SystemWall};
 use writ_broker::human::ApprovalChannel;
@@ -36,7 +52,17 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match run(&config) {
+    let signals = match shutdown::signals() {
+        Ok(rx) => rx,
+        Err(e) => {
+            eprintln!(
+                "writ-approval-server: not serving: signal handling: {}",
+                e.kind()
+            );
+            return ExitCode::from(1);
+        }
+    };
+    match run(&config, signals) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("writ-approval-server: not serving: {e}");
@@ -45,7 +71,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(c: &ServerConfig) -> Result<(), String> {
+fn run(c: &ServerConfig, signals: Receiver<Stop>) -> Result<(), String> {
     let verifier = Arc::new(
         PasskeyVerifier::new(&c.rp_id, &c.origin)
             .map_err(|e| format!("passkey verifier: {e:?}"))?,
@@ -85,7 +111,38 @@ fn run(c: &ServerConfig) -> Result<(), String> {
     .and_then(|()| out.flush())
     .map_err(|e| format!("stdout: {}", e.kind()))?;
     drop(out);
-    listener
-        .serve(Arc::new(AtomicBool::new(false)))
-        .map_err(|e| format!("serve: {}", e.kind()))
+    let control = listener.control();
+    let server = std::thread::spawn(move || listener.serve(Arc::new(AtomicBool::new(false))));
+    // Serve until the first signal (or until the listener fails).
+    let first = loop {
+        match signals.recv_timeout(Duration::from_millis(100)) {
+            Ok(s) => break s,
+            Err(RecvTimeoutError::Timeout) if !server.is_finished() => {}
+            Err(_) => {
+                return match server.join() {
+                    Ok(Err(e)) => Err(format!("serve: {}", e.kind())),
+                    _ => Err("serve: the listener stopped".into()),
+                };
+            }
+        }
+    };
+    // J-8 step 1: stop accepting work (the socket stays open, new requests answer 503).
+    control.stop_accepting_work();
+    eprintln!(
+        "writ-approval-server: {first:?}: stopping (drain {} s)",
+        c.drain.as_secs()
+    );
+    shutdown::arm(signals, c.drain).map_err(|e| format!("watchdog: {}", e.kind()))?;
+    // Step 2: drain the requests in progress.
+    let drained = control.wait_idle(Instant::now() + c.drain);
+    // Step 3: release; the ledger is dropped with the listener's backend when the serving
+    // thread returns (the hard deadline bounds this join).
+    control.exit();
+    let served = server.join();
+    eprintln!("writ-approval-server: stopped (drained {drained}); ownership released");
+    match served {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(format!("serve: {}", e.kind())),
+        Err(_) => Err("serve: the listener panicked".into()),
+    }
 }

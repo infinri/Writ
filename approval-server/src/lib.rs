@@ -15,6 +15,11 @@
 //! - `--origin http://localhost:<port>`: exactly the listener's fixed origin for `--port`.
 //! - `--channel <identity>`: the channel identity recorded on decisions (O-2).
 //! - `--subject-issuer <issuer>`: the human realm of the subjects who sign in on the page.
+//!
+//! One optional setting (M5a-11, J-8): `--drain-seconds <1..30>`, the drain period of the
+//! bounded graceful shutdown (default 10, [`shutdown::DEFAULT_DRAIN`]).
+
+pub mod shutdown;
 
 use std::ffi::OsString;
 use std::fmt;
@@ -24,7 +29,8 @@ use writ_approval::listener::RP_ID;
 
 /// The command-line synopsis.
 pub const USAGE: &str = "usage: writ-approval-server --ledger <path> --port <1..65535> \
---rp-id localhost --origin http://localhost:<port> --channel <identity> --subject-issuer <issuer>";
+--rp-id localhost --origin http://localhost:<port> --channel <identity> --subject-issuer <issuer> \
+[--drain-seconds <1..30>]";
 
 /// The validated configuration of the entry point.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,6 +47,8 @@ pub struct ServerConfig {
     pub channel: String,
     /// The issuer of page subjects.
     pub subject_issuer: String,
+    /// The drain period of the graceful shutdown (J-8).
+    pub drain: std::time::Duration,
 }
 
 /// Why a configuration was refused (the entry point exits non-zero).
@@ -81,6 +89,9 @@ const SETTINGS: [&str; 6] = [
     "subject-issuer",
 ];
 
+/// The optional setting (index 6 of the parsed values).
+const DRAIN: &str = "drain-seconds";
+
 /// A channel identity or issuer: 1 to 128 characters from `[A-Za-z0-9._:-]`.
 fn identity(text: &str) -> bool {
     !text.is_empty()
@@ -96,19 +107,21 @@ impl ServerConfig {
     where
         I: IntoIterator<Item = OsString>,
     {
-        let mut values: [Option<String>; 6] = Default::default();
+        let mut values: [Option<String>; 7] = Default::default();
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             let Some(text) = arg.to_str() else {
                 return Err(ConfigError::Unknown(arg.to_string_lossy().into_owned()));
             };
-            let Some(index) = text
-                .strip_prefix("--")
-                .and_then(|name| SETTINGS.iter().position(|s| *s == name))
-            else {
+            let Some(index) = text.strip_prefix("--").and_then(|name| {
+                SETTINGS
+                    .iter()
+                    .position(|s| *s == name)
+                    .or((name == DRAIN).then_some(SETTINGS.len()))
+            }) else {
                 return Err(ConfigError::Unknown(text.to_string()));
             };
-            let name = SETTINGS[index];
+            let name = SETTINGS.get(index).copied().unwrap_or(DRAIN);
             if values[index].is_some() {
                 return Err(ConfigError::Repeated(name));
             }
@@ -121,7 +134,7 @@ impl ServerConfig {
             }
             values[index] = Some(value);
         }
-        let [ledger, port, rp_id, origin, channel, subject_issuer] = values;
+        let [ledger, port, rp_id, origin, channel, subject_issuer, drain] = values;
         let ledger = ledger.ok_or(ConfigError::Missing("ledger"))?;
         let port = port.ok_or(ConfigError::Missing("port"))?;
         let rp_id = rp_id.ok_or(ConfigError::Missing("rp-id"))?;
@@ -147,7 +160,21 @@ impl ServerConfig {
         if !identity(&subject_issuer) {
             return Err(ConfigError::Invalid("subject-issuer"));
         }
+        let drain = match drain {
+            None => shutdown::DEFAULT_DRAIN,
+            Some(text) => match text.parse::<u64>() {
+                Ok(n)
+                    if n >= 1
+                        && n <= shutdown::MAX_DRAIN.as_secs()
+                        && text.bytes().all(|b| b.is_ascii_digit()) =>
+                {
+                    std::time::Duration::from_secs(n)
+                }
+                _ => return Err(ConfigError::Invalid(DRAIN)),
+            },
+        };
         Ok(ServerConfig {
+            drain,
             ledger: PathBuf::from(ledger),
             port,
             rp_id,
@@ -200,6 +227,31 @@ mod tests {
         assert_eq!(c.origin, "http://localhost:8443");
         assert_eq!(c.rp_id, "localhost");
         assert_eq!(c.channel, "approval-listener");
+        assert_eq!(c.drain, shutdown::DEFAULT_DRAIN);
+    }
+
+    #[test]
+    fn the_drain_period_is_optional_and_bounded() {
+        let mut args: Vec<String> = GOOD.iter().map(|s| s.to_string()).collect();
+        args.extend(["--drain-seconds".into(), "3".into()]);
+        assert_eq!(
+            parse_owned(&args).unwrap().drain,
+            std::time::Duration::from_secs(3)
+        );
+        for bad in ["0", "31", "+3", "x"] {
+            let mut args: Vec<String> = GOOD.iter().map(|s| s.to_string()).collect();
+            args.extend(["--drain-seconds".into(), bad.into()]);
+            assert_eq!(
+                parse_owned(&args),
+                Err(ConfigError::Invalid("drain-seconds")),
+                "{bad}"
+            );
+        }
+        args.extend(["--drain-seconds".into(), "4".into()]);
+        assert_eq!(
+            parse_owned(&args),
+            Err(ConfigError::Repeated("drain-seconds"))
+        );
     }
 
     #[test]

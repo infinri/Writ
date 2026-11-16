@@ -8,10 +8,11 @@ Release binary of the workspace crate `writ-approval-server` (`approval-server/`
 
 ```
 writ-approval-server --ledger <path> --port <1..65535> --rp-id localhost \
-  --origin http://localhost:<port> --channel <identity> --subject-issuer <issuer>
+  --origin http://localhost:<port> --channel <identity> --subject-issuer <issuer> \
+  [--drain-seconds <1..30>]
 ```
 
-Every setting is required and given exactly once on the command line. There is no default, no configuration file, no environment variable and no verifier choice.
+Every setting except the drain period is required, and each is given at most once on the command line. There is no default, no configuration file, no environment variable and no verifier choice.
 
 What it does, in order (each step fails closed before the next):
 
@@ -19,7 +20,9 @@ What it does, in order (each step fails closed before the next):
 2. Builds the reviewed `webauthn-rs` `PasskeyVerifier` for that RP id and origin and one `ApprovalChannel` over it. This is the only verifier the binary can build: there is no test verifier, switch or fallback.
 3. Opens the existing ledger with `SqliteLedger::open`, the normal ownership path (canonical identity, sidecar ownership lock, schema verification `writ-ledger-6`, owner epoch), and attaches the channel once (`with_approval_channel`). The ledger is never created here, and bootstrap stays the separate `BootstrapSession` ceremony (M4-ENROLLMENT-CEREMONY).
 4. Starts the trusted host clock (`HostClock`, wall plus `CLOCK_BOOTTIME`) against the ledger's persisted floor. A blocked startup rollback is refused.
-5. Binds the loopback listener on `127.0.0.1:<port>` (the listener has no address setting), checks that its fixed origin and RP id equal the configuration, prints one readiness line on standard output and serves until it is terminated. The operating system releases the ownership lock at exit.
+5. Binds the loopback listener on `127.0.0.1:<port>` (the listener has no address setting), checks that its fixed origin and RP id equal the configuration, prints one readiness line on standard output and serves.
+
+**Graceful shutdown (M5a-11, M5-INTERFACES J-8; closes CO-M4X-05).** `SIGTERM` and `SIGINT` are registered (Tokio `signal`, in this crate only) before the ledger is opened. At the first signal the listening socket stays open and every new request is answered `503` `{"error":"stopping"}` (no login, ceremony or decision begins); requests in progress finish within the drain period (optional `--drain-seconds <1..30>`, default 10; ceremonies not finished are left and their challenges expire); then the accept loop ends, remaining connections are dropped, the serving thread is joined and the ledger is dropped (ownership lock unlocked before close), exit 0, so a new owner can open the ledger at once. A second signal exits at once with status 4; the hard deadline (drain plus 5 s) exits with status 5 (the operating system releases the lock; nothing committed is rewritten). Tests with real signals to the binary: `tests/shutdown.rs`.
 
 Fails closed, non-zero exit, nothing bound:
 
@@ -29,10 +32,11 @@ Fails closed, non-zero exit, nothing bound:
 | Ledger absent (never created), not a `writ-ledger-6` ledger, or owned by another process (`OwnedElsewhere`) | 1 |
 | Verifier or channel cannot be built; clock floor unreadable or rollback unacknowledged | 1 |
 | Port in use, or bound origin differs from the configuration | 1 |
+| Second signal during the graceful shutdown; hard deadline passed | 4; 5 |
 
 Release-build contents: `cargo tree -p writ-approval-server -e normal,build` has no `webauthn-authenticator-rs` (the software passkey is a dev-dependency); the verifier tests, `m4_support` and the ledger's `*_for_tests` functions are `#[cfg(test)]` and are never compiled into the binary. `tests/server_entry.rs` checks the configuration and ledger failures against the real binary and scans it for test-verifier symbols with a positive control (`PasskeyVerifier`); `approval/browser-tests/check-release-binary.sh` repeats the scan on the release binary.
 
-Dependencies: workspace path crates only (`writ-approval`, `writ-broker`, `writ-ledger-sqlite`); no registry package of its own. It is gated by `approval-server/deps-allowlist.json` (empty `packages`; `forbidden` and `forbidden_anywhere` keep TLS stacks, OpenSSL, `reqwest`, HTTP/2 and the software test authenticator out of its complete closure). `writ-approval` has no SQLite dependency, and its `forbidden_anywhere` list proves it.
+Dependencies: workspace path crates (`writ-approval`, `writ-broker`, `writ-ledger-sqlite`) and Tokio `=1.54.1` with `rt` and `signal` only (M5a-11; the closure listed exactly). It is gated by `approval-server/deps-allowlist.json` ( `forbidden` and `forbidden_anywhere` keep TLS stacks, OpenSSL, `reqwest`, HTTP/2 and the software test authenticator out of its complete closure). `writ-approval` has no SQLite dependency, and its `forbidden_anywhere` list proves it.
 
 Trust boundary (M4-INTERFACES, configured approval channel): any code that links these crates and opens the ledger is inside the trust boundary. Deploying only this reviewed binary is the operational requirement of the local profile.
 
