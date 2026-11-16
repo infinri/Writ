@@ -136,7 +136,7 @@ impl<'a> LauncherSandbox<'a> {
         let Ok(conn) = UnixStream::connect(&self.cfg.socket) else {
             return Observed::NoHello;
         };
-        match writ_hostsys::socket::peer(&conn) {
+        match writ_hostsys::sock::peer_credentials(&conn) {
             Ok(p) if p.uid == self.cfg.launcher_uid => {}
             _ => return Observed::NoHello,
         }

@@ -153,7 +153,7 @@ pub fn read_request(conn: &UnixStream, deadline: Instant) -> io::Result<Vec<u8>>
             Ok(_) | Err(rustix::io::Errno::INTR) => {}
             Err(e) => return Err(e.into()),
         }
-        match writ_hostsys::socket::recv_plain(conn, &mut buf) {
+        match writ_hostsys::sock::recv_plain(conn, &mut buf) {
             Ok(0) => return Err(ErrorKind::UnexpectedEof.into()),
             Ok(n) => {
                 let frames = d
@@ -302,7 +302,7 @@ pub fn serve(paths: &Paths) -> Exit {
         }
     };
     // Admission before any read (J-11.2).
-    match writ_hostsys::socket::peer(&conn) {
+    match writ_hostsys::sock::peer_credentials(&conn) {
         Ok(p) if p.uid == cfg.writ_uid && p.uid != 0 && p.uid != crate::config::OVERFLOW_ID => {}
         Ok(p) => {
             log(&format!("peer uid {} refused", p.uid));

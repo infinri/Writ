@@ -1,9 +1,11 @@
-//! Socket and process-identity primitives for the service (M5a-04; J-1, J-2): peer
-//! credentials of a connected Unix socket, a receive path that refuses ancillary data, and
-//! the identity of the running process for the `writ-serviced` startup check.
+//! Unix socket and process-identity primitives (M5a-04, M5a-07; J-1, J-2, J-11.2): peer
+//! credentials of a connected Unix socket read **before any byte**, a receive path that
+//! refuses ancillary data (`SCM_RIGHTS`, `SCM_CREDENTIALS`), and the identity of the running
+//! process for the `writ-serviced` startup check. The one module for both the service and the
+//! job launcher (the former `socket` module of M5a-07 is merged here).
 //!
-//! No listener lives here; the service owns its sockets. `SO_PEERCRED` is read with
-//! `rustix` `net` (the only crate that calls it directly, J-0).
+//! No listener lives here; the service owns its sockets. `SO_PEERCRED` and `recvmsg` are
+//! called with `rustix` `net` (this crate is the only one that calls them directly, J-0).
 
 use std::io::{self, IoSliceMut, Read};
 use std::mem::MaybeUninit;
@@ -32,14 +34,16 @@ pub fn peer_credentials(socket: impl AsFd) -> io::Result<Peer> {
     })
 }
 
-/// Bytes of control buffer offered to `recvmsg`: room for one small ancillary message, so
-/// that any `SCM_RIGHTS` or `SCM_CREDENTIALS` is seen (and its descriptors closed at once).
-const CONTROL_BYTES: usize = 64;
+/// Bytes of control buffer offered to `recvmsg`: room for eight passed descriptors and one
+/// credentials message, so that any `SCM_RIGHTS` or `SCM_CREDENTIALS` is seen (and its
+/// descriptors closed at once); anything larger is truncated, which is refused too.
+const CONTROL_BYTES: usize = rustix::cmsg_space!(ScmRights(8), ScmCredentials(1));
 
 /// Receive up to `buf.len()` bytes from the stream socket `socket`. A message carrying
 /// ancillary data (descriptors or credentials), or whose ancillary data was truncated, is
-/// refused with `InvalidData` (J-2); received descriptors are closed before returning
-/// (`MSG_CMSG_CLOEXEC` in the meantime).
+/// refused with `InvalidData` (J-2, J-11.2; the connection must be closed); received
+/// descriptors are closed before returning (`MSG_CMSG_CLOEXEC` in the meantime). `Ok(0)` at
+/// EOF; `WouldBlock` on a non-blocking socket without data.
 pub fn recv_plain(socket: impl AsFd, buf: &mut [u8]) -> io::Result<usize> {
     let mut space = [MaybeUninit::<u8>::uninit(); CONTROL_BYTES];
     let mut control = RecvAncillaryBuffer::new(&mut space);
@@ -203,6 +207,31 @@ mod tests {
         sendmsg(&b, &[IoSlice::new(b"x")], &mut control, SendFlags::empty()).unwrap();
         let mut buf = [0u8; 16];
         let err = PlainReader(&a).read(&mut buf).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn would_block_on_an_empty_nonblocking_socket() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        a.set_nonblocking(true).unwrap();
+        let mut buf = [0u8; 8];
+        assert_eq!(
+            recv_plain(&a, &mut buf).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn eight_descriptors_and_credentials_fit_and_are_refused() {
+        let (a, b) = UnixStream::pair().unwrap();
+        let held: Vec<UnixStream> = (0..8).map(|_| UnixStream::pair().unwrap().0).collect();
+        let fds: Vec<_> = held.iter().map(|s| s.as_fd()).collect();
+        let mut space = [MaybeUninit::<u8>::uninit(); CONTROL_BYTES];
+        let mut control = SendAncillaryBuffer::new(&mut space);
+        assert!(control.push(SendAncillaryMessage::ScmRights(&fds)));
+        sendmsg(&b, &[IoSlice::new(b"x")], &mut control, SendFlags::empty()).unwrap();
+        let mut buf = [0u8; 16];
+        let err = recv_plain(&a, &mut buf).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 

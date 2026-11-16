@@ -16,10 +16,10 @@
 //!   P-JOB-SERIAL, P-FD status pipe) evaluated from reference-VM trial reports.
 //! - [`exec`]: bounded child-process execution.
 //! - [`sock`]: peer credentials, a receive path that refuses ancillary data, the service
-//!   process identity check (M5a-04, J-1, J-2).
+//!   process identity check and socket-activation takeover (M5a-04, M5a-07, M5a-11; J-1, J-2,
+//!   J-8, J-11.2).
 //! - [`deployment`]: `VerifiedDeployment`, the static start-time check bound to the
 //!   operator-run report (M5a-04, J-9).
-//! - [`socket`]: peer credentials and receives that refuse ancillary data (J-2, J-11.2).
 //! - [`fsfx`]: the `fs.write` adapter's filesystem primitives (M5a-09, J-7.2).
 //!
 //! J-0 lists `writ-containment` as a dependency of `writ-probe`; that crate does not exist yet
@@ -37,7 +37,6 @@ pub mod jobprobes;
 pub mod probes;
 pub mod readiness;
 pub mod sock;
-pub mod socket;
 
 pub use probes::Config;
 pub use readiness::{report, verdict, ProbeId, ProbeResult, Status, Verdict};

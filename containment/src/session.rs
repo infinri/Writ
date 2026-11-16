@@ -128,7 +128,7 @@ fn read_some(f: &mut impl Read, buf: &mut [u8]) -> Got {
 /// connection (J-11.2).
 fn recv_conn(conn: &UnixStream, buf: &mut [u8]) -> Got {
     loop {
-        match writ_hostsys::socket::recv_plain(conn, buf) {
+        match writ_hostsys::sock::recv_plain(conn, buf) {
             Ok(0) => return Got::Eof,
             Ok(n) => return Got::Bytes(n),
             Err(e) if e.kind() == ErrorKind::Interrupted => continue,
