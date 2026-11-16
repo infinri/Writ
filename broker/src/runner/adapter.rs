@@ -42,9 +42,11 @@
 //! every guarantee of the configured [`RunnerRequirements`].
 //!
 //! **Materialization.** A fresh directory `run-<permit id>` under the
-//! configured work root (mode 0700; it must not exist), the snapshot files
-//! (read-only, parent directories 0700) and the program at
-//! [`PROGRAM_NAME`] (mode 0500). The snapshot digest is recomputed from the
+//! configured work root (mode 0750; it must not exist), the snapshot files
+//! (mode 0640, parent directories 0750) and the program at [`PROGRAM_NAME`]
+//! (mode 0740). Group read access is for the root job launcher, which reads
+//! `run-<id>` through group `writ` and never by DAC override (M5-INTERFACES
+//! J-1 layout, J-11.3); nothing is group- or other-writable. The snapshot digest is recomputed from the
 //! bytes read back from the work directory and must equal the workflow's
 //! artifact digest; the program read back must equal the registered bytes.
 //!
@@ -563,10 +565,17 @@ impl Drop for WorkDir {
     }
 }
 
-/// Create `dir` with mode 0700 exactly (it must not exist).
+/// Mode of materialized directories: owner, plus group read for the launcher.
+const DIR_MODE: u32 = 0o750;
+/// Mode of materialized snapshot files.
+const FILE_MODE: u32 = 0o640;
+/// Mode of the materialized program.
+const PROGRAM_MODE: u32 = 0o740;
+
+/// Create `dir` with mode [`DIR_MODE`] exactly (it must not exist).
 fn private_dir(dir: &Path) -> std::io::Result<()> {
-    DirBuilder::new().mode(0o700).create(dir)?;
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+    DirBuilder::new().mode(DIR_MODE).create(dir)?;
+    fs::set_permissions(dir, fs::Permissions::from_mode(DIR_MODE))
 }
 
 /// Write `bytes` to the new file `path` with exactly `mode`.
@@ -582,8 +591,8 @@ fn new_file(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(mode))
 }
 
-/// Materialize `files` under `root` (creating parent directories 0700,
-/// files read-only), then read every file back.
+/// Materialize `files` under `root` (creating parent directories with
+/// [`DIR_MODE`], files with [`FILE_MODE`]), then read every file back.
 fn materialize(root: &Path, files: &[SnapshotFile]) -> Result<Vec<SnapshotFile>, RunnerDiagnostic> {
     let io = |_| RunnerDiagnostic::WorkdirUnavailable;
     for f in files {
@@ -597,7 +606,7 @@ fn materialize(root: &Path, files: &[SnapshotFile]) -> Result<Vec<SnapshotFile>,
                 Err(_) => private_dir(&dir).map_err(io)?,
             }
         }
-        new_file(&root.join(&f.path), &f.bytes, 0o400).map_err(io)?;
+        new_file(&root.join(&f.path), &f.bytes, FILE_MODE).map_err(io)?;
     }
     files
         .iter()
@@ -761,7 +770,7 @@ impl<'a, S: RunnerStore + ?Sized> RunnerAdapter<'a, S> {
             private_dir(&dir).map_err(|_| D::WorkdirUnavailable)?;
             let work = WorkDir(dir);
             let program = work.0.join(PROGRAM_NAME);
-            new_file(&program, &command.program, 0o500).map_err(|_| D::WorkdirUnavailable)?;
+            new_file(&program, &command.program, PROGRAM_MODE).map_err(|_| D::WorkdirUnavailable)?;
             let readback = materialize(&work.0, &content)?;
             if snapshot_digest(&readback).as_deref() != Some(workflow.artifact_digest.as_str()) {
                 return Err(D::ArtifactIntegrityViolation);

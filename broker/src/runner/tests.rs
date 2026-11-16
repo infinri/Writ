@@ -345,6 +345,8 @@ impl SnapshotContent for Snapshots {
 struct Seen {
     workdir_mode: u32,
     program_mode: u32,
+    src_dir_mode: u32,
+    lib_mode: u32,
     program: Vec<u8>,
     lib: Vec<u8>,
     args: Vec<String>,
@@ -391,6 +393,8 @@ impl Sandbox for FakeSandbox {
         self.seen.lock().unwrap().push(Seen {
             workdir_mode: mode(job.workdir),
             program_mode: mode(job.program),
+            src_dir_mode: mode(&job.workdir.join("src")),
+            lib_mode: mode(&job.workdir.join("src/lib.rs")),
             program: std::fs::read(job.program).unwrap(),
             lib: std::fs::read(job.workdir.join("src/lib.rs")).unwrap(),
             args: job.args.to_vec(),
@@ -551,7 +555,17 @@ fn a_run_produces_an_authenticated_attestation_bound_to_trusted_state() {
     assert_eq!(s("output_digest"), output_digest(&out).unwrap());
     // The job ran on the materialized private copy, which is gone afterwards.
     let seen = w.sandbox.seen.lock().unwrap()[0].clone();
-    assert_eq!((seen.workdir_mode, seen.program_mode), (0o700, 0o500));
+    // Group-readable for the root launcher (J-1 layout, J-11.3: it reads `run-<id>` through
+    // group `writ`, never by DAC override); never group- or other-writable.
+    assert_eq!(
+        (
+            seen.workdir_mode,
+            seen.src_dir_mode,
+            seen.program_mode,
+            seen.lib_mode
+        ),
+        (0o750, 0o750, 0o740, 0o640)
+    );
     assert_eq!(seen.program, command().program);
     assert_eq!(seen.lib, b"pub fn f() {}\n");
     assert_eq!((seen.args, seen.env), (command().args, command().env));
