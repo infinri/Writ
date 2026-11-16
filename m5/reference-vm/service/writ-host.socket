@@ -1,0 +1,21 @@
+# Writ host.sock (M5a-11; M5-INTERFACES J-1 layout, J-2, J-8). PREPARED, NOT RUN.
+# Installed only by m5/reference-vm/service-install.sh inside the designated disposable VM.
+# systemd holds the socket across writ.service restarts, so no other process can bind it in
+# between (J-8 option (a)); writ-serviced takes it over by name ("host") and verifies its
+# address, owner and mode before serving, and never binds it itself.
+[Unit]
+Description=Writ host ingress socket (agent uids, admitted by peer credentials)
+
+[Socket]
+ListenStream=/run/writ/host.sock
+FileDescriptorName=host
+Service=writ.service
+Accept=no
+SocketUser=writ
+SocketGroup=writ-agents
+SocketMode=0660
+DirectoryMode=0750
+RemoveOnStop=no
+
+[Install]
+WantedBy=sockets.target

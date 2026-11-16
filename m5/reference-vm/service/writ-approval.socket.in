@@ -1,0 +1,18 @@
+# Writ loopback approval port (M5a-11; M5-INTERFACES J-8 option (a)). PREPARED, NOT RUN.
+# Template: service-install.sh replaces @PORT@ with --approval-port and installs the result as
+# /etc/systemd/system/writ-approval.socket inside the designated disposable VM, only when an
+# approval port is configured. systemd holds 127.0.0.1:@PORT@ across writ.service restarts, so
+# the agent uid cannot bind it in between and serve a look-alike page on the approval origin.
+# writ-serviced takes it over by name ("approval") and accepts it only on 127.0.0.1:@PORT@.
+[Unit]
+Description=Writ loopback approval page port
+
+[Socket]
+ListenStream=127.0.0.1:@PORT@
+FileDescriptorName=approval
+Service=writ.service
+Accept=no
+FreeBind=no
+
+[Install]
+WantedBy=sockets.target

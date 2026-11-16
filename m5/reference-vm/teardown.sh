@@ -40,7 +40,8 @@ tac "$WRIT_STATE_FILE" | while read -r kind path extra; do
     unit)
       case "$path" in
         writ.service) systemctl disable --now "$path" 2>/dev/null || true ;;  # service-install.sh (M5a-04)
-        writ-job-launcher.socket|writ-job-launcher@.service|writ-jobs.slice)
+        writ-job-launcher.socket|writ-job-launcher@.service|writ-jobs.slice|\
+        writ-host.socket|writ-admin.socket|writ-approval.socket)
           systemctl disable --now "$path" 2>/dev/null || true
           rm -f -- "/etc/systemd/system/$path"
           systemctl daemon-reload ;;

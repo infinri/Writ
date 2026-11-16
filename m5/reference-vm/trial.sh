@@ -83,6 +83,10 @@ sha256sum "$probe" "$WRIT_PRIVATE_BWRAP" "$WRIT_APPARMOR_PROFILE" > "$ev/digests
 # properties. Sets PLACEHOLDER_PID (runs in this shell so cleanup sees the unit).
 start_placeholder() {
   local unit="$1"; shift
+  if systemctl is-active --quiet writ-admin.socket; then
+    echo "writ-admin.socket is active (service-install.sh ran): stop it or run trial.sh before installing the service" >&2
+    exit 1
+  fi
   rm -f /run/writ/admin.sock
   systemd-run --quiet --collect --unit "$unit" -p User=writ -p Group=writ -p UMask=0077 -p LimitCORE=0 "$@" \
     /usr/bin/python3 -c 'import os,socket,time

@@ -15,10 +15,11 @@
 # the readiness report, see README "Service"). Every change is appended to the setup state
 # file so teardown.sh reverses it.
 #
-# Recorded limitations of this revision: writ-serviced binds host.sock and admin.sock itself
-# (umask 0077: mode 0700 writ:writ), so the agent cannot reach host.sock until socket
-# activation (J-8, writ-host.socket with SocketGroup=writ-agents, M5a-11) is integrated: the
-# installation fails closed for the agent, never open. No job launcher (J-11, M5a-07).
+# Sockets (M5a-11, J-8): the socket units in service/ (writ-host.socket 0660 writ:writ-agents,
+# writ-admin.socket 0600 writ:writ, writ-approval.socket on 127.0.0.1:<port> when configured)
+# hold the sockets across service restarts; writ-serviced takes them over by name
+# (sockets.activation "systemd") and never binds them. ReadWritePaths no longer includes
+# /run/writ (the temporary M5a-04 deviation); only /run/writ/state stays writable.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=common.sh
@@ -49,6 +50,8 @@ for v in "$tenant" "$project"; do
 done
 [ -z "$approval_port" ] || printf '%s' "$approval_port" | grep -Eqx '[1-9][0-9]{0,4}' || { echo "invalid --approval-port" >&2; exit 2; }
 for p in /usr/local/libexec/writ/writ-serviced /etc/writ/service.json /etc/systemd/system/writ.service \
+         /etc/systemd/system/writ-host.socket /etc/systemd/system/writ-admin.socket \
+         /etc/systemd/system/writ-approval.socket \
          /var/lib/writ/ledger/ledger.db /var/lib/writ/stores/snapshots.db; do
   [ ! -e "$p" ] || { echo "$p already exists; install only once per setup" >&2; exit 2; }
 done
@@ -73,7 +76,9 @@ cat > /etc/writ/service.json <<EOF
  "ledger":"/var/lib/writ/ledger/ledger.db",
  "snapshots":"/var/lib/writ/stores/snapshots.db",
  "keys":{"dir":"/var/lib/writ/keys"},
- "sockets":{"host":"/run/writ/host.sock","admin":"/run/writ/admin.sock"},
+ "sockets":{"host":"/run/writ/host.sock","admin":"/run/writ/admin.sock","activation":"systemd"},
+ "shutdown":{"drain_seconds":10},
+ "containment":{"run_root":"/var/lib/writ/run","jobs_cgroup_events":"/sys/fs/cgroup/writ.slice/writ-jobs.slice/cgroup.events","sweep_wait_seconds":10},
  "host_bindings":[{"uid":$agent_uid,"tenant_id":"$tenant","project_id":"$project","principal_id":"agent:$agent_user","roles":["agent"],"adapter_id":"writ-host-adapter:cli","ingress_key_id":"ingress/vm-1"}]$approval}
 EOF
 chown root:writ /etc/writ/service.json; chmod 0640 /etc/writ/service.json
@@ -110,11 +115,27 @@ for f in ledger/ledger.db ledger/ledger.db-wal ledger/ledger.db-shm ledger/ledge
   state "file /var/lib/writ/$f"
 done
 
-# 5. writ.service (J-1 hardening, revision 4). Not enabled or started here.
-cat > /etc/systemd/system/writ.service <<'EOF'
+# 5. Socket units (J-8, M5a-11) and writ.service (J-1 hardening, revision 4). Not enabled or
+#    started here.
+install -m 0644 -o root -g root "$here/service/writ-host.socket" /etc/systemd/system/writ-host.socket
+state "file /etc/systemd/system/writ-host.socket"
+state "unit writ-host.socket"
+install -m 0644 -o root -g root "$here/service/writ-admin.socket" /etc/systemd/system/writ-admin.socket
+state "file /etc/systemd/system/writ-admin.socket"
+state "unit writ-admin.socket"
+sockets="writ-host.socket writ-admin.socket"
+if [ -n "$approval_port" ]; then
+  sed "s/@PORT@/$approval_port/g" "$here/service/writ-approval.socket.in" > /etc/systemd/system/writ-approval.socket
+  chown root:root /etc/systemd/system/writ-approval.socket; chmod 0644 /etc/systemd/system/writ-approval.socket
+  state "file /etc/systemd/system/writ-approval.socket"
+  state "unit writ-approval.socket"
+  sockets="$sockets writ-approval.socket"
+fi
+cat > /etc/systemd/system/writ.service <<EOF
 [Unit]
 Description=Writ trusted service (writ-serviced)
-After=local-fs.target
+After=local-fs.target $sockets
+Requires=$sockets
 
 [Service]
 Type=simple
@@ -122,10 +143,11 @@ User=writ
 Group=writ
 SupplementaryGroups=
 UMask=0077
+Sockets=$sockets
 ExecStart=/usr/local/libexec/writ/writ-serviced --config /etc/writ/service.json
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=/var/lib/writ /srv/writ /run/writ
+ReadWritePaths=/var/lib/writ /srv/writ /run/writ/state
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
@@ -145,6 +167,7 @@ RestrictAddressFamilies=AF_UNIX AF_INET
 CapabilityBoundingSet=
 LimitCORE=0
 KillMode=mixed
+# Above the J-8 hard deadline (drain 10 s plus 5 s).
 TimeoutStopSec=45
 Restart=on-failure
 # PrivateUsers is not set: peer credentials of agent connections would read as the overflow
@@ -164,7 +187,8 @@ systemctl daemon-reload
 #    and the service runs with label "unverified" (snapshot store not immutable).
 stat -c '%n %a %U:%G %F' /usr/local/libexec/writ/writ-serviced /etc/writ/service.json \
   /var/lib/writ/keys /var/lib/writ/keys/* /var/lib/writ/ledger/* /var/lib/writ/stores/* \
-  /etc/systemd/system/writ.service > "$ev/layout.txt"
-sha256sum /usr/local/libexec/writ/writ-serviced /etc/writ/service.json /etc/systemd/system/writ.service > "$ev/digests.txt"
+  /etc/systemd/system/writ.service /etc/systemd/system/writ-*.socket > "$ev/layout.txt"
+sha256sum /usr/local/libexec/writ/writ-serviced /etc/writ/service.json /etc/systemd/system/writ.service \
+  /etc/systemd/system/writ-*.socket > "$ev/digests.txt"
 cp /etc/writ/service.json "$ev/service.json"
 echo "service installed (not started); evidence in $ev"

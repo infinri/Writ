@@ -1,0 +1,20 @@
+# Writ admin.sock (M5a-11; M5-INTERFACES J-1 layout, J-2, J-8, J-11.8). PREPARED, NOT RUN.
+# Installed only by m5/reference-vm/service-install.sh inside the designated disposable VM.
+# Mode 0600 writ:writ: only root (admin_uids, default [0]) and writ can connect; the agent
+# uid cannot reach it (P-AGENT-DENY). writ-serviced takes it over by name ("admin").
+[Unit]
+Description=Writ operator socket (keys.revoke, readiness)
+
+[Socket]
+ListenStream=/run/writ/admin.sock
+FileDescriptorName=admin
+Service=writ.service
+Accept=no
+SocketUser=writ
+SocketGroup=writ
+SocketMode=0600
+DirectoryMode=0750
+RemoveOnStop=no
+
+[Install]
+WantedBy=sockets.target
