@@ -210,6 +210,44 @@ fn dropin_scan_finds_every_applicable_directory() {
     std::fs::remove_dir_all(&base).unwrap();
 }
 
+#[test]
+fn dropin_roots_include_control_transient_and_generator_directories() {
+    // M5a-13 L8: `systemctl set-property` writes to system.control; transient units and
+    // generators can carry drop-ins too.
+    for d in [
+        "/etc/systemd/system.control",
+        "/run/systemd/system.control",
+        "/run/systemd/transient",
+        "/run/systemd/generator",
+        "/run/systemd/generator.early",
+        "/run/systemd/generator.late",
+        "/etc/systemd/system",
+        "/run/systemd/system",
+        "/usr/lib/systemd/system",
+        "/usr/local/lib/systemd/system",
+    ] {
+        assert!(UNIT_DIRS.contains(&d), "{d}");
+    }
+}
+
+#[test]
+fn apparmor_profile_includes_and_local_overrides_are_reported() {
+    // M5a-13 M7: the pinned digest covers only the profile file itself.
+    let shipped = include_str!("../../../m5/reference-vm/launcher/apparmor-writ-bwrap");
+    assert!(apparmor_problems(shipped, &[]).is_empty());
+    let with_local = format!("{shipped}\n  include if exists <local/writ-bwrap>\n");
+    assert_eq!(apparmor_problems(&with_local, &[]).len(), 1);
+    assert_eq!(
+        apparmor_problems("#include <local/writ-job-child>\n", &[]).len(),
+        1
+    );
+    assert!(apparmor_problems("# include is mentioned in a comment\n", &[]).is_empty());
+    let local = vec!["/etc/apparmor.d/local/writ-bwrap".to_string()];
+    assert_eq!(apparmor_problems(shipped, &local).len(), 1);
+    let e = eval_launcher_admit(&r(&admit_ok()), &apparmor_problems(&with_local, &[]));
+    assert_eq!(e.status, Status::Missing);
+}
+
 fn serial_ok() -> Vec<String> {
     let mut v: Vec<String> = [
         "second_connection=refused",

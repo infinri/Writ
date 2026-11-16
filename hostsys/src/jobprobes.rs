@@ -286,9 +286,11 @@ pub const REQUEST_CASES: [(&str, &str); 14] = [
 /// P-LAUNCHER-ADMIT (revision 4 and 5, L2, L3, L7). Keys: `peer_<who>=closed_before_read`
 /// for [`REFUSED_PEERS`], `peer_writ=hello`; `case_<name>=<outcome>` and
 /// `case_<name>_job_created=0` for [`REQUEST_CASES`]; `dropins=none` (from
-/// `systemctl show -p DropInPaths`, combined with the live scan). Control:
-/// `ctl_admit_agent=detected` (a configuration admitting the agent uid is reported).
-pub fn eval_launcher_admit(r: &Kv, dropins_found: &[String]) -> Eval {
+/// `systemctl show -p DropInPaths`, combined with the live scan). `static_found` holds the live
+/// findings: drop-in directories ([`dropin_scan`]) and AppArmor profile includes or `local/`
+/// overrides ([`apparmor_problems`], M5a-13 M7). Control: `ctl_admit_agent=detected` (a
+/// configuration admitting the agent uid is reported).
+pub fn eval_launcher_admit(r: &Kv, static_found: &[String]) -> Eval {
     let mut p = Vec::new();
     for who in REFUSED_PEERS {
         let k = format!("peer_{who}");
@@ -311,10 +313,10 @@ pub fn eval_launcher_admit(r: &Kv, dropins_found: &[String]) -> Eval {
     if get(r, "dropins") != "none" {
         p.push(format!("systemd reports drop-ins: {}", get(r, "dropins")));
     }
-    if !dropins_found.is_empty() {
+    if !static_found.is_empty() {
         p.push(format!(
-            "drop-in directories present: {}",
-            dropins_found.join(",")
+            "drop-ins or AppArmor includes present: {}",
+            static_found.join(",")
         ));
     }
     let missed = if get(r, "ctl_admit_agent") == "detected" {
@@ -346,13 +348,76 @@ pub const DROPIN_NAMES: [&str; 11] = [
     "slice.d",
 ];
 
-/// Unit directories searched for drop-ins.
-pub const UNIT_DIRS: [&str; 4] = [
+/// Unit directories searched for drop-ins: the persistent, runtime and vendor directories,
+/// and (M5a-13 L8) the `systemctl set-property` control directories, transient units, attached
+/// portable units, generator output and `/lib` (when it is not the `/usr/lib` symlink).
+pub const UNIT_DIRS: [&str; 12] = [
+    "/etc/systemd/system.control",
+    "/run/systemd/system.control",
+    "/run/systemd/transient",
     "/etc/systemd/system",
     "/run/systemd/system",
-    "/usr/lib/systemd/system",
+    "/run/systemd/generator.early",
+    "/run/systemd/generator",
+    "/run/systemd/generator.late",
+    "/etc/systemd/system.attached",
+    "/run/systemd/system.attached",
     "/usr/local/lib/systemd/system",
+    "/usr/lib/systemd/system",
 ];
+
+/// Additional unit directory on systems where `/lib` is not a symlink to `/usr/lib`.
+pub const LIB_UNIT_DIR: &str = "/lib/systemd/system";
+
+/// The installed two-profile AppArmor file (J-11.5a) and the `local/` overrides it must not
+/// read (M5a-13 M7).
+pub const APPARMOR_PROFILE: &str = "/etc/apparmor.d/writ-bwrap";
+/// `local/` override files that must not exist.
+pub const APPARMOR_LOCAL: [&str; 2] = [
+    "/etc/apparmor.d/local/writ-bwrap",
+    "/etc/apparmor.d/local/writ-job-child",
+];
+
+/// Problems of the pinned AppArmor profile (M5a-13 M7): its digest covers only its own bytes,
+/// so any `include` (or legacy `#include`) other than `<tunables/global>` is a problem, as is
+/// any existing `local/` override file in `local_present`.
+pub fn apparmor_problems(profile: &str, local_present: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = profile
+        .lines()
+        .map(str::trim)
+        .filter(|t| {
+            let d = t.strip_prefix('#').unwrap_or(t);
+            d.starts_with("include") && d["include".len()..].trim() != "<tunables/global>"
+        })
+        .map(|t| format!("apparmor include: {t}"))
+        .collect();
+    out.extend(
+        local_present
+            .iter()
+            .map(|p| format!("apparmor override: {p}")),
+    );
+    out
+}
+
+fn live_static_findings() -> Vec<String> {
+    let mut roots: Vec<&Path> = UNIT_DIRS.iter().map(Path::new).collect();
+    let lib = Path::new(LIB_UNIT_DIR);
+    let usr = Path::new("/usr/lib/systemd/system");
+    if lib.exists() && std::fs::canonicalize(lib).ok() != std::fs::canonicalize(usr).ok() {
+        roots.push(lib);
+    }
+    let mut found = dropin_scan(&roots);
+    let local: Vec<String> = APPARMOR_LOCAL
+        .iter()
+        .filter(|p| Path::new(p).symlink_metadata().is_ok())
+        .map(|p| (*p).to_string())
+        .collect();
+    match std::fs::read_to_string(APPARMOR_PROFILE) {
+        Ok(text) => found.extend(apparmor_problems(&text, &local)),
+        Err(e) => found.push(format!("{APPARMOR_PROFILE}: {e}")),
+    }
+    found
+}
 
 /// Existing drop-in directories under `roots` (including per-instance
 /// `writ-job-launcher@<instance>.service.d`).
@@ -536,13 +601,10 @@ pub fn probe(cfg: &Config, id: ProbeId) -> ProbeResult {
             eval_job_deny(&r),
             "canary, unlabelled escape, writable binds",
         ),
-        ProbeId::LauncherAdmit => {
-            let roots: Vec<&Path> = UNIT_DIRS.iter().map(Path::new).collect();
-            (
-                eval_launcher_admit(&r, &dropin_scan(&roots)),
-                "configuration admitting the agent uid",
-            )
-        }
+        ProbeId::LauncherAdmit => (
+            eval_launcher_admit(&r, &live_static_findings()),
+            "configuration admitting the agent uid",
+        ),
         _ => (
             eval_job_serial(&r),
             "lingering process, key-users, jobs entry, planted files, pipe core_pattern",

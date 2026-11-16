@@ -252,14 +252,35 @@ pub fn group_gid(etc_group: &str, name: &str) -> Option<u32> {
     })
 }
 
+/// The job identity's group (D-046 H-2): the private bubblewrap copy is `root:writ-job` 0750,
+/// executable by the job uid only (J-1, J-11.10).
+pub const JOB_GROUP: &str = "writ-job";
+
 /// J-1 layout problems as seen by the service uid.
 pub fn layout_problems(cfg: &Config) -> Vec<String> {
     let uid = rustix::process::getuid().as_raw();
     let gid = rustix::process::getgid().as_raw();
-    let agents = group_gid(
-        &fs::read_to_string("/etc/group").unwrap_or_default(),
-        &cfg.agents_group,
-    );
+    let etc_group = fs::read_to_string("/etc/group").unwrap_or_default();
+    let (layout, mut problems) = expected_layout(cfg, uid, gid, &etc_group);
+    problems.extend(layout.iter().filter_map(|(p, e)| check_path(p, *e)));
+    for p in [&cfg.state_root, &cfg.target_root, &cfg.bwrap] {
+        problems.extend(ancestor_problems(p, uid));
+    }
+    problems
+}
+
+/// The J-1 layout the service uid `uid` (primary group `gid`) expects, and the problems found
+/// while building it (an absent group). `run/` is `writ:writ` 0750 (N9: the launcher reads
+/// sources by group through PID 1's bind); the private bubblewrap is `root:writ-job` 0750
+/// (D-046 H-2).
+pub fn expected_layout(
+    cfg: &Config,
+    uid: u32,
+    gid: u32,
+    etc_group: &str,
+) -> (Vec<(PathBuf, Expect)>, Vec<String>) {
+    let agents = group_gid(etc_group, &cfg.agents_group);
+    let job_group = group_gid(etc_group, JOB_GROUP);
     let d = |modes: &'static [u32]| Expect {
         dir: true,
         modes,
@@ -272,7 +293,7 @@ pub fn layout_problems(cfg: &Config) -> Vec<String> {
         (sr.join("ledger"), d(&[0o700])),
         (sr.join("stores"), d(&[0o700])),
         (sr.join("keys"), d(&[0o700])),
-        (sr.join("run"), d(&[0o700])),
+        (sr.join("run"), d(&[0o750])),
         (cfg.target_root.clone(), d(&[0o755, 0o750])),
         (
             cfg.config_dir.clone(),
@@ -284,17 +305,20 @@ pub fn layout_problems(cfg: &Config) -> Vec<String> {
             },
         ),
         (cfg.run_dir.join("state"), d(&[0o700])),
-        (
+    ];
+    let mut problems = Vec::new();
+    match job_group {
+        Some(j) => layout.push((
             cfg.bwrap.clone(),
             Expect {
                 dir: false,
                 modes: &[0o750],
                 uid: 0,
-                gid: Some(gid),
+                gid: Some(j),
             },
-        ),
-    ];
-    let mut problems = Vec::new();
+        )),
+        None => problems.push(format!("group {JOB_GROUP} absent")),
+    }
     match agents {
         Some(a) => layout.push((
             cfg.run_dir.clone(),
@@ -319,11 +343,7 @@ pub fn layout_problems(cfg: &Config) -> Vec<String> {
             },
         ));
     }
-    problems.extend(layout.iter().filter_map(|(p, e)| check_path(p, *e)));
-    for p in [sr, &cfg.target_root, &cfg.bwrap] {
-        problems.extend(ancestor_problems(p, uid));
-    }
-    problems
+    (layout, problems)
 }
 
 /// Abstract socket names held by process `pid` (from its descriptors and `/proc/net/unix`).
@@ -900,6 +920,32 @@ mod tests {
             "agent-executable private copy reported"
         );
         assert!(mode_problem(false, false, 0o100750, 0, 0, bwrap).is_some());
+    }
+
+    #[test]
+    fn layout_expects_run_0750_and_bwrap_group_writ_job() {
+        // M5a-13: N9 (`run/` read by group writ through PID 1's bind) and D-046 H-2 (the
+        // private bubblewrap executable by writ-job only).
+        let cfg = Config::reference();
+        let groups = "writ:x:990:\nwrit-agents:x:991:writ-agent\nwrit-job:x:992:\n";
+        let (layout, problems) = expected_layout(&cfg, 990, 990, groups);
+        assert!(problems.is_empty(), "{problems:?}");
+        let find = |p: &std::path::Path| layout.iter().find(|(q, _)| q == p).map(|(_, e)| *e);
+        let run = find(&cfg.state_root.join("run")).unwrap();
+        assert_eq!(run.modes, &[0o750]);
+        assert_eq!(run.gid, Some(990));
+        let bwrap = find(&cfg.bwrap).unwrap();
+        assert_eq!(
+            (bwrap.uid, bwrap.gid, bwrap.modes),
+            (0, Some(992), &[0o750][..])
+        );
+        assert!(mode_problem(false, false, 0o100750, 0, 990, bwrap).is_some());
+        assert_eq!(mode_problem(false, false, 0o100750, 0, 992, bwrap), None);
+        let (_, problems) = expected_layout(&cfg, 990, 990, "writ-agents:x:991:\n");
+        assert!(
+            problems.iter().any(|p| p.contains("writ-job")),
+            "{problems:?}"
+        );
     }
 
     fn report(uid: i64, outcomes: &[(&str, &str)]) -> Vec<u8> {
