@@ -1,0 +1,75 @@
+# Excerpt of the job log of required CI run 43918426151, job "Production Rust workspace",
+# commit 924b82c. Fetched read-only by the lead through the GitHub REST endpoint
+# actions/jobs/<id>/logs. Lines are unmodified apart from stripped ANSI colour codes and a
+# leading byte-order mark; no credential value is included.
+
+2026-11-16T17:26:45.4637639Z Current runner version: '2.338.2'
+2026-11-16T17:26:45.4658840Z ##[group]Runner Image Provisioner
+2026-11-16T17:26:45.4659657Z Hosted Compute Agent
+2026-11-16T17:26:45.4660161Z Version: 20261103.629
+2026-11-16T17:26:45.4660659Z Commit: 15dbd9ccb5dbf34fae002b6ed1a2670f52df37bc
+2026-11-16T17:26:45.4661348Z Build Date: 2026-11-03T17:26:59Z
+2026-11-16T17:26:45.4661904Z Worker ID: {4e3b14dc-6e73-4fd7-ab1d-0330e28d92a9}
+2026-11-16T17:26:45.4662540Z Region: westus2
+2026-11-16T17:26:45.4662985Z Cloud: Azure
+2026-11-16T17:26:45.4663420Z ##[endgroup]
+2026-11-16T17:26:45.4664556Z ##[group]Operating System
+2026-11-16T17:26:45.4665057Z Ubuntu
+2026-11-16T17:26:45.4665683Z 26.04.1
+2026-11-16T17:26:45.4666138Z LTS
+2026-11-16T17:26:45.4666563Z ##[endgroup]
+2026-11-16T17:26:45.4667062Z ##[group]Runner Image
+2026-11-16T17:26:45.4667598Z Image: ubuntu-26.04
+2026-11-16T17:26:45.4668112Z Version: 20261111.196.1
+2026-11-16T17:26:45.4669170Z Included Software: https://github.com/actions/runner-images/blob/ubuntu26/20261111.196/images/ubuntu/Ubuntu2604-Readme.md
+2026-11-16T17:26:49.4257287Z  * [new ref]         924b82c5b73c0b908bc1ea051823c752031d2a39 -> origin/v2/architecture-rebuild
+2026-11-16T17:26:49.6490137Z 924b82c5b73c0b908bc1ea051823c752031d2a39
+2026-11-16T17:29:25.6508830Z 
+2026-11-16T17:29:25.6511287Z      Running unittests src/lib.rs (target/debug/deps/writ_fs_effects-ef86d4bb142f9b96)
+2026-11-16T17:29:25.6523777Z 
+2026-11-16T17:29:25.6523898Z running 30 tests
+2026-11-16T17:29:25.7370403Z test adapter_tests::a_journal_io_error_marks_the_root_file_first_and_refuses_until_reboot ... ok
+2026-11-16T17:29:25.7378086Z test adapter_tests::a_statx_without_birth_time_records_nothing_and_an_st_dev_change_concludes_nothing ... ok
+2026-11-16T17:29:25.7407177Z test adapter_tests::a_mark_that_cannot_be_written_refuses_every_operation_and_every_reopen ... ok
+2026-11-16T17:29:25.7863382Z test adapter_tests::ambiguous_commits_in_both_durable_states_never_lose_or_invent_progress ... ok
+2026-11-16T17:29:25.7998842Z test adapter_tests::an_fsync_error_marks_the_root_even_when_the_journal_refuses_the_mark ... ok
+2026-11-16T17:29:25.8022099Z test adapter_tests::an_external_change_after_an_applied_write_taints_the_target_r11 ... ok
+2026-11-16T17:29:25.8026412Z test adapter_tests::create_only_applies_once_with_identity_evidence_and_replays ... ok
+2026-11-16T17:29:25.8493927Z test adapter_tests::equal_bytes_from_a_foreign_writer_yield_unknown_never_completed ... ok
+2026-11-16T17:29:25.8684566Z test adapter_tests::malformed_or_unknown_root_requests_are_refused_before_anything_is_reserved ... ok
+2026-11-16T17:29:25.8693540Z test adapter_tests::no_adapter_descriptor_reaches_a_spawned_child ... ok
+2026-11-16T17:29:25.8902917Z test adapter_tests::gc_removes_only_recorded_identities_of_applied_or_failed_untainted_ops ... ok
+2026-11-16T17:29:25.9112564Z test adapter_tests::one_unreadable_root_does_not_block_reconciliation_of_ruled_out_receipts ... ok
+2026-11-16T17:29:25.9395978Z test adapter_tests::preconditions_are_consumed_failed_results_not_refusals ... FAILED
+2026-11-16T17:29:25.9619456Z test adapter_tests::permission_failures_and_simulated_enospc_resolve_or_stay_unknown_by_the_table ... ok
+2026-11-16T17:29:25.9724306Z test adapter_tests::path_races_between_recheck_and_rename_never_produce_false_evidence ... ok
+2026-11-16T17:29:25.9798334Z test adapter_tests::release_refuses_while_an_op_on_the_target_is_unresolved ... ok
+2026-11-16T17:29:26.0096718Z test adapter_tests::open_refuses_unsafe_layouts_overlaps_second_owners_and_foreign_bindings ... ok
+2026-11-16T17:29:26.0097758Z test ident::tests::identity_text_round_trips_and_rejects_variants ... ok
+2026-11-16T17:29:26.0098652Z test kill_tests::fs_kill_child ... ok
+2026-11-16T17:29:26.0099612Z test kill_tests::sigkill_at_every_create_only_boundary_then_recovery ... ignored, real process kills: run alone with --ignored --test-threads=1
+2026-11-16T17:29:26.0100808Z test kill_tests::sigkill_at_replace_if_boundaries_then_recovery_and_gc ... ignored, real process kills: run alone with --ignored --test-threads=1
+2026-11-16T17:29:26.0102020Z test kill_tests::sigkill_between_disposition_steps_completes_exactly_once_or_lapses ... ignored, real process kills: run alone with --ignored --test-threads=1
+2026-11-16T17:29:26.0103278Z test kill_tests::sigkill_during_inline_staging_failure_resolution_reaches_r1c ... ignored, real process kills: run alone with --ignored --test-threads=1
+2026-11-16T17:29:26.0104517Z test kill_tests::sigkill_then_external_changes_reach_r2_r4_r6_r8_and_r_other ... ignored, real process kills: run alone with --ignored --test-threads=1
+2026-11-16T17:29:26.0105890Z test row_tests::content_equality_alone_never_completes_an_op ... ok
+2026-11-16T17:29:26.0112634Z test row_tests::every_row_is_reached_by_its_defining_observation ... ok
+2026-11-16T17:29:26.0117074Z test row_tests::unsafe_rows_win_over_completing_rows_n1 ... ok
+2026-11-16T17:29:26.0196393Z test adapter_tests::release_requires_resolved_ops_and_worker_gone_evidence_and_is_idempotent ... ok
+2026-11-16T17:29:26.0310738Z test adapter_tests::replace_if_exchanges_and_removes_only_the_displaced_identity_after_commit ... ok
+2026-11-16T17:29:26.0376404Z test adapter_tests::repeated_identical_content_and_later_writes_are_evidenced_by_identity ... ok
+2026-11-16T17:29:26.0376888Z 
+2026-11-16T17:29:26.0376996Z failures:
+2026-11-16T17:29:26.0377128Z 
+2026-11-16T17:29:26.0377440Z ---- adapter_tests::preconditions_are_consumed_failed_results_not_refusals stdout ----
+2026-11-16T17:29:26.0377886Z 
+2026-11-16T17:29:26.0378401Z thread 'adapter_tests::preconditions_are_consumed_failed_results_not_refusals' (8187) panicked at fs-effects/src/adapter_tests.rs:134:29:
+2026-11-16T17:29:26.0379408Z called `Result::unwrap()` on an `Err` value: Unavailable { category: "fs_root", code: "OWNED_ELSEWHERE" }
+2026-11-16T17:29:26.0380075Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+2026-11-16T17:29:26.0380412Z 
+2026-11-16T17:29:26.0380416Z 
+2026-11-16T17:29:26.0380517Z failures:
+2026-11-16T17:29:26.0380849Z     adapter_tests::preconditions_are_consumed_failed_results_not_refusals
+2026-11-16T17:29:26.0381174Z 
+2026-11-16T17:29:26.0381447Z test result: FAILED. 24 passed; 1 failed; 5 ignored; 0 measured; 0 filtered out; finished in 0.39s
+2026-11-16T17:29:26.0381809Z 

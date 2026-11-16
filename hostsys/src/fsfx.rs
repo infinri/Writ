@@ -295,6 +295,12 @@ pub fn try_lock_exclusive(fd: impl AsFd) -> Result<bool, FxError> {
     }
 }
 
+/// Release a `flock` held through `fd` (`LOCK_UN`; it releases the lock of the open file
+/// description even while a not-yet-executed child holds a duplicate).
+pub fn unlock(fd: impl AsFd) -> Result<(), FxError> {
+    Ok(flock(fd, FlockOperation::Unlock)?)
+}
+
 /// Which POSIX ACL extended attributes `fd` carries: (`access`, `default`). A filesystem
 /// without extended attributes (`EOPNOTSUPP`) carries none.
 pub fn acls(fd: impl AsFd) -> Result<(bool, bool), FxError> {

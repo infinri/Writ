@@ -1,0 +1,56 @@
+Required CI failure 43918426151: adapter_tests::preconditions_are_consumed_failed_results_not_refusals
+Investigated under D-046 (preserve the failing evidence, reproduce the cause, show why the
+correction is valid; no skip, no weakened check).
+
+1. Failing evidence (failing-job-log-excerpt.txt, this directory)
+   Run 43918426151, job "Production Rust workspace", commit 924b82c, 2026-11-16, image
+   ubuntu-26.04 20261111.196.1. fs-effects/src/adapter_tests.rs:134 `env.adapter(&s).unwrap()`
+   returned Unavailable { category: "fs_root", code: "OWNED_ELSEWHERE" }: the exclusive flock on
+   R/staging (fs-effects/src/lib.rs, FsWriteAdapter::open) was still held. The test had just
+   created its environment: Env::new opens an adapter (create_journal) and drops it, then the
+   test opens the adapter again. 24 other writ-fs-effects tests passed; the suite ran
+   multi-threaded, with other tests spawning children (/bin/sh in
+   no_adapter_descriptor_reaches_a_spawned_child, setfacl in three tests) at the same time.
+
+2. Root cause
+   A flock lock belongs to the open file description. FsWriteAdapter held it through its
+   `staging` descriptor and released it only by closing that descriptor when the adapter was
+   dropped. Every descriptor is O_CLOEXEC, but a child spawned by any other thread of the
+   process holds duplicates of all descriptors between fork (or posix_spawn's clone) and exec;
+   close-on-exec closes them only at exec. When the adapter dropped inside that window, the
+   child's duplicate kept the open file description, and with it the lock, alive; the
+   immediate reopen saw the lock held and refused OWNED_ELSEWHERE. The stores of
+   writ-ledger-sqlite already avoid this (broker::process::OwnerLock, E-066): they acquire and
+   release under the exclusive guard of the process lifecycle gate and unlock explicitly before
+   closing. The staging flock did not follow that pattern.
+   Not the cause: a descriptor without O_CLOEXEC (all fsfx opens use openat2 with O_CLOEXEC,
+   std and SQLite open with O_CLOEXEC; no_adapter_descriptor_reaches_a_spawned_child checks the
+   exec'd child); temp directory collision (directories carry the pid and a per-test name and
+   the failing open is the test's own second open); filesystem semantics (flock behaves the same
+   on the CI ext4 root and the workstation).
+
+3. Reproduction (local, workstation, before the fix)
+   New regression test a_dropped_adapter_releases_its_staging_lock_while_other_threads_spawn:
+   four threads spawn /bin/true without the gate while the main thread opens and drops the
+   adapter 300 times. At 924b82c it fails: 147 of 300 opens refused OWNED_ELSEWHERE. CI hit
+   the same window once, by chance, which is why 15 local repetitions of the suite passed.
+
+4. Correction (production code)
+   fs-effects: StagingLock holds a duplicate of the staging descriptor, takes the flock under
+   writ_broker::process::ownership_change, and on drop unlocks it explicitly (LOCK_UN, new
+   writ_hostsys::fsfx::unlock) under the same exclusive guard before closing; it is the
+   adapter's last field. LOCK_UN releases the lock of the open file description even while a
+   not-yet-executed child holds a duplicate, so a dropped adapter never leaves the lock held.
+   Valid because it changes only when the lock is released: while an adapter exists the lock is
+   held exactly as before (a second adapter on the same root, through another journal or path,
+   is still refused OWNED_ELSEWHERE, test open_refuses_unsafe_layouts_overlaps_second_owners_
+   and_foreign_bindings), and it matches the reviewed OwnerLock pattern.
+   After the fix: the regression test passes, the writ-fs-effects suite passed 5 of 5
+   repetitions; workspace, kill tests and gates as recorded in TEST-EVIDENCE E-084.
+
+5. Security implications
+   No descriptor reaches an executed child (every descriptor is close-on-exec, verified), so
+   no job or helper gains access to the root, the journal or the lock. The defect was
+   availability only and failed closed: a stale lock makes a reopen refuse, it never lets two
+   adapters own one root. The reverse risk (a lock released while an adapter still exists)
+   does not arise: the lock is released only in the adapter's drop.

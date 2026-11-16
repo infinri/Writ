@@ -778,6 +778,41 @@ fn open_refuses_unsafe_layouts_overlaps_second_owners_and_foreign_bindings() {
     assert!(env.adapter(&s).is_ok());
 }
 
+/// CI run 43918426151: a child spawned by another thread holds duplicates of every
+/// descriptor between fork and exec (close-on-exec only closes them at exec), so closing the
+/// `staging` descriptor alone did not release its `flock` while such a child existed, and an
+/// immediate reopen refused `OWNED_ELSEWHERE`. The lock must be released explicitly, under the
+/// lifecycle gate, before the descriptor is closed.
+#[test]
+fn a_dropped_adapter_releases_its_staging_lock_while_other_threads_spawn() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let env = Env::new("respawn");
+    let s = env.stores();
+    let stop = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            scope.spawn(|| {
+                while !stop.load(Ordering::SeqCst) {
+                    // Ungated, like any library or test code that spawns.
+                    let _ = std::process::Command::new("/bin/true").status();
+                }
+            });
+        }
+        let mut refused = 0;
+        for _ in 0..300 {
+            match env.adapter(&s) {
+                Ok(a) => drop(a),
+                Err(e) => {
+                    assert_eq!(e.code(), "OWNED_ELSEWHERE");
+                    refused += 1;
+                }
+            }
+        }
+        stop.store(true, Ordering::SeqCst);
+        assert_eq!(refused, 0, "a released staging lock outlived its adapter");
+    });
+}
+
 #[test]
 fn no_adapter_descriptor_reaches_a_spawned_child() {
     let env = Env::new("fds");

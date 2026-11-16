@@ -210,6 +210,44 @@ pub struct FsWriteAdapter<'s> {
     #[cfg(test)]
     pub(crate) faults: Mutex<Vec<(Step, FxError)>>,
     _root: OwnedFd,
+    /// The adapter-lifetime `flock` on `staging` (F11); last field.
+    _staging_lock: StagingLock,
+}
+
+/// The exclusive `flock` on `R/staging`, held for the adapter lifetime (F11). Like the
+/// stores' `OwnerLock` (E-066), it is acquired and released under the exclusive guard of
+/// the process lifecycle gate, and released by an explicit unlock before its descriptor is
+/// closed: a `flock` belongs to the open file description, and a child spawned by any thread
+/// holds duplicates of every descriptor until it executes (close-on-exec acts only at exec),
+/// so closing the descriptor alone could leave the lock held after the adapter is gone (CI
+/// run 43918426151).
+struct StagingLock {
+    fd: Option<OwnedFd>,
+}
+
+impl StagingLock {
+    fn acquire(staging: &OwnedFd) -> Result<StagingLock, StoreError> {
+        let fd = staging.try_clone().map_err(|_| refused("LOCK"))?;
+        writ_broker::process::ownership_change(|| {
+            if fsfx::try_lock_exclusive(&fd).map_err(|_| refused("LOCK"))? {
+                Ok(StagingLock { fd: Some(fd) })
+            } else {
+                Err(refused("OWNED_ELSEWHERE"))
+            }
+        })
+    }
+}
+
+impl Drop for StagingLock {
+    fn drop(&mut self) {
+        if let Some(fd) = self.fd.take() {
+            writ_broker::process::ownership_change(|| {
+                // If the unlock fails, closing still releases it once every duplicate is gone.
+                let _ = fsfx::unlock(&fd);
+                drop(fd);
+            });
+        }
+    }
 }
 
 /// Roots whose unrecoverable mark could not be written in this process (N3: refuse to open
@@ -392,9 +430,7 @@ impl<'s> FsWriteAdapter<'s> {
                 return Err(refused("CASEFOLD"));
             }
         }
-        if !fsfx::try_lock_exclusive(&staging).map_err(|_| refused("LOCK"))? {
-            return Err(refused("OWNED_ELSEWHERE"));
-        }
+        let staging_lock = StagingLock::acquire(&staging)?;
         check_overlap(&root, &ro, peers)?;
         let binding = JournalBinding {
             ledger_id: ledger.clone(),
@@ -440,6 +476,7 @@ impl<'s> FsWriteAdapter<'s> {
             #[cfg(test)]
             faults: Mutex::new(Vec::new()),
             _root: root,
+            _staging_lock: staging_lock,
         };
         {
             let guard = adapter.lock();
