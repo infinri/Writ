@@ -160,6 +160,27 @@ pub enum Boundary {
     AbandonUnlinked,
 }
 
+/// Behavioural mutants of the CO-PROP-01 property harness (test only, M5a-10): each one
+/// disables one J-7 rule, and the harness must reject every one of them.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Mutant {
+    /// Recovery treats a `create_only` target whose bytes equal `content_digest` as completed
+    /// (R3) although its identity is not the staged one (M5-D8: content is never evidence).
+    ContentEquality,
+    /// T-staged releases the target block before the op is resolved.
+    ReleaseBlockEarly,
+    /// Garbage collection ignores taint.
+    GcTainted,
+    /// An `fsync` error does not mark the root unrecoverable (N3).
+    SkipFsyncMark,
+}
+
+/// The mutant of each journal path (test only; set before the adapter opens).
+#[cfg(test)]
+pub(crate) static MUTANTS: Mutex<std::collections::BTreeMap<PathBuf, Mutant>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
 /// A boundary hook (test only).
 #[cfg(test)]
 pub(crate) type HookFn = std::sync::Arc<dyn Fn(Boundary) + Send + Sync>;
@@ -209,6 +230,8 @@ pub struct FsWriteAdapter<'s> {
     pub(crate) hook: Mutex<Option<HookFn>>,
     #[cfg(test)]
     pub(crate) faults: Mutex<Vec<(Step, FxError)>>,
+    #[cfg(test)]
+    pub(crate) mutant: Option<Mutant>,
     _root: OwnedFd,
     /// The adapter-lifetime `flock` on `staging` (F11); last field.
     _staging_lock: StagingLock,
@@ -475,6 +498,12 @@ impl<'s> FsWriteAdapter<'s> {
             hook: Mutex::new(None),
             #[cfg(test)]
             faults: Mutex::new(Vec::new()),
+            #[cfg(test)]
+            mutant: MUTANTS
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&cfg.journal)
+                .copied(),
             _root: root,
             _staging_lock: staging_lock,
         };
@@ -543,6 +572,12 @@ impl<'s> FsWriteAdapter<'s> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push((step, e));
+    }
+
+    /// Test only: `true` when this adapter runs the mutant `m`.
+    #[cfg(test)]
+    pub(crate) fn is_mutant(&self, m: Mutant) -> bool {
+        self.mutant == Some(m)
     }
 
     /// Test only: the journal (fault injection and direct reads).
@@ -648,6 +683,10 @@ impl<'s> FsWriteAdapter<'s> {
         match self.fault(step).and_then(|()| fsfx::fsync(fd)) {
             Ok(()) => Ok(()),
             Err(e) => {
+                #[cfg(test)]
+                if self.is_mutant(Mutant::SkipFsyncMark) {
+                    return Err(effect_failure(&format!("fsync {what}")));
+                }
                 self.mark_unrecoverable(&format!("fsync {what} {}", e.code()));
                 Err(effect_failure(&format!("fsync {what}")))
             }
@@ -903,3 +942,6 @@ mod row_tests;
 
 #[cfg(test)]
 mod kill_tests;
+
+#[cfg(test)]
+mod prop_tests;

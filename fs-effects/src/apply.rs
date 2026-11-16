@@ -312,6 +312,15 @@ impl FsWriteAdapter<'_> {
                 OpState::Staged,
                 Some(&staged.text()),
             )?;
+            #[cfg(test)]
+            if self.is_mutant(crate::Mutant::ReleaseBlockEarly) {
+                if let Some(row) = tx.target(&op.row.target)? {
+                    tx.put_target(&TargetRow {
+                        blocked_by: None,
+                        ..row
+                    })?;
+                }
+            }
             Ok(FsEnd::Commit(()))
         })?;
         self.boundary(Boundary::B5);

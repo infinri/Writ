@@ -287,6 +287,17 @@ impl FsWriteAdapter<'_> {
             expected_prior_digest: expected_prior_digest.as_deref(),
         };
         let row = decide(&facts, &t, &s);
+        #[cfg(test)]
+        let row = if self.is_mutant(crate::Mutant::ContentEquality)
+            && op.state == OpState::Staged
+            && mode == FsWriteMode::CreateOnly
+            && s == Slot::Absent
+            && t.digest() == Some(op.content_digest.as_str())
+        {
+            "R3"
+        } else {
+            row
+        };
         let Some((evidence, result, after, remove)) = plan(row) else {
             return Ok("R9");
         };
@@ -378,6 +389,10 @@ impl FsWriteAdapter<'_> {
                 let clear = target
                     .as_ref()
                     .is_some_and(|r| !r.tainted && r.blocked_by.is_none());
+                #[cfg(test)]
+                let clear = clear
+                    || (self.is_mutant(crate::Mutant::GcTainted)
+                        && target.as_ref().is_some_and(|r| r.blocked_by.is_none()));
                 if !clear || !matches!(outcome.result.as_str(), "applied" | "failed") {
                     return Ok(None);
                 }
