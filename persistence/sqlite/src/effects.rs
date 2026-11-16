@@ -174,6 +174,7 @@ fn evidence_of(tx: &Transaction<'_>, permit_id: &str) -> Result<Option<EffectEvi
         idempotency_key,
         request_fingerprint,
         result,
+        reason: None,
     }))
 }
 

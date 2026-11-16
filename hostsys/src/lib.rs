@@ -20,6 +20,7 @@
 //! - [`deployment`]: `VerifiedDeployment`, the static start-time check bound to the
 //!   operator-run report (M5a-04, J-9).
 //! - [`socket`]: peer credentials and receives that refuse ancillary data (J-2, J-11.2).
+//! - [`fsfx`]: the `fs.write` adapter's filesystem primitives (M5a-09, J-7.2).
 //!
 //! J-0 lists `writ-containment` as a dependency of `writ-probe`; that crate does not exist yet
 //! (M5a-07), so the probe binary lives in this crate for now. This crate opens no trusted state
@@ -31,6 +32,7 @@ pub mod deny;
 pub mod deployment;
 pub mod exec;
 pub mod facts;
+pub mod fsfx;
 pub mod jobprobes;
 pub mod probes;
 pub mod readiness;

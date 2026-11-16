@@ -151,12 +151,18 @@ pub use writ_broker::store::{ExecuteLedger, GrantLedger, LedgerStore, StoreError
 
 mod approval_store;
 mod effects;
+mod fs_journal;
 mod keys;
 mod runner_store;
 mod snapshots;
 mod workflow;
 pub use approval_store::BootstrapSession;
 pub use effects::{SqliteEffectStore, EFFECTS_SCHEMA, EFFECTS_SCHEMA_VERSION};
+pub use fs_journal::{
+    DispositionRow, FaultCode, FaultStage, FsEnd, FsJournal, FsTx, FsTxError, JournalBinding,
+    JournalFault, OpRow, OpState, OutcomeRow, OwnerRecord, TargetRow, FS_JOURNAL_SCHEMA,
+    FS_JOURNAL_SCHEMA_VERSION,
+};
 pub use keys::{
     OsActor, RevocationRow, RevocationScope, RevokeRefusal, MAX_REVOCATION_REASON_BYTES,
 };

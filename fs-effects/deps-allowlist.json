@@ -1,0 +1,7 @@
+{
+  "comment": "Reviewed dependency allow-list for writ-fs-effects (M5a-09; D-045 M5-D8; M5-INTERFACES J-0, J-7). Only workspace path dependencies (writ-broker, writ-ledger-sqlite for the writ-fseffects-1 journal, writ-hostsys for the filesystem primitives), each gated by its own allow-list; no direct or transitive registry package of its own (rustix is reached only through writ-hostsys, rusqlite only through writ-ledger-sqlite). J-0: no network, MCP or model code anywhere in the closure.",
+  "approved_licenses": ["MIT", "MIT OR Apache-2.0", "MIT/Apache-2.0", "Apache-2.0 OR MIT"],
+  "forbidden": ["rustix", "rusqlite", "libsqlite3-sys", "tokio", "hyper", "reqwest", "rmcp"],
+  "forbidden_anywhere": ["tokio", "hyper", "hyper-util", "reqwest", "h2", "rmcp", "openssl", "openssl-sys", "native-tls", "rustls", "anthropic", "async-openai"],
+  "packages": {}
+}
