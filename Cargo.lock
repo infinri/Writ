@@ -2544,6 +2544,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "writ-containment"
+version = "0.1.0"
+dependencies = [
+ "rustix",
+ "writ-broker",
+ "writ-hostsys",
+ "writ-kernel",
+]
+
+[[package]]
 name = "writ-hostsys"
 version = "0.1.0"
 dependencies = [
