@@ -9,7 +9,7 @@
 
 use std::io::{self, IoSliceMut, Read};
 use std::mem::MaybeUninit;
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, OwnedFd};
 
 use rustix::net::{recvmsg, RecvAncillaryBuffer, RecvFlags, ReturnFlags};
 
@@ -168,6 +168,133 @@ pub fn check_service_identity(
     Ok(())
 }
 
+/// The socket-activation environment systemd sets for a service with `Sockets=` (J-8):
+/// `LISTEN_PID`, `LISTEN_FDS` and `LISTEN_FDNAMES` (`sd_listen_fds(3)`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ListenEnv {
+    /// `LISTEN_PID`.
+    pub pid: Option<String>,
+    /// `LISTEN_FDS`.
+    pub fds: Option<String>,
+    /// `LISTEN_FDNAMES` (colon-separated `FileDescriptorName=` values).
+    pub names: Option<String>,
+}
+
+impl ListenEnv {
+    /// The variables of this process (read once; nothing else of the environment is used).
+    pub fn of_process() -> ListenEnv {
+        let var = |k: &str| std::env::var(k).ok();
+        ListenEnv {
+            pid: var("LISTEN_PID"),
+            fds: var("LISTEN_FDS"),
+            names: var("LISTEN_FDNAMES"),
+        }
+    }
+}
+
+/// Why inherited sockets were refused (the service then refuses to start, J-8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActivationRefused {
+    /// No `LISTEN_PID` or `LISTEN_FDS`: not socket-activated.
+    NotActivated,
+    /// `LISTEN_PID` is not this process.
+    OtherProcess,
+    /// `LISTEN_FDS` is not a count from 1 to [`MAX_INHERITED`].
+    Count,
+    /// `LISTEN_FDNAMES` is absent, does not name every descriptor, repeats a name or uses a
+    /// character outside `[A-Za-z0-9._-]`.
+    Names,
+    /// `pidfd_open` or `pidfd_getfd` failed.
+    Takeover(io::ErrorKind),
+}
+
+/// The first inherited descriptor (`SD_LISTEN_FDS_START`).
+pub const LISTEN_FDS_START: i32 = 3;
+/// Most inherited descriptors accepted.
+pub const MAX_INHERITED: usize = 16;
+
+/// Take over the sockets systemd passed to this process (J-8; lead decision after M5a-04):
+/// with `unsafe_code` forbidden, a raw descriptor number cannot become an `OwnedFd`
+/// directly, so each one is duplicated through this process's own pidfd with
+/// `pidfd_getfd` (Linux 5.6; always permitted on the caller's own thread group). The
+/// duplicates are close-on-exec. The original descriptors stay open, without
+/// close-on-exec, for the life of the process (recorded residual: closing a raw number
+/// needs `unsafe`; `writ-serviced` spawns no child process).
+pub fn take_inherited(env: &ListenEnv) -> Result<Vec<(String, OwnedFd)>, ActivationRefused> {
+    take_inherited_from(env, LISTEN_FDS_START)
+}
+
+fn take_inherited_from(
+    env: &ListenEnv,
+    first: i32,
+) -> Result<Vec<(String, OwnedFd)>, ActivationRefused> {
+    use rustix::process::{getpid, pidfd_getfd, pidfd_open, PidfdFlags, PidfdGetfdFlags};
+    let (Some(pid), Some(fds)) = (env.pid.as_deref(), env.fds.as_deref()) else {
+        return Err(ActivationRefused::NotActivated);
+    };
+    let digits = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
+    if !digits(pid) || pid.parse::<i32>().ok() != Some(getpid().as_raw_nonzero().get()) {
+        return Err(ActivationRefused::OtherProcess);
+    }
+    let count = match fds.parse::<usize>() {
+        Ok(n) if digits(fds) && (1..=MAX_INHERITED).contains(&n) => n,
+        _ => return Err(ActivationRefused::Count),
+    };
+    let names: Vec<&str> = env.names.as_deref().unwrap_or("").split(':').collect();
+    let name_ok = |n: &&str| {
+        !n.is_empty()
+            && n.len() <= 255
+            && n.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+    };
+    let distinct = names
+        .iter()
+        .enumerate()
+        .all(|(i, n)| !names[..i].contains(n));
+    if names.len() != count || !names.iter().all(name_ok) || !distinct {
+        return Err(ActivationRefused::Names);
+    }
+    let pidfd = pidfd_open(getpid(), PidfdFlags::empty())
+        .map_err(|e| ActivationRefused::Takeover(io::Error::from(e).kind()))?;
+    let mut out = Vec::with_capacity(count);
+    for (i, name) in names.into_iter().enumerate() {
+        let target = first + i32::try_from(i).map_err(|_| ActivationRefused::Count)?;
+        let fd = pidfd_getfd(&pidfd, target, PidfdGetfdFlags::empty())
+            .map_err(|e| ActivationRefused::Takeover(io::Error::from(e).kind()))?;
+        out.push((name.to_string(), fd));
+    }
+    Ok(out)
+}
+
+/// What a received listening socket must be.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListenKind {
+    /// `AF_UNIX`, `SOCK_STREAM`, listening.
+    UnixStream,
+    /// `AF_INET`, `SOCK_STREAM`, listening.
+    TcpV4,
+}
+
+/// Check the family, type and listening state of a received socket (J-8: the service
+/// verifies every received socket before it serves; address and mode are checked by the
+/// caller on the converted listener).
+pub fn check_listening(fd: impl AsFd, kind: ListenKind) -> io::Result<()> {
+    use rustix::net::sockopt::{socket_acceptconn, socket_domain, socket_type};
+    use rustix::net::{AddressFamily, SocketType};
+    let family = match kind {
+        ListenKind::UnixStream => AddressFamily::UNIX,
+        ListenKind::TcpV4 => AddressFamily::INET,
+    };
+    let fd = fd.as_fd();
+    if socket_domain(fd)? != family
+        || socket_type(fd)? != SocketType::STREAM
+        || !socket_acceptconn(fd)?
+    {
+        return Err(io::Error::from(io::ErrorKind::InvalidInput));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -298,6 +425,79 @@ mod tests {
             check_service_identity(&ok, 990, 0),
             Err(IdentityRefused::Root)
         );
+    }
+
+    fn env(pid: &str, fds: &str, names: Option<&str>) -> ListenEnv {
+        ListenEnv {
+            pid: Some(pid.into()),
+            fds: Some(fds.into()),
+            names: names.map(str::to_string),
+        }
+    }
+
+    fn me() -> String {
+        std::process::id().to_string()
+    }
+
+    #[test]
+    fn inherited_descriptors_are_duplicated_through_the_own_pidfd() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::net::UnixListener;
+        let dir = std::env::temp_dir().join(format!("writ-sock-takeover-{}", me()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        // Each listener's own descriptor number stands in for 3 (the test harness owns 3).
+        let a = UnixListener::bind(dir.join("a.sock")).unwrap();
+        let b = UnixListener::bind(dir.join("b.sock")).unwrap();
+        let mut got = Vec::new();
+        for (l, name) in [(&a, "host"), (&b, "admin")] {
+            let mut one = take_inherited_from(&env(&me(), "1", Some(name)), l.as_raw_fd()).unwrap();
+            assert_eq!(one.len(), 1);
+            assert_eq!(one[0].0, name);
+            got.push((one.remove(0), l.as_raw_fd()));
+        }
+        for (((_, fd), original), path) in got.into_iter().zip(["a.sock", "b.sock"]) {
+            assert_ne!(fd.as_raw_fd(), original);
+            let flags = rustix::io::fcntl_getfd(&fd).unwrap();
+            assert!(flags.contains(rustix::io::FdFlags::CLOEXEC));
+            check_listening(&fd, ListenKind::UnixStream).unwrap();
+            assert_eq!(
+                check_listening(&fd, ListenKind::TcpV4).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+            let l = UnixListener::from(fd);
+            assert_eq!(
+                l.local_addr().unwrap().as_pathname(),
+                Some(dir.join(path).as_path())
+            );
+        }
+        // A connected (not listening) socket is refused.
+        let (c, _d) = UnixStream::pair().unwrap();
+        assert!(check_listening(&c, ListenKind::UnixStream).is_err());
+        drop((a, b));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_foreign_or_malformed_activation_environment_is_refused() {
+        use ActivationRefused as R;
+        let none = ListenEnv::default();
+        assert_eq!(take_inherited(&none).unwrap_err(), R::NotActivated);
+        let other = (std::process::id() + 1).to_string();
+        for (e, want) in [
+            (env(&other, "1", Some("host")), R::OtherProcess),
+            (env("+1", "1", Some("host")), R::OtherProcess),
+            (env(&me(), "0", Some("")), R::Count),
+            (env(&me(), "17", Some("host")), R::Count),
+            (env(&me(), " 1", Some("host")), R::Count),
+            (env(&me(), "2", Some("host")), R::Names),
+            (env(&me(), "1", None), R::Names),
+            (env(&me(), "2", Some("host:host")), R::Names),
+            (env(&me(), "1", Some("ho st")), R::Names),
+            (env(&me(), "2", Some("host:")), R::Names),
+        ] {
+            assert_eq!(take_inherited(&e).unwrap_err(), want, "{e:?}");
+        }
     }
 
     #[test]

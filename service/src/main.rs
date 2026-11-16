@@ -11,18 +11,22 @@
 //! 2. configuration (`writ-service-config/1`; exit 2 when refused);
 //! 3. the J-1 startup identity check: real and effective uid and gid equal the configured
 //!    service ids, neither is 0, no supplementary group (exit 3);
-//! 4. open and own the ledger, stores and keys ([`writ_service::Service::open`]);
-//! 5. bind and serve `host.sock`, `admin.sock` and the approval listener; announce on
-//!    standard output and serve until terminated (signals are M5a-11).
+//! 4. the rest is [`writ_service::daemon::run`]: inherited sockets (socket activation),
+//!    open and own the ledger, stores and keys, the start-time sweep, serve and announce on
+//!    standard output, then the J-8 graceful shutdown at the first `SIGTERM` or `SIGINT`
+//!    (second signal: exit 4; hard deadline: exit 5).
+//!
+//! `SIGTERM` and `SIGINT` are registered (Tokio `signal`) right after the configuration is
+//! loaded, before anything is opened; the socket-activation variables are read once, then.
 
-use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use writ_hostsys::deployment::{observe, static_facts_value};
+use writ_hostsys::sock::ListenEnv;
 use writ_hostsys::sock::{check_service_identity, process_identity, restrict_umask};
 use writ_service::config::ServiceConfig;
-use writ_service::Service;
+use writ_service::{daemon, shutdown, Service};
 
 const USAGE: &str = "usage: writ-serviced [--init | --print-static-facts] --config <path>";
 
@@ -67,6 +71,16 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let (signals, listen) = match mode {
+        Mode::Serve => match shutdown::signals() {
+            Ok(rx) => (Some(rx), ListenEnv::of_process()),
+            Err(e) => {
+                eprintln!("writ-serviced: signal handling unavailable: {:?}", e.kind());
+                return ExitCode::from(1);
+            }
+        },
+        _ => (None, ListenEnv::default()),
+    };
     if let Mode::PrintFacts = mode {
         let Some(d) = &config.deployment else {
             eprintln!("writ-serviced: no deployment fact plan configured");
@@ -102,26 +116,8 @@ fn main() -> ExitCode {
             }
         };
     }
-    let service = match Service::open(config) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("writ-serviced: not serving: {e}");
-            return ExitCode::from(1);
-        }
-    };
-    let label = service.config().label(service.deployment_verified());
-    let running = match service.serve() {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("writ-serviced: not serving: {e}");
-            return ExitCode::from(1);
-        }
-    };
-    let mut out = std::io::stdout().lock();
-    let _ = writeln!(out, "writ-serviced: serving ({label})").and_then(|()| out.flush());
-    drop(out);
-    loop {
-        std::thread::park();
-        let _ = &running;
+    match signals {
+        Some(rx) => ExitCode::from(daemon::run(config, rx, &listen)),
+        None => ExitCode::from(1),
     }
 }

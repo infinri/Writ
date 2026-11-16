@@ -69,6 +69,17 @@ impl Limits {
     };
 }
 
+/// The start-time sweep of leftover job state (J-11.6 "`writ` crashes or stops"; M5a-11).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SweepConfig {
+    /// Where the runner materializes `run-<id>` (`/var/lib/writ/run`).
+    pub run_root: PathBuf,
+    /// `cgroup.events` of `writ-jobs.slice` (read only; J-11.5).
+    pub jobs_cgroup_events: PathBuf,
+    /// How long the sweep waits for `populated 0` (default 10 s, at most 60 s).
+    pub wait: std::time::Duration,
+}
+
 /// The approval listener (loopback; WebAuthn authenticates the human).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApprovalConfig {
@@ -115,6 +126,15 @@ pub struct ServiceConfig {
     pub approval: Option<ApprovalConfig>,
     /// The operator report and fact plan for `VerifiedDeployment` (J-9); `None`: no proof.
     pub deployment: Option<DeploymentConfig>,
+    /// `sockets.activation` = `"systemd"`: every socket is received from systemd (J-8) and
+    /// none is ever bound by the service; `"bind"` (default, development): the service binds
+    /// its Unix sockets and the approval port itself.
+    pub socket_activation: bool,
+    /// The drain period of the graceful shutdown (J-8; `shutdown.drain_seconds`, default
+    /// 10, at most 30).
+    pub drain: std::time::Duration,
+    /// The start-time sweep (`containment`), when configured.
+    pub sweep: Option<SweepConfig>,
 }
 
 /// Why a configuration was refused.
@@ -286,7 +306,14 @@ impl ServiceConfig {
                 "sockets",
                 "host_bindings",
             ],
-            &["admin_uids", "limits", "approval", "deployment"],
+            &[
+                "admin_uids",
+                "limits",
+                "approval",
+                "deployment",
+                "shutdown",
+                "containment",
+            ],
             "configuration",
         )?;
         if m.get("contract").and_then(Value::as_str) != Some(CONFIG_CONTRACT) {
@@ -318,9 +345,48 @@ impl ServiceConfig {
         let sockets = members(
             m.get("sockets").unwrap_or(&Value::Null),
             &["host", "admin"],
-            &[],
+            &["activation"],
             "sockets",
         )?;
+        let socket_activation = match sockets.get("activation") {
+            None => false,
+            Some(Value::Str(t)) if t == "bind" => false,
+            Some(Value::Str(t)) if t == "systemd" => true,
+            Some(_) => return err("sockets.activation: \"systemd\" or \"bind\""),
+        };
+        let drain = match m.get("shutdown") {
+            None => std::time::Duration::from_secs(10),
+            Some(v) => {
+                let d = members(v, &["drain_seconds"], &[], "shutdown")?;
+                std::time::Duration::from_secs(positive(
+                    d.get("drain_seconds"),
+                    30,
+                    "shutdown.drain_seconds",
+                )? as u64)
+            }
+        };
+        let sweep = match m.get("containment") {
+            None => None,
+            Some(v) => {
+                let c = members(
+                    v,
+                    &["run_root", "jobs_cgroup_events"],
+                    &["sweep_wait_seconds"],
+                    "containment",
+                )?;
+                Some(SweepConfig {
+                    run_root: abs_path(c.get("run_root"), "containment.run_root")?,
+                    jobs_cgroup_events: abs_path(
+                        c.get("jobs_cgroup_events"),
+                        "containment.jobs_cgroup_events",
+                    )?,
+                    wait: std::time::Duration::from_secs(match c.get("sweep_wait_seconds") {
+                        None => 10,
+                        some => positive(some, 60, "containment.sweep_wait_seconds")? as u64,
+                    }),
+                })
+            }
+        };
         let host_bindings = match m.get("host_bindings") {
             Some(Value::Arr(items)) if !items.is_empty() => {
                 items.iter().map(binding).collect::<Result<Vec<_>, _>>()?
@@ -421,6 +487,9 @@ impl ServiceConfig {
             limits,
             approval,
             deployment,
+            socket_activation,
+            drain,
+            sweep,
         };
         config.validate()?;
         Ok(config)
@@ -630,6 +699,51 @@ mod tests {
             parse(&[("host_bindings", extra)]).is_err(),
             "unknown member"
         );
+    }
+
+    #[test]
+    fn activation_shutdown_and_sweep_settings() {
+        let c = parse(&[]).unwrap();
+        assert!(!c.socket_activation);
+        assert_eq!(c.drain, std::time::Duration::from_secs(10));
+        assert!(c.sweep.is_none());
+        let c = parse(&[
+            (
+                "sockets",
+                r#"{"host":"/run/writ/host.sock","admin":"/run/writ/admin.sock","activation":"systemd"}"#,
+            ),
+            ("shutdown", r#"{"drain_seconds":3}"#),
+            (
+                "containment",
+                r#"{"run_root":"/var/lib/writ/run","jobs_cgroup_events":"/sys/fs/cgroup/writ.slice/writ-jobs.slice/cgroup.events","sweep_wait_seconds":2}"#,
+            ),
+        ])
+        .unwrap();
+        assert!(c.socket_activation);
+        assert_eq!(c.drain, std::time::Duration::from_secs(3));
+        let sweep = c.sweep.unwrap();
+        assert_eq!(sweep.run_root, PathBuf::from("/var/lib/writ/run"));
+        assert_eq!(sweep.wait, std::time::Duration::from_secs(2));
+        for (k, v) in [
+            (
+                "sockets",
+                r#"{"host":"/run/writ/host.sock","admin":"/run/writ/admin.sock","activation":"inetd"}"#,
+            ),
+            ("shutdown", r#"{"drain_seconds":0}"#),
+            ("shutdown", r#"{"drain_seconds":31}"#),
+            ("shutdown", r#"{"drain":3}"#),
+            ("containment", r#"{"run_root":"/var/lib/writ/run"}"#),
+            (
+                "containment",
+                r#"{"run_root":"run","jobs_cgroup_events":"/sys/fs/cgroup/x/cgroup.events"}"#,
+            ),
+            (
+                "containment",
+                r#"{"run_root":"/var/lib/writ/run","jobs_cgroup_events":"/sys/fs/cgroup/x/cgroup.events","sweep_wait_seconds":61}"#,
+            ),
+        ] {
+            assert!(parse(&[(k, v)]).is_err(), "{k} {v}");
+        }
     }
 
     #[test]

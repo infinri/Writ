@@ -9,8 +9,9 @@ publish.workspace = true
 
 # Reviewed allow-list: hostsys/deps-allowlist.json (M5-DEPENDENCY-REVIEW section 2). rustix
 # features: std, fs (openat2, statx, statfs, renameat_with, lgetxattr, setxattr), process
-# (getuid, getgid, kill_process_group, test_kill_process), net (SO_PEERCRED; lead decision,
-# J-0/J-2). No new registry package.
+# (getuid, getgid, kill_process_group, test_kill_process; pidfd_open and pidfd_getfd for the
+# socket-activation takeover, M5a-11, J-8), net (SO_PEERCRED; lead decision, J-0/J-2; socket
+# domain, type and listening state of received sockets). No new registry package.
 [dependencies]
 writ-kernel = { path = "../kernel" }
 rustix = { version = "=1.1.6", default-features = false, features = ["std", "fs", "process", "net"] }

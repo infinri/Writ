@@ -32,24 +32,46 @@
 //!   (J-11.8: explicit scope, registered purpose and digest, OS-peer provenance, ordering
 //!   row, idempotent). `keys.reload`, `registry.*` refuse here (later tasks).
 //!
-//! **Not in this crate yet (recorded):** systemd socket activation (J-8; receiving
-//! inherited descriptors needs either `unsafe` or a reviewed safe path, M5a-11), graceful
-//! shutdown on signals (M5a-11), the runner supervisor and job launcher client (M5a-07,
-//! J-11), the broker execute path over an effect adapter (M5a-09, M5b-03).
+//! **Sockets (J-8; M5a-11).** With `sockets.activation = "systemd"` every socket (`host`,
+//! `admin` and, when configured, `approval`) is received from systemd and taken over through
+//! the service's own pidfd ([`writ_hostsys::sock::take_inherited`]); each is verified (family,
+//! type, listening, exact address, and for the Unix sockets owner and mode: `host.sock` 0660,
+//! `admin.sock` 0600 in group `writ`) and the service refuses to start unless it receives
+//! exactly those. It never binds in that mode. Otherwise (development) it binds them itself.
+//!
+//! **Graceful shutdown (J-8; [`Running::stop_gracefully`], [`daemon`]).** Stop accepting work
+//! (listening sockets stay open; admitted connections and new requests on open connections
+//! are answered `SERVICE_STOPPING`, the page `503`), drain, terminate owned jobs through the
+//! launcher (the [`Running::job_termination`] token), join every task holding a store handle,
+//! then drop the stores and the ledger last. A second signal or the hard deadline exits at
+//! once ([`shutdown`]).
+//!
+//! **Start-time sweep ([`sweep`]).** Leftover job state through the launcher contract.
+//!
+//! **Not in this crate yet (recorded):** the runner supervisor composed over the launcher
+//! client (M5a-07 client exists; composition with the execute path is M5b-03) and the broker
+//! execute path over an effect adapter (M5a-09, M5b-03).
 
 pub mod config;
+pub mod daemon;
 pub mod seal;
+pub mod shutdown;
+pub mod sweep;
 
 use std::io::{self, Write};
+use std::net::{Shutdown, TcpListener};
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use writ_approval::backend::LedgerBackend;
-use writ_approval::listener::{ApprovalListener, Limits as PageLimits, ListenerConfig, RP_ID};
+use writ_approval::listener::{
+    ApprovalListener, Limits as PageLimits, ListenerConfig, ServeControl, RP_ID,
+};
 use writ_approval::verifier::PasskeyVerifier;
 use writ_broker::clock::{observe, Boottime, HostClock, SystemWall};
 use writ_broker::human::ApprovalChannel;
@@ -58,7 +80,10 @@ use writ_broker::store::StoreError;
 use writ_broker::writ_kernel::json::{self, Value};
 use writ_broker::writ_kernel::time::Timestamp;
 use writ_hostsys::deployment::{DeploymentRefused, VerifiedDeployment};
-use writ_hostsys::sock::{peer_credentials, PlainReader};
+use writ_hostsys::sock::{
+    check_listening, peer_credentials, take_inherited, ActivationRefused, ListenEnv, ListenKind,
+    PlainReader,
+};
 use writ_keys::{DirRefusal, FileKeySource, KeyDirConfig};
 use writ_ledger_sqlite::{
     OsActor, RevocationRow, RevocationScope, RevokeRefusal, SnapshotLimits, SqliteLedger,
@@ -69,6 +94,11 @@ use writ_rpc::frame::{read_frame, write_control, Frame, FrameError, FrameLimits}
 use writ_rpc::ConnectionCaps;
 
 use crate::config::{HostBinding, ServiceConfig};
+use crate::sweep::SweepReport;
+
+/// The generic refusal answered while stopping (J-8; external mapping: the request was not
+/// started and may be retried after the restart).
+pub const SERVICE_STOPPING: &str = "SERVICE_STOPPING";
 
 /// The host clock the service runs on.
 pub type Clock = HostClock<SystemWall, Boottime>;
@@ -90,6 +120,8 @@ pub enum StartError {
     Approval(String),
     /// A socket path exists already or could not be bound.
     Socket(&'static str, io::ErrorKind),
+    /// Socket activation was configured and the inherited sockets were refused (J-8).
+    Activation(String),
 }
 
 impl std::fmt::Display for StartError {
@@ -102,6 +134,7 @@ impl std::fmt::Display for StartError {
             StartError::Keys(r) => write!(f, "key directory: {r}"),
             StartError::Approval(e) => write!(f, "approval listener: {e}"),
             StartError::Socket(which, k) => write!(f, "socket {which}: {k:?}"),
+            StartError::Activation(why) => write!(f, "socket activation: {why}"),
         }
     }
 }
@@ -113,6 +146,7 @@ pub struct Service {
     keys: FileKeySource,
     snapshots: Arc<SqliteSnapshotStore>,
     deployment: Option<Arc<VerifiedDeployment>>,
+    sweep: Option<SweepReport>,
     clock: Arc<Clock>,
     ledger: Arc<SqliteLedger>,
 }
@@ -177,6 +211,7 @@ impl Service {
             keys,
             snapshots: Arc::new(snapshots),
             deployment,
+            sweep: None,
             clock: Arc::new(clock),
             ledger: Arc::new(ledger),
         })
@@ -200,6 +235,14 @@ impl Service {
     /// The loaded key source.
     pub fn keys(&self) -> &FileKeySource {
         &self.keys
+    }
+
+    /// Run the start-time sweep when configured ([`sweep`]) and keep its report for
+    /// `readiness`; `None` when not configured.
+    pub fn sweep(&mut self) -> Option<&SweepReport> {
+        let cfg = self.config.sweep.clone()?;
+        self.sweep = Some(sweep::sweep(&cfg, self.config.service_uid));
+        self.sweep.as_ref()
     }
 
     /// `true` while the deployment proof exists and holds (rechecked here).
@@ -257,6 +300,12 @@ impl Service {
                 Value::Bool(self.snapshots_immutable()),
             ),
             ("ledger_id", json::s(self.ledger.ledger_id().as_str())),
+            (
+                "sweep",
+                self.sweep
+                    .as_ref()
+                    .map_or(Value::Null, SweepReport::to_value),
+            ),
             ("keys", Value::Arr(keys)),
             ("key_diagnostics", Value::Arr(diagnostics)),
         ])
@@ -268,8 +317,14 @@ impl Service {
     }
 
     /// Bind both sockets (umask 0077 applies; the paths must not exist) and serve them, and
-    /// the approval listener when configured, until [`Running::shutdown`].
+    /// the approval listener when configured, until [`Running::shutdown`] or
+    /// [`Running::stop_gracefully`]. Refused when socket activation is configured.
     pub fn serve(self) -> Result<Running, StartError> {
+        self.serve_with(Sockets::Bind)
+    }
+
+    /// Serve `sockets` (module documentation, "Sockets").
+    pub fn serve_with(self, sockets: Sockets) -> Result<Running, StartError> {
         let service = Arc::new(self);
         let config = &service.config;
         let host_table = AdmissionTable::new(
@@ -290,45 +345,77 @@ impl Service {
                 .collect(),
         )
         .map_err(|_| StartError::Socket("admin.sock", io::ErrorKind::InvalidInput))?;
-        let host = bind(&config.host_socket, "host.sock")?;
-        let admin = match bind(&config.admin_socket, "admin.sock") {
-            Ok(a) => a,
-            Err(e) => {
-                let _ = std::fs::remove_file(&config.host_socket);
-                return Err(e);
-            }
-        };
         let caps = ConnectionCaps::new(
             config.limits.max_connections,
             config.limits.max_connections_per_uid,
         )
         .ok_or(StartError::Socket("caps", io::ErrorKind::InvalidInput))?;
+        let (host, admin, approval_socket, bound_self) = match sockets {
+            Sockets::Bind if config.socket_activation => {
+                return Err(StartError::Activation(
+                    "configured for systemd sockets; the service never binds them".into(),
+                ))
+            }
+            Sockets::Bind => {
+                let host = bind(&config.host_socket, "host.sock")?;
+                let admin = match bind(&config.admin_socket, "admin.sock") {
+                    Ok(a) => a,
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&config.host_socket);
+                        return Err(e);
+                    }
+                };
+                (host, admin, None, true)
+            }
+            Sockets::Inherited(i) => {
+                let Inherited {
+                    host,
+                    admin,
+                    approval,
+                } = i;
+                host.set_nonblocking(true)
+                    .and_then(|()| admin.set_nonblocking(true))
+                    .map_err(|e| StartError::Socket("inherited", e.kind()))?;
+                (host, admin, approval, false)
+            }
+        };
         let stop = Arc::new(AtomicBool::new(false));
-        let connections: Arc<Mutex<Vec<JoinHandle<()>>>> = Arc::new(Mutex::new(Vec::new()));
+        let lifecycle = Arc::new(Lifecycle::default());
+        let connections: Arc<Mutex<Vec<Open>>> = Arc::new(Mutex::new(Vec::new()));
         let mut threads = Vec::new();
+        let mut approval = None;
         if let Some(a) = &config.approval {
             let backend = Arc::new(LedgerBackend::new(
                 Arc::clone(&service.ledger),
                 Arc::clone(&service.clock),
             ));
-            let listener = ApprovalListener::bind(
-                ListenerConfig {
-                    port: a.port,
-                    subject_issuer: a.subject_issuer.clone(),
-                    limits: PageLimits::default(),
-                },
-                backend,
-            )
+            let page = ListenerConfig {
+                port: a.port,
+                subject_issuer: a.subject_issuer.clone(),
+                limits: PageLimits::default(),
+            };
+            let listener = match approval_socket {
+                Some(l) => ApprovalListener::from_std(l, page, backend),
+                None => ApprovalListener::bind(page, backend),
+            }
             .map_err(|e| StartError::Approval(format!("bind: {:?}", e.kind())))?;
             if listener.origin() != format!("http://localhost:{}", a.port) {
                 return Err(StartError::Approval(
                     "origin differs from the configuration".into(),
                 ));
             }
+            let control = listener.control();
             let stop = Arc::clone(&stop);
-            threads.push(thread::spawn(move || {
-                let _ = listener.serve(stop);
-            }));
+            approval = Some((
+                control,
+                thread::spawn(move || {
+                    let _ = listener.serve(stop);
+                }),
+            ));
+        } else if approval_socket.is_some() {
+            return Err(StartError::Activation(
+                "an approval socket was received but no approval listener is configured".into(),
+            ));
         }
         for (listener, table, endpoint) in [
             (host, host_table, Endpoint::Host),
@@ -340,6 +427,7 @@ impl Service {
                 endpoint,
                 caps: caps.clone(),
                 stop: Arc::clone(&stop),
+                lifecycle: Arc::clone(&lifecycle),
                 connections: Arc::clone(&connections),
             };
             threads.push(thread::spawn(move || ctx.run(listener)));
@@ -347,10 +435,122 @@ impl Service {
         Ok(Running {
             service,
             stop,
+            lifecycle,
+            jobs: Arc::new(AtomicBool::new(false)),
+            approval,
             threads,
             connections,
+            bound_self,
         })
     }
+}
+
+/// Where the service's sockets come from (J-8).
+pub enum Sockets {
+    /// The service binds them (development; refused with socket activation configured).
+    Bind,
+    /// Received from systemd and verified ([`Inherited::take`]).
+    Inherited(Inherited),
+}
+
+/// The verified sockets received from systemd (J-8).
+pub struct Inherited {
+    host: UnixListener,
+    admin: UnixListener,
+    approval: Option<TcpListener>,
+}
+
+/// The `FileDescriptorName=` of each socket unit.
+pub const SOCKET_NAMES: [&str; 3] = ["host", "admin", "approval"];
+
+impl Inherited {
+    /// Take over and verify the sockets systemd passed (module documentation): exactly
+    /// `host`, `admin` and, iff the approval listener is configured, `approval`.
+    pub fn take(config: &ServiceConfig, env: &ListenEnv) -> Result<Inherited, StartError> {
+        let refused = |why: String| StartError::Activation(why);
+        let got = take_inherited(env).map_err(|r| match r {
+            ActivationRefused::NotActivated => refused("no sockets were passed".into()),
+            other => refused(format!("{other:?}")),
+        })?;
+        let mut want: Vec<&str> = vec!["host", "admin"];
+        if config.approval.is_some() {
+            want.push("approval");
+        }
+        let mut names: Vec<&str> = got.iter().map(|(n, _)| n.as_str()).collect();
+        names.sort_unstable();
+        want.sort_unstable();
+        if names != want {
+            return Err(refused(format!(
+                "received sockets {names:?}, configured {want:?}"
+            )));
+        }
+        let mut host = None;
+        let mut admin = None;
+        let mut approval = None;
+        for (name, fd) in got {
+            match name.as_str() {
+                "approval" => {
+                    check_listening(&fd, ListenKind::TcpV4)
+                        .map_err(|e| refused(format!("approval: {:?}", e.kind())))?;
+                    approval = Some(TcpListener::from(fd));
+                }
+                "host" | "admin" => {
+                    check_listening(&fd, ListenKind::UnixStream)
+                        .map_err(|e| refused(format!("{name}: {:?}", e.kind())))?;
+                    let l = UnixListener::from(fd);
+                    let (path, mode, gid) = if name == "host" {
+                        (&config.host_socket, 0o660, None)
+                    } else {
+                        (&config.admin_socket, 0o600, Some(config.service_gid))
+                    };
+                    verify_unix(&l, path, mode, config.service_uid, gid)
+                        .map_err(|why| refused(format!("{name}: {why}")))?;
+                    if name == "host" {
+                        host = Some(l);
+                    } else {
+                        admin = Some(l);
+                    }
+                }
+                _ => return Err(refused(format!("unexpected socket {name}"))),
+            }
+        }
+        match (host, admin) {
+            (Some(host), Some(admin)) => Ok(Inherited {
+                host,
+                admin,
+                approval,
+            }),
+            _ => Err(refused("host or admin socket missing".into())),
+        }
+    }
+}
+
+/// The received Unix socket is bound at exactly `path`, a socket owned by `uid` (and `gid`
+/// when given) with permission bits exactly `mode`.
+fn verify_unix(
+    l: &UnixListener,
+    path: &Path,
+    mode: u32,
+    uid: u32,
+    gid: Option<u32>,
+) -> Result<(), String> {
+    let addr = l.local_addr().map_err(|e| format!("{:?}", e.kind()))?;
+    if addr.as_pathname() != Some(path) {
+        return Err("bound to another address".into());
+    }
+    let m = std::fs::symlink_metadata(path).map_err(|e| format!("{:?}", e.kind()))?;
+    if !m.file_type().is_socket() {
+        return Err("path is not a socket".into());
+    }
+    if m.mode() & 0o7777 != mode || m.uid() != uid || gid.is_some_and(|g| m.gid() != g) {
+        return Err(format!(
+            "owner {}:{} mode {:o}, required uid {uid} mode {mode:o}",
+            m.uid(),
+            m.gid(),
+            m.mode() & 0o7777
+        ));
+    }
+    Ok(())
 }
 
 fn bind(path: &Path, which: &'static str) -> Result<UnixListener, StartError> {
@@ -361,12 +561,94 @@ fn bind(path: &Path, which: &'static str) -> Result<UnixListener, StartError> {
     Ok(listener)
 }
 
-/// A serving service. Dropping it without [`Running::shutdown`] leaves the threads running.
+/// Requests in progress and the `stopping` state of the Unix endpoints (J-8). A request
+/// counts itself in flight **before** it checks `stopping` (both sequentially consistent),
+/// so a drain that observes zero after setting `stopping` cannot miss a request that will
+/// still run.
+#[derive(Debug, Default)]
+pub struct Lifecycle {
+    stopping: AtomicBool,
+    in_flight: AtomicUsize,
+}
+
+impl Lifecycle {
+    /// Answer every new connection and request `SERVICE_STOPPING` from now on.
+    pub fn stop(&self) {
+        self.stopping.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether [`Lifecycle::stop`] was called.
+    pub fn is_stopping(&self) -> bool {
+        self.stopping.load(Ordering::SeqCst)
+    }
+
+    /// Requests in progress now.
+    pub fn in_flight(&self) -> usize {
+        self.in_flight.load(Ordering::SeqCst)
+    }
+
+    /// Count one request in flight, or `None` while stopping. Public so that a test or a
+    /// later component (the runner supervisor) can hold a request open.
+    pub fn enter(self: &Arc<Self>) -> Option<InFlight> {
+        self.in_flight.fetch_add(1, Ordering::SeqCst);
+        let guard = InFlight(Arc::clone(self));
+        (!self.is_stopping()).then_some(guard)
+    }
+
+    /// Wait until no request is in progress, or `deadline`; `true` when idle.
+    pub fn wait_idle(&self, deadline: Instant) -> bool {
+        loop {
+            if self.in_flight() == 0 {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+/// One counted request in flight ([`Lifecycle::enter`]).
+pub struct InFlight(Arc<Lifecycle>);
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// One open connection: its thread and a handle to shut its socket down at release.
+struct Open {
+    thread: JoinHandle<()>,
+    stream: Option<UnixStream>,
+}
+
+/// A serving service. Dropping it without [`Running::shutdown`] or
+/// [`Running::stop_gracefully`] leaves the threads running.
 pub struct Running {
     service: Arc<Service>,
     stop: Arc<AtomicBool>,
+    lifecycle: Arc<Lifecycle>,
+    jobs: Arc<AtomicBool>,
+    approval: Option<(Arc<ServeControl>, JoinHandle<()>)>,
     threads: Vec<JoinHandle<()>>,
-    connections: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    connections: Arc<Mutex<Vec<Open>>>,
+    bound_self: bool,
+}
+
+/// What [`Running::stop_gracefully`] did (J-8).
+pub struct Stopped {
+    /// Every request in progress finished within the drain period.
+    pub drained: bool,
+    /// The job-termination token was set (step 4); requests that held jobs then ended
+    /// before the hard deadline.
+    pub jobs_ended: bool,
+    /// The service, when every task holding a store handle was joined before the hard
+    /// deadline; dropping it drops the stores, then the ledger (its lock last). `None`: a
+    /// handle is still held; the caller exits non-zero and the operating system releases
+    /// the locks (uncertain outcomes stay uncertain).
+    pub service: Option<Service>,
 }
 
 impl Running {
@@ -375,26 +657,91 @@ impl Running {
         &self.service
     }
 
-    /// Stop accepting, wait for the open connections (bounded by their idle deadline), remove
-    /// the socket files and release the stores and the ledger (this is not the J-8 signal
-    /// path, which is M5a-11). Returns the service if no other reference remains.
+    /// The request lifecycle of the Unix endpoints.
+    pub fn lifecycle(&self) -> &Arc<Lifecycle> {
+        &self.lifecycle
+    }
+
+    /// The job-termination token (J-8 step 4): set after the drain period; a runner job in
+    /// progress is then cancelled through the launcher (`writ-containment`
+    /// `LauncherSandbox::with_termination`), killed and verified empty by the launcher, and
+    /// finished `failed` with `terminated_shutdown`, or left `started` when that cannot be
+    /// recorded.
+    pub fn job_termination(&self) -> &Arc<AtomicBool> {
+        &self.jobs
+    }
+
+    /// Stop at once: no drain period (tests and the development path). Returns the service
+    /// if no other reference remains.
     pub fn shutdown(self) -> Option<Service> {
+        let hard = Instant::now() + Duration::from_secs(60);
+        self.stop_gracefully(Duration::ZERO, hard).service
+    }
+
+    /// The J-8 sequence (module documentation): stop accepting work, drain for `drain`,
+    /// terminate owned jobs, release ownership; every wait bounded by `hard`.
+    pub fn stop_gracefully(self, drain: Duration, hard: Instant) -> Stopped {
+        // 1. Stop accepting work; the listening sockets stay open.
+        self.lifecycle.stop();
+        if let Some((control, _)) = &self.approval {
+            control.stop_accepting_work();
+        }
+        // 2. Drain.
+        let drain_end = (Instant::now() + drain).min(hard);
+        let unix_idle = self.lifecycle.wait_idle(drain_end);
+        let page_idle = self
+            .approval
+            .as_ref()
+            .is_none_or(|(c, _)| c.wait_idle(drain_end));
+        // 4. Terminate owned jobs through the launcher; their requests then end.
+        self.jobs.store(true, Ordering::SeqCst);
+        let jobs_ended = self.lifecycle.wait_idle(hard);
+        // 5. Release: end the accept loops (closing the listening sockets), shut down every
+        //    open connection, join every task holding a store handle.
         self.stop.store(true, Ordering::SeqCst);
+        if let Some((control, _)) = &self.approval {
+            control.exit();
+        }
         for t in self.threads {
             let _ = t.join();
         }
-        let open: Vec<JoinHandle<()>> = std::mem::take(
+        if let Some((_, t)) = self.approval {
+            let _ = t.join();
+        }
+        let open: Vec<Open> = std::mem::take(
             &mut *self
                 .connections
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner),
         );
-        for t in open {
-            let _ = t.join();
+        for o in &open {
+            if let Some(s) = &o.stream {
+                let _ = s.shutdown(Shutdown::Both);
+            }
         }
-        let _ = std::fs::remove_file(&self.service.config.host_socket);
-        let _ = std::fs::remove_file(&self.service.config.admin_socket);
-        Arc::into_inner(self.service)
+        for o in open {
+            let _ = o.thread.join();
+        }
+        if self.bound_self {
+            let _ = std::fs::remove_file(&self.service.config.host_socket);
+            let _ = std::fs::remove_file(&self.service.config.admin_socket);
+        }
+        let mut service = self.service;
+        let service = loop {
+            match Arc::try_unwrap(service) {
+                Ok(s) => break Some(s),
+                Err(still) if Instant::now() < hard => {
+                    service = still;
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => break None,
+            }
+        };
+        Stopped {
+            drained: unix_idle && page_idle,
+            jobs_ended,
+            service,
+        }
     }
 }
 
@@ -404,7 +751,8 @@ struct Acceptor {
     endpoint: Endpoint,
     caps: ConnectionCaps,
     stop: Arc<AtomicBool>,
-    connections: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    lifecycle: Arc<Lifecycle>,
+    connections: Arc<Mutex<Vec<Open>>>,
 }
 
 impl Acceptor {
@@ -440,6 +788,15 @@ impl Acceptor {
                     continue;
                 }
             };
+            if self.lifecycle.is_stopping() {
+                // J-8: answered without reading, then closed.
+                let _ = stream
+                    .set_nonblocking(false)
+                    .and_then(|()| stream.set_write_timeout(Some(Duration::from_secs(1))));
+                let mut w = &stream;
+                let _ = write_control(&mut w, &refused(SERVICE_STOPPING));
+                continue;
+            }
             let Some(slot) = self.caps.try_acquire(peer.uid) else {
                 eprintln!(
                     "writ-serviced: {:?} over the connection cap for uid {}",
@@ -448,17 +805,28 @@ impl Acceptor {
                 continue;
             };
             let service = Arc::clone(&self.service);
+            let lifecycle = Arc::clone(&self.lifecycle);
             let endpoint = self.endpoint;
+            // One clone lets the release step shut the socket down; another shuts it down
+            // when the connection ends, so the registry's clone never keeps it open.
+            let handle_stream = stream.try_clone().ok();
+            let closer = stream.try_clone().ok();
             let handle = thread::spawn(move || {
                 let _slot = slot;
-                serve_connection(&service, stream, endpoint, peer, binding);
+                serve_connection(&service, &lifecycle, stream, endpoint, peer, binding);
+                if let Some(c) = closer {
+                    let _ = c.shutdown(Shutdown::Both);
+                }
             });
             let mut open = self
                 .connections
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            open.retain(|h| !h.is_finished());
-            open.push(handle);
+            open.retain(|o| !o.thread.is_finished());
+            open.push(Open {
+                thread: handle,
+                stream: handle_stream,
+            });
         }
     }
 }
@@ -497,6 +865,7 @@ struct Conn<'a> {
 
 fn serve_connection(
     service: &Service,
+    lifecycle: &Arc<Lifecycle>,
     stream: UnixStream,
     endpoint: Endpoint,
     peer: PeerCred,
@@ -525,7 +894,18 @@ fn serve_connection(
     };
     let mut writer = &stream;
     loop {
-        let next = match read_frame(&mut PlainReader(&stream), &frame_limits) {
+        let frame = read_frame(&mut PlainReader(&stream), &frame_limits);
+        if matches!(frame, Err(FrameError::Closed)) {
+            return;
+        }
+        // J-8: a request that arrives while stopping is answered SERVICE_STOPPING and the
+        // connection closed (an uncommitted ingest session is abandoned with it).
+        let Some(_in_flight) = lifecycle.enter() else {
+            let _ = write_control(&mut writer, &refused(SERVICE_STOPPING));
+            let _ = writer.flush();
+            return;
+        };
+        let next = match frame {
             Err(FrameError::Closed) => return,
             Err(_) => Next::Close(generic()),
             Ok(Frame::Data(bytes)) => conn.data(&bytes),
