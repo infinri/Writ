@@ -1,0 +1,104 @@
+# Excerpt of the job log of required CI run 43668827472, job 132674107174
+# (Production Rust workspace), commit 77e04bb. Fetched read-only on 2026-11-16 through the
+# GitHub REST endpoint actions/jobs/132674107174/logs (gh run view --log-failed printed nothing).
+# Lines are unmodified apart from stripped ANSI colour codes; credential values are not included.
+
+## Runner and image (log lines 1-21)
+2026-11-15T02:39:53.7103558Z Current runner version: '2.338.2'
+2026-11-15T02:39:53.7118485Z ##[group]Runner Image Provisioner
+2026-11-15T02:39:53.7119092Z Hosted Compute Agent
+2026-11-15T02:39:53.7119436Z Version: 20261103.629
+2026-11-15T02:39:53.7119793Z Commit: 15dbd9ccb5dbf34fae002b6ed1a2670f52df37bc
+2026-11-15T02:39:53.7120375Z Build Date: 2026-11-03T17:26:59Z
+2026-11-15T02:39:53.7120766Z Worker ID: {c4ec0ea8-24dc-47fd-9f1b-d7e6fef6e892}
+2026-11-15T02:39:53.7121182Z Region: centralus
+2026-11-15T02:39:53.7121532Z Cloud: Azure
+2026-11-15T02:39:53.7121839Z ##[endgroup]
+2026-11-15T02:39:53.7122575Z ##[group]Operating System
+2026-11-15T02:39:53.7122952Z Ubuntu
+2026-11-15T02:39:53.7123272Z 26.04.1
+2026-11-15T02:39:53.7123607Z LTS
+2026-11-15T02:39:53.7123901Z ##[endgroup]
+2026-11-15T02:39:53.7124234Z ##[group]Runner Image
+2026-11-15T02:39:53.7124578Z Image: ubuntu-26.04
+2026-11-15T02:39:53.7124928Z Version: 20261111.196.1
+2026-11-15T02:39:53.7125659Z Included Software: https://github.com/actions/runner-images/blob/ubuntu26/20261111.196/images/ubuntu/Ubuntu2604-Readme.md
+2026-11-15T02:39:53.7126507Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu26%2F20261111.196
+2026-11-15T02:39:53.7127045Z ##[endgroup]
+
+## Checkout working directory (log lines 54-56)
+2026-11-15T02:39:54.6857172Z Syncing repository: infinri/Writ
+2026-11-15T02:39:54.6858149Z ##[group]Getting Git version info
+2026-11-15T02:39:54.6858630Z Working directory is '/home/runner/work/Writ/Writ'
+
+## Failing step and its environment (log lines 139-153)
+2026-11-15T02:40:19.7564154Z ##[group]Run cargo fmt --all --check
+2026-11-15T02:40:19.7564371Z cargo fmt --all --check
+2026-11-15T02:40:19.7564568Z cargo clippy --workspace --all-targets --locked -- -D warnings
+2026-11-15T02:40:19.7564786Z cargo build --workspace --locked
+2026-11-15T02:40:19.7565025Z # The runner sandbox refuses jobs while an inherited descriptor above 2 lacks
+2026-11-15T02:40:19.7565337Z # close-on-exec (E-071); the CI runner provides such descriptors, so tests start clean.
+2026-11-15T02:40:19.7565652Z m3/tools/run-with-clean-fds.sh cargo test --workspace --locked
+2026-11-15T02:40:19.7604236Z shell: /usr/bin/bash -e {0}
+2026-11-15T02:40:19.7604378Z env:
+2026-11-15T02:40:19.7604550Z   SQLITE3_INCLUDE_DIR: /home/runner/work/_temp/m1/sqlite-3.54.1-r2/include
+2026-11-15T02:40:19.7604791Z   SQLITE3_LIB_DIR: /home/runner/work/_temp/m1/sqlite-3.54.1-r2/lib
+2026-11-15T02:40:19.7604973Z   SQLITE3_STATIC: 1
+2026-11-15T02:40:19.7605173Z   PKG_CONFIG_LIBDIR: /home/runner/work/_temp/m1/sqlite-3.54.1-r2/lib/pkgconfig
+2026-11-15T02:40:19.7605373Z ##[endgroup]
+2026-11-15T02:40:20.2488707Z     Updating crates.io index
+
+## writ-hostsys unit tests (log lines 1216-1268)
+2026-11-15T02:41:39.9011450Z      Running unittests src/lib.rs (target/debug/deps/writ_hostsys-952a40f4ba9c645e)
+2026-11-15T02:41:39.9019136Z 
+2026-11-15T02:41:39.9019274Z running 32 tests
+2026-11-15T02:41:39.9022752Z test agent::tests::forbidden_group_membership ... ok
+2026-11-15T02:41:39.9023124Z test deny::tests::acl_planting_is_detected ... ok
+2026-11-15T02:41:39.9023832Z test deny::tests::mode_checks ... ok
+2026-11-15T02:41:39.9024227Z test deny::tests::parsers ... ok
+2026-11-15T02:41:39.9025092Z test deny::tests::peercred_admission ... ok
+2026-11-15T02:41:39.9025505Z test deny::tests::secret_scanner ... ok
+2026-11-15T02:41:39.9026817Z test exec::tests::kv_parses_last_value_and_ignores_noise ... ok
+2026-11-15T02:41:39.9028682Z test probes::tests::cgroup_parsers_and_missing_cgroup_kill ... ok
+2026-11-15T02:41:39.9029009Z test deny::tests::agent_report_evaluation ... ok
+2026-11-15T02:41:39.9030188Z test probes::tests::filesystem_allow_list_and_record ... ok
+2026-11-15T02:41:39.9031695Z test probes::tests::fs_evaluation ... ok
+2026-11-15T02:41:39.9032654Z test probes::tests::job_profile_unshares_every_namespace_explicitly ... ok
+2026-11-15T02:41:39.9137867Z test probes::tests::fd_evaluation_and_inherited_descriptor_is_reported ... ok
+2026-11-15T02:41:39.9140786Z test probes::tests::kill_and_limits_evaluation ... ok
+2026-11-15T02:41:39.9149414Z test probes::tests::net_evaluation ... ok
+2026-11-15T02:41:39.9149833Z test probes::tests::openat2_evaluation_including_missing_flags ... ok
+2026-11-15T02:41:39.9253433Z test probes::tests::pid_evaluation_and_uncontained_check_discriminates ... ok
+2026-11-15T02:41:39.9254114Z test probes::tests::rename_evaluation ... ok
+2026-11-15T02:41:39.9254387Z test probes::tests::shell_quoting ... ok
+2026-11-15T02:41:39.9255061Z test probes::tests::userns_missing_binary_is_missing ... ok
+2026-11-15T02:41:39.9255775Z test probes::tests::userns_requires_every_namespace_distinct ... ok
+2026-11-15T02:41:39.9256363Z test readiness::tests::absent_and_duplicate_results_block ... ok
+2026-11-15T02:41:39.9256956Z test readiness::tests::control_that_did_not_fail_turns_ok_into_error_and_blocks ... ok
+2026-11-15T02:41:39.9258930Z test readiness::tests::every_required_probe_blocks_when_missing_or_error ... ok
+2026-11-15T02:41:39.9259364Z test readiness::tests::every_required_probe_observed_is_ready ... ok
+2026-11-15T02:41:39.9263300Z test readiness::tests::forged_version_strings_do_not_change_the_verdict ... ok
+2026-11-15T02:41:39.9263750Z test readiness::tests::landlock_is_optional ... ok
+2026-11-15T02:41:39.9267026Z test readiness::tests::report_is_canonical_strict_json ... ok
+2026-11-15T02:41:39.9268334Z test readiness::tests::version_looks_new_enough_but_capability_missing_is_not_ready ... ok
+2026-11-15T02:41:39.9450064Z test probes::tests::job_scripts_uncontained_report_absence ... FAILED
+2026-11-15T02:41:39.9876204Z test agent::tests::same_uid_attempts_are_not_a_passing_report ... ok
+2026-11-15T02:41:40.0141071Z test exec::tests::runs_with_cleared_environment_and_deadline ... ok
+2026-11-15T02:41:40.0141329Z 
+2026-11-15T02:41:40.0141482Z failures:
+2026-11-15T02:41:40.0141579Z 
+2026-11-15T02:41:40.0141774Z ---- probes::tests::job_scripts_uncontained_report_absence stdout ----
+2026-11-15T02:41:40.0143155Z 
+2026-11-15T02:41:40.0143593Z thread 'probes::tests::job_scripts_uncontained_report_absence' (7703) panicked at hostsys/src/probes.rs:2392:9:
+2026-11-15T02:41:40.0144015Z assertion `left == right` failed
+2026-11-15T02:41:40.0144231Z   left: Some("refused")
+2026-11-15T02:41:40.0144414Z  right: Some("reachable")
+2026-11-15T02:41:40.0144687Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+2026-11-15T02:41:40.0144915Z 
+2026-11-15T02:41:40.0144918Z 
+2026-11-15T02:41:40.0144985Z failures:
+2026-11-15T02:41:40.0145179Z     probes::tests::job_scripts_uncontained_report_absence
+2026-11-15T02:41:40.0145356Z 
+2026-11-15T02:41:40.0145547Z test result: FAILED. 31 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+2026-11-15T02:41:40.0145812Z 
+2026-11-15T02:41:40.0146269Z error: test failed, to rerun pass `-p writ-hostsys --lib`

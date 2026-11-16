@@ -2383,13 +2383,31 @@ mod tests {
         fs::create_dir(&sentinel).unwrap();
         fs::write(sentinel.join("secret"), b"s").unwrap();
         let cfg = Config::reference();
-        let out = uncontained(
-            &fs_script(&cfg, &sentinel)
-                .replace("/work/", &format!("{}/", scratch.path().display())),
-        )
-        .unwrap();
+        // Redirect only the job's own work-directory write to the scratch directory. A blanket
+        // replacement of "/work/" would also rewrite host paths that contain it (the CI checkout
+        // lives under /home/runner/work/, run 43668827472), so the sentinel would not be found.
+        let job_write = ": > /work/.writ-probe\n";
+        let script = fs_script(&cfg, &sentinel);
+        assert_eq!(script.matches(job_write).count(), 1, "{script}");
+        let script = script.replace(
+            job_write,
+            &format!(
+                ": > {}\n",
+                sq(&scratch.path().join(".writ-probe").display().to_string())
+            ),
+        );
+        assert!(
+            script.contains(&sq(&sentinel.join("secret").display().to_string())),
+            "{script}"
+        );
+        let out = uncontained(&script).unwrap();
         let pairs = kv(&out.stdout);
-        assert_eq!(kv_get(&pairs, "read_sentinel"), Some("reachable"));
+        assert_eq!(
+            kv_get(&pairs, "read_sentinel"),
+            Some("reachable"),
+            "{}",
+            out.stdout
+        );
         assert_eq!(
             eval_fs(&pairs, sentinel.join("written").exists(), true).0,
             Status::Missing
