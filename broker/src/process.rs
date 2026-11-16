@@ -246,6 +246,7 @@ impl Sandbox for LocalProcessSandbox {
             resource_limited: false,
             descriptors_closed: closed,
             bounded: true,
+            job_identity_separated: false,
         })
     }
 

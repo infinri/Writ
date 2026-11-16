@@ -880,6 +880,46 @@ fn job_failures_produce_no_attestation_and_a_nonzero_exit_is_attested() {
 }
 
 #[test]
+fn an_uncertain_job_stays_started_and_is_never_run_again() {
+    let w = W::new("job-uncertain");
+    *w.sandbox.result.lock().unwrap() = Err(JobFailure::Uncertain);
+    let failed = w.apply("permit-1").unwrap_err();
+    assert!(failed.outcome_unknown);
+    assert_eq!(failed.error.code(), "job_uncertain");
+    let record = w.store.record("permit-1").unwrap().unwrap();
+    assert_eq!(record.state, RunState::Started);
+    assert_eq!(record.evidence(), None);
+    assert_eq!(w.apply("permit-1"), Ok(Err(Refusal::PermitReplayed)));
+    assert_eq!((w.runs(), w.store.attestations()), (1, 0));
+}
+
+#[test]
+fn production_requires_the_separate_job_identity() {
+    let all = SandboxGuarantees::all();
+    assert!(all.satisfies(&RunnerRequirements::production().sandbox()));
+    let without = SandboxGuarantees {
+        job_identity_separated: false,
+        ..all
+    };
+    assert!(!without.satisfies(&RunnerRequirements::production().sandbox()));
+    assert!(
+        !RunnerRequirements::uncontained_for_disposable_tests()
+            .sandbox()
+            .job_identity_separated
+    );
+    let w = W::new("production-without-identity");
+    *w.sandbox.guarantees.lock().unwrap() = Ok(without);
+    let mut w = w;
+    w.requirements = RunnerRequirements::production();
+    assert_eq!(w.apply("permit-1"), Ok(Ok(EffectResult::Failed)));
+    assert_eq!(
+        w.diagnostic("permit-1").as_deref(),
+        Some("RUNNER_SANDBOX_INSUFFICIENT")
+    );
+    assert_eq!(w.runs(), 0);
+}
+
+#[test]
 fn storage_failures_never_run_twice_and_a_started_run_is_no_evidence() {
     // T-start fails at begin, in the body or at commit: nothing ran.
     for stage in [TxStage::Begin, TxStage::Body, TxStage::Commit] {

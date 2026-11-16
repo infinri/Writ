@@ -24,11 +24,12 @@
 //! - [`failure`]: the J-11.6 failure table as code.
 //! - [`launcher`]: the orchestration of one connection (root, VM only).
 //!
-//! `writ` side: `client` (next step), the `writ_broker::runner::Sandbox` that runs jobs only through
+//! `writ` side: [`client`], the [`writ_broker::runner::Sandbox`] that runs jobs only through
 //! the launcher and reports guarantees only while readiness is verified.
 
 pub mod bwrap;
 pub mod cgroup;
+pub mod client;
 pub mod config;
 pub mod failure;
 pub mod fdplan;
