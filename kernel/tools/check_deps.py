@@ -19,12 +19,19 @@ graph; one that becomes built fails until reviewed). An `advisory_exceptions` en
 (`name@version` -> advisory ids, scope, decision) keeps a recorded advisory visible in the
 output without failing a development gate run; any other advisory fails.
 
+Source rules (M5-INTERFACES J-0 feature-unification note; M5a-11): Cargo builds one copy of
+`rustix` and `tokio` per target with the union of the features of every member built
+together, so "the broker uses rustix `time` only" and "`writ-approval` never uses
+`tokio::signal`" are checked on the members' sources and manifests (`source_rules`), not as
+forbidden features of the unified resolve.
+
   python3 kernel/tools/check_deps.py [--osv] [--release] [--sbom kernel-sbom.json]
 """
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import tomllib
@@ -136,6 +143,117 @@ def forbidden_through_members(full: dict, allows: dict) -> list[str]:
             for crate in sorted(full.get(member, set()) & set(allow.get("forbidden_anywhere", [])))]
 
 
+def strip_rust(text: str) -> str:
+    """Rust source with comments, string literals and character literals blanked (newlines kept),
+    so the source rules below see only code."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        c = text[i]
+        if text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+        elif text.startswith("/*", i):
+            depth, i = 1, i + 2
+            while i < n and depth:
+                if text.startswith("/*", i):
+                    depth, i = depth + 1, i + 2
+                elif text.startswith("*/", i):
+                    depth, i = depth - 1, i + 2
+                else:
+                    out.append("\n" if text[i] == "\n" else "")
+                    i += 1
+        elif c in "rb" and re.match(r'(?:br|r|b)?#*"', text[i:i + 8]) and (i == 0 or not (text[i - 1].isalnum() or text[i - 1] == "_")):
+            m = re.match(r'(b?r)(#*)"', text[i:])
+            if m:
+                end = text.find('"' + m.group(2), i + len(m.group(0)))
+                i = n if end < 0 else end + 1 + len(m.group(2))
+            else:
+                out.append(c)
+                i += 1
+        elif c == '"':
+            i += 1
+            while i < n and text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+            i += 1
+            out.append('""')
+        elif c == "'" and re.match(r"'(\\.|[^\\'])'", text[i:i + 4]):
+            i += len(re.match(r"'(\\.|[^\\'])'", text[i:i + 4]).group(0))
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def rustix_time_only(text: str) -> list[str]:
+    """J-0: the broker's source uses `rustix` for `time` only (with feature unification the
+    broker links a rustix built with every member's features, so this is a source rule)."""
+    code, out = strip_rust(text), []
+    for m in re.finditer(r"\brustix\b", code):
+        before, after = code[max(0, m.start() - 20):m.start()], code[m.end():]
+        if re.search(r"extern\s+crate\s+$", before) or not re.match(r"\s*::\s*time\b", after):
+            out.append(f"rustix used beyond `time`: {code[m.start():m.end() + 24].splitlines()[0]!r}")
+    return out
+
+
+def no_tokio_signal(text: str) -> list[str]:
+    """J-0: `writ-approval` source never uses `tokio::signal` (the feature is unified into its
+    Tokio by writ-approval-server and writ-service, so this is a source rule). Glob imports and
+    renames of `tokio` are refused too, since they would hide a use."""
+    code, out = strip_rust(text), []
+    for m in re.finditer(r"\btokio\b", code):
+        after = code[m.end():]
+        group = re.match(r"\s*::\s*\{", after)
+        if group:
+            depth, j = 1, group.end()
+            while j < len(after) and depth:
+                depth += {"{": 1, "}": -1}.get(after[j], 0)
+                j += 1
+            bad = re.search(r"\bsignal\b", after[group.end():j]) is not None
+        else:
+            bad = re.match(r"\s*::\s*(signal\b|\*)|\s+as\b", after) is not None
+        if bad:
+            out.append(f"tokio::signal (or a glob or rename of tokio): {code[m.start():m.end() + 24].splitlines()[0]!r}")
+    return out
+
+
+def manifest_features(toml_text: str, dep: str, allowed: set) -> list[str]:
+    """`dep` in `[dependencies]` must have default features off and only `allowed` features."""
+    spec = tomllib.loads(toml_text).get("dependencies", {}).get(dep)
+    if not isinstance(spec, dict):
+        return [f"{dep}: not a dependency table with explicit features"]
+    out = []
+    if spec.get("default-features", True):
+        out.append(f"{dep}: default features not disabled")
+    extra = sorted(set(spec.get("features", [])) - allowed)
+    if extra:
+        out.append(f"{dep}: features {extra} beyond {sorted(allowed)}")
+    return out
+
+
+# (member directory, rule, reviewed features of the dependency in that member's manifest).
+SOURCE_RULES = [
+    ("broker", "rustix", rustix_time_only, {"time"}),
+    ("approval", "tokio", no_tokio_signal, {"rt", "net", "time"}),
+]
+
+
+def source_rules(root: Path) -> list[str]:
+    """Source-level replacements for features that workspace feature unification makes
+    uncheckable per member (M5-INTERFACES J-0; M5a-11): every `.rs` file of the member
+    (sources, tests, examples, benches, build script) and its manifest."""
+    out = []
+    for member, dep, rule, allowed in SOURCE_RULES:
+        base = root / member
+        files = sorted(p for p in base.rglob("*.rs") if "target" not in p.relative_to(base).parts)
+        if not files:
+            out.append(f"source rule {member}: no Rust source found")
+        for path in files:
+            out += [f"source rule {path.relative_to(root)}: {x}" for x in rule(path.read_text())]
+        out += [f"source rule {member}/Cargo.toml: {x}"
+                for x in manifest_features((base / "Cargo.toml").read_text(), dep, allowed)]
+    return out
+
+
 def combined(edges: str) -> dict:
     """Effective graph of a supported combined build (all production members built together,
     so Cargo unifies features across them): {root member: set of (name, version)} for the
@@ -245,6 +363,7 @@ def main() -> int:
     covered |= set(unbuilt)
     allows = {m: json.loads((ROOT / ap).read_text()) for m, ap in MEMBERS.items()}
     problems += forbidden_through_members(full_closures(meta), allows)
+    problems += source_rules(ROOT)
     for p in pkgs:
         if (p["name"], p["version"]) not in covered:
             problems.append(f"locked package {p['name']} {p['version']} is in no member's closure")

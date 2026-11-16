@@ -42,7 +42,6 @@
       "full",
       "process",
       "fs",
-      "signal",
       "io-std"
     ],
     "webauthn-rs": [

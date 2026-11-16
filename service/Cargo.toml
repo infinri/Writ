@@ -7,10 +7,12 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
-# Reviewed allow-list: service/deps-allowlist.json. Workspace path dependencies only (J-0:
-# all trusted crates and writ-approval); no registry package of its own. Tokio `signal` is not
-# adopted here yet (graceful shutdown is M5a-11).
+# Reviewed allow-list: service/deps-allowlist.json. Workspace path dependencies (J-0: all
+# trusted crates and writ-approval) and Tokio with `rt` and `signal` only, for the J-8 bounded
+# graceful shutdown (D-045 M5-D16; M5-DEPENDENCY-REVIEW section 2; adds signal-hook-registry
+# 1.4.8). The signal thread runs its own current-thread runtime; nothing else here uses Tokio.
 [dependencies]
+tokio = { version = "=1.54.1", default-features = false, features = ["rt", "signal"] }
 writ-approval = { path = "../approval" }
 writ-broker = { path = "../broker" }
 writ-hostsys = { path = "../hostsys" }

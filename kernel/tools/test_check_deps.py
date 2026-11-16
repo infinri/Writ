@@ -118,6 +118,40 @@ class ThroughMembers(unittest.TestCase):
         full["writ-approval"].discard("rusqlite")
         self.assertEqual(check_deps.forbidden_through_members(full, allows), [])
 
+    # M5a-11 (J-0 feature-unification note): source-level rules replace the forbidden features
+    # that workspace feature unification would otherwise trip.
+    def test_broker_source_may_use_rustix_time_only(self):
+        ok = ("use rustix::time::{clock_gettime_dynamic, DynamicClockId};\n"
+              "let t = rustix :: time::clock_gettime_dynamic(x); // rustix::process in a comment\n"
+              "/* rustix::fs::open */ let s = \"rustix::fs\";\n")
+        self.assertEqual(check_deps.rustix_time_only(ok), [])
+        for bad in ("use rustix::fs::open;", "rustix::process::getpid()", "use rustix::{time, fs};",
+                    "use rustix;", "use rustix::*;", "extern crate rustix as r;", "use ::rustix::net::x;"):
+            with self.subTest(bad=bad):
+                self.assertNotEqual(check_deps.rustix_time_only(bad), [])
+
+    def test_approval_source_never_uses_tokio_signal(self):
+        ok = ("use tokio::net::TcpListener; // tokio::signal is not used\n"
+              "let r = tokio::runtime::Builder::new_current_thread(); let s = \"tokio::signal\";\n"
+              "use tokio::{net, time};\n")
+        self.assertEqual(check_deps.no_tokio_signal(ok), [])
+        for bad in ("tokio::signal::ctrl_c()", "use tokio::signal::unix::{signal, SignalKind};",
+                    "use tokio::{net, signal};", "use tokio::{\n  signal::unix,\n};", "use tokio::*;",
+                    "use ::tokio :: signal;", "use tokio as t;"):
+            with self.subTest(bad=bad):
+                self.assertNotEqual(check_deps.no_tokio_signal(bad), [])
+
+    def test_manifest_features_are_checked_per_member(self):
+        good = '[dependencies]\nrustix = { version = "=1.1.6", default-features = false, features = ["time"] }\n'
+        wide = '[dependencies]\nrustix = { version = "=1.1.6", default-features = false, features = ["time", "fs"] }\n'
+        default = '[dependencies]\nrustix = { version = "=1.1.6", features = ["time"] }\n'
+        self.assertEqual(check_deps.manifest_features(good, "rustix", {"time"}), [])
+        self.assertNotEqual(check_deps.manifest_features(wide, "rustix", {"time"}), [])
+        self.assertNotEqual(check_deps.manifest_features(default, "rustix", {"time"}), [])
+
+    def test_this_repository_passes_the_source_rules(self):
+        self.assertEqual(check_deps.source_rules(check_deps.ROOT), [])
+
 
 if __name__ == "__main__":
     unittest.main()
