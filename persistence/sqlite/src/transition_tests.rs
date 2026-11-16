@@ -1345,3 +1345,50 @@ fn a_writ_ledger_4_ledger_is_upgraded_explicitly_keeping_its_identity_and_rows()
     );
     assert!(SqliteLedger::open(&path).is_ok());
 }
+
+// ---------------------------------------------------------------------------
+// M5a-13 M2: a key revocation recorded over `admin.sock` stops promotion at once.
+
+fn revoke_material(w: &W, purpose: writ_broker::keys::KeyPurpose, key: &[u8]) {
+    use crate::{OsActor, RevocationScope};
+    use writ_broker::keys::MaterialDigest;
+    let row = w
+        .ledger
+        .revoke_key(
+            &RevocationScope::Material {
+                purpose,
+                digest: MaterialDigest::of(key),
+            },
+            "compromised",
+            &OsActor { uid: 0, pid: 1 },
+            now(),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(row.created);
+}
+
+#[test]
+fn a_ledger_revoked_record_key_refuses_promotion_although_the_ring_still_holds_it() {
+    use writ_broker::keys::KeyPurpose;
+    let w = W::ready("revoked-record-key");
+    // The in-memory ring still answers `Active` for the key; only the ledger knows.
+    revoke_material(&w, KeyPurpose::AcceptanceRecord, &RECORD_KEY);
+    assert_eq!(
+        w.promote(&accept("k1", 1)),
+        Err(acceptance(AcceptanceCode::RecordUnauthenticated))
+    );
+    unchanged(&w);
+}
+
+#[test]
+fn a_ledger_revoked_attestation_key_refuses_promotion_although_the_ring_still_holds_it() {
+    use writ_broker::keys::KeyPurpose;
+    let w = W::ready("revoked-runner-key");
+    revoke_material(&w, KeyPurpose::RunnerAttestation, &RUNNER_KEY);
+    assert_eq!(
+        w.promote(&accept("k1", 1)),
+        Err(acceptance(AcceptanceCode::AttestationUnauthenticated))
+    );
+    unchanged(&w);
+}

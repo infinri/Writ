@@ -128,7 +128,7 @@ use crate::human::{
     check_human_permission, scope_contains, signoff_separation, EnrollmentRecord, Permission,
     RoleAssignment, SubjectId, SubjectRecord, SubjectStatus,
 };
-use crate::keys::{AcceptanceKeyRing, KeyStatus, RunnerKeyRing};
+use crate::keys::{AcceptanceKeyRing, KeyStatus, MaterialDigest, RunnerKeyRing};
 use crate::mac;
 
 /// `contract_version` of an authenticated acceptance record.
@@ -318,6 +318,7 @@ pub struct VerifiedRecord {
     version: RecordVersion,
     issuer: String,
     key_id: String,
+    key_digest: MaterialDigest,
 }
 
 impl VerifiedRecord {
@@ -358,6 +359,12 @@ impl VerifiedRecord {
     /// The key id that authenticated it.
     pub fn key_id(&self) -> &str {
         &self.key_id
+    }
+
+    /// The digest of the key material that authenticated it (J-3: the ledger
+    /// revocation lookup inside the promotion transaction names id and material).
+    pub fn key_digest(&self) -> &MaterialDigest {
+        &self.key_digest
     }
 
     /// Attestation ids the record requires (its mechanical criteria).
@@ -438,6 +445,7 @@ pub fn verify_record(
     if !mac::verify_hex(key.bytes(), bytes.as_bytes(), tag) {
         return Err(RecordUnauthenticated);
     }
+    let key_digest = MaterialDigest::of(key.bytes());
     let record = m
         .get("record")
         .and_then(|r| AcceptanceRecord::from_value(r).ok())
@@ -452,6 +460,7 @@ pub fn verify_record(
         version,
         issuer: issuer.to_string(),
         key_id: key_id.to_string(),
+        key_digest,
     })
 }
 
@@ -529,24 +538,38 @@ fn evaluations(
 /// A runner attestation whose contract and MAC verified. Only
 /// [`verify_attestation`] builds one.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct VerifiedAttestation(Value);
+pub struct VerifiedAttestation {
+    doc: Value,
+    key_id: String,
+    key_digest: MaterialDigest,
+}
 
 impl VerifiedAttestation {
     /// The verified document.
     pub fn as_value(&self) -> &Value {
-        &self.0
+        &self.doc
+    }
+
+    /// The key id that authenticated it.
+    pub fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    /// The digest of the key material that authenticated it (J-3).
+    pub fn key_digest(&self) -> &MaterialDigest {
+        &self.key_digest
     }
 
     /// Its `attestation_id`.
     pub fn attestation_id(&self) -> &str {
-        self.0
+        self.doc
             .get("attestation_id")
             .and_then(Value::as_str)
             .unwrap_or("")
     }
 
     fn str(&self, key: &str) -> Option<&str> {
-        self.0.get(key).and_then(Value::as_str)
+        self.doc.get(key).and_then(Value::as_str)
     }
 }
 
@@ -587,7 +610,11 @@ pub fn verify_attestation(
     if !mac::verify_hex(key.bytes(), bytes.as_bytes(), tag) {
         return Err(AttestationUnauthenticated);
     }
-    Ok(VerifiedAttestation(doc.clone()))
+    Ok(VerifiedAttestation {
+        doc: doc.clone(),
+        key_id: key_id.to_string(),
+        key_digest: MaterialDigest::of(key.bytes()),
+    })
 }
 
 /// Trusted use-time inputs of [`check_use`], read inside the promotion

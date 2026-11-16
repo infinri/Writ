@@ -385,6 +385,14 @@ impl WorkflowLedger for SqliteLedger {
                     Err(Refusal::IdempotencyConflict)
                 }));
             }
+            // J-3: the keys of the acceptance record and of every runner attestation are
+            // looked up in `key_revocations` inside the promotion transaction (no cache): a
+            // revocation over `admin.sock` stops promotion at once.
+            for (id, digest, refusal) in intent.signing_keys() {
+                if crate::keys::revoked_text_in(tx, id, digest)? {
+                    return Ok(End::Rollback(Err(refusal)));
+                }
+            }
             let workflow = read_workflow(tx, &key.tenant_id, &key.project_id, &key.workflow_id)?;
             let policy = read_policy(tx, &key.tenant_id, &key.project_id)?.map(|(p, _)| p);
             let mut registry = Vec::new();

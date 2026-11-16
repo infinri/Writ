@@ -13,7 +13,9 @@
 //!   no cache; every call reads the ledger. The broker calls it inside the transaction that
 //!   consumes the authenticated object (permits: from the verification callback inside the
 //!   adapter transaction). Seals are additionally checked by T-reserve and T-dispatch
-//!   themselves ([`writ_broker::grants::ReserveRequest::seal_key`]).
+//!   themselves ([`writ_broker::grants::ReserveRequest::seal_key`]); the keys of the
+//!   acceptance record and runner attestations by the promotion transaction
+//!   ([`writ_broker::workflow::PromotionIntent::signing_keys`], M5a-13 M2).
 //! - **Revocation** ([`SqliteLedger::revoke_key`], transaction `key_revoke`): explicit scope
 //!   only ([`RevocationScope`]); for a key id the purpose must equal the registered purpose
 //!   and the recorded digest is the registered one; for a material digest a registered
@@ -154,6 +156,17 @@ pub(crate) fn revoked_in(
     digest: &MaterialDigest,
 ) -> Result<bool, BodyError> {
     Ok(revoked(tx, Some(id.as_str()), digest.as_str())?)
+}
+
+/// As [`revoked_in`] for a key id in its text form (acceptance records and runner
+/// attestations name keys by string; an id that is not a [`KeyId`] still matches a
+/// revocation of its material). Used by the promotion transaction (J-3).
+pub(crate) fn revoked_text_in(
+    tx: &Transaction<'_>,
+    id: &str,
+    digest: &MaterialDigest,
+) -> Result<bool, BodyError> {
+    Ok(revoked(tx, Some(id), digest.as_str())?)
 }
 
 fn registered_by_id(tx: &Transaction<'_>, id: &str) -> rusqlite::Result<Option<(String, String)>> {
