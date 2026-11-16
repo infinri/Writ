@@ -1,0 +1,7 @@
+{
+  "comment": "Reviewed dependency allow-list for writ-rpc (M5a-04, M5-INTERFACES J-0, J-2). Only the workspace path dependency writ-kernel, which is gated by its own allow-list; no direct or transitive registry package of its own. Tokio (rt, net) is permitted by J-0 but not used. MCP, model SDKs, SQLite, HTTP and TLS stacks are forbidden anywhere in the closure.",
+  "approved_licenses": ["MIT", "MIT OR Apache-2.0", "MIT/Apache-2.0", "Apache-2.0 OR MIT"],
+  "forbidden": ["rusqlite", "libsqlite3-sys", "hyper", "reqwest", "rmcp", "webauthn-rs", "openssl", "ring", "rustls"],
+  "forbidden_anywhere": ["rusqlite", "libsqlite3-sys", "hyper", "reqwest", "rmcp", "webauthn-rs", "openssl", "openssl-sys", "native-tls", "ring", "rustls", "aws-lc-rs", "aws-lc-sys"],
+  "packages": {}
+}

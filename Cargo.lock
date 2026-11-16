@@ -2575,6 +2575,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "writ-rpc"
+version = "0.1.0"
+dependencies = [
+ "writ-kernel",
+]
+
+[[package]]
 name = "writeable"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

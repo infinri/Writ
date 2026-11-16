@@ -44,7 +44,8 @@ MEMBERS = {"writ-kernel": "kernel/deps-allowlist.json", "writ-broker": "broker/d
            "writ-approval": "approval/deps-allowlist.json",
            "writ-approval-server": "approval-server/deps-allowlist.json",
            "writ-keys": "keys/deps-allowlist.json",
-           "writ-hostsys": "hostsys/deps-allowlist.json"}
+           "writ-hostsys": "hostsys/deps-allowlist.json",
+           "writ-rpc": "rpc/deps-allowlist.json"}
 
 
 def entry_for(allowed: dict, name: str, ver: str):

@@ -1,0 +1,18 @@
+[package]
+name = "writ-rpc"
+version = "0.1.0"
+description = "Writ V2 local RPC: frames, peer admission, scope binding and connection caps for the service Unix sockets (M5a-04, M5-INTERFACES J-2)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Reviewed allow-list: rpc/deps-allowlist.json. Workspace path dependency writ-kernel only
+# (strict JSON parser); no registry package of its own. J-0 permits Tokio (rt, net) here; it
+# is not used: the frame reader is generic over std::io::Read and the service runs blocking
+# per-connection threads, so no new feature is needed.
+[dependencies]
+writ-kernel = { path = "../kernel" }
+
+[lints]
+workspace = true
