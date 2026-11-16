@@ -82,7 +82,7 @@ use crate::effects::{EffectAdapter, EffectEvidence, EffectResult, VerifiedEffect
 use crate::keys::{KeyStatus, RunnerKeyRing};
 use crate::mac;
 use crate::refusal::Refusal;
-use crate::store::{LedgerStore, TxFailure};
+use crate::store::{LedgerStore, StoreError, TxFailure, TxStage};
 use crate::workflow::{SourceUnavailable, StoredEntry, StoredPolicy, StoredWorkflow, WorkflowKey};
 
 /// The file name of the materialized program inside the work directory (a
@@ -257,6 +257,8 @@ pub enum RunnerDiagnostic {
     JobSignaled,
     /// Waiting for or reading from the child failed.
     JobIo,
+    /// The job's outcome is unknown (never recorded: the run stays `started`).
+    JobUncertain,
     /// The produced attestation could not be built, authenticated or did not
     /// verify.
     AttestationInvalid,
@@ -297,6 +299,7 @@ impl RunnerDiagnostic {
             JobOutputExceeded => "RUNNER_JOB_OUTPUT_EXCEEDED",
             JobSignaled => "RUNNER_JOB_SIGNALED",
             JobIo => "RUNNER_JOB_IO",
+            JobUncertain => "RUNNER_JOB_UNCERTAIN",
             AttestationInvalid => "RUNNER_ATTESTATION_INVALID",
         }
     }
@@ -309,6 +312,7 @@ impl RunnerDiagnostic {
             JobFailure::OutputExceeded => RunnerDiagnostic::JobOutputExceeded,
             JobFailure::Signaled => RunnerDiagnostic::JobSignaled,
             JobFailure::Io => RunnerDiagnostic::JobIo,
+            JobFailure::Uncertain => RunnerDiagnostic::JobUncertain,
         }
     }
 }
@@ -878,6 +882,18 @@ impl<S: RunnerStore + ?Sized> EffectAdapter for RunnerAdapter<'_, S> {
             permit_id: effect.permit_id().to_string(),
             result: self.evaluate(&effect),
         };
+        // An uncertain job (J-11.6) records nothing: the run stays `started`,
+        // is never run again, and the outcome is reported as unknown.
+        if outcome.result == Err(RunnerDiagnostic::JobUncertain) {
+            return Err(TxFailure {
+                stage: TxStage::Body,
+                error: StoreError::Unavailable {
+                    category: "runner job".into(),
+                    code: "job_uncertain".into(),
+                },
+                outcome_unknown: true,
+            });
+        }
         // A failure to record the outcome happens after the consuming commit:
         // the permit is consumed and the job may have run, so the adapter
         // transaction's outcome is reported as unknown (D-035 item 4), which

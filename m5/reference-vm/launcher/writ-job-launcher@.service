@@ -1,0 +1,70 @@
+# Writ job launcher instance (M5a-07; D-046 H-2; M5-INTERFACES J-11.2). PREPARED, NOT RUN.
+# Installed only by m5/reference-vm/setup.sh inside the designated disposable VM. Root-owned
+# template; no drop-in may apply (readiness refuses, L2). The launcher accepts no arbitrary
+# privileged command, uid, mount, unit property or shell evaluation (J-11.1).
+#
+# Connection hand-over: StandardInput=socket (the accepted connection on descriptor 0) instead
+# of LISTEN_FDS, because safe Rust cannot take ownership of an inherited raw descriptor 3
+# (containment/src/launcher.rs). Verify in VM: no other descriptor is passed.
+#
+# Verify in VM (J-11.10): TemporaryFileSystem=/run with socket activation; TemporaryFileSystem
+# for /dev/shm and /dev/mqueue over PrivateDevices=yes; SystemCallFilter groups against
+# bubblewrap 0.9.0 and the runtime profiles; that ProtectKernelTunables=yes leaves the unit's
+# delegated cgroup subtree writable.
+[Unit]
+Description=Writ job launcher instance %i
+CollectMode=inactive-or-failed
+
+[Service]
+ExecStart=/usr/local/libexec/writ/writ-job-launcher
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+User=root
+SupplementaryGroups=writ
+Slice=writ-jobs.slice
+Delegate=memory pids cpu
+KillMode=control-group
+KillSignal=SIGKILL
+TimeoutStopSec=10s
+OOMScoreAdjust=-500
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN
+AmbientCapabilities=
+UMask=0077
+LimitCORE=0
+LimitSIGPENDING=1024
+# Ceilings; launcher_bytes + maxima.memory_max_bytes <= MemoryMax (L5, checked at load).
+MemoryMax=576M
+TasksMax=512
+CPUQuota=100%
+
+# Filesystem view, allow-list form (L1, H3, N9).
+ProtectSystem=strict
+TemporaryFileSystem=/var/lib:ro
+BindReadOnlyPaths=/var/lib/writ/run
+BindPaths=/var/lib/writ-jobs
+ProtectHome=yes
+PrivateTmp=yes
+TemporaryFileSystem=/run /dev/shm /dev/mqueue
+InaccessiblePaths=/etc/writ /srv/writ
+PrivateDevices=yes
+PrivateIPC=yes
+PrivateNetwork=yes
+KeyringMode=private
+
+# Kernel surface (H3), inherited by the job.
+SystemCallFilter=~@keyring io_uring_setup bpf perf_event_open userfaultfd @debug @module @reboot @swap @clock @cpu-emulation
+SystemCallErrorNumber=EPERM
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+# Not set, with reasons (J-11.2): ProtectControlGroups (would make the delegated subtree
+# read-only), RestrictNamespaces (bubblewrap needs them), MemoryDenyWriteExecute and
+# RestrictAddressFamilies (belong to the runtime profile), ProtectProc=invisible (L10).

@@ -1,0 +1,43 @@
+[package]
+name = "writ-containment"
+version = "0.1.0"
+description = "Writ V2 job containment (M5a-07; D-045 M5-D4, D-046 H-2; M5-INTERFACES J-5, J-11): the root job launcher writ-job-launcher, the helper writ-cgroup-exec and the writ-side launcher client implementing broker::runner::Sandbox"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Reviewed allow-list: containment/deps-allowlist.json (M5-DEPENDENCY-REVIEW section 2). No new
+# registry package. rustix 1.1.6 features for this crate: std, fs (openat2, statx, fstat,
+# fgetxattr, fchown, mkdirat, unlinkat), process (pidfd_open, getrlimit, setrlimit, getuid),
+# pipe (pipe_with), event (poll), thread (capset, set_thread_groups, no_new_privs). SO_PEERCRED
+# is read through writ-hostsys (J-0). The launcher and helper binaries use only the kernel's
+# strict JSON parser, writ-hostsys and this crate's launcher modules; the broker is linked for
+# the writ-side client (`client`) only.
+[dependencies]
+writ-kernel = { path = "../kernel" }
+writ-broker = { path = "../broker" }
+writ-hostsys = { path = "../hostsys" }
+rustix = { version = "=1.1.6", default-features = false, features = ["std", "fs", "process", "pipe", "event", "thread"] }
+
+[features]
+# Test-only fault injection for the P-JOB-IDENTITY negative controls (J-9): a helper or launcher
+# built with it skips `setgroups`, skips `no_new_privs`, or closes the gate writer on an error
+# path without killing, when WRIT_TEST_FAULT names that fault. Never installed: both binaries
+# report the feature in `--build-info`, and setup.sh refuses such a binary.
+test-faults = []
+
+[[bin]]
+name = "writ-job-launcher"
+path = "src/bin/writ-job-launcher.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "writ-cgroup-exec"
+path = "src/bin/writ-cgroup-exec.rs"
+test = false
+bench = false
+
+[lints]
+workspace = true

@@ -12,11 +12,14 @@
 //!   peer credentials, agent denial, secrets) and the J-1 layout facts.
 //! - [`facts`]: recorded host facts and versions.
 //! - [`agent`]: the agent-side attempts (`writ-probe agent-deny`).
+//! - [`jobprobes`]: the job-launcher probes (P-JOB-IDENTITY, P-JOB-DENY, P-LAUNCHER-ADMIT,
+//!   P-JOB-SERIAL, P-FD status pipe) evaluated from reference-VM trial reports.
 //! - [`exec`]: bounded child-process execution.
 //! - [`sock`]: peer credentials, a receive path that refuses ancillary data, the service
 //!   process identity check (M5a-04, J-1, J-2).
 //! - [`deployment`]: `VerifiedDeployment`, the static start-time check bound to the
 //!   operator-run report (M5a-04, J-9).
+//! - [`socket`]: peer credentials and receives that refuse ancillary data (J-2, J-11.2).
 //!
 //! J-0 lists `writ-containment` as a dependency of `writ-probe`; that crate does not exist yet
 //! (M5a-07), so the probe binary lives in this crate for now. This crate opens no trusted state
@@ -28,9 +31,11 @@ pub mod deny;
 pub mod deployment;
 pub mod exec;
 pub mod facts;
+pub mod jobprobes;
 pub mod probes;
 pub mod readiness;
 pub mod sock;
+pub mod socket;
 
 pub use probes::Config;
 pub use readiness::{report, verdict, ProbeId, ProbeResult, Status, Verdict};

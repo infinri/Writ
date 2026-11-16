@@ -45,13 +45,24 @@ pub enum ProbeId {
     AgentDeny,
     /// No key material in command lines, environments, logs or reports.
     NoSecret,
+    /// Job processes run as `writ-job` with the required identity, descriptors, label and
+    /// limits; the gate is never released early (revision 5, H-2, H1, M1, M2).
+    JobIdentity,
+    /// `writ-job` is denied every trusted target inside the sandbox and in the escape view
+    /// (revision 4 to 6, H2, H3, N1).
+    JobDeny,
+    /// The launcher admits only `writ`, before any read, and refuses malformed requests with
+    /// no job created (revision 4 and 5, L2, L3, L7).
+    LauncherAdmit,
+    /// One job at a time; nothing of a job survives it (revision 4 and 6, J-11.7, N1).
+    JobSerial,
     /// Landlock (optional defence in depth; never required).
     Landlock,
 }
 
 impl ProbeId {
     /// Every probe in report order.
-    pub const ALL: [ProbeId; 18] = [
+    pub const ALL: [ProbeId; 22] = [
         ProbeId::Userns,
         ProbeId::AgentUserns,
         ProbeId::Fs,
@@ -69,6 +80,10 @@ impl ProbeId {
         ProbeId::Peercred,
         ProbeId::AgentDeny,
         ProbeId::NoSecret,
+        ProbeId::JobIdentity,
+        ProbeId::JobDeny,
+        ProbeId::LauncherAdmit,
+        ProbeId::JobSerial,
         ProbeId::Landlock,
     ];
 
@@ -92,6 +107,10 @@ impl ProbeId {
             ProbeId::Peercred => "P-PEERCRED",
             ProbeId::AgentDeny => "P-AGENT-DENY",
             ProbeId::NoSecret => "P-NO-SECRET",
+            ProbeId::JobIdentity => "P-JOB-IDENTITY",
+            ProbeId::JobDeny => "P-JOB-DENY",
+            ProbeId::LauncherAdmit => "P-LAUNCHER-ADMIT",
+            ProbeId::JobSerial => "P-JOB-SERIAL",
             ProbeId::Landlock => "P-LANDLOCK",
         }
     }
@@ -556,7 +575,7 @@ mod tests {
         assert_eq!(r.get("contract").and_then(Value::as_str), Some(CONTRACT));
         assert_eq!(
             r.get("probes").and_then(Value::as_arr).map(<[Value]>::len),
-            Some(18)
+            Some(22)
         );
     }
 }

@@ -193,6 +193,12 @@ pub struct SandboxGuarantees {
     /// Wall-time and output limits are enforced (the child is killed at the
     /// deadline; output beyond the limit fails the job).
     pub bounded: bool,
+    /// Every job process runs under a separate unprivileged job identity
+    /// established by a constrained root launcher before untrusted execution,
+    /// never under the broker's uid, groups, keys or state access (D-046 H-2;
+    /// M5-INTERFACES J-5, J-11). Only the launcher sandbox (`writ-containment`)
+    /// reports it, and only while its readiness is verified.
+    pub job_identity_separated: bool,
 }
 
 impl SandboxGuarantees {
@@ -205,6 +211,7 @@ impl SandboxGuarantees {
             self.resource_limited,
             self.descriptors_closed,
             self.bounded,
+            self.job_identity_separated,
         ];
         let need = [
             required.filesystem_isolated,
@@ -213,6 +220,7 @@ impl SandboxGuarantees {
             required.resource_limited,
             required.descriptors_closed,
             required.bounded,
+            required.job_identity_separated,
         ];
         have.iter().zip(need).all(|(h, n)| *h || !n)
     }
@@ -226,6 +234,7 @@ impl SandboxGuarantees {
             resource_limited: true,
             descriptors_closed: true,
             bounded: true,
+            job_identity_separated: true,
         }
     }
 }
@@ -240,9 +249,11 @@ pub struct RunnerRequirements {
 }
 
 impl RunnerRequirements {
-    /// The supported configuration: every guarantee. No M3 sandbox provides
-    /// all of them, so a runner with these requirements refuses every job
-    /// (fail closed) until a contained sandbox exists (M5).
+    /// The supported configuration: every guarantee, including a separate job
+    /// identity (D-046 H-2). Only the launcher sandbox of `writ-containment`
+    /// can report all of them, and only while its readiness is verified, so
+    /// jobs run only through the launcher; every other sandbox is refused
+    /// (fail closed, no uncontained fallback).
     pub const fn production() -> RunnerRequirements {
         RunnerRequirements {
             sandbox: SandboxGuarantees::all(),
@@ -270,6 +281,7 @@ impl RunnerRequirements {
                 resource_limited: false,
                 descriptors_closed: true,
                 bounded: true,
+                job_identity_separated: false,
             },
         }
     }
@@ -330,6 +342,11 @@ pub enum JobFailure {
     Signaled,
     /// Waiting for or reading from the child failed.
     Io,
+    /// The job may have run but its outcome is unknown (the launcher
+    /// connection was lost after the request, or the launcher crashed): the
+    /// run stays `started`, is never re-run, and the adapter reports an
+    /// unknown outcome (M5-INTERFACES J-11.6).
+    Uncertain,
 }
 
 /// The sandbox cannot report its guarantees (fail closed).
