@@ -34,6 +34,10 @@ AmbientCapabilities=
 UMask=0077
 LimitCORE=0
 LimitSIGPENDING=1024
+# Explicit (M5a-13 M6): the source copy holds at most 2 * (max_depth + 1) + 2 descriptors
+# besides the launcher's own 64; the launcher refuses to serve below that bound for the
+# configured source.max_depth (32 in launcher.json: 132), and the cleanup lowers to 4096.
+LimitNOFILE=4096
 # Ceilings; launcher_bytes + maxima.memory_max_bytes <= MemoryMax (L5, checked at load).
 MemoryMax=576M
 TasksMax=512

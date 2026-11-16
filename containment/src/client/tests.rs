@@ -44,6 +44,7 @@ fn pinned() -> Hello {
         runtime_profiles: vec![("py312".into(), d('6'))],
         maxima_digest: d('7'),
         instance: "1".into(),
+        build: crate::protocol::BUILD_RELEASE.into(),
     }
 }
 

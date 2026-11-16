@@ -9,6 +9,11 @@
 #   job descendant regains them, including by executing a copy of bubblewrap or the private
 #   copy itself.
 #
+# Self-contained (M5a-13 M7): the launcher pins this file's digest in `hello`, so it includes no
+# other file except <tunables/global>; no `local/` override is read. The launcher refuses to
+# serve a profile with any other include, and P-LAUNCHER-ADMIT reports one, as well as any
+# /etc/apparmor.d/local/writ-bwrap or local/writ-job-child file.
+#
 # Verify in VM (J-11.10): syntax and stacking under the pinned AppArmor; attachment of
 # writ-bwrap when executed under no_new_privs from the unconfined launcher; from the escape
 # view, `unshare -U` and the private bubblewrap yield no usable namespace.
@@ -31,8 +36,6 @@ profile writ-bwrap /usr/local/libexec/writ/bwrap flags=(attach_disconnected,medi
 
   # Every program bubblewrap executes runs under the stacked child label.
   allow pix /** -> &writ-bwrap//&writ-job-child,
-
-  include if exists <local/writ-bwrap>
 }
 
 profile writ-job-child flags=(attach_disconnected,mediate_deleted) {
@@ -49,6 +52,4 @@ profile writ-job-child flags=(attach_disconnected,mediate_deleted) {
   audit deny pivot_root,
   audit deny ptrace,
   audit deny io_uring,
-
-  include if exists <local/writ-job-child>
 }

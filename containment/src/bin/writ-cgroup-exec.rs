@@ -74,6 +74,10 @@ fn main() -> ExitCode {
         err("refusing to run: not built with panic = \"abort\" (profile launcher)");
         return ExitCode::from(70);
     }
+    if !writ_containment::TEST_FAULTS && std::env::var_os("WRIT_TEST_FAULT").is_some() {
+        err("refusing to run: WRIT_TEST_FAULT set for a build without test-faults");
+        return ExitCode::from(70);
+    }
     if args.first().is_some_and(|a| a == "cleanup-as-job") {
         return cleanup_as_job(&args);
     }

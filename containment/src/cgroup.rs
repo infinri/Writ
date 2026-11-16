@@ -77,6 +77,17 @@ pub fn populated_zero(events: &str) -> bool {
         == Some("0")
 }
 
+fn parse_procs(text: &str) -> io::Result<Vec<i32>> {
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            l.trim()
+                .parse::<i32>()
+                .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))
+        })
+        .collect()
+}
+
 /// A counter line `name value` of a keyed cgroup file (0 when absent).
 pub fn counter(text: &str, name: &str) -> u64 {
     writ_hostsys::probes::counter(text, name).unwrap_or(0)
@@ -100,6 +111,15 @@ impl KillProof {
 /// The kill did not empty the cgroup within the deadline (or a file could not be used).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KillFailed(pub String);
+
+/// The outcome of [`Cgroups::terminate`].
+#[derive(Debug)]
+pub struct Terminated {
+    /// The kill proof, or why there is none.
+    pub proof: Result<KillProof, KillFailed>,
+    /// The direct child's exit status when it was reaped.
+    pub status: Option<std::process::ExitStatus>,
+}
 
 /// Counters reported in `finished`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -216,15 +236,7 @@ impl Cgroups {
 
     /// Pids in `<unit>/job/cgroup.procs`.
     pub fn job_procs(&self) -> io::Result<Vec<i32>> {
-        self.read("job/cgroup.procs")?
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .map(|l| {
-                l.trim()
-                    .parse::<i32>()
-                    .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))
-            })
-            .collect()
+        parse_procs(&self.read("job/cgroup.procs")?)
     }
 
     /// `populated 0` currently reported for `<unit>/job`.
@@ -234,16 +246,154 @@ impl Cgroups {
 
     /// Write `cgroup.kill` and wait (bounded) for `populated 0`.
     pub fn kill_and_verify(&self, deadline: Duration) -> Result<KillProof, KillFailed> {
+        let end = Instant::now() + deadline;
         self.write("job/cgroup.kill", "1")
             .map_err(|e| KillFailed(format!("cgroup.kill: {e}")))?;
-        let start = Instant::now();
+        self.wait_populated_zero(end)
+    }
+
+    /// The unit's own `memory.max` (systemd's `MemoryMax=`), for the memory budget self-check
+    /// (L7); `None` for `max` or an unreadable value.
+    pub fn unit_memory_max(&self) -> Option<u64> {
+        self.read("memory.max").ok()?.trim().parse().ok()
+    }
+
+    /// Freeze `<unit>/job` (`cgroup.freeze`) and wait, bounded, for `frozen 1`. Used only when
+    /// the kill could not be verified (L5): the launcher then exits non-zero, which closes the
+    /// gate writer; a frozen job cannot act on that EOF before systemd's `SIGKILL` of the
+    /// instance cgroup (cgroup v2 delivers `SIGKILL` to frozen tasks; verify in VM).
+    pub fn freeze_job(&self, deadline: Duration) -> Result<(), KillFailed> {
+        let end = Instant::now() + deadline;
+        self.write("job/cgroup.freeze", "1")
+            .map_err(|e| KillFailed(format!("cgroup.freeze: {e}")))?;
+        loop {
+            let ev = self
+                .read("job/cgroup.events")
+                .map_err(|e| KillFailed(format!("cgroup.events: {e}")))?;
+            let frozen = ev
+                .lines()
+                .find_map(|l| l.strip_prefix("frozen "))
+                .map(str::trim)
+                == Some("1");
+            if frozen {
+                return Ok(());
+            }
+            if Instant::now() >= end {
+                return Err(KillFailed("frozen 0 at the deadline".into()));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Replace the job's own limits on `<unit>/job` by the fixed launcher-owned cleanup limits
+    /// (L4) after a verified kill, before the cleanup process joins it.
+    pub fn set_cleanup_limits(
+        &self,
+        _proof: &KillProof,
+        memory_max: u64,
+        pids_max: u64,
+        cpu_period_us: u64,
+    ) -> io::Result<()> {
+        self.write("job/memory.max", &memory_max.to_string())?;
+        self.write("job/pids.max", &pids_max.to_string())?;
+        self.write("job/cpu.max", &format!("max {cpu_period_us}"))
+    }
+
+    /// Pids in `<unit>/supervisor/cgroup.procs`.
+    pub fn supervisor_procs(&self) -> io::Result<Vec<i32>> {
+        parse_procs(&self.read("supervisor/cgroup.procs")?)
+    }
+
+    /// Terminate a job whose direct child (the helper, later bubblewrap) is `child` (H1, M1).
+    ///
+    /// A cancel or EOF can arrive while the helper is still in `<unit>/supervisor` and has not
+    /// joined `<unit>/job`; a `cgroup.kill` of the then empty `job` would prove nothing about
+    /// it. So, in order, every step bounded by one `deadline` and every write result checked
+    /// before anything waits:
+    ///
+    /// 1. `cgroup.kill` of `job` (stops a released job at once);
+    /// 2. `SIGKILL` to the direct child through its pidfd (or `Child::kill` without one): the
+    ///    helper can then never join `job` or execute bubblewrap;
+    /// 3. the direct child reaped (polled, never a blocking `wait`);
+    /// 4. `cgroup.kill` of `job` again (descendants forked into `job` before step 2);
+    /// 5. `populated 0` of `job`;
+    /// 6. `supervisor` holds only this launcher (`self_pid`).
+    ///
+    /// Only then is a [`KillProof`] returned. Any failure returns at once with the reason and
+    /// whatever status was reaped; the caller reports `populated_zero: false` (J-11.5).
+    pub fn terminate(
+        &self,
+        child: &mut std::process::Child,
+        pidfd: Option<std::os::fd::BorrowedFd<'_>>,
+        self_pid: u32,
+        deadline: Duration,
+    ) -> Terminated {
+        let end = Instant::now() + deadline;
+        let mut status = None;
+        let proof = self.terminate_steps(child, pidfd, self_pid, end, &mut status);
+        if proof.is_err() && status.is_none() {
+            // Never block: reap only if the child is already gone.
+            status = child.try_wait().ok().flatten();
+        }
+        Terminated { proof, status }
+    }
+
+    fn terminate_steps(
+        &self,
+        child: &mut std::process::Child,
+        pidfd: Option<std::os::fd::BorrowedFd<'_>>,
+        self_pid: u32,
+        end: Instant,
+        status: &mut Option<std::process::ExitStatus>,
+    ) -> Result<KillProof, KillFailed> {
+        let first = self.write("job/cgroup.kill", "1");
+        // The direct child is signalled even when the kill write failed (never harmful).
+        let signalled = match pidfd {
+            Some(fd) => {
+                match rustix::process::pidfd_send_signal(fd, rustix::process::Signal::KILL) {
+                    Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
+                    Err(e) => Err(io::Error::from(e)),
+                }
+            }
+            None => child.kill(),
+        };
+        first.map_err(|e| KillFailed(format!("cgroup.kill: {e}")))?;
+        signalled.map_err(|e| KillFailed(format!("SIGKILL of the direct child: {e}")))?;
+        loop {
+            match child.try_wait() {
+                Ok(Some(st)) => {
+                    *status = Some(st);
+                    break;
+                }
+                Ok(None) => {}
+                Err(e) => return Err(KillFailed(format!("reaping the direct child: {e}"))),
+            }
+            if Instant::now() >= end {
+                return Err(KillFailed("direct child alive at the kill deadline".into()));
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        self.write("job/cgroup.kill", "1")
+            .map_err(|e| KillFailed(format!("cgroup.kill: {e}")))?;
+        let proof = self.wait_populated_zero(end)?;
+        let own = i32::try_from(self_pid).unwrap_or(-1);
+        match self.supervisor_procs() {
+            Ok(p) if p == [own] => Ok(proof),
+            Ok(p) => Err(KillFailed(format!(
+                "supervisor holds {p:?}, not only {own}"
+            ))),
+            Err(e) => Err(KillFailed(format!("supervisor/cgroup.procs: {e}"))),
+        }
+    }
+
+    fn wait_populated_zero(&self, end: Instant) -> Result<KillProof, KillFailed> {
         loop {
             match self.job_populated_zero() {
                 Ok(true) => return Ok(KillProof { _private: () }),
                 Ok(false) => {}
                 Err(e) => return Err(KillFailed(format!("cgroup.events: {e}"))),
             }
-            if start.elapsed() >= deadline {
+            if Instant::now() >= end {
                 return Err(KillFailed("populated 1 at the kill deadline".into()));
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -418,6 +568,161 @@ mod tests {
         assert_eq!(k.pids_max, 0);
         // remove_job needs the proof; the fake directory still has files, so rmdir fails.
         assert!(c.remove_job(&proof).is_err());
+    }
+
+    /// A fake unit whose `job` is empty and whose `supervisor` holds only this process.
+    fn fake_empty_job() -> (Scratch, Cgroups) {
+        let (s, u) = fake();
+        let unit = s.path().join(&u.rel);
+        fs::write(unit.join("job/cgroup.events"), "populated 0\nfrozen 0\n").unwrap();
+        fs::write(
+            unit.join("supervisor/cgroup.procs"),
+            format!("{}\n", std::process::id()),
+        )
+        .unwrap();
+        let c = Cgroups::open(s.path(), &u).unwrap();
+        (s, c)
+    }
+
+    fn blocked_child() -> std::process::Child {
+        // Stands for a helper that joins `job` only after the kill and then blocks on the
+        // gate (--block-fd 3) forever.
+        std::process::Command::new("/bin/sh")
+            .args(["-c", "exec sleep 600"])
+            .stdin(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    /// Run `terminate` on another thread; `None` when it did not return within `limit`.
+    fn bounded(
+        s: Scratch,
+        c: Cgroups,
+        mut child: std::process::Child,
+        deadline: Duration,
+        limit: Duration,
+    ) -> Option<(Terminated, std::process::Child)> {
+        let pid = child.id();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let pidfd = rustix::process::pidfd_open(
+                rustix::process::Pid::from_raw(i32::try_from(child.id()).unwrap()).unwrap(),
+                rustix::process::PidfdFlags::empty(),
+            )
+            .unwrap();
+            let t = c.terminate(
+                &mut child,
+                Some(pidfd.as_fd()),
+                std::process::id(),
+                deadline,
+            );
+            let _ = tx.send((t, child));
+            drop(s);
+        });
+        let got = rx.recv_timeout(limit).ok();
+        if got.is_none() {
+            // Unblock the stuck thread so the test process does not keep a sleeper.
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .status();
+        }
+        got
+    }
+
+    #[test]
+    fn termination_before_the_helper_joined_kills_the_direct_child_and_is_bounded() {
+        // H1: a cancel or EOF during start finds `job` still empty; the direct child must be
+        // killed through its pidfd and every wait bounded, never a blocking wait.
+        let (s, c) = fake_empty_job();
+        let t0 = Instant::now();
+        let (t, _child) = bounded(
+            s,
+            c,
+            blocked_child(),
+            Duration::from_secs(2),
+            Duration::from_secs(5),
+        )
+        .expect("terminate blocked on the direct child");
+        assert!(t0.elapsed() < Duration::from_secs(5));
+        assert!(t.proof.is_ok(), "{:?}", t.proof);
+        let st = t.status.expect("direct child reaped");
+        assert_eq!(std::os::unix::process::ExitStatusExt::signal(&st), Some(9));
+    }
+
+    #[test]
+    fn a_failed_kill_write_reports_at_once_without_waiting() {
+        // M1: the cgroup.kill write result is checked first; a failure never blocks.
+        let (s, c) = fake_empty_job();
+        fs::remove_file(s.path().join(&c.rel).join("job/cgroup.kill")).unwrap();
+        let (t, _child) = bounded(
+            s,
+            c,
+            blocked_child(),
+            Duration::from_secs(2),
+            Duration::from_secs(5),
+        )
+        .expect("terminate blocked after a failed kill write");
+        assert!(t.proof.is_err());
+    }
+
+    #[test]
+    fn a_foreign_process_in_supervisor_yields_no_proof() {
+        // Every cgroup the helper could reach must be empty of it: `supervisor` holds only the
+        // launcher.
+        let (s, c) = fake_empty_job();
+        fs::write(
+            s.path().join(&c.rel).join("supervisor/cgroup.procs"),
+            format!("{}\n1\n", std::process::id()),
+        )
+        .unwrap();
+        let (t, _child) = bounded(
+            s,
+            c,
+            blocked_child(),
+            Duration::from_secs(2),
+            Duration::from_secs(5),
+        )
+        .expect("terminate blocked");
+        assert!(t.proof.is_err());
+    }
+
+    #[test]
+    fn freeze_waits_bounded_for_frozen() {
+        // L5: on an unverified kill the job is frozen before the launcher exits.
+        let (s, c) = fake_empty_job();
+        let job = s.path().join(&c.rel).join("job");
+        fs::write(job.join("cgroup.freeze"), "").unwrap();
+        fs::write(job.join("cgroup.events"), "populated 1\nfrozen 0\n").unwrap();
+        let t = Instant::now();
+        assert!(c.freeze_job(Duration::from_millis(50)).is_err());
+        assert!(t.elapsed() < Duration::from_secs(2));
+        assert_eq!(fs::read_to_string(job.join("cgroup.freeze")).unwrap(), "1");
+        fs::write(job.join("cgroup.events"), "populated 1\nfrozen 1\n").unwrap();
+        c.freeze_job(Duration::from_millis(50)).unwrap();
+    }
+
+    #[test]
+    fn cleanup_limits_replace_the_jobs_own() {
+        // L4: launcher-owned limits on `job` for the cleanup, after a verified kill.
+        let (s, c) = fake_empty_job();
+        let job = s.path().join(&c.rel).join("job");
+        fs::write(job.join("memory.max"), "1").unwrap();
+        c.set_cleanup_limits(&KillProof::for_tests(), 64 << 20, 4, 100_000)
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(job.join("memory.max")).unwrap(),
+            (64u64 << 20).to_string()
+        );
+        assert_eq!(fs::read_to_string(job.join("pids.max")).unwrap(), "4");
+        assert_eq!(
+            fs::read_to_string(job.join("cpu.max")).unwrap(),
+            "max 100000"
+        );
+        // The unit's own memory.max (systemd MemoryMax=) for the L7 budget check.
+        fs::write(s.path().join(&c.rel).join("memory.max"), "603979776\n").unwrap();
+        assert_eq!(c.unit_memory_max(), Some(603_979_776));
+        fs::write(s.path().join(&c.rel).join("memory.max"), "max\n").unwrap();
+        assert_eq!(c.unit_memory_max(), None);
     }
 
     #[test]

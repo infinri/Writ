@@ -418,9 +418,27 @@ pub struct Hello {
     pub maxima_digest: String,
     /// The systemd instance name.
     pub instance: String,
+    /// The build mode (L7): [`BUILD_RELEASE`] or [`BUILD_TEST_FAULTS`]; pinned, so a
+    /// test-faults launcher never matches an installed pin.
+    pub build: String,
 }
 
-const HELLO_KEYS: [&str; 9] = [
+/// `build` of an installable launcher.
+pub const BUILD_RELEASE: &str = "release";
+/// `build` of a test-only launcher (feature `test-faults`).
+pub const BUILD_TEST_FAULTS: &str = "test-faults";
+
+/// The build mode of this binary.
+pub fn build_mode() -> &'static str {
+    if crate::TEST_FAULTS {
+        BUILD_TEST_FAULTS
+    } else {
+        BUILD_RELEASE
+    }
+}
+
+const HELLO_KEYS: [&str; 10] = [
+    "build",
     "contract",
     "launcher_digest",
     "exec_digest",
@@ -437,6 +455,7 @@ impl Hello {
     pub fn to_value(&self) -> Value {
         json::obj([
             ("contract", s(HELLO)),
+            ("build", s(&self.build)),
             ("launcher_digest", s(&self.launcher_digest)),
             ("exec_digest", s(&self.exec_digest)),
             ("bwrap_digest", s(&self.bwrap_digest)),
@@ -484,6 +503,7 @@ impl Hello {
             runtime_profiles,
             maxima_digest: t("maxima_digest")?,
             instance: t("instance")?,
+            build: t("build")?,
         })
     }
 

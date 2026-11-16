@@ -23,7 +23,7 @@
 //! gate writer is closed; cleanup as `writ-job` through the helper's self-exec; `finished`.
 
 use crate::bwrap;
-use crate::cgroup::{unit_from_proc_cgroup, Cgroups, KillProof, UnitPath};
+use crate::cgroup::{unit_from_proc_cgroup, Cgroups, KillProof, Terminated, UnitPath};
 use crate::config::{Config, Paths};
 use crate::fdplan::{self, Slots};
 use crate::frame::{self, Decoder, Frame};
@@ -34,15 +34,15 @@ use crate::procfs::HostProc;
 use crate::protocol::{self, Finished, Hello, LaunchCode, Reason, Request, ResultDigests};
 use crate::residue;
 use crate::session::{self, Bounds, Channels, Session, Start};
-use crate::source::{self, Owner};
+use crate::source;
 use rustix::event::{poll, PollFd, PollFlags, Timespec};
 use rustix::fs::{mkdirat, openat2, unlinkat, AtFlags, Mode, OFlags, ResolveFlags};
 use std::fs::File;
 use std::io::{self, ErrorKind, Read, Write};
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 use writ_kernel::json::{self, Digest, Value};
 
@@ -77,12 +77,14 @@ pub fn hello(
     instance: &str,
     self_exe: &std::path::Path,
 ) -> io::Result<Hello> {
+    let aa = std::fs::read(&paths.apparmor_profile)?;
+    apparmor_includes_ok(&String::from_utf8_lossy(&aa)).map_err(io::Error::other)?;
     Ok(Hello {
         launcher_digest: file_digest(self_exe)?,
         exec_digest: file_digest(&paths.exec)?,
         bwrap_digest: file_digest(&paths.bwrap)?,
         bwrap_profile_digest: bwrap::profile_digest(),
-        apparmor_profile_digest: file_digest(&paths.apparmor_profile)?,
+        apparmor_profile_digest: Digest::of_bytes(&aa).as_str().to_string(),
         runtime_profiles: cfg
             .runtime_profiles
             .iter()
@@ -90,6 +92,117 @@ pub fn hello(
             .collect(),
         maxima_digest: cfg.maxima_digest(),
         instance: instance.to_string(),
+        build: protocol::build_mode().to_string(),
+    })
+}
+
+/// The AppArmor profile file must be self-contained (M7): its digest is what `hello` pins, so
+/// no `include` (nor the legacy `#include`) may pull in another file, except the system
+/// `<tunables/global>` the profile syntax needs. In particular `local/writ-bwrap` and
+/// `local/writ-job-child` overrides are refused.
+pub fn apparmor_includes_ok(text: &str) -> Result<(), String> {
+    for line in text.lines() {
+        let t = line.trim();
+        // `#include` (no space) is the legacy include directive, not a comment.
+        let directive = t.strip_prefix('#').unwrap_or(t);
+        if !directive.starts_with("include") {
+            continue;
+        }
+        let rest = directive["include".len()..].trim();
+        if rest != "<tunables/global>" {
+            return Err(format!("AppArmor profile includes another file: {t}"));
+        }
+    }
+    Ok(())
+}
+
+/// The bounding set of the unit (J-11.2, M5): `CAP_CHOWN` (0), `CAP_SETGID` (6),
+/// `CAP_SETUID` (7).
+pub const BOUNDING_SET: u64 = (1 << 0) | (1 << 6) | (1 << 7);
+
+/// Descriptors the launcher needs besides the source walk (connection, pipes, cgroup and job
+/// directories, reads); the walk needs `2 * (max_depth + 1) + 2` more (M6).
+pub const BASE_DESCRIPTORS: u64 = 64;
+
+/// What the launcher observes about itself before serving (L7).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelfFacts {
+    /// `/proc/self/status` text.
+    pub status: String,
+    /// Group of the source root (`/var/lib/writ/run`, read by group; N9).
+    pub source_gid: u32,
+    /// The unit's actual `memory.max` (`None`: `max` or unreadable).
+    pub unit_memory_max: Option<u64>,
+    /// `RLIMIT_NOFILE` soft limit (`None`: unlimited).
+    pub nofile: Option<u64>,
+    /// `WRIT_TEST_FAULT` is set in the environment.
+    pub test_fault_env: bool,
+}
+
+fn status_hex(status: &str, key: &str) -> Option<u64> {
+    let v = status
+        .lines()
+        .find_map(|l| l.strip_prefix(key).and_then(|r| r.strip_prefix(':')))?;
+    u64::from_str_radix(v.trim(), 16).ok()
+}
+
+/// The launcher's self-checks (L7): no test fault requested of a release build; `NoNewPrivs`;
+/// the bounding set exactly [`BOUNDING_SET`] and no ambient capability; supplementary groups
+/// exactly the source root's group (root's own group 0 tolerated; verify in VM what systemd
+/// 255 sets for `User=root` with `SupplementaryGroups=writ`); the unit's actual `MemoryMax`
+/// equal to the configured one (the budget was checked against it at load, L5); and a
+/// descriptor limit that fits the configured walk depth (a launcher-level fault, M6).
+pub fn self_check(f: &SelfFacts, cfg: &Config, test_faults: bool) -> Result<(), String> {
+    if f.test_fault_env && !test_faults {
+        return Err("WRIT_TEST_FAULT set for a build without test-faults".into());
+    }
+    let st = crate::procfs::parse_status(&f.status).ok_or("status unreadable")?;
+    if !st.no_new_privs {
+        return Err("NoNewPrivs is not set".into());
+    }
+    match status_hex(&f.status, "CapBnd") {
+        Some(b) if b == BOUNDING_SET => {}
+        other => {
+            return Err(format!(
+                "bounding set {other:x?}, expected {BOUNDING_SET:x}"
+            ))
+        }
+    }
+    match status_hex(&f.status, "CapAmb") {
+        Some(0) => {}
+        other => return Err(format!("ambient set {other:x?}")),
+    }
+    let mut groups = st.groups.clone();
+    groups.retain(|g| *g != 0);
+    if groups != [f.source_gid] || f.source_gid == 0 || f.source_gid == cfg.job_gid {
+        return Err(format!(
+            "supplementary groups {:?}, expected only {}",
+            st.groups, f.source_gid
+        ));
+    }
+    if f.unit_memory_max != Some(cfg.unit_memory_max_bytes) {
+        return Err(format!(
+            "unit memory.max {:?} differs from the configured {}",
+            f.unit_memory_max, cfg.unit_memory_max_bytes
+        ));
+    }
+    let need = 2 * (cfg.source.max_depth as u64 + 1) + 2 + BASE_DESCRIPTORS;
+    if f.nofile.is_some_and(|n| n < need) {
+        return Err(format!(
+            "RLIMIT_NOFILE {:?} below {need} for max_depth {}",
+            f.nofile, cfg.source.max_depth
+        ));
+    }
+    Ok(())
+}
+
+fn observe_self(paths: &Paths, cg: &Cgroups) -> io::Result<SelfFacts> {
+    Ok(SelfFacts {
+        status: std::fs::read_to_string(paths.proc_root.join("self/status"))?,
+        source_gid: std::fs::metadata(&paths.source_root)?.gid(),
+        unit_memory_max: cg.unit_memory_max(),
+        nofile: rustix::process::getrlimit(rustix::process::Resource::Nofile).current,
+        test_fault_env: std::env::var_os("WRIT_TEST_FAULT").is_some(),
     })
 }
 
@@ -166,54 +279,6 @@ pub fn read_request(conn: &UnixStream, deadline: Instant) -> io::Result<Vec<u8>>
             Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {}
             Err(e) => return Err(e),
         }
-    }
-}
-
-/// Owner hook that defers `fchown` until the whole copy succeeded (root can then still remove
-/// a partial copy without `CAP_DAC_OVERRIDE`, which the unit does not grant).
-pub struct Deferred {
-    fds: Vec<OwnedFd>,
-}
-
-impl Deferred {
-    /// An empty hook.
-    pub fn new() -> Deferred {
-        Deferred { fds: Vec::new() }
-    }
-
-    /// `fchown` every recorded entry to `uid`/`gid`.
-    pub fn apply(self, uid: u32, gid: u32) -> io::Result<()> {
-        for fd in &self.fds {
-            rustix::fs::fchown(
-                fd,
-                Some(rustix::fs::Uid::from_raw(uid)),
-                Some(rustix::fs::Gid::from_raw(gid)),
-            )?;
-        }
-        Ok(())
-    }
-
-    /// Entries recorded.
-    pub fn len(&self) -> usize {
-        self.fds.len()
-    }
-
-    /// No entry recorded.
-    pub fn is_empty(&self) -> bool {
-        self.fds.is_empty()
-    }
-}
-
-impl Default for Deferred {
-    fn default() -> Self {
-        Deferred::new()
-    }
-}
-
-impl Owner for Deferred {
-    fn own(&mut self, fd: BorrowedFd<'_>) -> io::Result<()> {
-        self.fds.push(fd.try_clone_to_owned()?);
-        Ok(())
     }
 }
 
@@ -294,6 +359,10 @@ pub fn serve(paths: &Paths) -> Exit {
         log("not running as root");
         return Exit::Unavailable;
     }
+    if !crate::TEST_FAULTS && std::env::var_os("WRIT_TEST_FAULT").is_some() {
+        log("WRIT_TEST_FAULT set for a build without test-faults");
+        return Exit::Unavailable;
+    }
     let mut conn = match take_connection(&paths.proc_root) {
         Ok(c) => c,
         Err(e) => {
@@ -331,6 +400,15 @@ pub fn serve(paths: &Paths) -> Exit {
             return Exit::Unavailable;
         }
     };
+    let checked = Cgroups::open(&paths.cgroup_root, &unit)
+        .and_then(|cg| observe_self(paths, &cg))
+        .map_err(|e| e.to_string())
+        .and_then(|f| self_check(&f, &cfg, crate::TEST_FAULTS));
+    if let Err(e) = checked {
+        // No hello: writ sees EOF before hello (containment unavailable).
+        log(&format!("self-check: {e}"));
+        return Exit::Unavailable;
+    }
     let self_exe = paths.proc_root.join("self/exe");
     let h = match hello(paths, &cfg, &unit.instance, &self_exe) {
         Ok(h) => h,
@@ -464,7 +542,6 @@ impl Job<'_> {
         )
         .map_err(|_| LaunchCode::Unavailable)?;
         rustix::fs::fchmod(&jd, Mode::from_raw_mode(0o711)).map_err(|_| LaunchCode::Unavailable)?;
-        let mut owner = Deferred::new();
         let rules = source::Rules {
             owner_uid: self.cfg.writ_uid,
             max_depth: self.cfg.source.max_depth,
@@ -477,27 +554,45 @@ impl Job<'_> {
             jd.as_fd(),
             &self.req.program,
             &rules,
-            &mut owner,
         );
-        self.job_dir = Some(jd);
         match copied {
             Ok(_) => {}
             Err(source::CopyError::Source(why)) => {
                 log(&format!("source: {why}"));
+                self.job_dir = Some(jd);
+                self.remove_partial();
+                return Err(LaunchCode::SourceInvalid);
+            }
+            Err(source::CopyError::Descriptors(why)) => {
+                // Request-level (M6): the launcher's own bound was checked at start.
+                log(&format!("descriptors: {why}"));
+                self.job_dir = Some(jd);
                 self.remove_partial();
                 return Err(LaunchCode::SourceInvalid);
             }
             Err(source::CopyError::Destination(why)) => {
                 log(&format!("destination: {why}"));
+                self.job_dir = Some(jd);
                 self.remove_partial();
                 return Err(LaunchCode::Unavailable);
             }
         }
-        if owner.apply(self.cfg.job_uid, self.cfg.job_gid).is_err() {
-            // Partly chowned entries can no longer be removed by root: residue.
-            log("chown of the copy failed");
+        let chowned = source::chown_tree(
+            jd.as_fd(),
+            self.cfg.job_uid,
+            self.cfg.job_gid,
+            self.cfg.source.max_entries,
+        );
+        self.job_dir = Some(jd);
+        if let Err(e) = chowned {
+            // Partly given away (children first): root can no longer remove those entries
+            // without CAP_DAC_OVERRIDE, and no cgroup exists yet for a cleanup as writ-job:
+            // `job-<instance>/` is residue (the next launch refuses until the operator clears
+            // it; L3).
+            log(&format!("chown of the copy failed: {e}"));
             return Err(LaunchCode::Unavailable);
         }
+        // A failure here leaves the copy, now owned by writ-job, as residue (L3; no cgroup yet).
         drop_chown().map_err(|_| LaunchCode::Unavailable)?;
         Ok(())
     }
@@ -527,11 +622,13 @@ impl Job<'_> {
         if let Err(code) = self.prepare() {
             return refuse(conn, &job_id, code);
         }
+        // From here on the job directory holds a copy owned by writ-job: every refusal goes
+        // through `refuse_prepared`, which cleans it up as writ-job when it can (L3).
         let cg = match Cgroups::open(&self.paths.cgroup_root, &self.unit) {
             Ok(c) => c,
             Err(e) => {
                 log(&format!("cgroup: {e}"));
-                return refuse(conn, &job_id, LaunchCode::Unavailable);
+                return self.refuse_prepared(conn, &job_id, LaunchCode::Unavailable, None);
             }
         };
         if let Err(e) = cg
@@ -539,25 +636,38 @@ impl Job<'_> {
             .and_then(|()| cg.create_job(&self.req.limits))
         {
             log(&format!("cgroup setup: {e}"));
-            return refuse(conn, &job_id, LaunchCode::Unavailable);
+            return self.refuse_prepared(conn, &job_id, LaunchCode::Unavailable, Some(&cg));
         }
         let (top, runtime) = match self.cfg.profile(&self.req.runtime_profile) {
             Some(p) => {
                 let root = self.paths.runtime_root.join(&p.id);
                 match bwrap::manifest(&root, 0) {
                     Ok((top, _)) => (top, root),
-                    Err(_) => return refuse(conn, &job_id, LaunchCode::Unavailable),
+                    Err(_) => {
+                        return self.refuse_prepared(
+                            conn,
+                            &job_id,
+                            LaunchCode::Unavailable,
+                            Some(&cg),
+                        )
+                    }
                 }
             }
-            None => return refuse(conn, &job_id, LaunchCode::ProfileUnknown),
+            None => {
+                return self.refuse_prepared(conn, &job_id, LaunchCode::ProfileUnknown, Some(&cg))
+            }
         };
         let bwrap_image = match self.image(&self.paths.bwrap) {
             Ok(i) => i,
-            Err(_) => return refuse(conn, &job_id, LaunchCode::Unavailable),
+            Err(_) => {
+                return self.refuse_prepared(conn, &job_id, LaunchCode::Unavailable, Some(&cg))
+            }
         };
         let pipes = match fdplan::pipes() {
             Ok(p) => p,
-            Err(_) => return refuse(conn, &job_id, LaunchCode::Unavailable),
+            Err(_) => {
+                return self.refuse_prepared(conn, &job_id, LaunchCode::Unavailable, Some(&cg))
+            }
         };
         let plan = Plan {
             cgroup_root: self.paths.cgroup_root.clone(),
@@ -586,7 +696,8 @@ impl Job<'_> {
             .install(&pipes.gate_read, &pipes.status_write)
             .is_err()
         {
-            return refuse(conn, &job_id, LaunchCode::Unavailable);
+            // No helper exists; the gate writer is leaked by Gate's Drop (nothing reads it).
+            return self.refuse_prepared(conn, &job_id, LaunchCode::Unavailable, Some(&cg));
         }
         let spawned = cmd.spawn();
         // Close 3, 4 and the originals of those ends right after the spawn returns (this
@@ -600,24 +711,30 @@ impl Job<'_> {
                 // Nothing was spawned: still before the helper, a refusal is definitive.
                 log(&format!("spawn: {e}"));
                 gate_close_unspawned(gate, &cg, self.cfg.deadlines.kill);
-                return refuse(conn, &job_id, LaunchCode::Unavailable);
+                return self.refuse_prepared(conn, &job_id, LaunchCode::Unavailable, Some(&cg));
             }
         };
         // From here on: no refused frame (H1).
-        let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) else {
-            return self.after_spawn_failure(conn, &cg, gate, Some(child), "pipes");
-        };
-        let pidfd = match i32::try_from(child.id())
+        let pidfd = i32::try_from(child.id())
             .ok()
             .and_then(rustix::process::Pid::from_raw)
-            .map(|p| rustix::process::pidfd_open(p, rustix::process::PidfdFlags::empty()))
-        {
-            Some(Ok(fd)) => fd,
-            _ => return self.after_spawn_failure(conn, &cg, gate, Some(child), "pidfd"),
+            .and_then(|p| {
+                rustix::process::pidfd_open(p, rustix::process::PidfdFlags::empty()).ok()
+            });
+        let Some(pidfd) = pidfd else {
+            return self.after_spawn_failure(conn, &cg, gate, child, None, "pidfd");
+        };
+        let Ok(kill_fd) = pidfd.try_clone() else {
+            return self.after_spawn_failure(conn, &cg, gate, child, Some(pidfd), "pidfd");
+        };
+        let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) else {
+            return self.after_spawn_failure(conn, &cg, gate, child, Some(kill_fd), "pipes");
         };
         let conn_clone = match conn.try_clone() {
             Ok(c) => c,
-            Err(_) => return self.after_spawn_failure(conn, &cg, gate, Some(child), "conn"),
+            Err(_) => {
+                return self.after_spawn_failure(conn, &cg, gate, child, Some(kill_fd), "conn")
+            }
         };
         let channels = Channels {
             conn: conn_clone,
@@ -634,7 +751,9 @@ impl Job<'_> {
         };
         let mut s = match Session::new(channels, bounds, &job_id) {
             Ok(s) => s,
-            Err(_) => return self.after_spawn_failure(conn, &cg, gate, Some(child), "session"),
+            Err(_) => {
+                return self.after_spawn_failure(conn, &cg, gate, child, Some(kill_fd), "session")
+            }
         };
         let start = s.await_start(Instant::now() + self.cfg.deadlines.start);
         let mut conn_lost = false;
@@ -698,31 +817,17 @@ impl Job<'_> {
             std::thread::sleep(Duration::from_millis(500));
             return Exit::Ok;
         }
-        // Always: kill, verify populated 0, and only then close the gate writer.
-        let proof = cg.kill_and_verify(self.cfg.deadlines.kill);
-        let status = child.wait().ok();
+        // Always: kill the direct child and the job, verify (bounded, H1, M1), and only then
+        // close the gate writer.
+        let Terminated { proof, status } = cg.terminate(
+            &mut child,
+            Some(kill_fd.as_fd()),
+            std::process::id(),
+            self.cfg.deadlines.kill,
+        );
         let counters = cg.counters();
         s.drain_output();
-        let (reason, exit_status, signal) = match (reason, status) {
-            (Some(r), st) => (
-                if s.output_exceeded() {
-                    Reason::OutputExceeded
-                } else {
-                    r
-                },
-                st.and_then(|x| x.code()).map(i64::from),
-                st.and_then(|x| std::os::unix::process::ExitStatusExt::signal(&x))
-                    .map(i64::from),
-            ),
-            (None, Some(st)) => match (
-                st.code(),
-                std::os::unix::process::ExitStatusExt::signal(&st),
-            ) {
-                (Some(c), _) => (Reason::Exited, Some(i64::from(c)), None),
-                (None, sig) => (Reason::Signaled, None, sig.map(i64::from)),
-            },
-            (None, None) => (Reason::StartFailed, None, None),
-        };
+        let (reason, exit_status, signal) = outcome(reason, status, s.output_exceeded());
         // P-FD negative control (test-only, never installed): a build that trusts the status
         // pipe after `started` reports what a writer of the monitor's descriptor 4 claimed.
         #[cfg(feature = "test-faults")]
@@ -751,13 +856,13 @@ impl Job<'_> {
         let proof = match proof {
             Ok(p) => p,
             Err(e) => {
-                // J-11.5: gate stays open (leaked by Gate's Drop), nothing cleaned, exit non-zero.
+                // J-11.5: nothing cleaned, finished with populated_zero false, exit non-zero.
                 log(&format!("kill not verified: {}", e.0));
                 if !conn_lost {
                     s.send_control(&fin(false, &s).to_value());
                     s.flush(Instant::now() + Duration::from_secs(2));
                 }
-                return Exit::NotEmpty;
+                return self.not_empty(&cg, gate);
             }
         };
         gate.close_after(&proof);
@@ -773,6 +878,50 @@ impl Job<'_> {
         }
     }
 
+    /// A refusal after [`Job::prepare`] (no helper spawned, so the refusal is definitive): send
+    /// `refused`, then remove the writ-job-owned copy through the cleanup as writ-job (L3).
+    /// That needs `<unit>/job` (the cleanup process joins it) and a kill proof for it; without
+    /// a usable `job` cgroup (the unit directory could not be opened, or `job` was never
+    /// created) the copy stays as residue and the next launch refuses `LAUNCH_UNAVAILABLE`
+    /// until the operator clears `/var/lib/writ-jobs/job-<instance>/`.
+    fn refuse_prepared(
+        &mut self,
+        conn: &mut UnixStream,
+        job_id: &str,
+        code: LaunchCode,
+        cg: Option<&Cgroups>,
+    ) -> Exit {
+        refuse(conn, job_id, code);
+        let Some(cg) = cg.filter(|c| c.job_exists()) else {
+            log("refused after prepare without a job cgroup: job directory left as residue");
+            return Exit::Residue;
+        };
+        match cg.kill_and_verify(self.cfg.deadlines.kill) {
+            Ok(p) if self.cleanup(cg, &p) => Exit::Ok,
+            Ok(_) => Exit::Residue,
+            Err(e) => {
+                log(&format!(
+                    "refused after prepare: kill not verified: {}",
+                    e.0
+                ));
+                Exit::Residue
+            }
+        }
+    }
+
+    /// The kill could not be verified (J-11.5, L5). The gate writer is never closed by this
+    /// code, but exiting closes it; so the job cgroup is frozen first (bounded), which keeps a
+    /// still-gated bubblewrap from acting on that EOF until systemd's `SIGKILL` of the
+    /// instance cgroup (`KillMode=control-group`) after this exit. Nothing is cleaned.
+    fn not_empty(&self, cg: &Cgroups, gate: Gate) -> Exit {
+        if let Err(e) = cg.freeze_job(self.cfg.deadlines.kill) {
+            log(&format!("freeze after an unverified kill: {}", e.0));
+        }
+        // Gate's Drop leaks the writer; process exit closes it.
+        drop(gate);
+        Exit::NotEmpty
+    }
+
     /// A failure after the helper was spawned (or might have been): kill with the gate closed,
     /// verify, then report `start_failed` (never `refused`).
     fn after_spawn_failure(
@@ -780,14 +929,17 @@ impl Job<'_> {
         conn: &mut UnixStream,
         cg: &Cgroups,
         gate: Gate,
-        child: Option<Child>,
+        mut child: Child,
+        pidfd: Option<OwnedFd>,
         why: &str,
     ) -> Exit {
         log(&format!("after spawn: {why}"));
-        let proof = cg.kill_and_verify(self.cfg.deadlines.kill);
-        if let Some(mut c) = child {
-            let _ = c.wait();
-        }
+        let Terminated { proof, .. } = cg.terminate(
+            &mut child,
+            pidfd.as_ref().map(AsFd::as_fd),
+            std::process::id(),
+            self.cfg.deadlines.kill,
+        );
         let populated_zero = proof.is_ok();
         let fin = Finished {
             job_id: self.req.job_id.clone(),
@@ -817,7 +969,10 @@ impl Job<'_> {
                     Exit::Residue
                 }
             }
-            Err(_) => Exit::NotEmpty,
+            Err(e) => {
+                log(&format!("kill not verified: {}", e.0));
+                self.not_empty(cg, gate)
+            }
         }
     }
 
@@ -825,10 +980,20 @@ impl Job<'_> {
     /// and executes itself as `writ-job`; the launcher verifies that process (ids, groups,
     /// `NoNewPrivs`, the pinned `writ-cgroup-exec` image) before sending the go byte; then kill
     /// and verify again, remove `<unit>/job`, `work/` and `job-<instance>/`. Any failure leaves
-    /// `job-<instance>/` as residue.
-    fn cleanup(&mut self, cg: &Cgroups, _after: &KillProof) -> bool {
+    /// `job-<instance>/` as residue. The cleanup runs under fixed launcher-owned limits, never
+    /// the job's (L4), and one deadline covers it from the spawn to the exit.
+    fn cleanup(&mut self, cg: &Cgroups, after: &KillProof) -> bool {
         let deadline = Instant::now() + self.cfg.deadlines.cleanup;
-        let ok = self.cleanup_as_job(cg, deadline);
+        let ok = cg
+            .set_cleanup_limits(
+                after,
+                CLEANUP_MEMORY_BYTES.min(self.cfg.maxima.memory_max_bytes),
+                CLEANUP_PIDS,
+                self.req.limits.cpu_max_period_us,
+            )
+            .map_err(|e| log(&format!("cleanup limits: {e}")))
+            .is_ok()
+            && self.cleanup_as_job(cg, deadline);
         let proof = match cg.kill_and_verify(self.cfg.deadlines.kill) {
             Ok(p) => p,
             Err(_) => return false,
@@ -858,7 +1023,7 @@ impl Job<'_> {
             unit: self.unit.rel.clone(),
             uid: self.cfg.job_uid,
             gid: self.cfg.job_gid,
-            rlimits: self.rlimits(),
+            rlimits: cleanup_rlimits(self.cfg),
             mode: HelperMode::Cleanup {
                 exe: self.paths.exec.clone(),
                 work: self.work_path(),
@@ -879,14 +1044,8 @@ impl Job<'_> {
         };
         let ok = (|| -> Option<()> {
             let mut go = child.stdin.take()?;
-            let mut ready = child.stdout.take()?;
-            // Wait for "ready" (bounded by the deadline through the read timeout of a poll).
-            let fd = ready.as_fd().try_clone_to_owned().ok()?;
-            let mut fds = [PollFd::new(&fd, PollFlags::IN)];
-            poll(&mut fds, Some(&timespec(deadline))).ok()?;
-            let mut buf = [0u8; 6];
-            ready.read_exact(&mut buf).ok()?;
-            if &buf != b"ready\n" {
+            let ready = child.stdout.take()?;
+            if !read_ready(OwnedFd::from(ready), deadline) {
                 return None;
             }
             let procs = cg.job_procs().ok()?;
@@ -914,8 +1073,83 @@ impl Job<'_> {
         if ok.is_none() {
             let _ = child.kill();
         }
+        // Bounded: the child was killed (or exited); reaping a SIGKILLed child returns.
         let _ = child.wait();
         ok.is_some()
+    }
+}
+
+/// Memory of `<unit>/job` during the cleanup (L4; at most the configured job maximum).
+pub const CLEANUP_MEMORY_BYTES: u64 = 64 << 20;
+/// `pids.max` of `<unit>/job` during the cleanup (the helper, then itself as writ-job).
+pub const CLEANUP_PIDS: u64 = 4;
+/// `RLIMIT_NOFILE` of the cleanup (its walk holds one descriptor per directory level).
+pub const CLEANUP_NOFILE: u64 = 4096;
+
+/// The cleanup's rlimits (L4): fixed by the launcher, independent of the job's request (a job
+/// asking for `nofile_max` 3 or `file_size_max_bytes` 1 must not break its own cleanup).
+pub fn cleanup_rlimits(cfg: &Config) -> Rlimits {
+    Rlimits {
+        nofile: CLEANUP_NOFILE,
+        fsize: 1 << 20,
+        nproc: cfg.rlimits.nproc,
+        msgqueue: cfg.rlimits.msgqueue,
+        memlock: cfg.rlimits.memlock,
+        sigpending: 64,
+    }
+}
+
+/// Wait for the cleanup process's `ready\n` until `deadline` (L4): non-blocking reads under
+/// `poll`, so a process that never writes (or writes part of it) cannot hold the launcher.
+pub fn read_ready(fd: OwnedFd, deadline: Instant) -> bool {
+    if rustix::io::ioctl_fionbio(&fd, true).is_err() {
+        return false;
+    }
+    let mut f = File::from(fd);
+    let mut got = Vec::with_capacity(6);
+    let mut buf = [0u8; 6];
+    while got.len() < 6 {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        let mut fds = [PollFd::new(&f, PollFlags::IN)];
+        match poll(&mut fds, Some(&timespec(deadline))) {
+            Ok(_) | Err(rustix::io::Errno::INTR) => {}
+            Err(_) => return false,
+        }
+        match f.read(&mut buf[..6 - got.len()]) {
+            Ok(0) => return false,
+            Ok(n) => got.extend_from_slice(&buf[..n]),
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {}
+            Err(_) => return false,
+        }
+    }
+    got == b"ready\n"
+}
+
+/// The result's reason, exit status and signal from the session's reason and the direct
+/// child's reaped status.
+fn outcome(
+    reason: Option<Reason>,
+    status: Option<ExitStatus>,
+    output_exceeded: bool,
+) -> (Reason, Option<i64>, Option<i64>) {
+    use std::os::unix::process::ExitStatusExt;
+    match (reason, status) {
+        (Some(r), st) => (
+            if output_exceeded {
+                Reason::OutputExceeded
+            } else {
+                r
+            },
+            st.and_then(|x| x.code()).map(i64::from),
+            st.and_then(|x| x.signal()).map(i64::from),
+        ),
+        (None, Some(st)) => match (st.code(), st.signal()) {
+            (Some(c), _) => (Reason::Exited, Some(i64::from(c)), None),
+            (None, sig) => (Reason::Signaled, None, sig.map(i64::from)),
+        },
+        (None, None) => (Reason::StartFailed, None, None),
     }
 }
 
@@ -932,19 +1166,6 @@ mod tests {
     use super::*;
     use crate::testutil::Scratch;
     use std::os::unix::fs::PermissionsExt;
-
-    #[test]
-    fn deferred_chown_records_and_applies_to_own_ids() {
-        let s = Scratch::new("deferred");
-        let f = File::create(s.path().join("x")).unwrap();
-        let mut d = Deferred::new();
-        d.own(f.as_fd()).unwrap();
-        assert_eq!(d.len(), 1);
-        // Chown to our own ids is permitted unprivileged.
-        let uid = rustix::process::getuid().as_raw();
-        let gid = rustix::process::getgid().as_raw();
-        d.apply(uid, gid).unwrap();
-    }
 
     #[test]
     fn dropping_chown_succeeds_without_privilege() {
@@ -1019,7 +1240,138 @@ mod tests {
         assert_eq!(h.runtime_profiles.len(), 1);
         assert_eq!(h.maxima_digest, cfg.maxima_digest());
         assert_eq!(h.instance, "4");
+        assert_eq!(h.apparmor_profile_digest, Digest::of_bytes(b"aa").as_str());
+        assert_eq!(h.build, protocol::build_mode());
+        // M7: a profile pulling in a local override is refused (no hello).
+        std::fs::write(
+            &paths.apparmor_profile,
+            "profile writ-bwrap {\n  include if exists <local/writ-bwrap>\n}\n",
+        )
+        .unwrap();
+        assert!(hello(&paths, &cfg, "4", &s.path().join("self")).is_err());
+        std::fs::write(&paths.apparmor_profile, b"aa").unwrap();
         paths.bwrap = s.path().join("absent");
         assert!(hello(&paths, &cfg, "4", &s.path().join("self")).is_err());
+    }
+
+    #[test]
+    fn apparmor_profile_must_be_self_contained() {
+        let shipped = include_str!("../../m5/reference-vm/launcher/apparmor-writ-bwrap");
+        apparmor_includes_ok(shipped).unwrap();
+        for bad in [
+            "  include if exists <local/writ-bwrap>\n",
+            "include <local/writ-job-child>\n",
+            "#include <local/writ-bwrap>\n",
+            "  include \"/etc/apparmor.d/other\"\n",
+        ] {
+            assert!(apparmor_includes_ok(bad).is_err(), "{bad:?}");
+        }
+        apparmor_includes_ok("# a comment that mentions include\ninclude <tunables/global>\n")
+            .unwrap();
+    }
+
+    fn cfg() -> Config {
+        Config::parse(
+            json::canonical(&crate::config::tests::sample())
+                .unwrap()
+                .as_bytes(),
+        )
+        .unwrap()
+    }
+
+    fn facts() -> SelfFacts {
+        SelfFacts {
+            status: "Uid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\nGroups:\t0 990 \nNoNewPrivs:\t1\n\
+                     Threads:\t1\nCapBnd:\t00000000000000c1\nCapAmb:\t0000000000000000\n"
+                .into(),
+            source_gid: 990,
+            unit_memory_max: Some(512 << 20),
+            nofile: Some(4096),
+            test_fault_env: false,
+        }
+    }
+
+    #[test]
+    fn self_checks_cover_privileges_groups_budget_and_build() {
+        let c = cfg();
+        self_check(&facts(), &c, false).unwrap();
+        let bad = |edit: &dyn Fn(&mut SelfFacts)| {
+            let mut f = facts();
+            edit(&mut f);
+            self_check(&f, &c, false).unwrap_err()
+        };
+        assert!(
+            bad(&|f| f.status = f.status.replace("NoNewPrivs:\t1", "NoNewPrivs:\t0"))
+                .contains("NoNewPrivs")
+        );
+        assert!(bad(&|f| f.status = f.status.replace("c1\n", "c3\n")).contains("bounding"));
+        assert!(
+            bad(&|f| f.status = f.status.replace("CapAmb:\t0000000000000000", "CapAmb:\t1"))
+                .contains("ambient")
+        );
+        assert!(bad(&|f| f.status = f.status.replace("0 990", "0 990 991")).contains("groups"));
+        assert!(bad(&|f| f.status = f.status.replace("0 990", "0")).contains("groups"));
+        assert!(bad(&|f| f.unit_memory_max = Some(256 << 20)).contains("memory.max"));
+        assert!(bad(&|f| f.unit_memory_max = None).contains("memory.max"));
+        assert!(bad(&|f| f.nofile = Some(64)).contains("RLIMIT_NOFILE"));
+        assert!(bad(&|f| f.test_fault_env = true).contains("WRIT_TEST_FAULT"));
+        // A test-faults build may be given a fault.
+        let mut f = facts();
+        f.test_fault_env = true;
+        self_check(&f, &c, true).unwrap();
+        // Groups without root's own group 0 are fine too.
+        f.status = f.status.replace("0 990", "990");
+        self_check(&f, &c, true).unwrap();
+    }
+
+    #[test]
+    fn cleanup_limits_ignore_the_jobs_request() {
+        let c = cfg();
+        let r = cleanup_rlimits(&c);
+        assert_eq!(r.nofile, CLEANUP_NOFILE);
+        assert_eq!(r.fsize, 1 << 20);
+        assert_eq!(r.nproc, c.rlimits.nproc);
+        const { assert!(CLEANUP_PIDS >= 2) };
+    }
+
+    #[test]
+    fn waiting_for_ready_is_bounded() {
+        use rustix::pipe::{pipe_with, PipeFlags};
+        // L4: a cleanup process that never writes `ready` (or writes part of it) cannot hold
+        // the launcher past the deadline.
+        let (r, w) = pipe_with(PipeFlags::CLOEXEC).unwrap();
+        let t = Instant::now();
+        assert!(!read_ready(r, Instant::now() + Duration::from_millis(100)));
+        assert!(t.elapsed() < Duration::from_secs(2));
+        let (r, w2) = pipe_with(PipeFlags::CLOEXEC).unwrap();
+        File::from(w2.try_clone().unwrap())
+            .write_all(b"rea")
+            .unwrap();
+        assert!(!read_ready(r, Instant::now() + Duration::from_millis(100)));
+        let (r, w3) = pipe_with(PipeFlags::CLOEXEC).unwrap();
+        File::from(w3.try_clone().unwrap())
+            .write_all(b"ready\n")
+            .unwrap();
+        assert!(read_ready(r, Instant::now() + Duration::from_secs(2)));
+        drop((w, w2, w3));
+    }
+
+    #[test]
+    fn outcome_prefers_the_session_reason_and_reaped_status() {
+        use std::os::unix::process::ExitStatusExt;
+        let killed = ExitStatus::from_raw(9);
+        assert_eq!(
+            outcome(Some(Reason::Cancelled), Some(killed), false),
+            (Reason::Cancelled, None, Some(9))
+        );
+        assert_eq!(
+            outcome(Some(Reason::TimedOut), None, true).0,
+            Reason::OutputExceeded
+        );
+        assert_eq!(
+            outcome(None, Some(ExitStatus::from_raw(3 << 8)), false),
+            (Reason::Exited, Some(3), None)
+        );
+        assert_eq!(outcome(None, None, false).0, Reason::StartFailed);
     }
 }

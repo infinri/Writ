@@ -3,15 +3,6 @@ use crate::testutil::Scratch;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
-struct Recorder(usize);
-
-impl Owner for Recorder {
-    fn own(&mut self, _fd: BorrowedFd<'_>) -> std::io::Result<()> {
-        self.0 += 1;
-        Ok(())
-    }
-}
-
 fn me() -> u32 {
     rustix::process::getuid().as_raw()
 }
@@ -46,18 +37,18 @@ fn tree() -> Scratch {
     s
 }
 
+/// The copy, then (when it succeeded) [`chown_tree`] to this process's own ids; returns the
+/// copy result and the number of entries given away.
 fn run_copy(s: &Scratch, program: &str, r: &Rules) -> (Result<Copied, CopyError>, usize) {
     let job = File::open(s.path().join("job")).unwrap();
-    let mut rec = Recorder(0);
-    let res = copy(
-        &s.path().join("src"),
-        "job1",
-        job.as_fd(),
-        program,
-        r,
-        &mut rec,
-    );
-    (res, rec.0)
+    let res = copy(&s.path().join("src"), "job1", job.as_fd(), program, r);
+    let owned = if res.is_ok() {
+        let gid = rustix::process::getgid().as_raw();
+        chown_tree(job.as_fd(), me(), gid, r.max_entries).unwrap()
+    } else {
+        0
+    };
+    (res, owned)
 }
 
 fn source_err(r: Result<Copied, CopyError>) -> String {
@@ -167,23 +158,9 @@ fn bounds_on_depth_entries_and_bytes_read() {
 fn run_directory_must_exist_and_job_id_is_checked() {
     let s = tree();
     let job = File::open(s.path().join("job")).unwrap();
-    let r = copy(
-        &s.path().join("src"),
-        "job2",
-        job.as_fd(),
-        "prog",
-        &rules(),
-        &mut Recorder(0),
-    );
+    let r = copy(&s.path().join("src"), "job2", job.as_fd(), "prog", &rules());
     assert!(source_err(r).contains("run-job2"));
-    let r = copy(
-        &s.path().join("src"),
-        "../x",
-        job.as_fd(),
-        "prog",
-        &rules(),
-        &mut Recorder(0),
-    );
+    let r = copy(&s.path().join("src"), "../x", job.as_fd(), "prog", &rules());
     assert!(matches!(r, Err(CopyError::Source(_))));
 }
 
@@ -206,4 +183,72 @@ fn swap_between_statx_and_open_refuses() {
     // Without a swap the same check passes.
     let exp = stat_entry(dir.as_fd(), c"prog").unwrap();
     assert!(open_expected(dir.as_fd(), c"prog", &exp, me()).is_ok());
+}
+
+/// M6: the copy holds a bounded number of descriptors (not one per entry or per pending
+/// directory). The inner test runs in a child process with `RLIMIT_NOFILE` 128 over a tree of
+/// more than 1024 entries.
+#[test]
+fn copy_of_a_wide_tree_holds_few_descriptors() {
+    let exe = std::env::current_exe().unwrap();
+    let out = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg("ulimit -n 128 && exec \"$0\" --exact source::tests::wide_tree_under_low_nofile --ignored --test-threads=1")
+        .arg(&exe)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("1 passed"));
+}
+
+#[test]
+#[ignore = "run by copy_of_a_wide_tree_holds_few_descriptors under ulimit -n 128"]
+fn wide_tree_under_low_nofile() {
+    let s = tree();
+    let run = s.path().join("src/run-job1");
+    for i in 0..1100 {
+        let d = run.join(format!("d{i:04}"));
+        fs::create_dir(&d).unwrap();
+        mode(&d, 0o750);
+        fs::write(d.join("f"), b"x").unwrap();
+        mode(&d.join("f"), 0o640);
+        let f = run.join(format!("f{i:04}"));
+        fs::write(&f, b"y").unwrap();
+        mode(&f, 0o640);
+    }
+    let r = Rules {
+        max_entries: 5000,
+        max_bytes: 1 << 20,
+        ..rules()
+    };
+    let (res, owned) = run_copy(&s, "prog", &r);
+    assert_eq!(res.unwrap().entries, 3 + 3300);
+    assert_eq!(owned, 1 + 3 + 3300);
+}
+
+#[test]
+fn descriptor_exhaustion_is_a_request_level_refusal() {
+    assert!(exhausted(Errno::MFILE) && exhausted(Errno::NFILE));
+    assert!(!exhausted(Errno::ACCESS));
+    assert!(matches!(
+        src_errno("x", Errno::MFILE),
+        CopyError::Descriptors(_)
+    ));
+    assert!(matches!(
+        dst_errno("x", Errno::NFILE),
+        CopyError::Descriptors(_)
+    ));
+    assert!(matches!(
+        dst_errno("x", Errno::NOSPC),
+        CopyError::Destination(_)
+    ));
+    assert!(matches!(
+        io_err("x", "read", std::io::Error::from_raw_os_error(24), false),
+        CopyError::Descriptors(_)
+    ));
 }

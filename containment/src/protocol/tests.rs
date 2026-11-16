@@ -197,6 +197,7 @@ fn hello_round_trip_and_matching_ignores_instance() {
         runtime_profiles: vec![("py312".into(), "sha256:ff".into())],
         maxima_digest: "sha256:11".into(),
         instance: "0-1-2".into(),
+        build: BUILD_RELEASE.into(),
     };
     let text = json::canonical(&h.to_value()).unwrap();
     let back = Hello::parse(text.as_bytes()).unwrap();
@@ -211,6 +212,17 @@ fn hello_round_trip_and_matching_ignores_instance() {
         ..h.clone()
     };
     assert!(!h.matches(&other_bwrap));
+    // L7: a test-faults launcher never matches a release pin.
+    let test_build = Hello {
+        build: BUILD_TEST_FAULTS.into(),
+        ..h.clone()
+    };
+    assert!(!h.matches(&test_build));
+    let mut no_build = h.to_value();
+    if let Value::Obj(m) = &mut no_build {
+        m.remove("build");
+    }
+    assert!(Hello::parse(json::canonical(&no_build).unwrap().as_bytes()).is_none());
     assert_eq!(h.runtime_profile("py312"), Some("sha256:ff"));
     let mut extra = h.to_value();
     if let Value::Obj(m) = &mut extra {

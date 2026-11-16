@@ -13,8 +13,9 @@
 //!
 //! Every entry is owned by `writ`, not group- or other-writable, without an access or default
 //! ACL; regular files have `nlink == 1`. Depth, entry count and **bytes actually read** are
-//! bounded. Copies go to `<job dir>/work/` (directories 0700, files 0600, the program 0700) and
-//! each copied entry is passed to the [`Owner`] hook (production: `fchown` to `writ-job`). Any
+//! bounded. Copies go to `<job dir>/work/` (directories 0700, files 0600, the program 0700);
+//! after the whole copy succeeded [`chown_tree`] gives every entry to `writ-job`, children
+//! before parents. Both walks hold only the directories on the current path open (M6). Any
 //! violation refuses before the helper is spawned.
 
 use rustix::fs::{
@@ -54,6 +55,9 @@ pub enum CopyError {
     Source(String),
     /// The destination could not be written (`LAUNCH_UNAVAILABLE`).
     Destination(String),
+    /// The walk ran out of descriptors (`EMFILE`/`ENFILE`): a request-level refusal
+    /// (`LAUNCH_SOURCE_INVALID`) that does not withdraw readiness (M6).
+    Descriptors(String),
 }
 
 /// What the copy did.
@@ -63,31 +67,6 @@ pub struct Copied {
     pub entries: usize,
     /// Bytes read from the source.
     pub bytes: u64,
-}
-
-/// Ownership hook applied to every created entry (and `work/` itself).
-pub trait Owner {
-    /// Give the created object `fd` to the job identity.
-    fn own(&mut self, fd: BorrowedFd<'_>) -> std::io::Result<()>;
-}
-
-/// Production hook: `fchown` to the job uid and gid.
-pub struct Chown {
-    /// Job uid.
-    pub uid: u32,
-    /// Job gid.
-    pub gid: u32,
-}
-
-impl Owner for Chown {
-    fn own(&mut self, fd: BorrowedFd<'_>) -> std::io::Result<()> {
-        rustix::fs::fchown(
-            fd,
-            Some(rustix::fs::Uid::from_raw(self.uid)),
-            Some(rustix::fs::Gid::from_raw(self.gid)),
-        )?;
-        Ok(())
-    }
 }
 
 fn src(e: impl std::fmt::Display) -> CopyError {
@@ -167,7 +146,8 @@ pub fn open_expected(
     owner_uid: u32,
 ) -> Result<OwnedFd, CopyError> {
     let what = name.to_string_lossy();
-    let fd = open_beneath(parent, name, exp.dir).map_err(|e| src(format!("{what}: open {e}")))?;
+    let fd =
+        open_beneath(parent, name, exp.dir).map_err(|e| src_errno(&format!("{what}: open"), e))?;
     let st = fstat(&fd).map_err(|e| src(format!("{what}: fstat {e}")))?;
     if st.st_dev != exp.dev || st.st_ino != exp.ino {
         return Err(src(format!("{what}: changed between statx and open")));
@@ -218,7 +198,7 @@ fn check_object(
 
 fn names(fd: &OwnedFd) -> Result<Vec<CString>, CopyError> {
     let mut out = Vec::new();
-    let mut d = Dir::read_from(fd).map_err(src)?;
+    let mut d = Dir::read_from(fd).map_err(|e| src_errno("directory", e))?;
     while let Some(e) = d.read() {
         let e = e.map_err(src)?;
         let n = e.file_name();
@@ -230,15 +210,28 @@ fn names(fd: &OwnedFd) -> Result<Vec<CString>, CopyError> {
     Ok(out)
 }
 
+/// One directory being copied: its source and destination descriptors and the names still
+/// to visit. Only the directories on the current path are open, so the copy holds at most
+/// `2 * (max_depth + 1)` directory descriptors plus one file pair, whatever the tree's width
+/// or entry count (M6).
+struct Level {
+    sdir: OwnedFd,
+    ddir: OwnedFd,
+    names: std::vec::IntoIter<CString>,
+    depth: usize,
+    rel: String,
+}
+
 /// Copy `run-<job_id>` from `source_root` into `work` created beneath `job_dir`; `program` is
-/// the request's canonical relative path, which must be a copied regular file.
+/// the request's canonical relative path, which must be a copied regular file. The copy is
+/// depth-first and iterative (an explicit stack of [`Level`]s, no recursion). Ownership is
+/// given to the job identity afterwards by [`chown_tree`].
 pub fn copy(
     source_root: &Path,
     job_id: &str,
     job_dir: BorrowedFd<'_>,
     program: &str,
     rules: &Rules,
-    owner: &mut dyn Owner,
 ) -> Result<Copied, CopyError> {
     if !crate::protocol::valid_job_id(job_id) {
         return Err(src("job_id"));
@@ -250,84 +243,199 @@ pub fn copy(
         Mode::empty(),
         ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
     )
-    .map_err(|e| src(format!("source root: {e}")))?;
+    .map_err(|e| src_errno("source root", e))?;
     let run = CString::new(format!("run-{job_id}")).map_err(src)?;
     let (top, is_dir) = open_checked(root.as_fd(), &run, rules.owner_uid)?;
+    drop(root);
     if !is_dir {
         return Err(src("run directory is not a directory"));
     }
-    mkdirat(job_dir, "work", Mode::from_raw_mode(0o700)).map_err(|e| dst(format!("work: {e}")))?;
-    let work = open_beneath(job_dir, c"work", true).map_err(|e| dst(format!("work: {e}")))?;
-    owner
-        .own(work.as_fd())
-        .map_err(|e| dst(format!("own work: {e}")))?;
+    mkdirat(job_dir, "work", Mode::from_raw_mode(0o700)).map_err(|e| dst_errno("work", e))?;
+    let work = open_beneath(job_dir, c"work", true).map_err(|e| dst_errno("work", e))?;
     let mut stats = Copied::default();
     let mut program_seen = false;
-    // (source dir, destination dir, depth, relative path of the directory)
-    let mut stack: Vec<(OwnedFd, OwnedFd, usize, String)> = vec![(top, work, 0, String::new())];
-    while let Some((sdir, ddir, depth, rel)) = stack.pop() {
-        for name in names(&sdir)? {
-            let text = name
-                .to_str()
-                .map_err(|_| src("entry name is not UTF-8"))?
-                .to_string();
-            let path = if rel.is_empty() {
-                text.clone()
-            } else {
-                format!("{rel}/{text}")
-            };
-            stats.entries += 1;
-            if stats.entries > rules.max_entries {
-                return Err(src("too many entries"));
+    let first = names(&top)?;
+    let mut stack = vec![Level {
+        sdir: top,
+        ddir: work,
+        names: first.into_iter(),
+        depth: 0,
+        rel: String::new(),
+    }];
+    while let Some(level) = stack.last_mut() {
+        let Some(name) = level.names.next() else {
+            stack.pop();
+            continue;
+        };
+        let text = name
+            .to_str()
+            .map_err(|_| src("entry name is not UTF-8"))?
+            .to_string();
+        let path = if level.rel.is_empty() {
+            text
+        } else {
+            format!("{}/{text}", level.rel)
+        };
+        stats.entries += 1;
+        if stats.entries > rules.max_entries {
+            return Err(src("too many entries"));
+        }
+        let (fd, dir) = open_checked(level.sdir.as_fd(), &name, rules.owner_uid)?;
+        if dir {
+            if level.depth + 1 > rules.max_depth {
+                return Err(src(format!("{path}: too deep")));
             }
-            let (fd, dir) = open_checked(sdir.as_fd(), &name, rules.owner_uid)?;
-            if dir {
-                if depth + 1 > rules.max_depth {
-                    return Err(src(format!("{path}: too deep")));
-                }
-                mkdirat(&ddir, name.as_c_str(), Mode::from_raw_mode(0o700))
-                    .map_err(|e| dst(format!("{path}: {e}")))?;
-                let d = open_beneath(ddir.as_fd(), &name, true)
-                    .map_err(|e| dst(format!("{path}: {e}")))?;
-                owner
-                    .own(d.as_fd())
-                    .map_err(|e| dst(format!("own {path}: {e}")))?;
-                stack.push((fd, d, depth + 1, path));
-            } else {
-                let is_program = path == program;
-                program_seen |= is_program;
-                let mode = if is_program { 0o700 } else { 0o600 };
-                let out = openat2(
-                    &ddir,
-                    name.as_c_str(),
-                    OFlags::WRONLY
-                        | OFlags::CREATE
-                        | OFlags::EXCL
-                        | OFlags::NOFOLLOW
-                        | OFlags::CLOEXEC,
-                    Mode::from_raw_mode(mode),
-                    RESOLVE,
-                )
-                .map_err(|e| dst(format!("{path}: {e}")))?;
-                let remaining = rules.max_bytes.saturating_sub(stats.bytes);
-                let n = copy_bounded(fd, &out, remaining).map_err(|e| match e {
-                    Bounded::Limit => src("input_max_bytes exceeded"),
-                    Bounded::Read(e) => src(format!("{path}: read {e}")),
-                    Bounded::Write(e) => dst(format!("{path}: write {e}")),
-                })?;
-                stats.bytes += n;
-                rustix::fs::fchmod(&out, Mode::from_raw_mode(mode))
-                    .map_err(|e| dst(format!("{path}: chmod {e}")))?;
-                owner
-                    .own(out.as_fd())
-                    .map_err(|e| dst(format!("own {path}: {e}")))?;
-            }
+            mkdirat(&level.ddir, name.as_c_str(), Mode::from_raw_mode(0o700))
+                .map_err(|e| dst_errno(&path, e))?;
+            let d =
+                open_beneath(level.ddir.as_fd(), &name, true).map_err(|e| dst_errno(&path, e))?;
+            let below = names(&fd)?;
+            let depth = level.depth + 1;
+            stack.push(Level {
+                sdir: fd,
+                ddir: d,
+                names: below.into_iter(),
+                depth,
+                rel: path,
+            });
+        } else {
+            let is_program = path == program;
+            program_seen |= is_program;
+            let mode = if is_program { 0o700 } else { 0o600 };
+            let out = openat2(
+                &level.ddir,
+                name.as_c_str(),
+                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::from_raw_mode(mode),
+                RESOLVE,
+            )
+            .map_err(|e| dst_errno(&path, e))?;
+            let remaining = rules.max_bytes.saturating_sub(stats.bytes);
+            let n = copy_bounded(fd, &out, remaining).map_err(|e| match e {
+                Bounded::Limit => src("input_max_bytes exceeded"),
+                Bounded::Read(e) => io_err(&path, "read", e, false),
+                Bounded::Write(e) => io_err(&path, "write", e, true),
+            })?;
+            stats.bytes += n;
+            rustix::fs::fchmod(&out, Mode::from_raw_mode(mode)).map_err(|e| dst_errno(&path, e))?;
         }
     }
     if !program_seen {
         return Err(src("program is not a regular file in the source"));
     }
     Ok(stats)
+}
+
+/// One directory whose entries are being given to the job identity.
+struct Owned {
+    dir: OwnedFd,
+    names: std::vec::IntoIter<CString>,
+}
+
+/// Give `<job_dir>/work` and everything beneath it to `uid`/`gid`, **children before their
+/// parent** (once a directory belongs to the job identity, root without `CAP_DAC_OVERRIDE`
+/// can no longer traverse it), iteratively and holding only the directories on the current
+/// path open (M6). The tree was created by the launcher itself (root-owned 0700 directories in
+/// a root-owned 0711 job directory), and no `writ-job` process exists (residue checks), so
+/// nothing can change it meanwhile; every open is still beneath the parent descriptor without
+/// following links or crossing mounts. At most `max_entries` entries besides `work`. Returns
+/// the number of entries given away (including `work`).
+pub fn chown_tree(
+    job_dir: BorrowedFd<'_>,
+    uid: u32,
+    gid: u32,
+    max_entries: usize,
+) -> std::io::Result<usize> {
+    let (u, g) = (
+        Some(rustix::fs::Uid::from_raw(uid)),
+        Some(rustix::fs::Gid::from_raw(gid)),
+    );
+    let work = open_beneath(job_dir, c"work", true)?;
+    let first = dir_names(&work)?;
+    let mut stack = vec![Owned {
+        dir: work,
+        names: first.into_iter(),
+    }];
+    let mut count = 0usize;
+    while let Some(level) = stack.last_mut() {
+        let Some(name) = level.names.next() else {
+            if let Some(done) = stack.pop() {
+                rustix::fs::fchown(&done.dir, u, g)?;
+                count += 1;
+            }
+            continue;
+        };
+        if count > max_entries {
+            return Err(std::io::Error::other("too many entries to give away"));
+        }
+        let sx = statx(
+            level.dir.as_fd(),
+            name.as_c_str(),
+            AtFlags::SYMLINK_NOFOLLOW,
+            StatxFlags::TYPE,
+        )?;
+        if FileType::from_raw_mode(u32::from(sx.stx_mode)) == FileType::Directory {
+            let sub = open_beneath(level.dir.as_fd(), &name, true)?;
+            let below = dir_names(&sub)?;
+            stack.push(Owned {
+                dir: sub,
+                names: below.into_iter(),
+            });
+        } else {
+            rustix::fs::chownat(
+                level.dir.as_fd(),
+                name.as_c_str(),
+                u,
+                g,
+                AtFlags::SYMLINK_NOFOLLOW,
+            )?;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+fn dir_names(fd: &OwnedFd) -> std::io::Result<Vec<CString>> {
+    let mut out = Vec::new();
+    let mut d = Dir::read_from(fd)?;
+    while let Some(e) = d.read() {
+        let n = e?.file_name().to_owned();
+        if n.as_bytes() != b"." && n.as_bytes() != b".." {
+            out.push(n);
+        }
+    }
+    Ok(out)
+}
+
+/// Descriptor exhaustion (`EMFILE`, `ENFILE`): a request-level refusal (M6), never a
+/// readiness withdrawal. The launcher's own descriptor bound against the configured depth is
+/// checked at start (a launcher-level fault refuses to serve instead).
+pub fn exhausted(e: Errno) -> bool {
+    e == Errno::MFILE || e == Errno::NFILE
+}
+
+fn src_errno(what: &str, e: Errno) -> CopyError {
+    if exhausted(e) {
+        CopyError::Descriptors(format!("{what}: {e}"))
+    } else {
+        src(format!("{what}: {e}"))
+    }
+}
+
+fn dst_errno(what: &str, e: Errno) -> CopyError {
+    if exhausted(e) {
+        CopyError::Descriptors(format!("{what}: {e}"))
+    } else {
+        dst(format!("{what}: {e}"))
+    }
+}
+
+fn io_err(what: &str, op: &str, e: std::io::Error, destination: bool) -> CopyError {
+    match e.raw_os_error().map(Errno::from_raw_os_error) {
+        Some(n) if exhausted(n) => CopyError::Descriptors(format!("{what}: {op} {e}")),
+        _ if destination => dst(format!("{what}: {op} {e}")),
+        _ => src(format!("{what}: {op} {e}")),
+    }
 }
 
 enum Bounded {
