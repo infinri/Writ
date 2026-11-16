@@ -448,14 +448,21 @@ pub fn eval_job_serial(r: &Kv) -> Eval {
 // ---------------------------------------------------------------------------------------------
 
 /// The status-pipe part of P-FD. Keys: `status_write=written|unreachable` (the job's attempt to
-/// write to `/proc/<monitor>/fd/4` after `started`), `job_exit=<n>` (what the job itself
-/// exited with), `result_reason`, `result_exit_status`, `result_populated_zero`.
-/// Control: `ctl_trusting_build=detected` (a test build that parses the status pipe after
-/// `started` reports a result that differs from the job's own exit).
+/// write to `/proc/<monitor>/fd/4` after `started`), `host_forged_writes=<n>` (forged
+/// `exit-code` lines written to the monitor's descriptor 4 from the host while the job ran,
+/// standing in for an escaped job that reaches it; at least one is required),
+/// `job_exit=<n>` (what the job itself exited with), `result_reason`, `result_exit_status`,
+/// `result_populated_zero`. Control (M5a-11): the test-only build with fault
+/// `trust-status-after-started`, under the same forged write (`ctl_forged_writes` at least
+/// one), reports the forged value (`ctl_result_exit_status=99`), recorded by the trial as
+/// `ctl_trusting_build=detected`.
 pub fn eval_fd_status(r: &Kv) -> Eval {
     let mut p = Vec::new();
     if !matches!(get(r, "status_write"), "written" | "unreachable") {
         p.push("status-pipe write attempt not recorded".into());
+    }
+    if get(r, "host_forged_writes").parse::<u32>().unwrap_or(0) == 0 {
+        p.push("no forged write reached the monitor's status descriptor".into());
     }
     if get(r, "result_reason") != "exited"
         || get(r, "result_exit_status") != get(r, "job_exit")
@@ -470,7 +477,10 @@ pub fn eval_fd_status(r: &Kv) -> Eval {
             get(r, "result_populated_zero")
         ));
     }
-    let missed = if get(r, "ctl_trusting_build") == "detected" {
+    let missed = if get(r, "ctl_trusting_build") == "detected"
+        && get(r, "ctl_forged_writes").parse::<u32>().unwrap_or(0) > 0
+        && get(r, "ctl_result_exit_status") == "99"
+    {
         vec![]
     } else {
         vec!["a build that trusts the status pipe after started".to_string()]

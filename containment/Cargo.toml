@@ -21,9 +21,10 @@ writ-hostsys = { path = "../hostsys" }
 rustix = { version = "=1.1.6", default-features = false, features = ["std", "fs", "process", "pipe", "event", "thread"] }
 
 [features]
-# Test-only fault injection for the P-JOB-IDENTITY negative controls (J-9): a helper or launcher
-# built with it skips `setgroups`, skips `no_new_privs`, or closes the gate writer on an error
-# path without killing, when WRIT_TEST_FAULT names that fault. Never installed: both binaries
+# Test-only fault injection for the P-JOB-IDENTITY and P-FD negative controls (J-9): a helper or
+# launcher built with it skips `setgroups`, skips `no_new_privs`, closes the gate writer on an
+# error path without killing, or trusts the status pipe after `started`
+# (`trust-status-after-started`, M5a-11), when WRIT_TEST_FAULT names that fault. Never installed: both binaries
 # report the feature in `--build-info`, and setup.sh refuses such a binary.
 test-faults = []
 

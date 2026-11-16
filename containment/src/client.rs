@@ -23,6 +23,8 @@ use std::collections::VecDeque;
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use writ_broker::runner::{
     Job, JobFailure, JobOutput, Sandbox, SandboxGuarantees, SandboxUnavailable,
@@ -64,7 +66,11 @@ pub struct ClientConfig {
 pub struct LauncherSandbox<'a> {
     cfg: ClientConfig,
     readiness: &'a dyn Readiness,
+    termination: Option<Arc<AtomicBool>>,
 }
+
+/// How often a running job's connection checks the termination token.
+const TERMINATION_POLL: Duration = Duration::from_millis(50);
 
 /// Contract of the environment digest.
 pub const PROFILE: &str = "writ-launcher/1";
@@ -72,7 +78,27 @@ pub const PROFILE: &str = "writ-launcher/1";
 impl<'a> LauncherSandbox<'a> {
     /// A sandbox over `cfg`, guarded by `readiness`.
     pub fn new(cfg: ClientConfig, readiness: &'a dyn Readiness) -> LauncherSandbox<'a> {
-        LauncherSandbox { cfg, readiness }
+        LauncherSandbox {
+            cfg,
+            readiness,
+            termination: None,
+        }
+    }
+
+    /// Cancel a running job when `token` is set (the service's graceful shutdown, J-8 step
+    /// 4): the client sends `writ-launch-cancel/1`; the launcher kills the job, verifies its
+    /// cgroup empty and answers `finished` with reason `cancelled`, which this sandbox
+    /// reports as [`JobFailure::TerminatedShutdown`]. Without that answer the run stays
+    /// uncertain ([`JobFailure::Uncertain`]).
+    pub fn with_termination(mut self, token: Arc<AtomicBool>) -> LauncherSandbox<'a> {
+        self.termination = Some(token);
+        self
+    }
+
+    fn terminating(&self) -> bool {
+        self.termination
+            .as_ref()
+            .is_some_and(|t| t.load(Ordering::SeqCst))
     }
 
     fn expected(&self, req: &Request) -> Finished {
@@ -132,7 +158,14 @@ impl<'a> LauncherSandbox<'a> {
         )
     }
 
-    fn observe(&self, req: &Request, out: &mut Collected) -> Observed {
+    /// Run the exchange for `req`: what was observed, and whether this side sent `cancel`.
+    fn observe_cancellable(&self, req: &Request, out: &mut Collected) -> (Observed, bool) {
+        let mut cancelled = false;
+        let observed = self.observe_inner(req, out, &mut cancelled);
+        (observed, cancelled)
+    }
+
+    fn observe_inner(&self, req: &Request, out: &mut Collected, cancelled: &mut bool) -> Observed {
         let Ok(conn) = UnixStream::connect(&self.cfg.socket) else {
             return Observed::NoHello;
         };
@@ -147,7 +180,7 @@ impl<'a> LauncherSandbox<'a> {
             queue: VecDeque::new(),
         };
         let hello = match r.next(hello_by) {
-            Some(Frame::Control(p)) => Hello::parse(&p),
+            Next::Frame(Frame::Control(p)) => Hello::parse(&p),
             _ => return Observed::NoHello,
         };
         match hello {
@@ -167,7 +200,27 @@ impl<'a> LauncherSandbox<'a> {
         let wall = Duration::from_millis(req.limits.wall_time_ms);
         let end = Instant::now() + wall + self.cfg.slack;
         loop {
-            match r.next(end) {
+            if !*cancelled && self.terminating() {
+                let sent = json::canonical(&protocol::cancel(&req.job_id))
+                    .ok()
+                    .and_then(|t| frame::encode(frame::CONTROL, t.as_bytes()))
+                    .is_some_and(|f| r.conn.write_all(&f).is_ok());
+                if !sent {
+                    return Observed::Lost;
+                }
+                *cancelled = true;
+            }
+            let slice = if self.termination.is_some() && !*cancelled {
+                end.min(Instant::now() + TERMINATION_POLL)
+            } else {
+                end
+            };
+            let got = match r.next(slice) {
+                Next::TimedOut if slice < end => continue,
+                Next::TimedOut | Next::Gone => return Observed::Lost,
+                Next::Frame(f) => f,
+            };
+            match Some(got) {
                 None => return Observed::Lost,
                 Some(Frame::Data(p)) => match frame::parse_output(&p) {
                     Some((stream, id, bytes)) if id == req.job_id => {
@@ -212,6 +265,16 @@ impl Collected {
     }
 }
 
+/// What the next read from the launcher produced.
+enum Next {
+    /// A complete frame.
+    Frame(Frame),
+    /// The deadline passed (the connection is intact).
+    TimedOut,
+    /// EOF, an error or a framing violation.
+    Gone,
+}
+
 /// Frames from the launcher, bounded by the decoder's per-type maxima.
 struct Reader {
     conn: UnixStream,
@@ -220,25 +283,33 @@ struct Reader {
 }
 
 impl Reader {
-    /// The next frame before `deadline`; `None` on EOF, error, timeout or a framing violation.
-    fn next(&mut self, deadline: Instant) -> Option<Frame> {
+    /// The next frame before `deadline`.
+    fn next(&mut self, deadline: Instant) -> Next {
         let mut buf = [0u8; 16 * 1024];
         loop {
             if let Some(f) = self.queue.pop_front() {
-                return Some(f);
+                return Next::Frame(f);
             }
-            let left = deadline.checked_duration_since(Instant::now())?;
+            let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                return None;
+                return Next::TimedOut;
             }
-            self.conn.set_read_timeout(Some(left)).ok()?;
+            if self.conn.set_read_timeout(Some(left)).is_err() {
+                return Next::Gone;
+            }
             let n = match self.conn.read(&mut buf) {
-                Ok(0) => return None,
+                Ok(0) => return Next::Gone,
                 Ok(n) => n,
                 Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-                Err(_) => return None,
+                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                    return Next::TimedOut
+                }
+                Err(_) => return Next::Gone,
             };
-            self.queue.extend(self.d.feed(&buf[..n]).ok()?);
+            match self.d.feed(&buf[..n]) {
+                Ok(frames) => self.queue.extend(frames),
+                Err(_) => return Next::Gone,
+            }
         }
     }
 }
@@ -282,7 +353,7 @@ impl Sandbox for LauncherSandbox<'_> {
         }
         let req = self.request(job).ok_or(JobFailure::Unavailable)?;
         let mut out = Collected::default();
-        let observed = self.observe(&req, &mut out);
+        let (observed, cancelled) = self.observe_cancellable(&req, &mut out);
         let expected = self.expected(&req);
         let c = failure::conclude(&observed, &expected);
         if c.withdraw_readiness {
@@ -330,6 +401,8 @@ impl Sandbox for LauncherSandbox<'_> {
                     Reason::Signaled => Err(JobFailure::Signaled),
                     Reason::TimedOut => Err(JobFailure::TimedOut),
                     Reason::OutputExceeded => Err(JobFailure::OutputExceeded),
+                    // J-8 step 4: killed and verified empty after this side's cancel.
+                    Reason::Cancelled if cancelled => Err(JobFailure::TerminatedShutdown),
                     Reason::Cancelled | Reason::StartFailed => Err(JobFailure::Io),
                 }
             }

@@ -268,3 +268,25 @@ fn status_after_started_is_drained_and_never_used() {
     );
     assert_eq!(r.session.output_bytes(), [0, 0]);
 }
+
+/// Without the fault requested, even a test-faults build derives nothing from the status
+/// pipe after `started`; the fault build's parser reads bubblewrap's `exit-code` line (the
+/// P-FD negative control, prepared for the reference VM).
+#[cfg(feature = "test-faults")]
+#[test]
+fn the_trusting_fault_build_is_off_unless_requested_and_parses_exit_code() {
+    assert_eq!(std::env::var_os("WRIT_TEST_FAULT"), None);
+    let mut r = running("sleep 0.3; exit 0", bounds());
+    r.status_w
+        .as_mut()
+        .unwrap()
+        .write_all(b"{ \"exit-code\": 99 }\n")
+        .unwrap();
+    assert_eq!(r.session.run(soon(5000)), Run::ChildExited);
+    assert_eq!(r.session.trusted_exit(), None);
+    use super::status_exit_code as p;
+    assert_eq!(p(b"{ \"exit-code\": 99 }\n"), Some(99));
+    assert_eq!(p(b"{\"child-pid\": 7}\n{\"exit-code\":-1}"), Some(-1));
+    assert_eq!(p(b"{ \"child-pid\": 7 }"), None);
+    assert_eq!(p(b"{ \"exit-code\": x }"), None);
+}

@@ -90,6 +90,26 @@ pub struct Session {
     status_reader: StatusReader,
     drained: usize,
     conn_open: bool,
+    /// Test-only fault `trust-status-after-started` (P-FD negative control, J-9 revision 6
+    /// N4): the first `exit-code` read from the status pipe after `started`.
+    #[cfg(feature = "test-faults")]
+    trusted_exit: Option<i64>,
+}
+
+/// The value of the first `"exit-code": <n>` member in `bytes` (bubblewrap's
+/// `--json-status-fd` end-of-job line). Used **only** by the test-only fault build that
+/// trusts the status pipe after `started` (the P-FD negative control); the launcher never
+/// reads a result from that pipe (N4).
+#[cfg(feature = "test-faults")]
+pub fn status_exit_code(bytes: &[u8]) -> Option<i64> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let at = text.find("\"exit-code\"")? + "\"exit-code\"".len();
+    let rest = text[at..].trim_start().strip_prefix(':')?.trim_start();
+    let end = rest
+        .char_indices()
+        .find(|(i, c)| !(c.is_ascii_digit() || (*i == 0 && *c == '-')))
+        .map_or(rest.len(), |(i, _)| i);
+    rest[..end].parse().ok()
 }
 
 fn set_nonblocking(f: &impl AsFd) -> io::Result<()> {
@@ -157,6 +177,8 @@ impl Session {
             decoder: Decoder::new(false),
             status_reader: StatusReader::new(b.status_max),
             drained: 0,
+            #[cfg(feature = "test-faults")]
+            trusted_exit: None,
             conn_open: true,
         })
     }
@@ -278,7 +300,12 @@ impl Session {
         };
         match read_some(f, &mut buf) {
             Got::Bytes(n) => {
-                // Discarded (N4).
+                // Discarded (N4), except by the test-only fault build of the P-FD control.
+                #[cfg(feature = "test-faults")]
+                if self.trusted_exit.is_none() && crate::helper::fault("trust-status-after-started")
+                {
+                    self.trusted_exit = status_exit_code(&buf[..n]);
+                }
                 self.drained += n;
                 if self.drained >= self.b.status_drain {
                     self.ch.status = None;
@@ -463,6 +490,12 @@ impl Session {
             }
         }
         true
+    }
+
+    /// The exit code the test-only fault build read from the status pipe after `started`.
+    #[cfg(feature = "test-faults")]
+    pub fn trusted_exit(&self) -> Option<i64> {
+        self.trusted_exit
     }
 
     /// Whether `writ`'s connection is still open (EOF not seen).

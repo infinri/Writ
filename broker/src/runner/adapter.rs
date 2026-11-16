@@ -262,6 +262,8 @@ pub enum RunnerDiagnostic {
     JobIo,
     /// The job's outcome is unknown (never recorded: the run stays `started`).
     JobUncertain,
+    /// The job was terminated by the service's graceful shutdown (J-8 step 4).
+    JobTerminatedShutdown,
     /// The produced attestation could not be built, authenticated or did not
     /// verify.
     AttestationInvalid,
@@ -303,6 +305,7 @@ impl RunnerDiagnostic {
             JobSignaled => "RUNNER_JOB_SIGNALED",
             JobIo => "RUNNER_JOB_IO",
             JobUncertain => "RUNNER_JOB_UNCERTAIN",
+            JobTerminatedShutdown => "RUNNER_JOB_TERMINATED_SHUTDOWN",
             AttestationInvalid => "RUNNER_ATTESTATION_INVALID",
         }
     }
@@ -316,6 +319,7 @@ impl RunnerDiagnostic {
             JobFailure::Signaled => RunnerDiagnostic::JobSignaled,
             JobFailure::Io => RunnerDiagnostic::JobIo,
             JobFailure::Uncertain => RunnerDiagnostic::JobUncertain,
+            JobFailure::TerminatedShutdown => RunnerDiagnostic::JobTerminatedShutdown,
         }
     }
 }

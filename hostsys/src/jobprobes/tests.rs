@@ -269,11 +269,14 @@ fn job_serial_each_check_and_control() {
 #[test]
 fn fd_status_pipe_is_never_trusted() {
     let ok: Vec<String> = [
-        "status_write=written",
-        "job_exit=0",
+        "status_write=unreachable",
+        "host_forged_writes=1",
+        "job_exit=7",
         "result_reason=exited",
-        "result_exit_status=0",
+        "result_exit_status=7",
         "result_populated_zero=true",
+        "ctl_forged_writes=1",
+        "ctl_result_exit_status=99",
         "ctl_trusting_build=detected",
     ]
     .iter()
@@ -288,6 +291,24 @@ fn fd_status_pipe_is_never_trusted() {
         Status::Missing
     );
     assert!(!eval_fd_status(&r(&without(&ok, "ctl_trusting_build"))).controls_detected);
+    // M5a-11: the positive run needs the forged write to the monitor's descriptor 4 to have
+    // happened (otherwise it shows nothing), and the control must report the forged value.
+    let k = "host_forged_writes";
+    assert_eq!(
+        eval_fd_status(&r(&with(&ok, k, "0"))).status,
+        Status::Missing
+    );
+    assert_eq!(eval_fd_status(&r(&without(&ok, k))).status, Status::Missing);
+    for (k, v) in [
+        ("ctl_forged_writes", "0"),
+        ("ctl_result_exit_status", "7"),
+        ("ctl_trusting_build", "missed"),
+    ] {
+        assert!(
+            !eval_fd_status(&r(&with(&ok, k, v))).controls_detected,
+            "{k}={v}"
+        );
+    }
 }
 
 #[test]

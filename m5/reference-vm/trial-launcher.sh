@@ -162,20 +162,66 @@ cp "$r" "$ev/report-job-identity.txt"
 # P-FD status pipe (N4)
 # ---------------------------------------------------------------------------------------------
 r="$reports/fd-status.txt"
-mkrun trial-fd 'w=unreachable; for f in /proc/[0-9]*/fd/4; do if printf "{ \"exit-code\": 99 }\n" > "$f" 2>/dev/null; then w=written; fi; done; echo "status_write=$w"; exit 7'
+# forge_status ID: while job ID runs, write a forged bubblewrap end line to descriptor 4 of every
+# process in the launcher instance's job cgroup that holds the status pipe (the bubblewrap
+# monitor). Done as root from the host, it stands in for an escaped job that can reach the
+# monitor's descriptor (J-9 revision 6, N4); records how many writes succeeded.
+forge_status() {
+  local id="$1" n=0 i p f
+  for i in $(seq 1 50); do
+    for p in /sys/fs/cgroup/writ.slice/writ-jobs.slice/writ-job-launcher@*.service/job/cgroup.procs; do
+      [ -f "$p" ] || continue
+      for pid in $(cat "$p"); do
+        f="/proc/$pid/fd/4"
+        if [ "$(readlink "$f" 2>/dev/null | cut -c1-5)" = "pipe:" ] && printf '{ "exit-code": 99 }\n' > "$f" 2>/dev/null; then
+          n=$((n + 1))
+        fi
+      done
+    done
+    [ "$n" -gt 0 ] && break
+    sleep 0.1
+  done
+  echo "$n" > "$share/forged-$id.txt"
+}
+mkrun trial-fd 'w=unreachable; for f in /proc/[0-9]*/fd/4; do if printf "{ \"exit-code\": 99 }\n" > "$f" 2>/dev/null; then w=written; fi; done; echo "status_write=$w"; sleep 2; exit 7'
 request trial-fd
+forge_status trial-fd &
+forger=$!
 launch writ trial-fd
+wait "$forger" || true
 {
   cat "$share/launch-trial-fd.out"
   echo job_exit=7
+  echo "host_forged_writes=$(cat "$share/forged-trial-fd.txt" 2>/dev/null || echo 0)"
   echo "result_reason=$(lget trial-fd result_reason)"
   echo "result_exit_status=$(lget trial-fd result_exit_status)"
   echo "result_populated_zero=$(lget trial-fd result_populated_zero)"
-  # The control needs a test build that trusts the status pipe after started plus a job that
-  # can reach the monitor's descriptor (Yama and the PID namespace prevent it in the pinned
-  # profile); not prepared yet, so P-FD stays failed until it is (fail closed).
-  echo ctl_trusting_build=not_run
 } > "$r"
+if [ -n "$test_launcher" ] && [ -n "$test_exec" ]; then
+  # Negative control: the test-only build that trusts the status pipe after started
+  # (WRIT_TEST_FAULT=trust-status-after-started), with the monitor's descriptor reached by the
+  # host-side forger. The probe must see a result that differs from the job's own exit.
+  use_test_builds
+  dropin_fault trust-status-after-started
+  mkrun trial-fdctl 'sleep 2; exit 7'
+  request trial-fdctl
+  forge_status trial-fdctl &
+  forger=$!
+  launch writ trial-fdctl
+  wait "$forger" || true
+  ctl_status=$(lget trial-fdctl result_exit_status)
+  echo "ctl_forged_writes=$(cat "$share/forged-trial-fdctl.txt" 2>/dev/null || echo 0)" >> "$r"
+  echo "ctl_result_exit_status=$ctl_status" >> "$r"
+  if [ "$(cat "$share/forged-trial-fdctl.txt" 2>/dev/null || echo 0)" -gt 0 ] && [ "$ctl_status" = 99 ]; then
+    echo ctl_trusting_build=detected >> "$r"
+  else
+    echo ctl_trusting_build=missed >> "$r"
+  fi
+  launcher_restore
+  rm -rf -- /var/lib/writ-jobs/job-*
+else
+  echo ctl_trusting_build=not_run >> "$r"
+fi
 cp "$r" "$ev/report-fd-status.txt"
 
 # ---------------------------------------------------------------------------------------------

@@ -2,7 +2,7 @@ use super::*;
 use crate::testutil::Scratch;
 use std::os::unix::net::UnixListener;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use writ_broker::runner::{Limits, RunnerRequirements};
 
@@ -57,6 +57,11 @@ enum Act {
         out: Vec<u8>,
         edit: fn(&mut Finished),
     },
+    /// `started`, then wait for `cancel` from `writ`; then `finished` (reason `cancelled`,
+    /// verified empty) when `finish`, else close the connection.
+    AwaitCancel {
+        finish: bool,
+    },
 }
 
 fn send(c: &mut UnixStream, kind: u8, p: &[u8]) {
@@ -103,6 +108,47 @@ fn fake(listener: UnixListener, act: Act) -> thread::JoinHandle<Option<Request>>
             Act::Refuse(code) => ctl(&mut c, &protocol::refused(&req.job_id, code)),
             Act::Lost => {
                 ctl(&mut c, &protocol::started(&req.job_id));
+            }
+            Act::AwaitCancel { finish } => {
+                ctl(&mut c, &protocol::started(&req.job_id));
+                let cancelled = loop {
+                    let n = match c.read(&mut buf) {
+                        Ok(0) | Err(_) => break false,
+                        Ok(n) => n,
+                    };
+                    let frames = dec.feed(&buf[..n]).unwrap();
+                    if frames.iter().any(
+                        |f| matches!(f, Frame::Control(p) if protocol::is_cancel(p, &req.job_id)),
+                    ) {
+                        break true;
+                    }
+                };
+                if !cancelled {
+                    return None;
+                }
+                if finish {
+                    let f = Finished {
+                        job_id: req.job_id.clone(),
+                        request_digest: req.digest.clone(),
+                        reason: Reason::Cancelled,
+                        exit_status: None,
+                        signal: Some(9),
+                        kill_used: true,
+                        populated_zero: true,
+                        memory_events: [0; 3],
+                        pids_max_events: 0,
+                        cpu_usage_usec: 10,
+                        output_bytes: [0, 0],
+                        digests: ResultDigests {
+                            bwrap: d('3'),
+                            bwrap_profile: d('4'),
+                            apparmor_profile: d('5'),
+                            runtime_profile: d('6'),
+                            exec: d('2'),
+                        },
+                    };
+                    ctl(&mut c, &f.to_value());
+                }
             }
             Act::Finish { out, edit } => {
                 ctl(&mut c, &protocol::started(&req.job_id));
@@ -172,7 +218,10 @@ fn rig() -> (Rig, UnixListener) {
 }
 
 fn run(r: &Rig, ready: &Ready) -> Result<JobOutput, JobFailure> {
-    let sb = LauncherSandbox::new(r.cfg.clone(), ready);
+    run_with(r, LauncherSandbox::new(r.cfg.clone(), ready))
+}
+
+fn run_with(r: &Rig, sb: LauncherSandbox<'_>) -> Result<JobOutput, JobFailure> {
     let program = r.workdir.join(".writ-runner-program");
     let args = vec!["--check".to_string()];
     let env = vec![("LANG".to_string(), "C".to_string())];
@@ -341,4 +390,59 @@ fn no_launcher_is_not_run() {
     let (r, l) = rig();
     drop(l);
     assert_eq!(run(&r, &Ready::new(true)), Err(JobFailure::Unavailable));
+}
+
+/// J-8 step 4 (M5a-11): the service's job-termination token cancels a running job through
+/// the launcher, which kills and verifies the cgroup empty; the run ends
+/// `terminated_shutdown` (finished `failed` by T-finish), long before its wall time.
+#[test]
+fn the_termination_token_cancels_a_running_job_through_the_launcher() {
+    let (mut r, l) = rig();
+    r.cfg.slack = Duration::from_secs(30);
+    let h = fake(l, Act::AwaitCancel { finish: true });
+    let ready = Ready::new(true);
+    let token = Arc::new(AtomicBool::new(false));
+    let setter = {
+        let token = Arc::clone(&token);
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            token.store(true, Ordering::SeqCst);
+        })
+    };
+    let started = Instant::now();
+    let sb = LauncherSandbox::new(r.cfg.clone(), &ready).with_termination(Arc::clone(&token));
+    assert_eq!(run_with(&r, sb), Err(JobFailure::TerminatedShutdown));
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "before the wall time"
+    );
+    assert!(h.join().unwrap().is_some(), "the launcher received cancel");
+    setter.join().unwrap();
+    assert!(ready.verified());
+}
+
+#[test]
+fn a_cancel_without_a_result_stays_uncertain() {
+    let (r, l) = rig();
+    let _h = fake(l, Act::AwaitCancel { finish: false });
+    let ready = Ready::new(true);
+    let token = Arc::new(AtomicBool::new(true));
+    let sb = LauncherSandbox::new(r.cfg.clone(), &ready).with_termination(token);
+    assert_eq!(run_with(&r, sb), Err(JobFailure::Uncertain));
+}
+
+#[test]
+fn a_cancelled_result_this_side_did_not_ask_for_is_an_io_failure() {
+    let (r, l) = rig();
+    let _h = fake(
+        l,
+        Act::Finish {
+            out: vec![],
+            edit: |f| {
+                f.reason = Reason::Cancelled;
+                f.exit_status = None;
+            },
+        },
+    );
+    assert_eq!(run(&r, &Ready::new(true)), Err(JobFailure::Io));
 }

@@ -723,6 +723,15 @@ impl Job<'_> {
             },
             (None, None) => (Reason::StartFailed, None, None),
         };
+        // P-FD negative control (test-only, never installed): a build that trusts the status
+        // pipe after `started` reports what a writer of the monitor's descriptor 4 claimed.
+        #[cfg(feature = "test-faults")]
+        let (reason, exit_status) = match s.trusted_exit() {
+            Some(x) if crate::helper::fault("trust-status-after-started") => {
+                (Reason::Exited, Some(x))
+            }
+            _ => (reason, exit_status),
+        };
         let request_digest = self.req.digest.clone();
         let result_digests = self.digests.clone();
         let fin = |populated_zero: bool, s: &Session| Finished {

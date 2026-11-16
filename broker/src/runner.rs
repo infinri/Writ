@@ -347,6 +347,10 @@ pub enum JobFailure {
     /// run stays `started`, is never re-run, and the adapter reports an
     /// unknown outcome (M5-INTERFACES J-11.6).
     Uncertain,
+    /// The service shut down while the job ran: the job was cancelled through the
+    /// launcher, which killed it and verified its cgroup empty (M5-INTERFACES J-8 step 4).
+    /// The run is finished `failed` (`terminated_shutdown`).
+    TerminatedShutdown,
 }
 
 /// The sandbox cannot report its guarantees (fail closed).
