@@ -34,6 +34,15 @@ done
 
 tac "$WRIT_STATE_FILE" | while read -r kind path extra; do
   case "$kind" in
+    setting|unit|user|group|package|enable) ;;
+    *)
+      # M5a-13 L12: only the recorded writ locations, never a `..` or relative path.
+      if ! writ_path_allowed "$kind" "$path"; then
+        echo "refusing to touch unexpected $kind path $path" >&2
+        continue
+      fi ;;
+  esac
+  case "$kind" in
     setting) ;;
     file) rm -f -- "$path"
           case "$path" in /etc/systemd/system/*) systemctl daemon-reload || true ;; esac ;;
@@ -52,16 +61,22 @@ tac "$WRIT_STATE_FILE" | while read -r kind path extra; do
       [ "$path" = /var/lib/writ-jobs ] && sed -i '\|^/var/lib/writ-jobs.img /var/lib/writ-jobs |d' /etc/fstab ;;
     sysctlfile)
       rm -f -- "$path"
-      [ -z "$extra" ] || sysctl -q -w "kernel.core_pattern=$(printf '%s' "$extra" | tr '_' ' ')" || true ;;
+      # The previous kernel.core_pattern, recorded as hex: every byte (underscores, spaces)
+      # restored exactly (M5a-13 L12).
+      case "$extra" in
+        hex:?*)
+          if old=$(writ_unhex "${extra#hex:}"); then
+            sysctl -q -w "kernel.core_pattern=$old" || true
+          else
+            echo "refusing malformed recorded core_pattern $extra" >&2
+          fi ;;
+        *) echo "no recorded core_pattern to restore ($extra)" >&2 ;;
+      esac ;;
     enable) systemctl enable --now "$path" || true ;;
     apparmor)
       if [ -f "$path" ]; then apparmor_parser -R "$path" || true; fi
       rm -f -- "$path" ;;
-    dir) case "$path" in
-           /var/lib/writ|/var/lib/writ/*|/etc/writ|/run/writ|/srv/writ|/srv/writ/*|"$WRIT_LIBEXEC"|\
-           /var/lib/writ-jobs|/etc/writ-launcher|/run/writ-launcher|/usr/lib/writ-runtime) rm -rf -- "$path" ;;
-           *) echo "refusing to remove unexpected directory $path" >&2 ;;
-         esac ;;
+    dir) rm -rf -- "$path" ;;
     user)
       if getent passwd "$path" >/dev/null; then
         # writ's home is /var/lib/writ (removed above); the agent user's home was created by setup.

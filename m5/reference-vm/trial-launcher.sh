@@ -25,7 +25,18 @@ launcher_backup="$share/launcher.json.orig"
 cp -p "$launcher_cfg" "$launcher_backup"
 dropin_dir=/run/systemd/system/writ-job-launcher@.service.d
 
+# The disposable desktop peer of P-LAUNCHER-ADMIT, removed here and therefore also by the exit
+# trap if the trial aborts while it exists (M5a-13 L12).
+trial_desktop=""
+remove_trial_desktop() {
+  if [ -n "$trial_desktop" ] && getent passwd "$trial_desktop" >/dev/null; then
+    userdel --remove "$trial_desktop" 2>/dev/null || true
+  fi
+  trial_desktop=""
+}
+
 launcher_restore() {
+  remove_trial_desktop
   [ -f "$launcher_backup" ] && cp -p "$launcher_backup" "$launcher_cfg"
   for b in writ-job-launcher writ-cgroup-exec; do
     [ -f "$share/$b.orig" ] && install -m 0755 -o root -g root "$share/$b.orig" "$WRIT_LIBEXEC/$b"
@@ -232,6 +243,8 @@ mkrun trial-admit 'true'
 request default
 cp "$share/req-default.json" "$share/req-trial-admit.json"
 desktop=writ-trial-desktop
+if getent passwd "$desktop" >/dev/null; then echo "$desktop already exists; refusing" >&2; exit 2; fi
+trial_desktop=$desktop
 useradd --create-home --shell /bin/bash "$desktop"
 {
   for who in agent:"$agent_user" job:"$job_user" desktop:"$desktop" root:root; do
@@ -245,7 +258,7 @@ useradd --create-home --shell /bin/bash "$desktop"
   launch writ peer-writ no-request
   if [ "$(lget peer-writ hello)" = 1 ]; then echo peer_writ=hello; else echo peer_writ=closed; fi
 } > "$r"
-userdel --remove "$desktop"
+remove_trial_desktop
 case_line() {  # case_line CASE ID MODE
   launch writ "$2" "$3"
   local o; o=$(outcome "$2")

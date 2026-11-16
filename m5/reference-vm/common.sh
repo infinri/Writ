@@ -35,7 +35,8 @@ writ_guard() {
     *) refuse "marker mode $(stat -c %a "$WRIT_VM_MARKER") is group- or other-writable or unexpected" ;;
   esac
   [ "$(head -n 1 "$WRIT_VM_MARKER")" = "writ-disposable-vm/1" ] || refuse "marker first line is not writ-disposable-vm/1"
-  grep -qx "name=$designated" "$WRIT_VM_MARKER" || refuse "marker does not name this VM as '$designated'"
+  # A literal line comparison (M5a-13 L12): the name is never a pattern.
+  grep -qxF -- "name=$designated" "$WRIT_VM_MARKER" || refuse "marker does not name this VM as '$designated'"
   [ "$(id -u)" = 0 ] || refuse "must run as root inside the VM"
   local virt
   virt=$(systemd-detect-virt --vm 2>/dev/null || true)
@@ -56,6 +57,43 @@ writ_parse_designated() {
       *) WRIT_ARGS+=("$1"); shift ;;
     esac
   done
+}
+
+# Whether teardown may remove PATH recorded as KIND (M5a-13 L12): absolute, without `.`, `..`
+# or empty components, and inside the locations setup.sh and service-install.sh record.
+writ_path_allowed() {
+  local kind="$1" p="$2"
+  case "$p" in /*) ;; *) return 1 ;; esac
+  case "$p/" in *//*|*/./*|*/../*) return 1 ;; esac
+  case "$kind" in
+    file)
+      case "$p" in
+        /etc/tmpfiles.d/writ.conf|/etc/tmpfiles.d/writ-launcher.conf|/etc/writ/?*|"$WRIT_LIBEXEC"/?*|\
+        /var/lib/writ/?*|/var/lib/writ-jobs.img|/etc/writ-launcher/?*|/etc/sysctl.d/60-writ-core.conf|\
+        /etc/systemd/system/writ.service|/etc/systemd/system/writ-host.socket|\
+        /etc/systemd/system/writ-admin.socket|/etc/systemd/system/writ-approval.socket|\
+        /etc/systemd/system/writ-job-launcher.socket|/etc/systemd/system/writ-job-launcher@.service|\
+        /etc/systemd/system/writ-jobs.slice) return 0 ;;
+      esac ;;
+    dir)
+      case "$p" in
+        /var/lib/writ|/var/lib/writ/?*|/etc/writ|/run/writ|/srv/writ|/srv/writ/?*|"$WRIT_LIBEXEC"|\
+        /var/lib/writ-jobs|/etc/writ-launcher|/run/writ-launcher|/usr/lib/writ-runtime) return 0 ;;
+      esac ;;
+    apparmor) [ "$p" = "$WRIT_APPARMOR_PROFILE" ] && return 0 ;;
+    sysctlfile) [ "$p" = /etc/sysctl.d/60-writ-core.conf ] && return 0 ;;
+    mount|fstab) [ "$p" = /var/lib/writ-jobs ] && return 0 ;;
+  esac
+  return 1
+}
+
+# The bytes of STRING as lowercase hex (state-file safe: no spaces, any byte but NUL).
+writ_hex() { printf '%s' "$1" | od -An -v -tx1 | tr -d ' \n'; }
+
+# The string whose hex is HEX (refuses anything but pairs of hex digits).
+writ_unhex() {
+  printf '%s' "$1" | grep -Eqx '([0-9a-f]{2})*' || return 1
+  printf '%b' "$(printf '%s' "$1" | sed 's/../\\x&/g')"
 }
 
 # Value recorded by setup.sh in the state file ("setting <key> <value>").

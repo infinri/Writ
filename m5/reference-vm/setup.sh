@@ -94,11 +94,36 @@ if ! getent passwd writ >/dev/null; then
   useradd --system --gid writ --home-dir /var/lib/writ --no-create-home --shell /usr/sbin/nologin writ
   state "user writ"
 fi
-if ! getent passwd "$agent_user" >/dev/null; then
+# An existing account is used only when it is exactly what this script would create
+# (M5a-13 L12): own primary group, the expected supplementary groups only, home, shell and a
+# regular (agent) or system (job) uid. Anything else refuses before a change.
+exact_identity() {  # exact_identity USER HOME SHELL GROUPS(sorted, space separated) uid-class
+  local u="$1" home="$2" shell="$3" groups="$4" class="$5" ent uid min
+  ent=$(getent passwd "$u") || return 1
+  uid=$(printf '%s' "$ent" | cut -d: -f3)
+  min=$(awk '$1 == "UID_MIN" { print $2 }' /etc/login.defs 2>/dev/null); min=${min:-1000}
+  [ "$(printf '%s' "$ent" | cut -d: -f6)" = "$home" ] || return 1
+  [ "$(printf '%s' "$ent" | cut -d: -f7)" = "$shell" ] || return 1
+  [ "$(id -gn "$u")" = "$u" ] || return 1
+  [ "$(id -nG "$u" | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')" = "$groups" ] || return 1
+  [ "$uid" != 0 ] || return 1
+  case "$class" in
+    regular) [ "$uid" -ge "$min" ] ;;
+    system) [ "$uid" -lt "$min" ] ;;
+  esac
+}
+agent_groups=$(printf '%s\n' "$agent_user" writ-agents | sort | tr '\n' ' ' | sed 's/ $//')
+if getent passwd "$agent_user" >/dev/null; then
+  exact_identity "$agent_user" "/home/$agent_user" /bin/bash "$agent_groups" regular \
+    || { echo "--agent-user $agent_user exists and differs from the expected identity; refusing" >&2; exit 2; }
+else
   useradd --create-home --shell /bin/bash --groups writ-agents "$agent_user"
   state "user $agent_user"
 fi
-if ! getent passwd "$job_user" >/dev/null; then
+if getent passwd "$job_user" >/dev/null; then
+  exact_identity "$job_user" /nonexistent /usr/sbin/nologin "$job_user" system \
+    || { echo "--job-user $job_user exists and differs from the expected identity; refusing" >&2; exit 2; }
+else
   # Own primary group, no supplementary groups, no other member (J-1).
   useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$job_user"
   state "user $job_user"
@@ -243,7 +268,8 @@ if systemctl list-unit-files apport.service >/dev/null 2>&1 && systemctl is-enab
   state "enable apport.service"
 fi
 echo "kernel.core_pattern = core" > /etc/sysctl.d/60-writ-core.conf
-state "sysctlfile /etc/sysctl.d/60-writ-core.conf $(sysctl -n kernel.core_pattern | tr ' ' '_')"
+# The previous pattern as hex, so teardown restores every byte exactly (M5a-13 L12).
+state "sysctlfile /etc/sysctl.d/60-writ-core.conf hex:$(writ_hex "$(sysctl -n kernel.core_pattern)")"
 sysctl -q -p /etc/sysctl.d/60-writ-core.conf
 case "$(sysctl -n kernel.core_pattern)" in '|'*) echo "core_pattern is still a pipe" >&2; exit 4 ;; esac
 sha256sum "$WRIT_LIBEXEC/writ-job-launcher" "$WRIT_LIBEXEC/writ-cgroup-exec" /etc/writ-launcher/launcher.json \
