@@ -1,8 +1,8 @@
-# M5 reference VM: setup, trial and teardown (M5a-03)
+# M5 reference VM: setup, trial and teardown (M5a-03, M5a-07)
 
 **Status: PREPARED, NOT RUN.** These scripts exist for the owner-designated disposable VM of D-045 M5-D12. They were never executed on a workstation; the live run is **blocked externally** until the VM exists, and is recorded as blocked, not passed. Interfaces: [M5-INTERFACES](../../docs/implementation/M5-INTERFACES.md) J-1 (identities, layout; **BLOCKED** on owner decisions C-1 and H-2) and J-9 revision 2 (reference image, probes); decision [D-045](../../docs/implementation/DECISION-LOG.md) (M5-D2, M5-D3, M5-D12).
 
-**Provisional names.** Because J-1 is blocked, the agent user (`--agent-user`, default `writ-agent`) and the job user (`--job-user`, default none; created only when given, for H-2 option (a)) are parameters. Probes that test the agent identity (P-AGENT-USERNS, P-AGENT-DENY, P-HARDLINK) report `depends_on: "J-1 C-1 (agent uid provisional)"`; their results are valid for the user tested, and must be repeated if C-1 changes who the agent is (for example a dedicated agent uid, or the human's desktop user with `--desktop-uid` display and session-bus checks under C-1 option (a)).
+**Job identity (D-046 H-2, M5a-07).** The job user (`--job-user`, default `writ-job`) is always created, with its own primary group and no supplementary groups; jobs run only as that user through the root job launcher (`launcher/`, M5-INTERFACES J-11). **Agent user.** The agent user (`--agent-user`, default `writ-agent`) is a parameter. Probes that test the agent identity (P-AGENT-USERNS, P-AGENT-DENY, P-HARDLINK) report `depends_on: "J-1 C-1 (agent uid provisional)"`; their results are valid for the user tested, and must be repeated if C-1 changes who the agent is (for example a dedicated agent uid, or the human's desktop user with `--desktop-uid` display and session-bus checks under C-1 option (a)).
 
 ## Safety
 
@@ -21,7 +21,10 @@ On a build machine (the workstation is fine for building; nothing runs there):
 ```sh
 source m1/tools/env.sh
 cargo build --release --locked -p writ-hostsys        # target/release/writ-probe
-sha256sum target/release/writ-probe                   # record; compare in the VM
+cargo build --locked --profile launcher -p writ-containment   # target/launcher/writ-job-launcher, writ-cgroup-exec (panic = abort)
+# test-only builds for the P-JOB-IDENTITY controls (never installed by setup.sh):
+CARGO_TARGET_DIR=target/faults cargo build --locked --profile launcher -p writ-containment --features test-faults
+sha256sum target/release/writ-probe target/launcher/writ-job-launcher target/launcher/writ-cgroup-exec   # record; compare in the VM
 ```
 
 Inside the VM, after copying `m5/reference-vm/` and `writ-probe` in (for example to `/root/writ/`):
@@ -34,11 +37,13 @@ Inside the VM, after copying `m5/reference-vm/` and `writ-probe` in (for example
 3. Setup:
    ```sh
    /root/writ/reference-vm/setup.sh --designated-vm writ-ref-1 --probe-binary /root/writ/writ-probe \
-     --image-name ubuntu-24.04-server-cloudimg-amd64.img --image-sha256 <64 hex> [--agent-user writ-agent]
+     --image-name ubuntu-24.04-server-cloudimg-amd64.img --image-sha256 <64 hex> \
+     --launcher-binary /root/writ/writ-job-launcher --exec-binary /root/writ/writ-cgroup-exec [--agent-user writ-agent] [--job-user writ-job]
    ```
 4. Trial:
    ```sh
-   /root/writ/reference-vm/trial.sh --designated-vm writ-ref-1
+   /root/writ/reference-vm/trial.sh --designated-vm writ-ref-1 \
+     --test-launcher /root/writ/faults/writ-job-launcher --test-exec /root/writ/faults/writ-cgroup-exec
    ```
 5. Copy `/root/writ-evidence/` off the VM.
 6. Teardown (then roll back to `fresh` anyway):
@@ -76,3 +81,21 @@ From `/root/writ-evidence/<time>-trial/`: `baseline.json` (the `writ-readiness/1
 From `/root/writ-evidence/<time>-teardown/`: `after.txt` (no `LEFT` line).
 
 Never record key material, the canary value, or credentials in evidence or chat.
+
+## Job launcher (M5a-07; D-046 H-2; M5-INTERFACES J-11)
+
+Files under `launcher/`, installed **only** by `setup.sh` inside the designated VM:
+
+| File | Installed as | Purpose |
+|---|---|---|
+| `writ-job-launcher.socket` | `/etc/systemd/system/` | `launch.sock` (`root:writ` 0660), `Accept=yes`, `MaxConnections=1`, explicit trigger and poll limits (J-11.2, L3) |
+| `writ-job-launcher@.service` | `/etc/systemd/system/` | root instance per connection, `StandardInput=socket` (see the deviation note in `containment/src/launcher.rs`), `CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN`, allow-list filesystem view, syscall filter, `Delegate=memory pids cpu`, `KillSignal=SIGKILL` |
+| `writ-jobs.slice` | `/etc/systemd/system/` | aggregate ceilings; child of `writ.slice` (N6) |
+| `writ-launcher.tmpfiles.conf` | `/etc/tmpfiles.d/writ-launcher.conf` | `/run/writ-launcher` `root:writ` 0750 (L6) |
+| `apparmor-writ-bwrap` | `/etc/apparmor.d/writ-bwrap` | profiles `writ-bwrap` (private copy, `userns`) and `writ-job-child` (children: no `userns`, no capabilities) (J-11.5a) |
+
+`setup.sh` also installs both binaries root-owned 0755 after checking `--build-info` (`panic_abort=true`, `test_faults=false`), makes the private bubblewrap `root:writ-job` 0750, makes `/var/lib/writ/run` 0750, creates the dedicated jobs filesystem (`/var/lib/writ-jobs.img`, ext4, mounted `loop,nosuid,nodev` at `/var/lib/writ-jobs`, 0711), a pinned runtime profile `busybox` under `/usr/lib/writ-runtime/` (manifest digest from `writ-job-launcher --runtime-manifest`), `/etc/writ-launcher/launcher.json` (`root:writ` 0640), disables apport and sets `kernel.core_pattern = core`, and records the digests in `/etc/writ/launcher.sha256`.
+
+`trial.sh` sources `trial-launcher.sh`, which drives jobs through `launch.sock` with `launch-client.py` (run as the identity under test) and writes the reports `writ-probe --launcher-reports` evaluates for P-JOB-IDENTITY (with the skip-setgroups and gate-EOF test builds), P-JOB-DENY (sandbox and escape view, per host location), P-LAUNCHER-ADMIT, P-JOB-SERIAL and the P-FD status pipe. Anything a step cannot observe is written `not_run`, which fails the probe. Known gap: the P-FD status-pipe negative control (a build that trusts the status pipe after `started`, with a job able to reach the monitor's descriptor) is not prepared, so P-FD stays failed until it is.
+
+**Verify in VM** (J-11.10), each to be recorded in TEST-EVIDENCE with the pinned version and source reference before the launcher is integrated: bubblewrap 0.9.0 `--block-fd` read location, EOF behaviour and descriptor closing; `--json-status-fd` emitting `child-pid` before blocking; `std` `CommandExt::exec` group clearing on Rust 1.99.1; AppArmor stacking, `px`/`ix` and attachment under `no_new_privs`; `TemporaryFileSystem=/run` with socket activation and `StandardInput=socket` passing no other descriptor; `SystemCallFilter` groups against bubblewrap and the runtime profile; `ProtectKernelTunables=yes` leaving the delegated subtree writable; apport and `core_pattern`; the pre-gate process count (`pre_gate_processes`, N5); `TemporaryFileSystem=/dev/shm /dev/mqueue` over `PrivateDevices=yes`; the `/proc/key-users` baseline after the helper's `setuid`; bubblewrap closing 3 and 4 before executing the program; `--remount-ro /` in `writ-bwrap/1`.

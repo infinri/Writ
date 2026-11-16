@@ -1,0 +1,24 @@
+# Writ job launcher socket (M5a-07; D-046 H-2; M5-INTERFACES J-11.2). PREPARED, NOT RUN.
+# Installed only by m5/reference-vm/setup.sh inside the designated disposable VM.
+# One root launcher instance per connection, one connection at a time (J-11.7). A socket unit
+# in the `failed` state (trigger or poll limit hit) makes containment unavailable (L3).
+[Unit]
+Description=Writ job launcher socket (writ-job jobs, one at a time)
+
+[Socket]
+ListenStream=/run/writ-launcher/launch.sock
+Accept=yes
+MaxConnections=1
+SocketUser=root
+SocketGroup=writ
+SocketMode=0660
+DirectoryMode=0750
+RemoveOnStop=yes
+# Explicit limits (L3); values recorded in the readiness report.
+TriggerLimitIntervalSec=10s
+TriggerLimitBurst=20
+PollLimitIntervalSec=10s
+PollLimitBurst=40
+
+[Install]
+WantedBy=sockets.target

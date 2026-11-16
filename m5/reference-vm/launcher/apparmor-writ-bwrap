@@ -1,0 +1,54 @@
+# Writ AppArmor profiles for the private bubblewrap and every program it executes
+# (M5a-07; D-046 H-2; M5-INTERFACES J-11.5a, H2). PREPARED, NOT RUN. Installed by setup.sh as
+# /etc/apparmor.d/writ-bwrap (digest pinned), following Ubuntu 24.04's bwrap-userns-restrict
+# pattern. kernel.apparmor_restrict_unprivileged_userns = 1 stays set.
+#
+# - writ-bwrap attaches by path to the private copy only and allows what bubblewrap needs;
+#   every program it executes runs under the stacked label writ-bwrap//&writ-job-child.
+# - writ-job-child denies user namespaces and capabilities; executions stay in it (ix), so no
+#   job descendant regains them, including by executing a copy of bubblewrap or the private
+#   copy itself.
+#
+# Verify in VM (J-11.10): syntax and stacking under the pinned AppArmor; attachment of
+# writ-bwrap when executed under no_new_privs from the unconfined launcher; from the escape
+# view, `unshare -U` and the private bubblewrap yield no usable namespace.
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile writ-bwrap /usr/local/libexec/writ/bwrap flags=(attach_disconnected,mediate_deleted) {
+  allow capability,
+  allow file rwlkm /{**,},
+  allow network,
+  allow unix,
+  allow ptrace,
+  allow signal,
+  allow mqueue,
+  allow userns,
+  allow mount,
+  allow umount,
+  allow pivot_root,
+
+  # Every program bubblewrap executes runs under the stacked child label.
+  allow pix /** -> &writ-bwrap//&writ-job-child,
+
+  include if exists <local/writ-bwrap>
+}
+
+profile writ-job-child flags=(attach_disconnected,mediate_deleted) {
+  allow file rwlkmix /{**,},
+  allow network,
+  allow unix,
+  allow signal,
+  allow mqueue,
+
+  audit deny userns,
+  audit deny capability,
+  audit deny mount,
+  audit deny umount,
+  audit deny pivot_root,
+  audit deny ptrace,
+  audit deny io_uring,
+
+  include if exists <local/writ-job-child>
+}

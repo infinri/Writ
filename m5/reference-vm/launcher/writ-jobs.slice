@@ -1,0 +1,10 @@
+# Writ jobs slice (M5a-07; M5-INTERFACES J-11.2, N6). PREPARED, NOT RUN.
+# Installed only by m5/reference-vm/setup.sh. A child of writ.slice by systemd's slice naming:
+# /sys/fs/cgroup/writ.slice/writ-jobs.slice/. It contains only launcher instances.
+[Unit]
+Description=Writ job launcher instances (one job at a time)
+
+[Slice]
+MemoryMax=640M
+TasksMax=1024
+CPUQuota=100%

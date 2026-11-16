@@ -100,12 +100,13 @@ pub fn eval_job_identity(r: &Kv) -> Eval {
         p.push("job did not exit with populated 0".to_string());
     }
     let fds: Vec<&str> = all_values(r, "fd");
+    // A descriptor above 2 that still names an open file is a leak (the listing's own
+    // directory handle is closed before it is read, so it names nothing; as in P-FD).
     let extra: Vec<&&str> = fds
         .iter()
-        .filter(|f| {
-            f.split_once(':')
-                .and_then(|(n, _)| n.parse::<u32>().ok())
-                .is_none_or(|n| n > 2)
+        .filter(|f| match f.split_once(':') {
+            Some((n, target)) => n.parse::<u32>().map_or(true, |n| n > 2) && !target.is_empty(),
+            None => true,
         })
         .collect();
     if fds.is_empty() || !extra.is_empty() {

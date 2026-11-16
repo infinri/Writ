@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# Writ M5 reference-VM readiness trial (M5a-03; D-045 M5-D2, M5-D12; J-9 revision 2).
-# PREPARED, NOT RUN. Runs only inside the owner-designated disposable Ubuntu 24.04 VM, after
-# setup.sh.
+# Writ M5 reference-VM readiness trial (M5a-03, M5a-07; D-045 M5-D2, M5-D12; D-046 H-2;
+# J-9 revisions 2 to 6). PREPARED, NOT RUN. Runs only inside the owner-designated disposable
+# Ubuntu 24.04 VM, after setup.sh.
 #
-# usage: trial.sh --designated-vm NAME
+# usage: trial.sh --designated-vm NAME [--test-launcher PATH --test-exec PATH]
+#
+# --test-launcher and --test-exec name writ-job-launcher and writ-cgroup-exec built with
+# `--features test-faults` (never installed by setup.sh); they replace the installed binaries
+# only during the P-JOB-IDENTITY negative controls (trial-launcher.sh) and are restored by the
+# exit trap. Without them those controls are `not_run` and P-JOB-IDENTITY fails (fail closed).
 #
 # The operator (root) orchestrates; each writ-probe run uses the identity it describes:
 #   - the service-side report runs as `writ` in its own delegated unit
@@ -12,7 +17,11 @@
 # 1. Starts a placeholder service as `writ` (stand-in for writ-serviced until M5a-04) holding
 #    /run/writ/admin.sock (0600), with LimitCORE=0; exports its journal for P-NO-SECRET.
 # 2. Prepares a writ-owned hard-link source in /var/tmp and a bind mount for P-OPENAT2.
-# 3. Runs `writ-probe agent-deny` as the agent user, then the baseline report.
+# 3. Runs the launcher probe trials (trial-launcher.sh; reports for P-JOB-IDENTITY,
+#    P-JOB-DENY, P-LAUNCHER-ADMIT, P-JOB-SERIAL and the P-FD status pipe), `writ-probe
+#    agent-deny` as the agent user, the baseline report as `writ`, and the sandbox probes as the
+#    job user (bubblewrap is executable only by `writ-job`, J-1; their through-the-launcher
+#    variants of the J-9 revision 4 amendment are pending, J-11.10).
 # 4. Runs each VM-only negative control and checks that the probe it targets now fails.
 # 5. Writes every report and a summary to /root/writ-evidence/<time>-trial/. Every change is
 #    restored by an exit trap.
@@ -22,7 +31,18 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/common.sh"
 writ_parse_designated "$@"
 writ_guard "$WRIT_DESIGNATED"
-[ "${#WRIT_ARGS[@]}" = 0 ] || { echo "unexpected arguments: ${WRIT_ARGS[*]}" >&2; exit 2; }
+test_launcher="" test_exec=""
+set -- "${WRIT_ARGS[@]+"${WRIT_ARGS[@]}"}"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --test-launcher) test_launcher="$2"; shift 2 ;;
+    --test-exec) test_exec="$2"; shift 2 ;;
+    *) echo "unexpected argument $1" >&2; exit 2 ;;
+  esac
+done
+for b in $test_launcher $test_exec; do
+  "$b" --build-info | grep -qx 'test_faults=true' || { echo "$b is not a test-faults build" >&2; exit 2; }
+done
 [ -f "$WRIT_STATE_FILE" ] || { echo "run setup.sh first" >&2; exit 2; }
 
 agent_user=$(state_setting agent_user)
@@ -42,6 +62,7 @@ granted=writ-probe-granted
 units=()
 
 cleanup() {
+  if declare -F launcher_restore >/dev/null; then launcher_restore || true; fi
   sysctl -q -w "fs.protected_hardlinks=$hardlinks_before" || true
   chmod 0700 /var/lib/writ/keys || true
   if command -v setfacl >/dev/null; then setfacl -k /var/lib/writ/stores 2>/dev/null || true; fi
@@ -87,16 +108,17 @@ agent_deny() {
   cp "$share/$name.json" "$ev/$name.json"
 }
 
-# run_probe NAME [systemd property args...] -- [writ-probe args...]
+# run_probe NAME [systemd property args...] -- [writ-probe args...] (as writ; RUN_AS overrides)
 run_probe() {
   local name="$1"; shift
+  local as="${RUN_AS:-writ}"
   local props=()
   while [ "$#" -gt 0 ] && [ "$1" != -- ]; do props+=("$1"); shift; done
   [ "$#" -gt 0 ] && shift
   local u="writ-probe-$name-$$"
   units+=("$u")
   set +e
-  systemd-run --quiet --wait --pipe --collect --unit "$u" -p User=writ -p Group=writ "${props[@]+"${props[@]}"}" \
+  systemd-run --quiet --wait --pipe --collect --unit "$u" -p User="$as" -p Group="$as" "${props[@]+"${props[@]}"}" \
     -- "$probe" --canary-file "$canary" "$@" > "$ev/$name.json" 2> "$ev/$name.stderr"
   echo $? > "$ev/$name.exit"
   set -e
@@ -132,13 +154,22 @@ install -d -m 0700 -o writ -g writ "$xdev" "$xdev/root" "$xdev/root/mnt" "$xdev/
 install -m 0600 -o writ -g writ /dev/null "$xdev/src/f"
 mount --bind "$xdev/src" "$xdev/root/mnt"
 
-# 3. Agent-side attempts and the baseline report.
+# 3. Launcher trials, agent-side attempts, the baseline report and the job-side sandbox probes.
+# shellcheck source=trial-launcher.sh
+. "$here/trial-launcher.sh"
 agent_deny agent-deny "$agent_user"
-common=(--service-pid "$pid" --agent-report "$share/agent-deny.json" --log-file "$share/journal.txt")
+common=(--service-pid "$pid" --agent-report "$share/agent-deny.json" --log-file "$share/journal.txt"
+        --launcher-reports "$reports")
 run_probe baseline -p Delegate=yes -- --cgroup-delegated --xdev-root "$xdev" "${common[@]}"
-for id in P-USERNS P-AGENT-USERNS P-FS P-NET P-PID P-CGROUP P-KILL P-LIMITS P-FD P-OPENAT2 P-RENAME \
-          P-FS-TYPE P-ACL P-HARDLINK P-PEERCRED P-AGENT-DENY P-NO-SECRET; do
+for id in P-AGENT-USERNS P-CGROUP P-OPENAT2 P-RENAME P-FS-TYPE P-ACL P-HARDLINK P-PEERCRED \
+          P-AGENT-DENY P-NO-SECRET P-JOB-IDENTITY P-JOB-DENY P-LAUNCHER-ADMIT P-JOB-SERIAL; do
   expect baseline "$id" ok
+done
+jobscratch="$share/jobside"
+install -d -m 0700 -o "$job_user" -g "$job_user" "$jobscratch"
+RUN_AS="$job_user" run_probe jobside -p Delegate=yes -- --cgroup-delegated --scratch "$jobscratch" "${common[@]}"
+for id in P-USERNS P-FS P-NET P-PID P-KILL P-LIMITS P-FD; do
+  expect jobside "$id" ok
 done
 python3 - "$ev/baseline.json" >> "$summary" <<'PY'
 import json, sys
@@ -147,7 +178,10 @@ for p in r["probes"]:
     c = p["negative_control"]
     if c["kind"] == "runtime":
         print(("PASS" if c["result"] == "failed_as_expected" else "FAIL") + f" baseline runtime control {p['id']}: {c['result']}")
-print(("PASS" if r["governed_ready"] else "FAIL") + f" baseline governed_ready={r['governed_ready']}")
+# The baseline alone cannot run the bubblewrap probes (the private copy is executable only by
+# writ-job); governed readiness is the union of baseline and jobside until the launcher-based
+# variants exist (J-11.10), so this line is informational.
+print(f"INFO baseline governed_ready={r['governed_ready']} (bubblewrap probes are in jobside)")
 PY
 
 # 4a. P-USERNS: a private copy without the AppArmor profile fails.
