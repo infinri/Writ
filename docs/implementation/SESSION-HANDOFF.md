@@ -8,13 +8,13 @@ Batch closed 2026-11-17. Continue in a fresh Codex chat. Read this section and W
 
 ### Repository and verification
 
-- Branch `v2/architecture-rebuild` at `infinri/Writ`. This checkpoint travels with the M5b portability batch. Verify the current local, tracking and GitHub heads and the six required jobs on the exact batch SHA. The preceding recovery SHA is `d0f85d8eb1b0c6ac8aa9434bf1c002fcf1d3292d`, [required CI run 44192053842](https://github.com/infinri/Writ/actions/runs/44192053842).
-- E-091 records the focused tests and review. Local logs and the final publication checkpoint are in `/tmp/writ-portability.aoJBF4/`. Preserve private untracked `docs/audit/m0/hook-audit/` without reading, modifying or publishing it. Earlier batch logs and historical worktree details remain in `/tmp/writ-d047.zDnI3H/CHECKPOINT.md`.
-- M5b-01/04 now compares paired canonical ActionRequests and complete kernel Decisions under fixed fixture authority. Refused cases never invoke the test callback. The tests exercise independent normalizers and synthetic snapshot membership. Production effect wiring still depends on verified M5a foundations.
+- Branch `v2/architecture-rebuild` at `infinri/Writ`. This checkpoint travels with the fixture-only desktop probe batch. Verify local, tracking and GitHub heads and the six required jobs on the exact batch SHA. The prior baseline `bfd4bbf2efe99a5fa2da8e7cdd767fab32c5af59` passed all six jobs in [required run 44193546910](https://github.com/infinri/Writ/actions/runs/44193546910).
+- E-092 records the checks and review. Detailed local logs are in `/tmp/writ-desktop.2XW71G/`. Preserve the private untracked `docs/audit/m0/hook-audit/` without reading, modifying or publishing it.
+- The P-AGENT-DESKTOP test-only evaluator covers configured identities, every agent and desktop pair, 38 observation kinds and all eight negative controls. Missing, changing or incomplete inventories, malformed evidence and unproven endpoint access block a pass. The [obligation map](../../m5/reference-vm/DESKTOP-PROBE.md) lists the guest targets and collector requirements. No collector, CLI registration, report integration or deployment evidence was added.
 
 ### Next exact action
 
-After verifying the published batch SHA and required CI, scope one M5a batch around the missing P-AGENT-DESKTOP producer. Start from M5-INTERFACES J-9 and J-11.10, the hostsys probe entry point and the reference-VM runbook. Map the required observations and negative controls to the producer, starting with fixture-backed fail-closed handling for missing or incomplete observations. Actual desktop and launcher evidence must come from the designated guest and isolated gate.
+After verifying the published SHA and required CI, scope one read-only collector batch for configured identities, agent process credentials and desktop target inventory. Start with fixture-backed source parsing and before/after reconciliation. Defer active denial attempts, protocol authorization, control execution and report integration. Run operational collection only in the owner-designated disposable guest with a live test session.
 
 ### Gates and external prerequisites
 

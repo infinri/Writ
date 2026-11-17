@@ -40,3 +40,6 @@ pub mod sock;
 
 pub use probes::Config;
 pub use readiness::{report, verdict, ProbeId, ProbeResult, Status, Verdict};
+
+#[cfg(test)]
+mod desktop;

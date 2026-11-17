@@ -1,11 +1,11 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-17 (M5b portability; M3 and M4 accepted for scoped development) · **Branch:** v2/architecture-rebuild · **Milestone:** M5 in progress. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md) section "Current recovery state".
+**Last updated:** 2026-11-17 (desktop probe fixtures; M3 and M4 accepted for scoped development) · **Branch:** v2/architecture-rebuild · **Milestone:** M5 in progress. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md) section "Current recovery state".
 
 ## Current
 
-- The M5b-01/04 test batch compares canonical ActionRequests and complete Decisions through independent Claude and CLI normalizers with fixed scope, clock, snapshot and policy. Input refusals and non-allow Decisions never reach the test callback. See E-091.
-- Production adapter integration and live host coverage remain open. The proposed next batch scopes fixture-backed work on the missing P-AGENT-DESKTOP producer. The private untracked hook-audit material and historical worktrees are retained.
+- P-AGENT-DESKTOP now has a test-only evaluator for configured actors, 38 required observations and eight negative controls. Seven fixture tests reject missing, incomplete, unstable, malformed or unsafe evidence. See E-092 and the [desktop obligation map](../../m5/reference-vm/DESKTOP-PROBE.md). Real collection, a live test session, control execution and report integration remain open.
+- M5b-01/04 synthetic portability passed in E-091. Production adapter integration and live host coverage remain open.
 - M5a remains implemented in user space with its gate open. Full VM verification and isolated containment CI remain required. Local tooling/designated guest, separate CI infrastructure, later live-model credential and later real hardware are separate prerequisites.
 - D-048 covers only locked-but-unbuilt Chrono 0.4.45. MCP adoption remains blocked on the built dependency and concrete lifecycle integration. Governed integration requires verified foundations. M5 remains in progress, ADR-0008 APPROVED IN PRINCIPLE, release and production NO-GO.
 
@@ -42,10 +42,10 @@ SANDBOX PREPARED / LIVE VERIFICATION NOT EXECUTED; sandbox **torn down** 2026-11
 
 ## Last verification
 
-The prior development baseline `ff0e2eb0e828e98d00fc11e4982586238290cfe3` passed [required CI run 44187034059](https://github.com/infinri/Writ/actions/runs/44187034059), six jobs. The current batch's focused results are in E-091. The handoff identifies where to verify publication and exact-SHA CI.
+The prior baseline `bfd4bbf2efe99a5fa2da8e7cdd767fab32c5af59` passed all six jobs in [required CI run 44193546910](https://github.com/infinri/Writ/actions/runs/44193546910). E-092 records the desktop fixture checks. Verify the current batch's published head and exact-SHA CI as directed in the handoff.
 
 Earlier local evidence (2026-11-13, `b60bf33`, E-074): workspace tests 394 passed (4 ignored), kill tests 4/4 alone, closure self-tests 40, property self-tests 31, closure gate PASS and report verifies, property gate 18,430 checks 0 failed, parity 320/320, dependency gate 0 problems, docs OK. CI run 43518287362, 6/6.
 
 ## Next exact action
 
-Start a fresh chat from [SESSION-HANDOFF](SESSION-HANDOFF.md#current-recovery-state) and verify local/remote state and exact-SHA CI before scoping the P-AGENT-DESKTOP producer batch.
+Start a fresh chat from [SESSION-HANDOFF](SESSION-HANDOFF.md#current-recovery-state) and verify local/remote state and exact-SHA CI before scoping the fixture-backed desktop identity and inventory collector batch.
