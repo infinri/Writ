@@ -4,6 +4,7 @@
 
 ## Current
 
+- Independent M5b development continues under D-045/D-047. Standalone host normalizers, model runner boundary checks, MCP lifecycle candidate and live-host/authenticator preparation are recorded in E-090. The deployment verifier now requires a complete probe set. Every VM and real-device result remains open.
 - M5a is implemented in user space. Its [gate package](M5A-GATE-REVIEW.md) is prepared and blocked on reference-guest verification and isolated containment CI. D-047 authorizes independent M5b contract work and approves Apache-2.0 for `rmcp` 3.9.0 subject to the dependency gates. ADR-0008 remains APPROVED IN PRINCIPLE.
 - Recovery SHA `482129d7a6b05a89451d576f94da31d4fe23f857` matched the upstream branch and passed all six required jobs in [run 43951124726](https://github.com/infinri/Writ/actions/runs/43951124726).
 - **Accepted M3 code:** `b60bf33` (D-039), required CI run [43518287362](https://github.com/infinri/Writ/actions/runs/43518287362), 6/6, closure gate GATE PASS with report verification. Earlier: D-038 `5ac6675` run 43498619705; D-037 `dd11ed1` run 43484993389; M3-07 `146260e` run 43475168083. The separate website workflow fails at the Pages deploy (environment protection); not required CI and protections are not to be changed.

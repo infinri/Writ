@@ -6,8 +6,8 @@
 //!
 //! 1. the operator's `writ-readiness/1` report, read from the configured path (bounded), has
 //!    exactly the D-006 digest recorded in the service configuration;
-//! 2. the report says `governed_ready: true`, lists no blocking probe, and every probe in it
-//!    has status `ok`;
+//! 2. the report says `governed_ready: true`, lists no blocking probe, and includes each
+//!    required J-9 probe exactly once, including P-AGENT-DESKTOP, with status `ok`;
 //! 3. the report carries `static_facts` (`writ-static-facts/1`) and every fact the service
 //!    can observe itself as `writ` ([`FactPlan`]: owners, modes and ACLs of layout paths,
 //!    sysctls, binary digests, group memberships, its own identity) is exactly the
@@ -43,7 +43,7 @@
 //! the reference image (J-9) uses files only. The probes (P-AGENT-DESKTOP) observe the
 //! effective membership with the kernel's view (`/proc/<pid>/status`) as the identities.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
@@ -54,6 +54,7 @@ use std::time::Instant;
 
 use writ_kernel::json::{self, Digest, Value};
 
+use crate::readiness::ProbeId;
 use crate::sock::process_identity;
 
 /// The ACL extended attributes present on `p` (not following a final symlink). A copy of
@@ -592,15 +593,7 @@ fn check(config: &DeploymentConfig) -> Result<(), DeploymentRefused> {
     }
     let ready = m.get("governed_ready") == Some(&Value::Bool(true));
     let unblocked = matches!(m.get("blocking"), Some(Value::Arr(b)) if b.is_empty());
-    let probes_ok = match m.get("probes") {
-        Some(Value::Arr(ps)) if !ps.is_empty() => ps.iter().all(|p| {
-            p.as_obj()
-                .and_then(|o| o.get("status"))
-                .and_then(Value::as_str)
-                == Some("ok")
-        }),
-        _ => false,
-    };
+    let probes_ok = m.get("probes").is_some_and(complete_probe_set);
     if !(ready && unblocked && probes_ok) {
         return Err(DeploymentRefused::NotReady);
     }
@@ -644,6 +637,34 @@ fn check(config: &DeploymentConfig) -> Result<(), DeploymentRefused> {
         }
     }
     Ok(())
+}
+
+fn complete_probe_set(probes: &Value) -> bool {
+    let Some(probes) = probes.as_arr() else {
+        return false;
+    };
+    let required: BTreeSet<_> = ProbeId::ALL
+        .into_iter()
+        .filter(|id| id.required())
+        .map(ProbeId::name)
+        .chain(["P-AGENT-DESKTOP"])
+        .collect();
+    let mut observed = BTreeSet::new();
+    for probe in probes {
+        let Some(row) = probe.as_obj() else {
+            return false;
+        };
+        let Some(id) = row.get("id").and_then(Value::as_str) else {
+            return false;
+        };
+        if (!required.contains(id) && id != ProbeId::Landlock.name())
+            || !observed.insert(id)
+            || row.get("status").and_then(Value::as_str) != Some("ok")
+        {
+            return false;
+        }
+    }
+    required.is_subset(&observed)
 }
 
 /// Largest identity database read (bytes).
@@ -977,10 +998,15 @@ mod tests {
         m.insert("blocking".into(), Value::Arr(vec![]));
         m.insert(
             "probes".into(),
-            Value::Arr(vec![json::obj([
-                ("id", json::s("P-USERNS")),
-                ("status", json::s(probe_status)),
-            ])]),
+            Value::Arr(
+                ProbeId::ALL
+                    .into_iter()
+                    .filter(|id| id.required())
+                    .map(ProbeId::name)
+                    .chain(["P-AGENT-DESKTOP"])
+                    .map(|id| json::obj([("id", json::s(id)), ("status", json::s(probe_status))]))
+                    .collect(),
+            ),
         );
         if let Some(f) = facts {
             m.insert("static_facts".into(), static_facts_value(f));
@@ -997,6 +1023,41 @@ mod tests {
             plan,
             recheck_interval: std::time::Duration::from_secs(300),
         }
+    }
+
+    #[test]
+    fn incomplete_duplicate_unknown_and_failed_probe_sets_refuse() {
+        let bytes = report(None, true, "ok");
+        let value = json::parse(&bytes).unwrap();
+        let complete = value.as_obj().unwrap()["probes"].as_arr().unwrap().to_vec();
+        assert!(complete
+            .iter()
+            .any(|row| row.as_obj().unwrap()["id"].as_str() == Some("P-AGENT-DESKTOP")));
+        assert!(complete_probe_set(&Value::Arr(complete.clone())));
+        for index in 0..complete.len() {
+            let mut missing = complete.clone();
+            missing.remove(index);
+            assert!(!complete_probe_set(&Value::Arr(missing)));
+        }
+        let mut duplicate = complete.clone();
+        duplicate.push(complete[0].clone());
+        assert!(!complete_probe_set(&Value::Arr(duplicate)));
+        let mut unknown = complete.clone();
+        unknown.push(json::obj([
+            ("id", json::s("P-UNKNOWN")),
+            ("status", json::s("ok")),
+        ]));
+        assert!(!complete_probe_set(&Value::Arr(unknown)));
+        let mut landlock = complete.clone();
+        landlock.push(json::obj([
+            ("id", json::s("P-LANDLOCK")),
+            ("status", json::s("ok")),
+        ]));
+        assert!(complete_probe_set(&Value::Arr(landlock)));
+        let failed = report(None, true, "missing");
+        assert!(!complete_probe_set(
+            &json::parse(&failed).unwrap().as_obj().unwrap()["probes"]
+        ));
     }
 
     #[test]

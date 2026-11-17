@@ -1,14 +1,25 @@
 # Model adapter contract fixtures (M5b-05)
 
-This dependency-free Rust draft exercises model selection and inert proposals with local text and hosted structured-tool fixtures. The fixture runner has separate external-host and managed entry points. Its output cannot carry a decision, grant, permit or receipt. The managed path checks the caller's residency and capability requirements before passing the prompt to each adapter, including fallbacks. Synthetic code, research and review tasks require no network, tools, credentials or provider SDK.
+The dependency-free Rust contract defines the agent-side runner, a local text stub and a hosted structured-tool stub. The external-host path takes no model binding. The managed path uses a locally configured tenant and project policy. Before any adapter receives a prompt, the runner checks the configured provider ID, residency, capability and exact egress endpoint. It repeats the same checks at each fallback and refuses missing or ambiguous policy bindings and duplicate provider IDs. A hosted binding requires an approved endpoint. The model request carries only task, prompt and capability.
 
-Run the fixture tests from the Writ root with the pinned Rust toolchain.
+Synthetic coding, research and review tasks produce text or tool proposals. Proposals carry no authorization decisions, grants, permits or receipts. The tests cover incompatible output and providers that lack eligibility, including forbidden endpoint and region. The boundary test calls the actual kernel with existing golden fixtures while the model is unavailable and after it offers a tool proposal. Allow, deny, approval-required and unavailable decisions remain identical. The test uses no model SDK or network. [M5 start plan](../../docs/implementation/M5-START-PLAN.md)
+
+Run the fixtures from the Writ root with the pinned Rust toolchain.
 
 ```bash
 source m1/tools/env.sh
 test_dir=$(mktemp -d)
-rustc --edition=2021 -D warnings --test m5/model-contracts/lib.rs -o "$test_dir/writ-model-contract-tests"
-"$test_dir/writ-model-contract-tests"
+rustc --edition=2021 -D warnings --test m5/model-contracts/lib.rs -o "$test_dir/model-tests"
+"$test_dir/model-tests"
+cargo build --locked -p writ-kernel --target-dir "$test_dir/target"
+rustc --edition=2021 -D warnings --crate-name writ_model_contracts --crate-type rlib \
+  m5/model-contracts/lib.rs -o "$test_dir/libwrit_model_contracts.rlib"
+rustc --edition=2021 -D warnings --test m5/model-contracts/kernel_boundary.rs \
+  -L dependency="$test_dir/target/debug/deps" \
+  --extern writ_kernel="$test_dir/target/debug/libwrit_kernel.rlib" \
+  --extern writ_model_contracts="$test_dir/libwrit_model_contracts.rlib" \
+  -o "$test_dir/kernel-boundary-tests"
+"$test_dir/kernel-boundary-tests"
 ```
 
-The fixtures cover separate provider capabilities, unavailable providers, forbidden fallback and external-host operation without a provider (INV-22, INV-26). Keep the production contracts and providers in separate agent-side crates after lead review. Production provider eligibility must come from trusted configuration, tenant policy and approved egress before a prompt is shared. These fixtures use only locally constructed adapters and reject proposal shapes outside the requested capability. The production INV-21 policy-evaluation outage test and production dependency closure check remain open. [M5 start plan](../../docs/implementation/M5-START-PLAN.md)
+Production adoption still requires separate agent-side crates, trusted provider configuration, transport enforcement of the actual destination including redirects, and a closure scan for kernel, broker and service. This fixture does not wire a managed model or broker effect path.

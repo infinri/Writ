@@ -21,42 +21,6 @@ PORTABILITY_PATH = HERE.parents[2] / "m5" / "host-contracts" / "portability.json
 PORTABILITY_CASES = json.loads(PORTABILITY_PATH.read_text())
 
 
-def claude_write_observation(payload):
-    event = {"PreToolUse": "before_tool", "PermissionRequest": "permission_prompt"}.get(
-        payload["hook_event_name"]
-    )
-    if event is None or payload["tool_name"] != "Write":
-        raise ValueError("unregistered fixture event or tool")
-    absolute_path = payload["tool_input"]["file_path"]
-    prefix = "/fixture/tree/"
-    if not isinstance(absolute_path, str) or not absolute_path.startswith(prefix):
-        raise ValueError("path outside the configured fixture root")
-    path = absolute_path[len(prefix):]
-    if any(part in ("", ".", "..") for part in path.split("/")):
-        raise ValueError("path segment refused")
-    if any(ord(character) < 32 or 127 <= ord(character) < 160 or character == "\\" for character in path):
-        raise ValueError("path character refused")
-    return {"event": event, "intent": "file-write", "relative_path": path}
-
-
-def cli_write_observation(payload):
-    match (payload["phase"], payload["operation"]):
-        case ("before", "file-write"):
-            event = "before_tool"
-        case ("prompt", "file-write"):
-            event = "permission_prompt"
-        case _:
-            raise ValueError("unregistered fixture event or tool")
-
-    relative_path = payload["target"]
-    if not isinstance(relative_path, str) or {"", ".", ".."}.intersection(relative_path.split("/")):
-        raise ValueError("path segment refused")
-    control_points = (*range(32), *range(127, 160))
-    if "\\" in relative_path or any(ord(char) in control_points for char in relative_path):
-        raise ValueError("path character refused")
-    return {"event": event, "intent": "file-write", "relative_path": relative_path}
-
-
 class HostAdapterContracts(unittest.TestCase):
     def test_drafts_and_examples(self):
         for name, schema in SCHEMAS.items():
@@ -166,49 +130,13 @@ class HostAdapterContracts(unittest.TestCase):
                     self.assertGreater(len(payload.encode("utf-8")), 64 * 1024)
 
 
-    def test_independent_write_fixture_projection_is_equal(self):
-        comparisons = {case["id"]: case for case in PORTABILITY_CASES if "expected_observation" in case}
-        self.assertEqual(set(comparisons), {"unicode-original", "unicode-decomposed", "symlink-parent", "permission-prompt"})
-        for case_id, case in comparisons.items():
-            with self.subTest(case=case_id):
-                claude = claude_write_observation(case["hook_input"])
-                cli = cli_write_observation(case["cli_input"])
-                self.assertEqual(claude, case["expected_observation"])
-                self.assertEqual(cli, claude)
-        original = comparisons["unicode-original"]["target_path"].encode()
-        decomposed = comparisons["unicode-decomposed"]["target_path"].encode()
-        self.assertNotEqual(original, decomposed)
 
-    def test_nested_diagnostic_claims_cannot_change_projected_observation(self):
-        prompt = next(case for case in PORTABILITY_CASES if case["id"] == "permission-prompt")
-        hook = copy.deepcopy(prompt["hook_input"])
-        cli = copy.deepcopy(prompt["cli_input"])
+    def test_nested_claims_are_structurally_valid_only_as_diagnostics(self):
         claims = {"grant": "claimed-grant", "approval": True, "action": {"kind": "workflow.transition"}}
-        hook["tool_input"]["diagnostics"] = claims
-        cli["diagnostics"] = claims
-        for view in (claude_write_observation(hook), cli_write_observation(cli)):
-            self.assertEqual(view, prompt["expected_observation"])
-        advisory = copy.deepcopy(FIXTURES["host-event"])
-        advisory["input"]["diagnostics"] = claims
-        VALIDATORS["host-event"].validate(advisory)
-
-    def test_fixture_normalizers_reject_ambiguous_path_segments(self):
-        for path in ("", "/absolute", "../escape", "nested/./file", "nested//file", "end/", "x\\y", "x\x00y", "x\x7fy", "x\x85y"):
-            with self.subTest(path=path):
-                with self.assertRaises(ValueError):
-                    claude_write_observation({
-                        "hook_event_name": "PreToolUse",
-                        "tool_name": "Write",
-                        "tool_input": {"file_path": "/fixture/tree/" + path},
-                    })
-                with self.assertRaises(ValueError):
-                    cli_write_observation({"phase": "before", "operation": "file-write", "target": path})
-        with self.assertRaises(ValueError):
-            claude_write_observation({
-                "hook_event_name": "PreToolUse",
-                "tool_name": "Write",
-                "tool_input": {"file_path": "/fixture/tree-other/report.txt"},
-            })
+        event = copy.deepcopy(FIXTURES["host-event"])
+        event["input"]["diagnostics"] = claims
+        VALIDATORS["host-event"].validate(event)
+        self.assertFalse(VALIDATORS["host-event"].is_valid(event | claims))
 
 
 if __name__ == "__main__":

@@ -2,6 +2,8 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::HashSet;
+
 /// The kind of work requested of a model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Task {
@@ -10,27 +12,57 @@ pub enum Task {
     Review,
 }
 
-/// Capability required to generate the requested proposal.
+/// Capability required by the agent-side task.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Capability {
     Text,
     StructuredTools,
 }
 
-/// Data residency advertised by the fixture.
+/// Data residency of a configured provider binding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Residency {
     Local,
     HostedEu,
 }
 
-/// Requirements established by the caller before provider selection.
+/// Where an approved adapter would send a request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Egress<'a> {
+    None,
+    Endpoint(&'a str),
+}
+
+/// Agent-side model input without credentials, policy or approval material.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Request<'a> {
     pub task: Task,
     pub prompt: &'a str,
     pub capability: Capability,
+}
+
+/// Service-owned tenant and project binding supplied by the local test interface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Scope<'a> {
+    pub tenant: &'a str,
+    pub project: &'a str,
+}
+
+/// Locally configured provider eligibility for a tenant and project.
+pub struct RoutingPolicy<'a> {
+    pub scope: Scope<'a>,
+    pub allowed_providers: &'a [&'a str],
     pub allowed_residencies: &'a [Residency],
+    pub approved_endpoints: &'a [&'a str],
+}
+
+/// Locally configured adapter binding. Routing facts come from this binding.
+pub struct ProviderBinding<'a> {
+    pub id: &'a str,
+    pub residency: Residency,
+    pub egress: Egress<'a>,
+    pub capabilities: &'a [Capability],
+    pub adapter: &'a dyn ModelAdapter,
 }
 
 /// Agent-side model output. An effect requires separate broker authorization.
@@ -50,52 +82,86 @@ pub enum ProviderError {
     UnsupportedCapability,
 }
 
-/// A fixture adapter. An implementation supplies no policy or effect authority.
+/// A fixture adapter. The adapter receives only the request it was selected for.
 pub trait ModelAdapter {
-    fn residency(&self) -> Residency;
-    fn supports(&self, capability: Capability) -> bool;
     fn propose(&self, request: &Request<'_>) -> Result<Proposal, ProviderError>;
 }
 
-/// Provider selection outcomes for this agent-side fixture.
+/// Agent-side runner outcomes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Run {
     ExternalHost,
     Proposed(Proposal),
+    RoutingPolicyUnavailable,
+    RoutingConfigurationInvalid,
     NoEligibleProvider,
     ProvidersUnavailable,
 }
 
-/// External hosts need no local model or provider credentials.
-pub fn external_host() -> Run {
-    Run::ExternalHost
+/// Fixture runner with no policy evaluation or effect API.
+pub struct AgentRunner<'a> {
+    pub policies: &'a [RoutingPolicy<'a>],
+    pub providers: &'a [ProviderBinding<'a>],
 }
 
-/// Try eligible adapters in caller-supplied order. Recheck each fallback's requirements.
-pub fn managed(request: &Request<'_>, adapters: &[&dyn ModelAdapter]) -> Run {
-    let mut eligible = false;
-    for adapter in adapters {
-        if !request.allowed_residencies.contains(&adapter.residency())
-            || !adapter.supports(request.capability)
-        {
-            continue;
+impl AgentRunner<'_> {
+    /// The external-host path requires no model binding or managed prompt.
+    pub fn external_host() -> Run {
+        Run::ExternalHost
+    }
+
+    /// Apply the bound routing policy before sharing the prompt with each candidate.
+    pub fn managed(&self, scope: Scope<'_>, request: &Request<'_>) -> Run {
+        let mut matching = self.policies.iter().filter(|policy| policy.scope == scope);
+        let Some(policy) = matching.next() else {
+            return Run::RoutingPolicyUnavailable;
+        };
+        if matching.next().is_some() {
+            return Run::RoutingPolicyUnavailable;
         }
-        eligible = true;
-        if let Ok(proposal) = adapter.propose(request) {
-            let shape_allowed = matches!(
-                (request.capability, &proposal),
-                (Capability::Text, Proposal::Text(_))
-                    | (Capability::StructuredTools, Proposal::Tool { .. })
-            );
-            if shape_allowed {
-                return Run::Proposed(proposal);
+
+        let mut provider_ids = HashSet::new();
+        if self
+            .providers
+            .iter()
+            .any(|binding| binding.id.is_empty() || !provider_ids.insert(binding.id))
+        {
+            return Run::RoutingConfigurationInvalid;
+        }
+
+        let mut eligible = false;
+        for binding in self.providers {
+            let egress_allowed = match (binding.residency, binding.egress) {
+                (Residency::Local, Egress::None) => true,
+                (Residency::HostedEu, Egress::Endpoint(endpoint)) => {
+                    !endpoint.is_empty() && policy.approved_endpoints.contains(&endpoint)
+                }
+                _ => false,
+            };
+            if !policy.allowed_providers.contains(&binding.id)
+                || !policy.allowed_residencies.contains(&binding.residency)
+                || !binding.capabilities.contains(&request.capability)
+                || !egress_allowed
+            {
+                continue;
+            }
+            eligible = true;
+            if let Ok(proposal) = binding.adapter.propose(request) {
+                let shape_allowed = matches!(
+                    (request.capability, &proposal),
+                    (Capability::Text, Proposal::Text(_))
+                        | (Capability::StructuredTools, Proposal::Tool { .. })
+                );
+                if shape_allowed {
+                    return Run::Proposed(proposal);
+                }
             }
         }
-    }
-    if eligible {
-        Run::ProvidersUnavailable
-    } else {
-        Run::NoEligibleProvider
+        if eligible {
+            Run::ProvidersUnavailable
+        } else {
+            Run::NoEligibleProvider
+        }
     }
 }
 
@@ -105,16 +171,8 @@ pub struct LocalText {
 }
 
 impl ModelAdapter for LocalText {
-    fn residency(&self) -> Residency {
-        Residency::Local
-    }
-
-    fn supports(&self, capability: Capability) -> bool {
-        capability == Capability::Text
-    }
-
     fn propose(&self, request: &Request<'_>) -> Result<Proposal, ProviderError> {
-        if !self.supports(request.capability) {
+        if request.capability != Capability::Text {
             return Err(ProviderError::UnsupportedCapability);
         }
         if self.offline {
@@ -135,16 +193,8 @@ pub struct HostedTools {
 }
 
 impl ModelAdapter for HostedTools {
-    fn residency(&self) -> Residency {
-        Residency::HostedEu
-    }
-
-    fn supports(&self, capability: Capability) -> bool {
-        capability == Capability::StructuredTools
-    }
-
     fn propose(&self, request: &Request<'_>) -> Result<Proposal, ProviderError> {
-        if !self.supports(request.capability) {
+        if request.capability != Capability::StructuredTools {
             return Err(ProviderError::UnsupportedCapability);
         }
         if self.offline {
@@ -160,133 +210,4 @@ impl ModelAdapter for HostedTools {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn coding_research_and_review_produce_inert_proposals() {
-        let local = LocalText { offline: false };
-        let hosted = HostedTools { offline: false };
-        for (task, text, tool, arguments) in [
-            (
-                Task::Code,
-                "Draft a patch for review",
-                "inspect_source",
-                "src/lib.rs",
-            ),
-            (
-                Task::Research,
-                "Collect sources for review",
-                "suggest_search",
-                "documentation",
-            ),
-            (
-                Task::Review,
-                "Summarize the review findings",
-                "inspect_diff",
-                "pending changes",
-            ),
-        ] {
-            let request = Request {
-                task,
-                prompt: "synthetic fixture",
-                capability: Capability::Text,
-                allowed_residencies: &[Residency::Local, Residency::HostedEu],
-            };
-            assert_eq!(
-                managed(&request, &[&hosted, &local]),
-                Run::Proposed(Proposal::Text(text))
-            );
-            let tools_request = Request {
-                capability: Capability::StructuredTools,
-                ..request
-            };
-            assert_eq!(
-                managed(&tools_request, &[&local, &hosted]),
-                Run::Proposed(Proposal::Tool {
-                    name: tool,
-                    arguments
-                })
-            );
-        }
-    }
-
-    #[test]
-    fn fallback_respects_capability_and_residency_before_provider_calls() {
-        struct Forbidden;
-        impl ModelAdapter for Forbidden {
-            fn residency(&self) -> Residency {
-                Residency::HostedEu
-            }
-            fn supports(&self, _capability: Capability) -> bool {
-                true
-            }
-            fn propose(&self, _request: &Request<'_>) -> Result<Proposal, ProviderError> {
-                panic!("the forbidden provider must not receive the prompt")
-            }
-        }
-
-        let offline = LocalText { offline: true };
-        let online = LocalText { offline: false };
-        let request = Request {
-            task: Task::Review,
-            prompt: "local-only fixture",
-            capability: Capability::Text,
-            allowed_residencies: &[Residency::Local],
-        };
-        assert_eq!(
-            managed(&request, &[&offline, &Forbidden]),
-            Run::ProvidersUnavailable
-        );
-        assert!(matches!(
-            managed(&request, &[&offline, &Forbidden, &online]),
-            Run::Proposed(_)
-        ));
-        assert_eq!(
-            managed(
-                &Request {
-                    capability: Capability::StructuredTools,
-                    ..request
-                },
-                &[&online, &Forbidden]
-            ),
-            Run::NoEligibleProvider
-        );
-    }
-
-    #[test]
-    fn mismatched_proposal_is_ignored_and_fallback_stays_eligible() {
-        struct WrongShape;
-        impl ModelAdapter for WrongShape {
-            fn residency(&self) -> Residency {
-                Residency::Local
-            }
-            fn supports(&self, capability: Capability) -> bool {
-                capability == Capability::Text
-            }
-            fn propose(&self, _request: &Request<'_>) -> Result<Proposal, ProviderError> {
-                Ok(Proposal::Tool {
-                    name: "fixture",
-                    arguments: "",
-                })
-            }
-        }
-
-        let request = Request {
-            task: Task::Review,
-            prompt: "local-only fixture",
-            capability: Capability::Text,
-            allowed_residencies: &[Residency::Local],
-        };
-        assert_eq!(managed(&request, &[&WrongShape]), Run::ProvidersUnavailable);
-        assert_eq!(
-            managed(&request, &[&WrongShape, &LocalText { offline: false }]),
-            Run::Proposed(Proposal::Text("Summarize the review findings"))
-        );
-    }
-
-    #[test]
-    fn external_host_needs_no_model() {
-        assert_eq!(external_host(), Run::ExternalHost);
-    }
-}
+mod tests;

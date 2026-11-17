@@ -20,4 +20,24 @@ The portability matrix is a set of independent adapter acceptance cases. Feed th
 
 Run the focused contract checks with `python3 -m unittest discover -s docs/contracts/proposed -p test_host_adapter_contract.py`.
 
-The fixture test has two independent write-observation projections. It checks the resulting event, write intent and exact relative path for matched inputs, including non-ASCII paths and permission prompts. Claude-shaped fixtures use the documented hook field layout. The generic CLI shape is local to the fixture. These prototypes consume predecoded, bounded fixture values and have no I/O, sealing or dispatch behavior. [Claude Code hooks reference](https://code.claude.com/docs/en/hooks#pretooluse-input)
+## Nonprivileged normalization
+
+The standalone Rust test interface has separate Claude Code and generic CLI modules. The advisory functions consume bounded raw JSON and project the event phase and path for matched write observations. Claude-shaped fixtures use the documented hook field layout. The generic CLI shape is local to these fixtures. Write contents, native approval choices and identity assertions do not enter the projection. [Claude Code hooks reference](https://code.claude.com/docs/en/hooks#pretooluse-input)
+
+The protected functions recognize separate synthetic `writ_fs_create` and `create-file` inputs. They produce inert create-only proposals with an exact target path, source path, snapshot ID, manifest digest and content digest. They share the existing strict parser and input cap but map fields and validate target paths independently. The Claude module takes a trusted configured path prefix. Both enforce J-7 lexical target limits. Source paths use the storage syntax for printable ASCII and snapshot IDs use `snap-` followed by a lowercase digest in hex. The service must still apply its configured limits and verify snapshot scope and membership. Target resolution remains the protected adapter's job.
+
+Run the Rust checks from the Writ root with the pinned toolchain.
+
+```bash
+source m1/tools/env.sh
+host_check=$(mktemp -d)
+cargo build --locked --target-dir "$host_check" -p writ-kernel -p writ-rpc
+rustc --edition=2021 -D warnings --test m5/host-contracts/lib.rs \
+  -L "dependency=$host_check/debug/deps" \
+  --extern "writ_kernel=$host_check/debug/libwrit_kernel.rlib" \
+  --extern "writ_rpc=$host_check/debug/libwrit_rpc.rlib" \
+  -o "$host_check/host-contract-tests"
+"$host_check/host-contract-tests"
+```
+
+Both normalizers agree on the advisory projections and the create-only proposals. Tests do not seal requests or dispatch effects. The protected tool registration, service integration, ActionRequest and Decision equivalence, and live host coverage remain open.

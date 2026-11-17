@@ -10,6 +10,17 @@ D-046 requires a dedicated agent UID (default `writ-agent`) separate from `writ`
 - Nothing here installs a hypervisor, provisions a cloud VM, uses personal credentials, or changes the workstation (M5-D3, M5-D12). Take an unmarked VM snapshot before owner designation; rolling back to it is the authoritative reset.
 - `kernel.apparmor_restrict_unprivileged_userns = 1` **stays set** (J-9). `setup.sh` stops (exit 4) if it is not 1, if cgroup v2 is missing, or if AppArmor is disabled. It leaves the user namespace restriction enabled. The `userns` grant goes only to the private bubblewrap copy through an AppArmor profile attached by path.
 
+## What still needs verification
+
+| Prerequisite | Gate it blocks |
+|---|---|
+| Working VM tooling and a guest the owner has designated | Reference VM observations for M5a. Confirm power-off rollback before the first Writ setup. |
+| Isolated containment CI with a reviewed host provisioner | M5a-12. The reference guest never enters this runner pool. |
+| A dedicated, revocable model credential on a separate approved trial guest | Later M5b-08 live-host observations. |
+| A roaming FIDO2 key and a platform passkey under the owner's control | Later M5b-10 real-device observations. |
+
+[Local provisioning](PROVISIONING.md) · [Containment CI](../containment-ci/README.md) · [Live-host readiness](../live-host/README.md) · [Real authenticators](../authenticator-trials/README.md)
+
 ## Commands
 
 In a reviewed checkout of the exact trial SHA on an amd64 Ubuntu 24.04 build machine with the pinned toolchain and SQLite installed, build and stage the binaries. Keep the test-only launcher binaries separate from the ordinary launchers.
@@ -96,7 +107,7 @@ VM-only negative controls in `trial.sh` (each probe's runtime control runs insid
 
 From `/root/writ-evidence/<time>-setup/`: `versions-before.txt`, `versions-after.txt` (kernel, kernel package, systemd, bubblewrap version, system and private binary digests, AppArmor profile digest and load state, util-linux, coreutils, glibc, apparmor package, cgroup controllers, the J-9 sysctls, LSMs, filesystem source, type, UUID and options of `/var/lib` and `/srv`), `digests.txt`, `apparmor-writ-bwrap.txt`, `filesystems.txt`, `layout.txt`, `identities.txt`, `state.txt`.
 
-From `/root/writ-evidence/<time>-trial/`: `baseline.json` (service-side `writ-readiness/1`), `jobside.json` (separate job-UID diagnostics), `agent-deny.json`, each `*-control.json` with its `.exit` and `.stderr`, `versions.txt`, `digests.txt` and `summary.txt` (one PASS or FAIL line per expectation). Record per-probe status in both reports, runtime control outcomes, the targeted VM control outcomes, `governed_ready` as emitted, the exact image name and SHA-256, hypervisor product and version, and the actual service, agent, desktop and job UIDs. The direct job-UID diagnostics do not supply the required launcher-mediated probes or a deployment proof. Treat absent checks as open.
+From `/root/writ-evidence/<time>-trial/`: `baseline.json` (service-side `writ-readiness/1`), `jobside.json` (separate job-UID diagnostics), `agent-deny.json`, each `*-control.json` with its `.exit` and `.stderr`, `versions.txt`, `digests.txt` and `summary.txt` (one PASS or FAIL line per expectation). Record per-probe status in both reports, runtime control outcomes, the targeted VM control outcomes, `governed_ready` as emitted, the exact image name and SHA-256, hypervisor product and version, and the actual service, agent, desktop and job UIDs. The direct job-UID diagnostics do not supply the required launcher-mediated probes or a deployment proof. Treat absent checks as open. Deployment report validation requires each mandatory probe exactly once with status `ok`, including P-AGENT-DESKTOP. The current probe CLI has no P-AGENT-DESKTOP producer. Complete and independently review the live desktop and launcher evidence before enabling a deployment proof. [Probe IDs](../../hostsys/src/readiness.rs) · [Deployment report verification](../../hostsys/src/deployment.rs).
 
 From `/root/writ-evidence/<time>-teardown/`: `after.txt` (no `LEFT` line).
 

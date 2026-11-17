@@ -30,3 +30,9 @@ Use the SDK stdio transport in the agent-side shim only. Set the returned server
 To reproduce in a scratch copy of the recovery commit, add a temporary workspace binary depending only on the declaration above and `tokio = { version = "=1.54.1", default-features = false, features = ["rt", "io-std", "time"] }`. Resolve from the existing lock, build with the pinned toolchain and `--locked`, inspect `cargo tree --locked -p <candidate> -e normal,build` with both the Linux target and `--target all`, and inspect the inverse feature tree with `cargo tree --locked -p <candidate> -e features -i chrono`. Compare each package's registry archive with its lock checksum and rerun OSV on the selected versions.
 
 Before adoption, review the actual final graph and feature unification, add per-member allow-list constraints and notices, generate the SBOM, and run the existing dependency gate. Assert that kernel, broker and service closures contain neither MCP packages nor model SDKs. The scratch graph and negotiation results are candidate evidence.
+
+## Initialization investigation continued (2026-11-17)
+
+The official registry metadata was refreshed through 3.11.0. Both 3.10.0 and 3.11.0 still declare a mandatory Chrono dependency. Disabling defaults and selecting the server/stdio features cannot remove that edge. Moving to either version would also require a new exact-version review and package licence decision. No replacement or advisory extension was adopted.
+
+The [initialization candidate](../../../m5/mcp-contracts/README.md) is exercised independently with four local state tests and a scratch rmcp 3.9.0 typed handler. That handler refused tools/list before initialized, accepted it after initialized, and refused a stateless pinned-version tools/list. Full tools/call dispatch, cancellation and concurrent transport integration remain adoption requirements. The SDK continues to own framing, parsing and negotiation.

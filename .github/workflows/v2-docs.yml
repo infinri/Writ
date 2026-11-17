@@ -37,6 +37,28 @@ jobs:
           rustfmt --edition 2021 --check m5/model-contracts/lib.rs
           rustc --edition 2021 -D warnings --test m5/model-contracts/lib.rs -o "$RUNNER_TEMP/writ-model-contract-tests"
           "$RUNNER_TEMP/writ-model-contract-tests"
+      - name: Host normalizers and kernel model boundary
+        run: |
+          check_dir="$RUNNER_TEMP/writ-adapter-check"
+          cargo build --locked --target-dir "$check_dir" -p writ-kernel -p writ-rpc
+          rustfmt --edition 2021 --check m5/host-contracts/lib.rs m5/model-contracts/kernel_boundary.rs
+          rustc --edition 2021 -D warnings --test m5/host-contracts/lib.rs \
+            -L "dependency=$check_dir/debug/deps" \
+            --extern "writ_kernel=$check_dir/debug/libwrit_kernel.rlib" \
+            --extern "writ_rpc=$check_dir/debug/libwrit_rpc.rlib" -o "$check_dir/host-tests"
+          "$check_dir/host-tests"
+          rustc --edition 2021 -D warnings --crate-name writ_model_contracts --crate-type rlib \
+            m5/model-contracts/lib.rs -o "$check_dir/libwrit_model_contracts.rlib"
+          rustc --edition 2021 -D warnings --test m5/model-contracts/kernel_boundary.rs \
+            -L "dependency=$check_dir/debug/deps" \
+            --extern "writ_kernel=$check_dir/debug/libwrit_kernel.rlib" \
+            --extern "writ_model_contracts=$check_dir/libwrit_model_contracts.rlib" -o "$check_dir/model-boundary-tests"
+          "$check_dir/model-boundary-tests"
+      - name: MCP lifecycle candidate fixtures
+        run: |
+          rustfmt --edition 2021 --check m5/mcp-contracts/lib.rs
+          rustc --edition 2021 -D warnings --test m5/mcp-contracts/lib.rs -o "$RUNNER_TEMP/writ-mcp-contract-tests"
+          "$RUNNER_TEMP/writ-mcp-contract-tests"
       - name: Format, lint, build and test (locked)
         run: |
           cargo fmt --all --check

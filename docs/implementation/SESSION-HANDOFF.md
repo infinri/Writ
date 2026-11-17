@@ -4,18 +4,21 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 
 ## Current recovery state
 
-Checkpoint 2026-11-17 under D-047 and D-048.
+Checkpoint 2026-11-17 under D-047 and D-048, independent M5b development.
 
 ### 1. Repository and CI
 
+- Current published baseline `f5e01c2a81389c85bc614d2ac10e0b5c33c7a64b` passed required CI 6/6 ([run 44178727740](https://github.com/infinri/Writ/actions/runs/44178727740)). Independent M5b work continues in the staging clone `/tmp/writ-d047.zDnI3H/repo` with three scoped workers and no worker commits. Lead owns shared interfaces, dependencies and CI.
 - Branch `v2/architecture-rebuild`. At recovery the original checkout, local tracking ref and GitHub remote branch all matched `482129d7a6b05a89451d576f94da31d4fe23f857`. All six required jobs passed on that SHA ([run 43951124726](https://github.com/infinri/Writ/actions/runs/43951124726)). The Pages deployment job remains separately blocked by environment protection.
 - D-047 was published as `b5de4d12b73c180a6dd417be22c5790c06f55e5f`. Required CI finished 5/6 ([run 44167024380](https://github.com/infinri/Writ/actions/runs/44167024380)) because the lockfile already contained unbuilt Chrono 0.4.45. D-048 authorizes the locked-only development exception. The exception requires absence from the all-features graph across targets and leaves release blocked. See E-089.
 - D-047 work was staged from that commit. Verify the current local SHA, remote branch and required jobs before proceeding. Preserve private owner material and every preexisting worker branch and worktree. D-047's VM, HostAdapter and MCP/model workers completed their scoped assignments in one staging checkout with disjoint ownership and no worker commits. No old worker worktrees were removed.
 
 ### 2. Delivered and open
 
+- Independent development adds Rust host normalizers, two provider stubs with configured routing and an AgentRunner, actual-kernel outage boundary checks, and a dependency-free MCP initialization gate. Prepared live-host and real-authenticator checklists expose the real-ledger bootstrap and missing executable trial paths. All three workers returned focused summaries and independent reviews. No worker branches or commits were added.
+- The deployment verifier now requires every mandatory probe plus P-AGENT-DESKTOP exactly once. The CLI still lacks the complete desktop producer, so governed deployment remains blocked until real operator evidence is available.
 - [D-047](DECISION-LOG.md) records VM and CI containment obligations and exact Apache-2.0 approval for `rmcp` 3.9.0. M5 is in progress. **M5a gate remains blocked. ADR-0008 APPROVED IN PRINCIPLE. Release and production NO-GO.**
-- [Reference VM](../../m5/reference-vm/README.md) and [provisioning](../../m5/reference-vm/PROVISIONING.md) document the verified dated Ubuntu 24.04 image, clean snapshot, owner marker and evidence export. Workstation has working KVM access, 9.3 GiB available RAM and 36 GiB available disk at preflight. QEMU and image/seed tooling are missing. The current readiness split and namespace negative-control gap are documented. Reference verification needs the configured guest, the owner marker and all open checks in [M5A-GATE-REVIEW](M5A-GATE-REVIEW.md).
+- [Reference VM](../../m5/reference-vm/README.md) and [provisioning](../../m5/reference-vm/PROVISIONING.md) document the verified dated Ubuntu 24.04 image, clean snapshot, owner marker and evidence export. Workstation has working KVM access, 9.3 GiB available RAM and 36 GiB available disk at preflight. QEMU and image/seed tooling are missing. The smallest local owner action is to provide those tools or an equivalent existing disposable guest. Isolated containment CI separately needs the restricted control repository, runner group, host provisioner, exact gate wrapper and status App. The dedicated model credential is a later live-host prerequisite, and real roaming/platform authenticators are a later hardware prerequisite. The current readiness split and namespace negative-control gap are documented. Reference verification needs the configured guest, the owner marker and all open checks in [M5A-GATE-REVIEW](M5A-GATE-REVIEW.md).
 - [Containment CI draft](../../m5/containment-ci/README.md) has an independently reviewed workflow and provisioning procedure. Needs the private control repository, restricted runner group, host-side provisioner, exact gate wrapper and manifest, and status App. It remains outside active CI.
 - [HostAdapter draft and fixtures](../../m5/host-contracts/README.md) and [Rust model fixtures](../../m5/model-contracts/README.md) passed focused checks (E-088). Live host portability, production contracts, trusted delegation, and governed enforcement remain open.
 - [MCP candidate review](m5-deps/d047-rmcp-review.md) records the Chrono advisory and a lifecycle validation gap. No dependency was adopted. Resolve or explicitly disposition the transitive advisory, implement and test the agent-side initialization guard, and complete dependency isolation, exact checksums, notices, SBOM and advisory gates before adoption.
@@ -36,7 +39,7 @@ rustc --edition=2021 -D warnings --test m5/model-contracts/lib.rs -o "$test_dir/
 "$test_dir/writ-model-contract-tests"
 ```
 
-Verify the reviewed D-047 revision and required CI. With the owner-provided VM tooling or equivalent disposable guest, follow the reference runbook through owner designation, record every VM checklist result and fix any failed control before re-presenting the gate. Continue independent M5b fixture and contract work while the host prerequisites are pending. Obtain independent review before integrating changed trust boundaries.
+Verify the current independent-development revision and required CI. See E-090 for deployment probe completeness and candidate checks. With the owner-provided VM tooling or equivalent disposable guest, follow the reference runbook through owner designation, record every VM checklist result and fix any failed control before re-presenting the gate. Continue independent M5b fixture and contract work while the host prerequisites are pending. Obtain independent review before integrating changed trust boundaries.
 
 ## Prior checkpoints
 
