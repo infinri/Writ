@@ -712,3 +712,10 @@ The timeout and lock-wait figures in E-034, E-035 and E-036 are **preliminary an
 - **Independent static review:** HostAdapter prevents after-tool coverage from claiming prevention and documents authenticated service peer and descriptor handling. The model fixture rejects mismatched proposal shapes and records the production trusted provider and tenant-policy requirement. The runner draft separates guest output from published evidence and requires authenticated terminal success, exact evidence, cleanup and fenced status publication.
 - **Dependency candidate:** archive inspection and independent rehash of the 61 Linux packages, 85-package OSV query, and scratch protocol negotiation. Chrono maintenance advisory and the SDK's stateless access at the pinned version leave adoption held. [D-047 candidate details](m5-deps/d047-rmcp-review.md).
 - **Open:** no VM or containment job executed. The entire [verify-in-VM checklist](M5A-GATE-REVIEW.md#4-verify-in-vm-checklist-all-open), live reference evidence, isolated runner gate and governed integration remain open.
+
+### E-089: D-048 locked-only Chrono advisory (2026-11-17)
+
+- Required CI failed 1 of 6 jobs on `b5de4d12b73c180a6dd417be22c5790c06f55e5f`. The sole dependency-gate problem was RUSTSEC-2026-0543 on `chrono` 0.4.45 ([run 44167024380](https://github.com/infinri/Writ/actions/runs/44167024380)).
+- `cargo tree --offline --locked --workspace --all-features --target all -e normal,build,dev --prefix none` found no Chrono build edge. Cargo.lock retains the package through `serde_with` in the WebAuthn graph.
+- The live `check_deps.py --osv --sbom` development run reported 0 problems and printed the Chrono advisory under the D-048 exception. `check_deps.py --release` queried OSV and exited 1 with the Chrono advisory as a problem.
+- Gate regression tests cover development and release handling, missing locked-only classification, an incomplete graph, and a synthetic build edge to the exact locked package.

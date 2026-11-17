@@ -4,11 +4,12 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 
 ## Current recovery state
 
-Checkpoint 2026-11-17 under D-047.
+Checkpoint 2026-11-17 under D-047 and D-048.
 
 ### 1. Repository and CI
 
 - Branch `v2/architecture-rebuild`. At recovery the original checkout, local tracking ref and GitHub remote branch all matched `482129d7a6b05a89451d576f94da31d4fe23f857`. All six required jobs passed on that SHA ([run 43951124726](https://github.com/infinri/Writ/actions/runs/43951124726)). The Pages deployment job remains separately blocked by environment protection.
+- D-047 was published as `b5de4d12b73c180a6dd417be22c5790c06f55e5f`. Required CI finished 5/6 ([run 44167024380](https://github.com/infinri/Writ/actions/runs/44167024380)) because the lockfile already contained unbuilt Chrono 0.4.45. D-048 authorizes the locked-only development exception. The exception requires absence from the all-features graph across targets and leaves release blocked. See E-089.
 - D-047 work was staged from that commit. Verify the current local SHA, remote branch and required jobs before proceeding. Preserve private owner material and every preexisting worker branch and worktree. D-047's VM, HostAdapter and MCP/model workers completed their scoped assignments in one staging checkout with disjoint ownership and no worker commits. No old worker worktrees were removed.
 
 ### 2. Delivered and open

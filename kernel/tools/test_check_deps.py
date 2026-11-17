@@ -5,7 +5,9 @@
 import json
 import sys
 import unittest
+from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_deps  # noqa: E402
@@ -107,6 +109,37 @@ class Advisories(unittest.TestCase):
         self.assertEqual(len(check_deps.advisories({("rsa", "0.10.0-rc.19"): ["RUSTSEC-2023-0071", "RUSTSEC-2099-0001"]},
                                                    self.EXC, False)[0]), 1)
         self.assertEqual(len(check_deps.advisories({("rsa", "0.10.0-rc.20"): ["RUSTSEC-2023-0071"]}, self.EXC, False)[0]), 1)
+
+    def test_chrono_exception_requires_a_complete_graph_and_an_unbuilt_entry(self):
+        allow = json.loads((check_deps.ROOT / "approval/deps-allowlist.json").read_text())
+        key = ("chrono", "0.4.45")
+        entry = allow["locked_unbuilt"]["chrono"]
+        exceptions = allow["advisory_exceptions"]
+        graph = {member: set() for member in check_deps.MEMBERS}
+        unbuilt = {key: entry}
+        hit = {key: ["RUSTSEC-2026-0543"]}
+        self.assertEqual(check_deps.locked_only_problems(exceptions, unbuilt, graph), [])
+        self.assertEqual(check_deps.advisories(hit, exceptions, False)[0], [])
+        self.assertEqual(len(check_deps.advisories(hit, exceptions, True)[0]), 1)
+        self.assertEqual(len(check_deps.locked_only_problems(exceptions, {}, graph)), 1)
+        self.assertEqual(len(check_deps.locked_only_problems(exceptions, unbuilt, {})), 1)
+
+        graph["writ-approval"].add(key)
+        self.assertIn("chrono@0.4.45", check_deps.locked_only_problems(exceptions, unbuilt, graph)[0])
+
+    def test_all_features_graph_rejects_an_unknown_row(self):
+        with patch.object(check_deps.subprocess, "run") as cargo:
+            cargo.return_value.stdout = "0writ-approval v0.1.0 (/checkout/approval)\n1unknown dependency row\n"
+            with self.assertRaisesRegex(ValueError, "unrecognized all-features cargo tree row"):
+                check_deps.combined("normal,build,dev", all_features=True)
+            cargo.return_value.stdout = "0writ-approval v0.1.0 (/checkout/approval)\n1chrono v0.4.45 (registry)\n"
+            graph = check_deps.combined("normal,build,dev", all_features=True)
+            self.assertEqual(graph, {"writ-approval": {("chrono", "0.4.45")}})
+
+    def test_osv_rejects_an_incomplete_batch(self):
+        with patch.object(check_deps.urllib.request, "urlopen", return_value=StringIO('{"results": []}')):
+            with self.assertRaisesRegex(ValueError, "one result object per locked package"):
+                check_deps.osv([{"name": "chrono", "version": "0.4.45"}])
 
 
 class ThroughMembers(unittest.TestCase):

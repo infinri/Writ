@@ -1435,6 +1435,14 @@
     }
   },
   "advisory_exceptions": {
+    "chrono@0.4.45": {
+      "ids": ["RUSTSEC-2026-0543"],
+      "scope": "DEVELOPMENT-ONLY, LOCKED-ONLY",
+      "decision": "D-048",
+      "locked_only": true,
+      "path": "optional chrono dependency of serde_with 3.24.0 through the WebAuthn closure",
+      "update_plan": "remove when the lock no longer retains chrono; review at dependency changes; release needs an explicit disposition"
+    },
     "rsa@0.10.0-rc.19": {
       "ids": [
         "RUSTSEC-2023-0071",
