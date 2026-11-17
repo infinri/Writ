@@ -8,6 +8,7 @@ Checkpoint 2026-11-17 under D-047 and D-048, independent M5b development.
 
 ### 1. Repository and CI
 
+- Independent-development candidate `f102eb7` was published. CI run 44185744860 exposed incomplete synthetic reports in snapshot and service tests. The follow-up updates those fixtures to the full required probe set without weakening deployment validation. See E-090 and verify required CI for the current tip.
 - Current published baseline `f5e01c2a81389c85bc614d2ac10e0b5c33c7a64b` passed required CI 6/6 ([run 44178727740](https://github.com/infinri/Writ/actions/runs/44178727740)). Independent M5b work continues in the staging clone `/tmp/writ-d047.zDnI3H/repo` with three scoped workers and no worker commits. Lead owns shared interfaces, dependencies and CI.
 - Branch `v2/architecture-rebuild`. At recovery the original checkout, local tracking ref and GitHub remote branch all matched `482129d7a6b05a89451d576f94da31d4fe23f857`. All six required jobs passed on that SHA ([run 43951124726](https://github.com/infinri/Writ/actions/runs/43951124726)). The Pages deployment job remains separately blocked by environment protection.
 - D-047 was published as `b5de4d12b73c180a6dd417be22c5790c06f55e5f`. Required CI finished 5/6 ([run 44167024380](https://github.com/infinri/Writ/actions/runs/44167024380)) because the lockfile already contained unbuilt Chrono 0.4.45. D-048 authorizes the locked-only development exception. The exception requires absence from the all-features graph across targets and leaves release blocked. See E-089.

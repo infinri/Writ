@@ -892,7 +892,15 @@ fn the_verified_deployment_proof_controls_immutable() {
         m.insert("blocking".into(), Value::Arr(vec![]));
         m.insert(
             "probes".into(),
-            Value::Arr(vec![json::obj([("status", json::s("ok"))])]),
+            Value::Arr(
+                writ_hostsys::readiness::ProbeId::ALL
+                    .into_iter()
+                    .filter(|id| id.required())
+                    .map(|id| id.name())
+                    .chain(["P-AGENT-DESKTOP"])
+                    .map(|id| json::obj([("id", json::s(id)), ("status", json::s("ok"))]))
+                    .collect(),
+            ),
         );
         if let Some(f) = facts {
             m.insert("static_facts".into(), f);

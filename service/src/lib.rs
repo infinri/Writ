@@ -1253,7 +1253,15 @@ mod tests {
         m.insert("blocking".into(), Value::Arr(vec![]));
         m.insert(
             "probes".into(),
-            Value::Arr(vec![json::obj([("status", json::s("ok"))])]),
+            Value::Arr(
+                writ_hostsys::readiness::ProbeId::ALL
+                    .into_iter()
+                    .filter(|id| id.required())
+                    .map(|id| id.name())
+                    .chain(["P-AGENT-DESKTOP"])
+                    .map(|id| json::obj([("id", json::s(id)), ("status", json::s("ok"))]))
+                    .collect(),
+            ),
         );
         m.insert("static_facts".into(), static_facts_value(&observe(&plan)));
         let bytes = json::canonical(&Value::Obj(m)).unwrap().into_bytes();
