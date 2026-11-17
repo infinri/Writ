@@ -1,6 +1,6 @@
 # HostAdapter draft fixtures (M5b-01 and M5b-04)
 
-The proposed schemas cover [advisory host observations](../../docs/contracts/proposed/host-event.schema.json), [coverage evidence](../../docs/contracts/proposed/host-coverage.schema.json) and [decision mapping](../../docs/contracts/proposed/host-outcome.schema.json). D-045 M5-D7/M5-D9/M5-D10 and M5-INTERFACES J-2/J-6 govern the boundary. These are synthetic contract fixtures. They establish neither host coverage nor portability acceptance.
+The proposed schemas cover [advisory host observations](../../docs/contracts/proposed/host-event.schema.json), [coverage evidence](../../docs/contracts/proposed/host-coverage.schema.json) and [decision mapping](../../docs/contracts/proposed/host-outcome.schema.json). D-045 M5-D7/M5-D9/M5-D10 and M5-INTERFACES J-2/J-6 govern the boundary. These synthetic contract fixtures establish portability for the declared cases. Live host coverage remains open.
 
 ## Observation and effect paths
 
@@ -16,7 +16,7 @@ Clients may display advisory outcomes only as observations. The label for an unr
 
 A coverage row is scoped to the host version and environment of its test. Record what the interceptor actually observed or prevented, and include intermittent, unsupported and bypassed cases. Report duplicate observations or conflicting rows during review. Coverage rows never participate in operation routing or permission decisions. Promote fixture rows to observed evidence only after the pinned-host trial verifies them.
 
-The portability matrix is a set of independent adapter acceptance cases. Feed the same operation through each adapter and compare only the ActionRequest and Decision under the same test-owned service connection, trusted clock, state, and broker policy. Record host diagnostics separately. Preserve Unicode path bytes and use the adapter's approved descriptor-based target resolution for real filesystem checks. No adapter attempts a side effect to establish equivalence.
+The portability matrix is a set of independent adapter acceptance cases. Feed the same operation through each adapter and compare the ActionRequest and Decision under the same test-owned connection, clock, state and kernel policy. Record host diagnostics separately. Preserve Unicode path bytes and use the adapter's approved descriptor-based target resolution for real filesystem checks. No adapter attempts a side effect to establish equivalence.
 
 Run the focused contract checks with `python3 -m unittest discover -s docs/contracts/proposed -p test_host_adapter_contract.py`.
 
@@ -40,4 +40,4 @@ rustc --edition=2021 -D warnings --test m5/host-contracts/lib.rs \
 "$host_check/host-contract-tests"
 ```
 
-Both normalizers agree on the advisory projections and the create-only proposals. Tests do not seal requests or dispatch effects. The protected tool registration, service integration, ActionRequest and Decision equivalence, and live host coverage remain open.
+The paired kernel tests feed each normalizer's proposal through the same test-owned scope, snapshot fixture, clock, state revision and policy. They compare canonical ActionRequests and complete kernel Decisions for the covered cases. A callback counts allowed test dispatches. Intake refusals, mismatched snapshot fields, policy denial, approval requirements and policy unavailability leave both counters at zero. Protected tool registration, service sealing, effect dispatch and live host coverage remain open.

@@ -314,3 +314,9 @@ fn target_depth_length_and_component_bounds_agree() {
         );
     }
 }
+
+#[path = "kernel_boundary.rs"]
+mod kernel_boundary;
+
+#[path = "kernel_cases.rs"]
+mod kernel_cases;

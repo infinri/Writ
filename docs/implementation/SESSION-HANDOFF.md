@@ -6,20 +6,15 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 
 Batch closed 2026-11-17. Continue in a fresh Codex chat. Read this section and WORK-STATE before changing code.
 
-### Verified repository and CI
+### Repository and verification
 
-- Repository `/home/lucio.saldivar/workspaces/Writ`, branch `v2/architecture-rebuild`. At checkpoint preparation, local HEAD, tracking ref and GitHub branch HEAD all equal `ff0e2eb0e828e98d00fc11e4982586238290cfe3`. Required [CI run 44187034059](https://github.com/infinri/Writ/actions/runs/44187034059) passed all six jobs on that exact baseline.
-- Main checkout has no tracked dirty files and no commits ahead of the remote. Its sole untracked entry is private `docs/audit/m0/hook-audit/`. Preserve it without reading, modifying or publishing it. The recovery-only commit following this baseline has its own CI status, which must be checked separately.
-- All three workers finished. Host work delivered independent Claude/CLI Rust normalizers and portability tests in `m5/host-contracts/`. Model work delivered configured AgentRunner routing, two dissimilar stubs and actual-kernel outage checks in `m5/model-contracts/`. Trial preparation delivered checklists/templates in `m5/live-host/` and `m5/authenticator-trials/`, plus VM instructions. Cross-reviews completed. E-090 records checks and the corrected integration fixtures.
-- Workers shared the clean staging clone `/tmp/writ-d047.zDnI3H/repo`, with no separate worker commits. Fourteen historical worktrees under `.claude/worktrees/` remain retained, all tracked-clean. Candidate `agent-a11e9f080900be29e` at `3b7cb76` has one commit outside the main line. The other thirteen tips are ancestors of this baseline. Two worktrees remain locked. The old detached `/tmp/claude-1001/.../scratchpad/review` entry is prunable and was preserved. Use `git worktree list` for exact paths, heads and locks. Scratch logs and final CI status are retained in `/tmp/writ-d047.zDnI3H/CHECKPOINT.md`.
+- Branch `v2/architecture-rebuild` at `infinri/Writ`. This checkpoint travels with the M5b portability batch. Verify the current local, tracking and GitHub heads and the six required jobs on the exact batch SHA. The preceding recovery SHA is `d0f85d8eb1b0c6ac8aa9434bf1c002fcf1d3292d`, [required CI run 44192053842](https://github.com/infinri/Writ/actions/runs/44192053842).
+- E-091 records the focused tests and review. Local logs and the final publication checkpoint are in `/tmp/writ-portability.aoJBF4/`. Preserve private untracked `docs/audit/m0/hook-audit/` without reading, modifying or publishing it. Earlier batch logs and historical worktree details remain in `/tmp/writ-d047.zDnI3H/CHECKPOINT.md`.
+- M5b-01/04 now compares paired canonical ActionRequests and complete kernel Decisions under fixed fixture authority. Refused cases never invoke the test callback. The tests exercise independent normalizers and synthetic snapshot membership. Production effect wiring still depends on verified M5a foundations.
 
-### Next bounded, unblocked batch
+### Next exact action
 
-Advance M5b-01/04 portability against the existing kernel test interface. Keep production effect wiring dependent on verified M5a foundations.
-
-- Relevant files are `m5/host-contracts/{claude,cli,lib,tests}.rs`, `m5/model-contracts/kernel_boundary.rs` as the kernel-linking example, `docs/contracts/proposed/host-*.schema.json`, `docs/implementation/M5-INTERFACES.md` J-0/J-6/J-7, and `.github/workflows/v2-docs.yml`.
-- Extend paired normalizer cases into a deterministic, test-owned ActionRequest/Decision comparison. Use fixed scope, clock, snapshots and policy. Cover Unicode/path bounds, unknown operations, malformed/oversized input and forged authority. Preserve independent normalization and inert proposals. Do not claim live coverage or effect mediation.
-- Accept when both paths produce matching canonical ActionRequests and complete Decisions for the declared cases, refused cases cannot reach a dispatch callback, focused tests and schema checks pass, changed trust boundaries receive independent review, and required CI passes on the exact published fast-forward SHA. Lead owns interfaces, manifests, dependencies and coordinated verification.
+After verifying the published batch SHA and required CI, scope one M5a batch around the missing P-AGENT-DESKTOP producer. Start from M5-INTERFACES J-9 and J-11.10, the hostsys probe entry point and the reference-VM runbook. Map the required observations and negative controls to the producer, starting with fixture-backed fail-closed handling for missing or incomplete observations. Actual desktop and launcher evidence must come from the designated guest and isolated gate.
 
 ### Gates and external prerequisites
 
