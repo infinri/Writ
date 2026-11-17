@@ -1,0 +1,9 @@
+{
+  "contract_version": "writ-host-outcome/1",
+  "mode": "governed",
+  "label": "governed",
+  "source": "adapter",
+  "status": "deny",
+  "disposition": "blocked",
+  "reason": "unregistered_tool"
+}

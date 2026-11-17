@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://writ.dev/contracts/proposed/host-coverage.schema.json",
+  "title": "host-coverage (PROPOSED, M5b-01, D-045)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "host",
+    "host_version",
+    "environment",
+    "evidence_kind",
+    "rows"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "writ-host-coverage/1"
+    },
+    "host": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "host_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "environment": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "evidence_kind": {
+      "enum": [
+        "fixture",
+        "observed"
+      ]
+    },
+    "rows": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1024,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event",
+          "tool_variant",
+          "capability",
+          "interceptor",
+          "can_prevent",
+          "can_observe",
+          "test_id"
+        ],
+        "properties": {
+          "event": {
+            "enum": [
+              "before_tool",
+              "after_tool",
+              "permission_prompt",
+              "session_start",
+              "session_end",
+              "subagent_start",
+              "subagent_end"
+            ]
+          },
+          "tool_variant": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "variant"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "variant": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "capability": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "interceptor": {
+            "enum": [
+              "hook",
+              "permission_prompt",
+              "broker_effect_path",
+              "none"
+            ]
+          },
+          "can_prevent": {
+            "type": "boolean"
+          },
+          "can_observe": {
+            "type": "boolean"
+          },
+          "test_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "event": {
+                  "enum": [
+                    "before_tool",
+                    "after_tool",
+                    "permission_prompt"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "tool_variant": {
+                  "type": "object"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "tool_variant": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "interceptor": {
+                  "const": "none"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "can_prevent": {
+                  "const": false
+                },
+                "can_observe": {
+                  "const": false
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "event": {
+                  "const": "after_tool"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "can_prevent": {
+                  "const": false
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "description": "Version-scoped evidence about observed host behavior. This document supplies no authorization or broker routing."
+}

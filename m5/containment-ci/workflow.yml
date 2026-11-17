@@ -1,0 +1,53 @@
+name: Writ M5a containment
+
+on:
+  workflow_dispatch:
+    inputs:
+      writ_sha:
+        description: Reviewed full SHA from v2/architecture-rebuild
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  admission:
+    name: Containment infrastructure and input preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      WRIT_SHA: ${{ inputs.writ_sha }}
+      ENABLED: ${{ vars.WRIT_CONTAINMENT_PROVISIONER_READY }}
+    steps:
+      - name: Refuse dispatch without a configured provisioner
+        shell: bash
+        run: |
+          if [[ "$ENABLED" != 1 ]]; then
+            echo "::error::M5a-12 blocked: verified ephemeral VM provisioner unavailable"
+            exit 1
+          fi
+          if [[ ! "$WRIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::A reviewed full lowercase Writ commit SHA is required"
+            exit 1
+          fi
+
+  containment:
+    name: Writ M5a containment
+    needs: admission
+    runs-on:
+      group: writ-containment
+      labels: writ-${{ github.run_id }}-${{ github.run_attempt }}
+    timeout-minutes: 45
+    env:
+      WRIT_SHA: ${{ inputs.writ_sha }}
+    steps:
+      - name: Verify provisioned inputs and run the containment gate
+        shell: bash
+        run: |
+          test -x /opt/writ-ci/bin/run-containment
+          test -f /opt/writ-ci/reviewed-sha
+          test "$(cat /opt/writ-ci/reviewed-sha)" = "$WRIT_SHA"
+          if ! /opt/writ-ci/bin/run-containment "$WRIT_SHA" >/dev/null 2>&1; then
+            echo "::error::Containment failed. See sanitized host-side evidence."
+            exit 1
+          fi

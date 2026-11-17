@@ -1,0 +1,77 @@
+[
+  {
+    "id": "unicode-original",
+    "target_path": "docs/résumé.txt",
+    "comparison": "Both normalizers preserve the exact UTF-8 path in the canonical fs.write resource. Compare the ActionRequest and Decision with fixed test service values.",
+    "hook_input": {"hook_event_name": "PreToolUse", "tool_name": "Write", "tool_input": {"file_path": "/fixture/tree/docs/résumé.txt", "content": "discarded"}, "session_id": "claimed-hook-session"},
+    "cli_input": {"phase": "before", "operation": "file-write", "target": "docs/résumé.txt", "session": "claimed-cli-session"},
+    "expected_observation": {"event": "before_tool", "intent": "file-write", "relative_path": "docs/résumé.txt"}
+  },
+  {
+    "id": "unicode-decomposed",
+    "target_path": "docs/résumé.txt",
+    "comparison": "Both normalizers preserve the decomposed bytes. The canonical resource differs from unicode-original.",
+    "hook_input": {"hook_event_name": "PreToolUse", "tool_name": "Write", "tool_input": {"file_path": "/fixture/tree/docs/résumé.txt", "content": "discarded"}, "session_id": "claimed-hook-session"},
+    "cli_input": {"phase": "before", "operation": "file-write", "target": "docs/résumé.txt", "session": "claimed-cli-session"},
+    "expected_observation": {"event": "before_tool", "intent": "file-write", "relative_path": "docs/résumé.txt"}
+  },
+  {
+    "id": "symlink-parent",
+    "target_path": "link/result.txt",
+    "tree_setup": "link is a symlink to an existing directory",
+    "comparison": "The normalized target stays link/result.txt and the protected resolver refuses the symlink. Neither adapter follows it or dispatches host writes.",
+    "hook_input": {"hook_event_name": "PreToolUse", "tool_name": "Write", "tool_input": {"file_path": "/fixture/tree/link/result.txt", "content": "discarded"}, "session_id": "claimed-hook-session"},
+    "cli_input": {"phase": "before", "operation": "file-write", "target": "link/result.txt", "session": "claimed-cli-session"},
+    "expected_observation": {"event": "before_tool", "intent": "file-write", "relative_path": "link/result.txt"}
+  },
+  {
+    "id": "oversized-control",
+    "repeat_utf8": {"value": "é", "count": 32769},
+    "comparison": "Refuse the control frame under the J-2 byte limit before JSON or tool interpretation."
+  },
+  {
+    "id": "host-unavailable",
+    "comparison": "Simulate hook timeout or CLI host failure. Neither path submits a protected effect.",
+    "expected_outcomes": [
+      {"mode": "advisory", "label": "ungoverned", "source": "adapter", "status": null, "disposition": "observation_only", "reason": "host_failure"},
+      {"mode": "governed", "label": "governed", "source": "adapter", "status": "unavailable", "disposition": "blocked", "reason": "host_failure"}
+    ]
+  },
+  {
+    "id": "nested-subagent",
+    "comparison": "Compare normalized intents from nested agent claims. A grant for the named parent does not match, regardless of the observed session lineage.",
+    "advisory_examples": [
+      {"contract_version": "writ-host-event/1", "op": "host.event", "event_id": "nested-fixture-hook", "event": "subagent_start", "host_version": "fixture-hook-1.0", "host_asserted": {"host_session_id": "session-b", "agent_id": "child", "parent_agent_id": "parent", "parent_session_id": "session-a"}},
+      {"contract_version": "writ-host-event/1", "op": "host.event", "event_id": "nested-fixture-cli", "event": "subagent_start", "host_version": "fixture-cli-1.0", "host_asserted": {"host_session_id": "session-d", "agent_id": "worker", "parent_agent_id": "caller", "parent_session_id": "session-c"}}
+    ],
+    "expected_outcomes": [
+      {"mode": "governed", "label": "governed", "source": "adapter", "status": "deny", "disposition": "blocked", "reason": "identity_unverified"}
+    ]
+  },
+  {
+    "id": "permission-prompt",
+    "comparison": "A tool prompt may convey a policy observation. Native approval in either adapter leaves the protected action waiting for authenticated Writ approval.",
+    "expected_outcomes": [
+      {"mode": "advisory", "label": "advisory", "source": "broker", "status": "require_approval", "disposition": "observation_only", "reason": "policy"},
+      {"mode": "governed", "label": "governed", "source": "broker", "status": "require_approval", "disposition": "needs_writ_approval", "reason": "policy"}
+    ],
+    "hook_input": {"hook_event_name": "PermissionRequest", "tool_name": "Write", "tool_input": {"file_path": "/fixture/tree/docs/report.txt", "content": "discarded"}, "session_id": "claimed-hook-session", "permission_suggestions": [{"type": "addRules"}]},
+    "cli_input": {"phase": "prompt", "operation": "file-write", "target": "docs/report.txt", "session": "claimed-cli-session", "native_approval": true},
+    "expected_observation": {"event": "permission_prompt", "intent": "file-write", "relative_path": "docs/report.txt"}
+  },
+  {
+    "id": "unknown-tool",
+    "comparison": "Both adapters leave observations ungoverned. A protected attempt is blocked at tool registration.",
+    "expected_outcomes": [
+      {"mode": "advisory", "label": "ungoverned", "source": "adapter", "status": null, "disposition": "observation_only", "reason": "unregistered_tool"},
+      {"mode": "governed", "label": "governed", "source": "adapter", "status": "deny", "disposition": "blocked", "reason": "unregistered_tool"}
+    ]
+  },
+  {
+    "id": "direct-promotion",
+    "comparison": "Neither adapter accepts a tool alias or a diagnostic payload as a workflow transition.",
+    "expected_outcomes": [
+      {"mode": "governed", "label": "governed", "source": "adapter", "status": "deny", "disposition": "blocked", "reason": "unsupported_workflow_operation"}
+    ]
+  }
+]

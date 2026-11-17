@@ -16,8 +16,8 @@ jobs:
         run: python3 -m pip install --disable-pip-version-check -r requirements-v2-docs.txt
       - name: Check docs, HTML, schemas, packs and task fixtures
         run: python3 scripts/check-v2-docs.py
-      - name: Proposed M3-06 acceptance contracts (schema-level positive and negative tests, D-033)
-        run: python3 docs/contracts/proposed/test_proposed_contracts.py
+      - name: Proposed acceptance and host adapter contracts
+        run: python3 -m unittest discover -s docs/contracts/proposed
   m2-kernel:
     name: Production Rust workspace (writ-kernel, writ-broker, writ-ledger-sqlite)
     runs-on: ubuntu-latest
@@ -32,6 +32,11 @@ jobs:
           { echo "SQLITE3_INCLUDE_DIR=$d/include"; echo "SQLITE3_LIB_DIR=$d/lib"; echo "SQLITE3_STATIC=1"; echo "PKG_CONFIG_LIBDIR=$d/lib/pkgconfig"; } >> "$GITHUB_ENV"
       - name: Toolchain is the pinned one
         run: cargo --version && rustc --version | grep -q '^rustc 1.99.1 '
+      - name: Proposed model adapter fixtures
+        run: |
+          rustfmt --edition 2021 --check m5/model-contracts/lib.rs
+          rustc --edition 2021 -D warnings --test m5/model-contracts/lib.rs -o "$RUNNER_TEMP/writ-model-contract-tests"
+          "$RUNNER_TEMP/writ-model-contract-tests"
       - name: Format, lint, build and test (locked)
         run: |
           cargo fmt --all --check

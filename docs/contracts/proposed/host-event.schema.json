@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://writ.dev/contracts/proposed/host-event.schema.json",
+  "title": "host-event (PROPOSED, M5b-01, D-045)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "op",
+    "event_id",
+    "event",
+    "host_version",
+    "host_asserted"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "writ-host-event/1"
+    },
+    "op": {
+      "const": "host.event"
+    },
+    "event_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "event": {
+      "enum": [
+        "before_tool",
+        "after_tool",
+        "permission_prompt",
+        "session_start",
+        "session_end",
+        "subagent_start",
+        "subagent_end"
+      ]
+    },
+    "host_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "host_asserted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "agent_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "host_session_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "parent_agent_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "parent_session_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        }
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "variant"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "variant": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      }
+    },
+    "input": {
+      "type": "object",
+      "maxProperties": 32,
+      "description": "Untrusted diagnostic input. The bounded strict parser and registered tool-specific validator govern interpretation."
+    }
+  },
+  "description": "Untrusted observation for the advisory endpoint. J-2 transport byte limits and strict JSON apply before this structural validation.",
+  "if": {
+    "properties": {
+      "event": {
+        "enum": [
+          "before_tool",
+          "after_tool",
+          "permission_prompt"
+        ]
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "tool",
+      "input"
+    ]
+  },
+  "else": {
+    "not": {
+      "anyOf": [
+        {
+          "required": [
+            "tool"
+          ]
+        },
+        {
+          "required": [
+            "input"
+          ]
+        }
+      ]
+    }
+  }
+}

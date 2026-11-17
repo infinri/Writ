@@ -1,0 +1,14 @@
+{
+  "contract_version": "writ-host-event/1",
+  "op": "host.event",
+  "event_id": "fixture-1",
+  "event": "permission_prompt",
+  "host_version": "fixture-1.0",
+  "host_asserted": {
+    "host_session_id": "claimed-session-1",
+    "agent_id": "claimed-agent-2",
+    "parent_agent_id": "claimed-agent-1"
+  },
+  "tool": {"name": "Write", "variant": "workspace-file"},
+  "input": {"path": "résumé.txt"}
+}

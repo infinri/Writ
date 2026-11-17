@@ -1,12 +1,12 @@
-# M5a gate-review package (M5a-14; D-045, D-046)
+# M5a gate-review package (M5a-14; D-045, D-046, D-047)
 
 Status: **PREPARED; NOT READY FOR A GATE DECISION.** Every M5a component is implemented and verified in user space with required CI green, but D-045 M5-D15 makes the containment gate depend on an isolated disposable VM runner, and the privileged and host-boundary checks can only run on the designated reference VM. Both are external blockers (owner provisioning). Nothing here claims host enforcement or production readiness. ADR-0008 APPROVED IN PRINCIPLE; release and production NO-GO.
 
 ## 1. What the owner is asked for
 
 1. **Provide the designated disposable reference VM** (D-045 M5-D12): Ubuntu 24.04 LTS, rollback capability, namespace and cgroup v2 support, a root-owned marker `/etc/writ-disposable-vm` naming it (see `m5/reference-vm/README.md`). Local VM preferred; a cloud VM needs separately approved provisioning and cost.
-2. **Provide the isolated containment CI runner** (M5a-12, M5-D15): a disposable VM runner with no exposure to unreviewed fork code or secrets.
-3. When both exist, the lead runs `setup.sh`, `service-install.sh`, `trial.sh` and the verify-in-VM checklist, records the evidence, wires the required containment job, and presents this package again for the gate decision.
+2. **Provide the isolated containment CI runner** (M5a-12, M5-D15): a disposable VM runner with no exposure to unreviewed fork code or secrets. See the [draft workflow and provisioning procedure](../../m5/containment-ci/README.md).
+3. When both exist, the lead follows the [reference-VM runbook](../../m5/reference-vm/README.md) to run `setup.sh`, `trial.sh`, `service-install.sh` and the verify-in-VM checklist, records the evidence, wires the required containment job, and presents this package again for the gate decision.
 
 ## 2. Scope delivered (TASKS M5a-00..M5a-14)
 
@@ -30,6 +30,7 @@ Status: **PREPARED; NOT READY FOR A GATE DECISION.** Every M5a component is impl
 
 ## 3. Verification
 
+- Required CI on the published recovery SHA `482129d7a6b05a89451d576f94da31d4fe23f857`: [run 43951124726](https://github.com/infinri/Writ/actions/runs/43951124726), 6/6. This run supplies user-space evidence.
 - Required CI on `4f4f92f`: run 43948789763, 6/6 (production workspace incl. browser suite, kill tests, fs.write SIGKILL property, closure and property gates, dependency gate with OSV and source rules).
 - Local: 920 workspace tests passed, closure gate exact 17 / adapted 72 / approved differences 38 / deferred 0, property gate 19,796 checks 0 failed, parity 320/320.
 - CI incidents investigated and corrected with preserved evidence: E-081 (test path rewrite), E-083 (directory order), E-084 (staging lock released late while a concurrent child held a duplicate; real production bug, fixed).

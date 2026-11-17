@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://writ.dev/contracts/proposed/host-outcome.schema.json",
+  "title": "Host outcome (PROPOSED, M5b-01, D-045)",
+  "description": "Internal adapter outcome projection. The endpoint may return a generic transport refusal instead. A disposition supplies no permit, execution or success.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "mode", "label", "source", "status", "disposition", "reason"],
+  "properties": {
+    "contract_version": {"const": "writ-host-outcome/1"},
+    "mode": {"enum": ["advisory", "governed"]},
+    "label": {"enum": ["advisory", "ungoverned", "governed"]},
+    "source": {"enum": ["broker", "adapter"]},
+    "status": {"enum": ["allow", "deny", "require_approval", "unavailable", "invalid", null]},
+    "disposition": {"enum": ["observation_only", "blocked", "needs_writ_approval", "continue_in_broker"]},
+    "reason": {"enum": [
+      "policy", "unregistered_tool", "malformed", "oversized", "host_failure",
+      "identity_unverified", "unsupported_workflow_operation"
+    ]}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"mode": {"const": "advisory"}}},
+      "then": {
+        "properties": {"disposition": {"const": "observation_only"}},
+        "if": {"properties": {"source": {"const": "broker"}}},
+        "then": {"properties": {"label": {"const": "advisory"}}},
+        "else": {"properties": {"label": {"const": "ungoverned"}, "status": {"type": "null"}}}
+      },
+      "else": {
+        "properties": {"label": {"const": "governed"}, "status": {"type": "string"}},
+        "oneOf": [
+          {"properties": {"status": {"const": "allow"}, "disposition": {"const": "continue_in_broker"}}},
+          {"properties": {"status": {"const": "require_approval"}, "disposition": {"const": "needs_writ_approval"}}},
+          {"properties": {"status": {"enum": ["deny", "unavailable", "invalid"]}, "disposition": {"const": "blocked"}}}
+        ]
+      }
+    },
+    {
+      "if": {"properties": {"source": {"const": "broker"}}},
+      "then": {"properties": {"reason": {"const": "policy"}, "status": {"type": "string"}}},
+      "else": {"properties": {"reason": {"not": {"const": "policy"}}}}
+    },
+    {
+      "if": {"properties": {"source": {"const": "adapter"}, "mode": {"const": "governed"}}},
+      "then": {
+        "oneOf": [
+          {"properties": {
+            "status": {"const": "deny"},
+            "reason": {"enum": ["unregistered_tool", "identity_unverified", "unsupported_workflow_operation"]}
+          }},
+          {"properties": {"status": {"const": "invalid"}, "reason": {"enum": ["malformed", "oversized"]}}},
+          {"properties": {"status": {"const": "unavailable"}, "reason": {"const": "host_failure"}}}
+        ]
+      }
+    }
+  ]
+}

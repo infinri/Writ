@@ -1,0 +1,27 @@
+{
+  "contract_version": "writ-host-coverage/1",
+  "host": "fixture-host",
+  "host_version": "fixture-1.0",
+  "environment": "schema fixture",
+  "evidence_kind": "fixture",
+  "rows": [
+    {
+      "event": "permission_prompt",
+      "tool_variant": {"name": "Write", "variant": "workspace-file"},
+      "capability": "fs.write",
+      "interceptor": "permission_prompt",
+      "can_prevent": false,
+      "can_observe": true,
+      "test_id": "synthetic-prompt-01"
+    },
+    {
+      "event": "subagent_start",
+      "tool_variant": null,
+      "capability": null,
+      "interceptor": "none",
+      "can_prevent": false,
+      "can_observe": false,
+      "test_id": "synthetic-subagent-01"
+    }
+  ]
+}

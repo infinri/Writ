@@ -1,8 +1,45 @@
 # Session handoff
 
-Read this first after compaction or in a new session, then [WORK-STATE](WORK-STATE.md). This file is the authoritative recovery entry point. Only the section "Current recovery state" gives current instructions; everything under "Historical record" is preserved evidence and superseded instructions, never a current next step.
+Read this first after compaction or in a new session, then [WORK-STATE](WORK-STATE.md). This file is the authoritative recovery entry point. Only the section "Current recovery state" gives current instructions; everything under "Prior checkpoints" and "Historical record" is preserved evidence and superseded instructions, never a current next step.
 
-## Current recovery state (checkpoint 2026-11-15, M3 ACCEPTED under D-039; M4 ACCEPTED under D-044 as scoped development scope)
+## Current recovery state
+
+Checkpoint 2026-11-17 under D-047.
+
+### 1. Repository and CI
+
+- Branch `v2/architecture-rebuild`. At recovery the original checkout, local tracking ref and GitHub remote branch all matched `482129d7a6b05a89451d576f94da31d4fe23f857`. All six required jobs passed on that SHA ([run 43951124726](https://github.com/infinri/Writ/actions/runs/43951124726)). The Pages deployment job remains separately blocked by environment protection.
+- D-047 work was staged from that commit. Verify the current local SHA, remote branch and required jobs before proceeding. Preserve private owner material and every preexisting worker branch and worktree. D-047's VM, HostAdapter and MCP/model workers completed their scoped assignments in one staging checkout with disjoint ownership and no worker commits. No old worker worktrees were removed.
+
+### 2. Delivered and open
+
+- [D-047](DECISION-LOG.md) records VM and CI containment obligations and exact Apache-2.0 approval for `rmcp` 3.9.0. M5 is in progress. **M5a gate remains blocked. ADR-0008 APPROVED IN PRINCIPLE. Release and production NO-GO.**
+- [Reference VM](../../m5/reference-vm/README.md) and [provisioning](../../m5/reference-vm/PROVISIONING.md) document the verified dated Ubuntu 24.04 image, clean snapshot, owner marker and evidence export. Workstation has working KVM access, 9.3 GiB available RAM and 36 GiB available disk at preflight. QEMU and image/seed tooling are missing. The current readiness split and namespace negative-control gap are documented. Reference verification needs the configured guest, the owner marker and all open checks in [M5A-GATE-REVIEW](M5A-GATE-REVIEW.md).
+- [Containment CI draft](../../m5/containment-ci/README.md) has an independently reviewed workflow and provisioning procedure. Needs the private control repository, restricted runner group, host-side provisioner, exact gate wrapper and manifest, and status App. It remains outside active CI.
+- [HostAdapter draft and fixtures](../../m5/host-contracts/README.md) and [Rust model fixtures](../../m5/model-contracts/README.md) passed focused checks (E-088). Live host portability, production contracts, trusted delegation, and governed enforcement remain open.
+- [MCP candidate review](m5-deps/d047-rmcp-review.md) records the Chrono advisory and a lifecycle validation gap. No dependency was adopted. Resolve or explicitly disposition the transitive advisory, implement and test the agent-side initialization guard, and complete dependency isolation, exact checksums, notices, SBOM and advisory gates before adoption.
+
+### 3. Recovery commands and next action
+
+```bash
+git status --short
+git rev-parse HEAD origin/v2/architecture-rebuild
+git worktree list
+gh api repos/infinri/Writ/commits/v2%2Farchitecture-rebuild --jq .sha
+gh run list --repo infinri/Writ --commit "$(git rev-parse HEAD)"
+python3 scripts/check-v2-docs.py
+python3 -m unittest discover -s docs/contracts/proposed
+source m1/tools/env.sh
+test_dir=$(mktemp -d)
+rustc --edition=2021 -D warnings --test m5/model-contracts/lib.rs -o "$test_dir/writ-model-contract-tests"
+"$test_dir/writ-model-contract-tests"
+```
+
+Verify the reviewed D-047 revision and required CI. With the owner-provided VM tooling or equivalent disposable guest, follow the reference runbook through owner designation, record every VM checklist result and fix any failed control before re-presenting the gate. Continue independent M5b fixture and contract work while the host prerequisites are pending. Obtain independent review before integrating changed trust boundaries.
+
+## Prior checkpoints
+
+### 2026-11-15 through 2026-11-16 (M3 and M4 accepted for scoped development, M5a gate package prepared)
 
 ### 1. Repository and CI (verify on recovery with the commands in section 7)
 
