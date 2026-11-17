@@ -4,18 +4,11 @@
 
 ## Current
 
-- Independent M5b development continues under D-045/D-047. Standalone host normalizers, model runner boundary checks, MCP lifecycle candidate and live-host/authenticator preparation are recorded in E-090. The deployment verifier now requires a complete probe set. Every VM and real-device result remains open.
-- M5a is implemented in user space. Its [gate package](M5A-GATE-REVIEW.md) is prepared and blocked on reference-guest verification and isolated containment CI. D-047 authorizes independent M5b contract work and approves Apache-2.0 for `rmcp` 3.9.0 subject to the dependency gates. ADR-0008 remains APPROVED IN PRINCIPLE.
-- Recovery SHA `482129d7a6b05a89451d576f94da31d4fe23f857` matched the upstream branch and passed all six required jobs in [run 43951124726](https://github.com/infinri/Writ/actions/runs/43951124726).
-- **Accepted M3 code:** `b60bf33` (D-039), required CI run [43518287362](https://github.com/infinri/Writ/actions/runs/43518287362), 6/6, closure gate GATE PASS with report verification. Earlier: D-038 `5ac6675` run 43498619705; D-037 `dd11ed1` run 43484993389; M3-07 `146260e` run 43475168083. The separate website workflow fails at the Pages deploy (environment protection); not required CI and protections are not to be changed.
-- **Production crates:** `writ-kernel` (M2, accepted, unchanged since), `writ-broker` and `writ-ledger-sqlite` (M3-00..M3-05 and D-035: ingress, use-time authorization, policy gate, trusted time, approvals with provenance, grants, execute lifecycle with revalidation, owned and ledger-bound effect store, evidence-based reconciliation, transition service with authenticated records, administration and effect prerequisites; evidence E-058..E-068). Schemas: ledger `writ-ledger-6`, effects `writ-effects-2`. M1 prototypes frozen as comparison material.
-- **Language:** **Rust** selected (ADR-0002 ACCEPTED 2026-11-12, D-030). Go prototype kept as comparison material only.
-- **Decisions:** D-035..D-040 approved; D-039 conditions met (E-074); D-040 authorizes M4; none to be requested again. ADR-0008 APPROVED IN PRINCIPLE.
-- **M3-07 implemented (E-069):** runner, process lifecycle gate, unlock-before-close ownership locks; production configuration refuses every job until a contained sandbox exists (M5). Exact-SHA CI: `146260e` run 43475168083, 6/6 (after the E-071 CI-host fix).
-- **M3-08 DONE (E-072..E-074):** scoped closure gate: exact 17, adapted 64, approved differences 21, deferred to M4 25 (carried, not passes), unexplained 0, unclassified 0; companions 33/33; required CI step with corrected report verification. Not 127/127 exact parity; not production enforcement.
-- **M3 status:** ACCEPTED for its documented development scope (D-039). Carried obligations CO-M4-01..CO-HR-01 in TASKS (assigned to M4..M10 gates).
-- **Enterprise direction:** [readiness plan](../security/ENTERPRISE-READINESS.md), ENT-OWNER-01 and ENT-00..ENT-08. PostgreSQL targets enterprise operational state, SQLite remains local/offline; durable multi-worker coordination requires separate future acceptance. Controls, SOC 2 scope and any examination remain planned, not implemented or attested.
-- **Historical benchmarks (M1, complete):** three official M1-06 run sets plus the process-concurrency correction (E-046, E-052, E-054) and real-edit M1-07 build timings (E-053); bundles in `m1/bench/evidence/`.
+- Batch closed for a fresh chat. Verified baseline `ff0e2eb0e828e98d00fc11e4982586238290cfe3`, required [run 44187034059](https://github.com/infinri/Writ/actions/runs/44187034059), six jobs passed. Local/tracking/remote HEAD matched at preparation, with no tracked changes or unpublished main-line commits. Private untracked hook-audit material is retained.
+- All three workers finished host normalization, model/AgentRunner/kernel-boundary checks, and live-host/authenticator preparation. E-090 records results. Historical worktrees and the clean staging clone are retained, including candidate `3b7cb76` outside the main line. Exact inventory is in the [current handoff](SESSION-HANDOFF.md#current-recovery-state).
+- Next bounded batch is M5b-01/04 paired ActionRequest/Decision portability against the kernel test interface, with independent normalizers, refused-dispatch checks, independent review and exact-SHA CI. Files and acceptance checks are in the handoff.
+- M5a remains implemented in user space with its gate open. Full VM verification and isolated containment CI remain required. Local tooling/designated guest, separate CI infrastructure, later live-model credential and later real hardware are separate prerequisites.
+- D-048 covers only locked-but-unbuilt Chrono 0.4.45. MCP adoption remains blocked on the built dependency and concrete lifecycle integration. Governed integration requires verified foundations. M5 remains in progress, ADR-0008 APPROVED IN PRINCIPLE, release and production NO-GO.
 
 ## Security findings
 
@@ -50,10 +43,10 @@ SANDBOX PREPARED / LIVE VERIFICATION NOT EXECUTED; sandbox **torn down** 2026-11
 
 ## Last verification
 
-Recovery: see E-088 for the 2026-11-17 focused checks and exact-SHA CI.
+Verified baseline `ff0e2eb0e828e98d00fc11e4982586238290cfe3`, required run 44187034059, six jobs passed. E-090 records this batch. The following recovery-only checkpoint requires its own CI status check.
 
 Earlier local evidence (2026-11-13, `b60bf33`, E-074): workspace tests 394 passed (4 ignored), kill tests 4/4 alone, closure self-tests 40, property self-tests 31, closure gate PASS and report verifies, property gate 18,430 checks 0 failed, parity 320/320, dependency gate 0 problems, docs OK. CI run 43518287362, 6/6.
 
 ## Next exact action
 
-Continue the [D-047 recovery checkpoint](SESSION-HANDOFF.md#current-recovery-state). Preserve the VM verification and isolated containment gates while reviewing independent M5b contracts.
+Start a fresh chat from [SESSION-HANDOFF](SESSION-HANDOFF.md#current-recovery-state) and verify local/remote state and exact-SHA CI before the bounded portability batch.

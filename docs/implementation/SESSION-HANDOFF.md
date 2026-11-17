@@ -4,43 +4,30 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 
 ## Current recovery state
 
-Checkpoint 2026-11-17 under D-047 and D-048, independent M5b development.
+Batch closed 2026-11-17. Continue in a fresh Codex chat. Read this section and WORK-STATE before changing code.
 
-### 1. Repository and CI
+### Verified repository and CI
 
-- Independent-development candidate `f102eb7` was published. CI run 44185744860 exposed incomplete synthetic reports in snapshot and service tests. The follow-up updates those fixtures to the full required probe set without weakening deployment validation. See E-090 and verify required CI for the current tip.
-- Current published baseline `f5e01c2a81389c85bc614d2ac10e0b5c33c7a64b` passed required CI 6/6 ([run 44178727740](https://github.com/infinri/Writ/actions/runs/44178727740)). Independent M5b work continues in the staging clone `/tmp/writ-d047.zDnI3H/repo` with three scoped workers and no worker commits. Lead owns shared interfaces, dependencies and CI.
-- Branch `v2/architecture-rebuild`. At recovery the original checkout, local tracking ref and GitHub remote branch all matched `482129d7a6b05a89451d576f94da31d4fe23f857`. All six required jobs passed on that SHA ([run 43951124726](https://github.com/infinri/Writ/actions/runs/43951124726)). The Pages deployment job remains separately blocked by environment protection.
-- D-047 was published as `b5de4d12b73c180a6dd417be22c5790c06f55e5f`. Required CI finished 5/6 ([run 44167024380](https://github.com/infinri/Writ/actions/runs/44167024380)) because the lockfile already contained unbuilt Chrono 0.4.45. D-048 authorizes the locked-only development exception. The exception requires absence from the all-features graph across targets and leaves release blocked. See E-089.
-- D-047 work was staged from that commit. Verify the current local SHA, remote branch and required jobs before proceeding. Preserve private owner material and every preexisting worker branch and worktree. D-047's VM, HostAdapter and MCP/model workers completed their scoped assignments in one staging checkout with disjoint ownership and no worker commits. No old worker worktrees were removed.
+- Repository `/home/lucio.saldivar/workspaces/Writ`, branch `v2/architecture-rebuild`. At checkpoint preparation, local HEAD, tracking ref and GitHub branch HEAD all equal `ff0e2eb0e828e98d00fc11e4982586238290cfe3`. Required [CI run 44187034059](https://github.com/infinri/Writ/actions/runs/44187034059) passed all six jobs on that exact baseline.
+- Main checkout has no tracked dirty files and no commits ahead of the remote. Its sole untracked entry is private `docs/audit/m0/hook-audit/`. Preserve it without reading, modifying or publishing it. The recovery-only commit following this baseline has its own CI status, which must be checked separately.
+- All three workers finished. Host work delivered independent Claude/CLI Rust normalizers and portability tests in `m5/host-contracts/`. Model work delivered configured AgentRunner routing, two dissimilar stubs and actual-kernel outage checks in `m5/model-contracts/`. Trial preparation delivered checklists/templates in `m5/live-host/` and `m5/authenticator-trials/`, plus VM instructions. Cross-reviews completed. E-090 records checks and the corrected integration fixtures.
+- Workers shared the clean staging clone `/tmp/writ-d047.zDnI3H/repo`, with no separate worker commits. Fourteen historical worktrees under `.claude/worktrees/` remain retained, all tracked-clean. Candidate `agent-a11e9f080900be29e` at `3b7cb76` has one commit outside the main line. The other thirteen tips are ancestors of this baseline. Two worktrees remain locked. The old detached `/tmp/claude-1001/.../scratchpad/review` entry is prunable and was preserved. Use `git worktree list` for exact paths, heads and locks. Scratch logs and final CI status are retained in `/tmp/writ-d047.zDnI3H/CHECKPOINT.md`.
 
-### 2. Delivered and open
+### Next bounded, unblocked batch
 
-- Independent development adds Rust host normalizers, two provider stubs with configured routing and an AgentRunner, actual-kernel outage boundary checks, and a dependency-free MCP initialization gate. Prepared live-host and real-authenticator checklists expose the real-ledger bootstrap and missing executable trial paths. All three workers returned focused summaries and independent reviews. No worker branches or commits were added.
-- The deployment verifier now requires every mandatory probe plus P-AGENT-DESKTOP exactly once. The CLI still lacks the complete desktop producer, so governed deployment remains blocked until real operator evidence is available.
-- [D-047](DECISION-LOG.md) records VM and CI containment obligations and exact Apache-2.0 approval for `rmcp` 3.9.0. M5 is in progress. **M5a gate remains blocked. ADR-0008 APPROVED IN PRINCIPLE. Release and production NO-GO.**
-- [Reference VM](../../m5/reference-vm/README.md) and [provisioning](../../m5/reference-vm/PROVISIONING.md) document the verified dated Ubuntu 24.04 image, clean snapshot, owner marker and evidence export. Workstation has working KVM access, 9.3 GiB available RAM and 36 GiB available disk at preflight. QEMU and image/seed tooling are missing. The smallest local owner action is to provide those tools or an equivalent existing disposable guest. Isolated containment CI separately needs the restricted control repository, runner group, host provisioner, exact gate wrapper and status App. The dedicated model credential is a later live-host prerequisite, and real roaming/platform authenticators are a later hardware prerequisite. The current readiness split and namespace negative-control gap are documented. Reference verification needs the configured guest, the owner marker and all open checks in [M5A-GATE-REVIEW](M5A-GATE-REVIEW.md).
-- [Containment CI draft](../../m5/containment-ci/README.md) has an independently reviewed workflow and provisioning procedure. Needs the private control repository, restricted runner group, host-side provisioner, exact gate wrapper and manifest, and status App. It remains outside active CI.
-- [HostAdapter draft and fixtures](../../m5/host-contracts/README.md) and [Rust model fixtures](../../m5/model-contracts/README.md) passed focused checks (E-088). Live host portability, production contracts, trusted delegation, and governed enforcement remain open.
-- [MCP candidate review](m5-deps/d047-rmcp-review.md) records the Chrono advisory and a lifecycle validation gap. No dependency was adopted. Resolve or explicitly disposition the transitive advisory, implement and test the agent-side initialization guard, and complete dependency isolation, exact checksums, notices, SBOM and advisory gates before adoption.
+Advance M5b-01/04 portability against the existing kernel test interface. Keep production effect wiring dependent on verified M5a foundations.
 
-### 3. Recovery commands and next action
+- Relevant files are `m5/host-contracts/{claude,cli,lib,tests}.rs`, `m5/model-contracts/kernel_boundary.rs` as the kernel-linking example, `docs/contracts/proposed/host-*.schema.json`, `docs/implementation/M5-INTERFACES.md` J-0/J-6/J-7, and `.github/workflows/v2-docs.yml`.
+- Extend paired normalizer cases into a deterministic, test-owned ActionRequest/Decision comparison. Use fixed scope, clock, snapshots and policy. Cover Unicode/path bounds, unknown operations, malformed/oversized input and forged authority. Preserve independent normalization and inert proposals. Do not claim live coverage or effect mediation.
+- Accept when both paths produce matching canonical ActionRequests and complete Decisions for the declared cases, refused cases cannot reach a dispatch callback, focused tests and schema checks pass, changed trust boundaries receive independent review, and required CI passes on the exact published fast-forward SHA. Lead owns interfaces, manifests, dependencies and coordinated verification.
 
-```bash
-git status --short
-git rev-parse HEAD origin/v2/architecture-rebuild
-git worktree list
-gh api repos/infinri/Writ/commits/v2%2Farchitecture-rebuild --jq .sha
-gh run list --repo infinri/Writ --commit "$(git rev-parse HEAD)"
-python3 scripts/check-v2-docs.py
-python3 -m unittest discover -s docs/contracts/proposed
-source m1/tools/env.sh
-test_dir=$(mktemp -d)
-rustc --edition=2021 -D warnings --test m5/model-contracts/lib.rs -o "$test_dir/writ-model-contract-tests"
-"$test_dir/writ-model-contract-tests"
-```
+### Gates and external prerequisites
 
-Verify the current independent-development revision and required CI. See E-090 for deployment probe completeness and candidate checks. With the owner-provided VM tooling or equivalent disposable guest, follow the reference runbook through owner designation, record every VM checklist result and fix any failed control before re-presenting the gate. Continue independent M5b fixture and contract work while the host prerequisites are pending. Obtain independent review before integrating changed trust boundaries.
+- M5 remains in progress. M5a gate remains open. Preserve the entire [reference-VM checklist](M5A-GATE-REVIEW.md#4-verify-in-vm-checklist-all-open) and the required isolated containment CI gate. Ordinary CI and synthetic checks provide no VM evidence. Deployment now requires every mandatory probe plus P-AGENT-DESKTOP exactly once. The complete desktop producer and launcher-mediated evidence remain open.
+- Local VM preparation needs QEMU/image/seed tools and an owner-designated disposable Ubuntu 24.04 guest with rollback. Follow `m5/reference-vm/PROVISIONING.md`. The separate isolated CI prerequisite needs the restricted control repository, runner group, host provisioner, exact gate wrapper and status App in `m5/containment-ci/`.
+- A dedicated revocable model credential is needed later for live-model trials. Real roaming FIDO2 and platform authenticator hardware are needed later for owner-performed device trials. Real-ledger bootstrap and executable trial-path gaps are documented in the checklists. No automatic privileged workstation changes or paid provisioning.
+- D-048 permits only `chrono` 0.4.45 locked but unbuilt. All-features build graphs must exclude it and release remains blocked. MCP adoption remains blocked because the selected rmcp graph builds Chrono and concrete handler/lifecycle integration checks remain open. Candidate guard and dependency findings are in `m5/mcp-contracts/` and `m5-deps/d047-rmcp-review.md`. No MCP/model SDK enters kernel, broker or service closures.
+- ADR-0008 remains APPROVED IN PRINCIPLE. Release and production remain NO-GO. Existing release obligations in WORK-STATE and TASKS remain in force. Use fresh chats between batches and save a concise recovery checkpoint before ending each batch.
 
 ## Prior checkpoints
 
