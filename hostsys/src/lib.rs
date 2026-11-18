@@ -43,3 +43,5 @@ pub use readiness::{report, verdict, ProbeId, ProbeResult, Status, Verdict};
 
 #[cfg(test)]
 mod desktop;
+#[cfg(test)]
+mod desktop_collect;

@@ -1,10 +1,10 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-17 (desktop probe fixtures; M3 and M4 accepted for scoped development) · **Branch:** v2/architecture-rebuild · **Milestone:** M5 in progress. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md) section "Current recovery state".
+**Last updated:** 2026-11-17 (fixture-backed desktop collectors; M3 and M4 accepted for scoped development) · **Branch:** v2/architecture-rebuild · **Milestone:** M5 in progress. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md) section "Current recovery state".
 
 ## Current
 
-- P-AGENT-DESKTOP now has a test-only evaluator for configured actors, 38 required observations and eight negative controls. Seven fixture tests reject missing, incomplete, unstable, malformed or unsafe evidence. See E-092 and the [desktop obligation map](../../m5/reference-vm/DESKTOP-PROBE.md). Real collection, a live test session, control execution and report integration remain open.
+- P-AGENT-DESKTOP has a test-only evaluator (E-092) and fixture-backed local account, agent credential and desktop socket inventory collection with before/after reconciliation (E-093). See the [desktop obligation map](../../m5/reference-vm/DESKTOP-PROBE.md). Guest collection and source provenance, other target classes, active observations, control execution and report integration remain open.
 - M5b-01/04 synthetic portability passed in E-091. Production adapter integration and live host coverage remain open.
 - M5a remains implemented in user space with its gate open. Full VM verification and isolated containment CI remain required. Local tooling/designated guest, separate CI infrastructure, later live-model credential and later real hardware are separate prerequisites.
 - D-048 covers only locked-but-unbuilt Chrono 0.4.45. MCP adoption remains blocked on the built dependency and concrete lifecycle integration. Governed integration requires verified foundations. M5 remains in progress, ADR-0008 APPROVED IN PRINCIPLE, release and production NO-GO.
@@ -42,10 +42,10 @@ SANDBOX PREPARED / LIVE VERIFICATION NOT EXECUTED; sandbox **torn down** 2026-11
 
 ## Last verification
 
-The prior baseline `bfd4bbf2efe99a5fa2da8e7cdd767fab32c5af59` passed all six jobs in [required CI run 44193546910](https://github.com/infinri/Writ/actions/runs/44193546910). E-092 records the desktop fixture checks. Verify the current batch's published head and exact-SHA CI as directed in the handoff.
+The starting baseline `631985902c1cde5b31e87ec48300fbc09727ca90` passed all six jobs in [required CI run 44197547123](https://github.com/infinri/Writ/actions/runs/44197547123). E-093 records the collector checks. Verify the current batch's published head and exact-SHA CI as directed in the handoff.
 
 Earlier local evidence (2026-11-13, `b60bf33`, E-074): workspace tests 394 passed (4 ignored), kill tests 4/4 alone, closure self-tests 40, property self-tests 31, closure gate PASS and report verifies, property gate 18,430 checks 0 failed, parity 320/320, dependency gate 0 problems, docs OK. CI run 43518287362, 6/6.
 
 ## Next exact action
 
-Start a fresh chat from [SESSION-HANDOFF](SESSION-HANDOFF.md#current-recovery-state) and verify local/remote state and exact-SHA CI before scoping the fixture-backed desktop identity and inventory collector batch.
+Start a fresh chat from [SESSION-HANDOFF](SESSION-HANDOFF.md#current-recovery-state), verify local and remote state and exact-SHA CI, then implement the guest process and socket ownership source.

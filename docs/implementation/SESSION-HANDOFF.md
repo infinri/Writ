@@ -4,17 +4,17 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 
 ## Current recovery state
 
-Batch closed 2026-11-17. Continue in a fresh Codex chat. Read this section and WORK-STATE before changing code.
+Collector checkpoint, 2026-11-17. Continue in a fresh Codex chat. Read this section and WORK-STATE before changing code.
 
 ### Repository and verification
 
-- Branch `v2/architecture-rebuild` at `infinri/Writ`. This checkpoint travels with the fixture-only desktop probe batch. Verify local, tracking and GitHub heads and the six required jobs on the exact batch SHA. The prior baseline `bfd4bbf2efe99a5fa2da8e7cdd767fab32c5af59` passed all six jobs in [required run 44193546910](https://github.com/infinri/Writ/actions/runs/44193546910).
-- E-092 records the checks and review. Detailed local logs are in `/tmp/writ-desktop.2XW71G/`. Preserve the private untracked `docs/audit/m0/hook-audit/` without reading, modifying or publishing it.
-- The P-AGENT-DESKTOP test-only evaluator covers configured identities, every agent and desktop pair, 38 observation kinds and all eight negative controls. Missing, changing or incomplete inventories, malformed evidence and unproven endpoint access block a pass. The [obligation map](../../m5/reference-vm/DESKTOP-PROBE.md) lists the guest targets and collector requirements. No collector, CLI registration, report integration or deployment evidence was added.
+- Branch `v2/architecture-rebuild` at `infinri/Writ`. Verify local, tracking and GitHub heads and the six required jobs on the exact published collector SHA. The starting head `631985902c1cde5b31e87ec48300fbc09727ca90` passed all six jobs in [required run 44197547123](https://github.com/infinri/Writ/actions/runs/44197547123).
+- Twenty focused collector tests, pinned formatting and hostsys Clippy passed. Independent review found inconsistent Linux PID bounds, now shared across configuration, process reads and socket owners with a regression test. E-093 records verification and review limits. Preserve the private untracked `docs/audit/m0/hook-audit/` without reading, modifying or publishing it.
+- The [fixture-only collector](../../hostsys/src/desktop_collect/mod.rs) separates configured identities and selected PIDs from observed local accounts, group membership and process credentials. It reconciles two guest-scoped samples of those facts and the desktop UID's IPv4, IPv6 and addressed Unix socket inventories. Unavailable or changing observations cannot supply evidence. The [obligation map](../../m5/reference-vm/DESKTOP-PROBE.md#fixture-backed-collector-coverage) records coverage, assumptions and missing sources. Collector output carries no denial or readiness authority.
 
 ### Next exact action
 
-After verifying the published SHA and required CI, scope one read-only collector batch for configured identities, agent process credentials and desktop target inventory. Start with fixture-backed source parsing and before/after reconciliation. Defer active denial attempts, protocol authorization, control execution and report integration. Run operational collection only in the owner-designated disposable guest with a live test session.
+After verifying the published SHA and required CI, implement and independently review the guest source for namespace-bound process selection and socket ownership. Establish bounded enumeration and independent endpoint coverage, including process identity stability and unambiguous Unix address representation. Exercise it operationally only in the owner-designated disposable guest with rollback and live targets. Other target classes, denial attempts, protocol authorization, negative-control execution and report integration remain separate work.
 
 ### Gates and external prerequisites
 
