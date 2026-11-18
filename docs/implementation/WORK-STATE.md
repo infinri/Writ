@@ -1,13 +1,13 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-18 (guest desktop inventory source, M3 and M4 accepted for scoped development) · **Branch:** v2/architecture-rebuild · **Milestone:** M5 in progress. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md) section "Current recovery state".
+**Last updated:** 2026-11-18 (VM and MCP blocker resolution, M3 and M4 accepted for scoped development) · **Branch:** v2/architecture-rebuild · **Milestone:** M5 in progress. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md) section "Current recovery state".
 
 ## Current
 
-- P-AGENT-DESKTOP has a test-only evaluator (E-092), fixture-backed reconciliation (E-093) and a guarded guest inventory source for local accounts, agent credentials and socket ownership (E-094). Guest execution awaits the owner-designated VM. Other target classes, desktop denials, control execution and readiness-report integration remain open. See the [desktop obligation map](../../m5/reference-vm/DESKTOP-PROBE.md).
+- P-AGENT-DESKTOP has a test-only evaluator (E-092), fixture-backed reconciliation (E-093) and a guarded guest inventory source for local accounts, agent credentials and socket ownership (E-094). Guest execution awaits the [owner provisioning and designation sequence](../../m5/reference-vm/PROVISIONING.md#first-guest-inventory). Other target classes, desktop denials, control execution and readiness-report integration remain open. See the [desktop obligation map](../../m5/reference-vm/DESKTOP-PROBE.md).
 - M5b-01/04 synthetic portability passed in E-091. Production adapter integration and live host coverage remain open.
 - M5a remains implemented in user space with its gate open. Full VM verification and isolated containment CI remain required. Local tooling/designated guest, separate CI infrastructure, later live-model credential and later real hardware are separate prerequisites.
-- D-048 covers only locked-but-unbuilt Chrono 0.4.45. MCP adoption remains blocked on the built dependency and concrete lifecycle integration. Governed integration requires verified foundations. M5 remains in progress, ADR-0008 APPROVED IN PRINCIPLE, release and production NO-GO.
+- D-048 covers only locked-but-unbuilt Chrono 0.4.45. The [MCP decision packet](m5-deps/d047-rmcp-review.md) records the built Chrono blocker, the deferred adoption and the concrete lifecycle requirements. Governed integration requires verified foundations. M5 remains in progress, ADR-0008 APPROVED IN PRINCIPLE, release and production NO-GO.
 
 ## Security findings
 
@@ -42,10 +42,10 @@ SANDBOX PREPARED / LIVE VERIFICATION NOT EXECUTED; sandbox **torn down** 2026-11
 
 ## Last verification
 
-The starting baseline `f3e17050858ceab69ac50559e536abec00b3c5d1` passed all six jobs in [required CI run 44215876990](https://github.com/infinri/Writ/actions/runs/44215876990). E-094 records the local guest-source checks. Verify the published head and exact-SHA CI as directed in the handoff.
+Verified baseline `083e22c35db139894f2bb378d1f4b4fa5ca286db` and all six jobs in [required CI run 44415046715](https://github.com/infinri/Writ/actions/runs/44415046715). E-094 records guest-source checks and E-095 records this batch's read-only evidence. Verify the published checkpoint and exact-SHA CI as directed in the handoff.
 
 Earlier local evidence (2026-11-13, `b60bf33`, E-074): workspace tests 394 passed (4 ignored), kill tests 4/4 alone, closure self-tests 40, property self-tests 31, closure gate PASS and report verifies, property gate 18,430 checks 0 failed, parity 320/320, dependency gate 0 problems, docs OK. CI run 43518287362, 6/6.
 
 ## Next exact action
 
-Start a fresh chat from [SESSION-HANDOFF](SESSION-HANDOFF.md#current-recovery-state), verify local and remote state and exact-SHA CI, then exercise the inventory source when the owner provides the designated VM. Passive target classification and path/session identity are the next development gaps.
+Start a fresh chat from [SESSION-HANDOFF](SESSION-HANDOFF.md#current-recovery-state). When the owner provides the designated VM, run the documented inventory and record actual evidence before extending collection. Resume MCP integration after the recheck trigger in the decision packet.

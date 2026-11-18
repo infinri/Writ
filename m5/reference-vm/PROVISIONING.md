@@ -2,51 +2,66 @@
 
 ## Workstation preflight
 
-Run as the ordinary workstation user. The destination must be on a filesystem with room for the guests and evidence.
+The 2026-11-18 read-only preflight ran as the ordinary user in the Debian 13 development sandbox. It found no `/dev/kvm`, QEMU, image or seed utilities, libvirt client or Ubuntu cloud-image keyring, and 16 GiB available on the overlay filesystem. This shell cannot provision the reference guest. On the owner Ubuntu workstation, the 2026-11-17 preflight previously found AMD-V, KVM API 12 as the ordinary login, about 9.3 GiB available RAM and 36 GiB free disk, with QEMU, image and seed tools absent. Recheck the actual owner workstation before proceeding.
 
-```bash
-uname -m
-lscpu | grep -E 'Architecture|Virtualization|Hypervisor'
-command -v qemu-system-x86_64 qemu-img cloud-localds curl gpgv ssh ssh-keygen
-ls -l /dev/kvm
-test -r /dev/kvm && test -w /dev/kvm
-free -h
-df -h "${XDG_DATA_HOME:-$HOME}"
-```
-
-This procedure uses amd64 hardware virtualization and an existing ordinary-user QEMU/KVM setup. Require at least 2 vCPUs, 4 GiB guest RAM and a 24 GiB virtual disk for the reference guest. Budget 4 vCPUs, 6 GiB and 24 GiB for a containment runner provisioned on a separate runner host. Keep at least 2 GiB of available host RAM above the selected allocation, and 30 GiB of free space per active guest for the base image, overlay growth and evidence. Measure host resources again before boot. The workstation preflight on 2026-11-17 found AMD-V, approximately 9.3 GiB available RAM and 36 GiB available disk. The ordinary login opened `/dev/kvm` successfully and returned KVM API version 12. QEMU, `qemu-img`, `cloud-localds` and libvirt clients are absent. For this workstation, the owner can install Ubuntu packages `qemu-system-x86`, `qemu-utils` and `cloud-image-utils`. An existing ordinary-user KVM host or an equivalent disposable Ubuntu 24.04 guest with rollback also meets the prerequisite. Run the preflight on that host and record its QEMU version with `qemu-system-x86_64 --version`.
-
-## Verify the clean image
-
-Use the [Canonical Noble build dated 2026-10-17](https://cloud-images.ubuntu.com/releases/noble/release-20261017/). Its signed manifest lists the amd64 cloud image SHA-256 as `04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94`. A separate download matched that digest before provisioning. The manifest signature was verified against the installed Ubuntu cloud-image keyring, signing fingerprint `D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81`. Verify both the signature and image on the provisioning host. Obtain the keyring from a trusted Ubuntu installation or package source. [Canonical verification instructions](https://ubuntu.com/docs/public-images/public-images-reference/artifacts/).
+The owner must provide `qemu-system-x86_64`, `qemu-img` and `cloud-localds` on that Ubuntu workstation (packages `qemu-system-x86`, `qemu-utils`, `cloud-image-utils`), and a trusted cloud-image keyring from `ubuntu-keyring`. Use the ordinary login for all host commands. The reference allocation is 2 vCPUs, 4 GiB RAM and a 24 GiB qcow2 disk. Require 6 GiB available host RAM and 30 GiB free at the selected filesystem before provisioning. Stop if a prerequisite fails.
 
 ```bash
 set -euo pipefail
 umask 077
-vm_dir="${XDG_DATA_HOME:-$HOME/.local/share}/writ-vms"
+vm_dir="${XDG_DATA_HOME:-$HOME}/writ-vms"
+ref=writ-ref-1
+test "$(uname -m)" = x86_64
+for tool in qemu-system-x86_64 qemu-img cloud-localds curl gpgv ssh ssh-keygen ssh-keyscan python3; do
+  command -v "$tool"
+done
+test -r /usr/share/keyrings/ubuntu-cloudimage-keyring.gpg
+python3 - <<'PYTHON'
+import fcntl
+with open("/dev/kvm", "rb+", buffering=0) as device:
+    version = fcntl.ioctl(device, 0xae00)
+    print(f"KVM API {version}")
+    if version != 12:
+        raise SystemExit(1)
+PYTHON
+test "$(nproc)" -ge 2
+test "$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)" -ge $((6 * 1024 * 1024))
+df -Pk "${vm_dir%/*}"
+test "$(df -Pk "${vm_dir%/*}" | awk 'NR == 2 {print $4}')" -ge $((30 * 1024 * 1024))
+qemu-system-x86_64 --version
+```
+
+Use an existing writable absolute parent for `vm_dir` with the required free space. If the tools are still missing on the Ubuntu workstation, the owner can run `sudo apt-get update && sudo apt-get install qemu-system-x86 qemu-utils cloud-image-utils ubuntu-keyring` there, then repeat the ordinary-user preflight. Keep VM paths free of commas. The host needs loopback TCP port 22224 free. [Ubuntu keyring file list](https://packages.ubuntu.com/noble/all/ubuntu-keyring/filelist).
+
+## Verify the clean image
+
+Run in the same workstation shell. Use a fresh base directory for the first run and retain the verification files and output. The [Canonical Noble build dated 2026-10-17](https://cloud-images.ubuntu.com/releases/noble/release-20261017/) currently publishes the pinned digest below. Authenticate its manifest and verify the full image on the provisioning host. If the dated build disappears, stop for review of a new signed pin. [Canonical image verification](https://ubuntu.com/docs/public-images/public-images-how-to/verify-image-checksum/).
+
+```bash
 image=ubuntu-24.04-server-cloudimg-amd64.img
 base_url=https://cloud-images.ubuntu.com/releases/noble/release-20261017
 image_sha=04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94
-mkdir -p "$vm_dir/base"
+mkdir -p "$vm_dir"
+mkdir "$vm_dir/base"
 cd "$vm_dir/base"
 for file in SHA256SUMS SHA256SUMS.gpg "$image"; do
-  curl --fail --silent --show-error --output "$file" "$base_url/$file"
+  curl --fail --silent --show-error --location --output "$file" "$base_url/$file"
 done
-gpgv --keyring /usr/share/keyrings/ubuntu-cloudimage-keyring.gpg SHA256SUMS.gpg SHA256SUMS
+gpgv --status-fd 1 --keyring /usr/share/keyrings/ubuntu-cloudimage-keyring.gpg \
+  SHA256SUMS.gpg SHA256SUMS | tee signature.txt
+grep -F '[GNUPG:] VALIDSIG D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81 ' signature.txt
 grep -Fx "$image_sha *$image" SHA256SUMS
 printf '%s *%s\n' "$image_sha" "$image" | sha256sum --check --strict
-qemu-img info --output=json "$image"
+qemu-img info --output=json "$image" | tee image-info.json
+python3 -c 'import json; image = json.load(open("image-info.json")); assert image["format"] == "qcow2" and "backing-filename" not in image'
 chmod 0444 "$image"
 ```
 
-Confirm `qemu-img info` reports `qcow2` and no backing file. Retain the dated URL, manifest, signature and verification output with the evidence. If Canonical removes the dated build, choose and review a new signed build and record its exact date and digest before creating guests.
-
 ## Create a disposable reference guest
 
-The stopped definition consists of the overlay, cloud-init seed and boot command below. Keep paths free of commas for QEMU. The base image is shared read-only. Make the containment runner's disk separately on its isolated host using the same verified base and a fresh overlay for each job ID. Create the separate runner disk with `qemu-img create -f qcow2 -F qcow2 -b "$vm_dir/base/$image" "$runner_disk" 24G` using an absolute path unique to the approved job and attempt on the runner host. The runner procedure uses a fresh CI-only seed and [separate admission, networking and lifecycle controls](../containment-ci/README.md). [QEMU invocation](https://www.qemu.org/docs/master/system/invocation.html) and [cloud-init NoCloud](https://docs.cloud-init.io/en/latest/reference/datasources/nocloud.html).
+Create a fresh overlay and NoCloud seed in the same workstation shell. The first boot uses restricted user networking. The seed contains only the disposable access public key and guest setup. [QEMU invocation](https://www.qemu.org/docs/master/system/invocation.html) and [cloud-init NoCloud](https://docs.cloud-init.io/en/latest/reference/datasources/nocloud.html).
 
 ```bash
-ref=writ-ref-1
 mkdir "$vm_dir/$ref"
 cd "$vm_dir/$ref"
 qemu-img create -f qcow2 -F qcow2 -b "$vm_dir/base/$image" disk.qcow2 24G
@@ -66,70 +81,243 @@ users:
 CLOUD
 cloud-localds seed.img user-data meta-data
 qemu-img info --backing-chain disk.qcow2
-```
-
-The provisioning operator can now boot the OS to install packages and stage reviewed build artifacts. Privileged Writ trials require the owner's manual designation in the next section. No shared directories, host devices, persistent credentials or agent forwarding are needed. Use restricted networking for the trial boot. The initial provisioning boot enables QEMU user networking for package installation. Use a host network policy that restricts access to approved package endpoints during that boot.
-
-```bash
-cd "$vm_dir/$ref"
 start_reference() {
   qemu-system-x86_64 -name "$ref" -machine q35,accel=kvm -cpu host \
     -smp 2 -m 4096 -display none -serial stdio -monitor none \
     -drive file=disk.qcow2,if=virtio,format=qcow2 \
     -drive file=seed.img,media=cdrom,format=raw,readonly=on \
-    -nic "user,model=virtio-net-pci,restrict=$1,hostfwd=tcp:127.0.0.1:22224-:22"
+    -nic "user,model=virtio-net-pci,restrict=${1:-on},hostfwd=tcp:127.0.0.1:22224-:22"
 }
-start_reference off
+start_reference
 ```
 
-In a second workstation shell, define the connection and its working directory and check the SSH fingerprint against the cloud-init fingerprint in the QEMU serial output before accepting it.
+In a second workstation shell, pin the Ed25519 SSH host key against the fingerprint in the QEMU serial output. Set `console_fingerprint` to that exact `SHA256:...` value. Use this connection and leave the first shell attached to QEMU.
 
 ```bash
-vm_dir="${XDG_DATA_HOME:-$HOME/.local/share}/writ-vms"
+set -euo pipefail
+umask 077
+vm_dir="${XDG_DATA_HOME:-$HOME}/writ-vms"
 ref=writ-ref-1
 cd "$vm_dir/$ref"
+read -r -p 'Guest console Ed25519 host fingerprint: ' console_fingerprint
+ssh-keyscan -4 -T 5 -p 22224 -t ed25519 127.0.0.1 > known_hosts.candidate
+test "$(ssh-keygen -lf known_hosts.candidate | awk '{print $2}')" = "$console_fingerprint"
+mv known_hosts.candidate known_hosts
 ref_ssh() {
-  ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no \
+  local -a tty=()
+  if [[ "${1:-}" = -t ]]; then
+    tty=(-t)
+    shift
+  fi
+  ssh "${tty[@]}" -F /dev/null -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no \
+    -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null \
     -o UserKnownHostsFile="$PWD/known_hosts" -i "$PWD/guest-access" \
     -p 22224 vm-operator@127.0.0.1 "$@"
 }
 ref_ssh 'cloud-init status --wait'
-ref_ssh 'sudo apt-get update && sudo apt-get install -y --no-install-recommends acl apparmor-utils bubblewrap busybox-static dbus-x11 dmeventd dmsetup e2fsprogs gnome-keyring xauth xvfb'
-ref_ssh 'sudo useradd -m -s /bin/bash writ-human && sudo chmod 0700 /home/writ-human'
-ref_ssh 'systemd-detect-virt --vm; stat -fc %T /sys/fs/cgroup; cat /sys/fs/cgroup/cgroup.controllers; sysctl kernel.apparmor_restrict_unprivileged_userns; findmnt -no FSTYPE /'
+ref_ssh 'test "$(hostname)" = writ-ref-1 && test "$(systemd-detect-virt --vm)" = kvm && test ! -e /etc/writ-disposable-vm && test ! -L /etc/writ-disposable-vm'
 ref_ssh 'sudo systemctl poweroff'
 ```
 
-Expect `kvm`, `cgroup2fs` with `cpu memory pids`, user namespace restriction `1` and `ext4`. With QEMU stopped, snapshot the clean, unmarked guest. The snapshot includes the installed packages and disposable human account.
+After QEMU exits, create and check the clean, unmarked snapshot in the first shell. The restore command is `qemu-img snapshot -a fresh disk.qcow2` while QEMU is stopped. Restore it now to confirm rollback before designation. Then boot again.
 
 ```bash
-cd "$vm_dir/$ref"
 qemu-img snapshot -c fresh disk.qcow2
 qemu-img snapshot -l disk.qcow2
+qemu-img snapshot -a fresh disk.qcow2
+qemu-img check disk.qcow2
+start_reference
 ```
 
 ## Owner designation and guest trials
 
-In the QEMU shell, run `start_reference on`. The owner opens an SSH session with `ref_ssh`, verifies `hostname`, virtualization and the guest image, then enters `sudo -i`. The owner alone runs the checks and writes the marker inside that guest after confirming that rollback is available.
+From the workstation, the owner opens `ref_ssh -t 'sudo -i'`. In this guest root shell, check the current boot, ordinary guest namespaces and procfs before making any test setup changes. The collector compares the filesystem root and mount, UTS, PID, user and network namespaces against PID 1. The initial PID and user namespace inode numbers are 4026531836 and 4026531837. Its process sweep also requires all visible tasks to be inspectable and in the admitted PID, user and network namespaces.
 
 ```bash
-(
-  set -e
-  test "$(id -u)" = 0
-  test "$(hostname)" = writ-ref-1
-  test "$(systemd-detect-virt --vm)" = kvm
-  . /etc/os-release
-  test "$ID:$VERSION_ID" = ubuntu:24.04
-  test ! -e /etc/writ-disposable-vm
-  test ! -L /etc/writ-disposable-vm
-  umask 077
-  set -o noclobber
-  printf 'writ-disposable-vm/1\nname=writ-ref-1\n' > /etc/writ-disposable-vm
-) || exit 1
-stat -c '%U:%G %a %F' /etc/writ-disposable-vm
+set -euo pipefail
+export LC_ALL=C
+test "$(id -ru):$(id -u)" = 0:0
+test "$(cat /proc/sys/kernel/hostname)" = writ-ref-1
+test "$(systemd-detect-virt --vm)" = kvm
+container_rc=0
+container_kind=$(systemd-detect-virt --container) || container_rc=$?
+test "$container_rc:$container_kind" = 1:none
+. /usr/lib/os-release
+test "$ID:$VERSION_ID" = ubuntu:24.04
+test "$(stat -Lc '%d:%i' /)" = "$(stat -Lc '%d:%i' /proc/1/root)"
+test -d /etc
+test ! -L /etc
+test "$(findmnt -n -o ID --target /etc)" = "$(findmnt -n -o ID --target /)"
+for ns in mnt uts pid user net; do
+  test "$(readlink "/proc/$$/ns/$ns")" = "$(readlink "/proc/1/ns/$ns")"
+done
+test "$(readlink /proc/1/ns/pid)" = 'pid:[4026531836]'
+test "$(readlink /proc/1/ns/user)" = 'user:[4026531837]'
+findmnt --target /proc --submounts -o TARGET,FSROOT,FSTYPE,VFS-OPTIONS,FS-OPTIONS
+cat /proc/sys/kernel/random/boot_id
 ```
 
-Expect `root:root 600 regular file`. Stop after any failed check. The marker belongs to this disposable guest and is absent from the clean snapshot and all seed images. Use the [reference trial commands](README.md#commands) for everything after designation. The separate `writ-human` account enables service configuration. The live desktop acceptance check still needs the actual session targets and negative controls listed in M5-INTERFACES J-9. A headless boot without those targets leaves P-AGENT-DESKTOP open.
+Require a single full procfs mounted at `/proc` with filesystem root `/`. Accept the default mount options (`rw` or `ro`, `relatime`, `nosuid`, `nodev`, `noexec`, optional `hidepid=0` or `hidepid=off`). The only allowed submount is `/proc/sys/fs/binfmt_misc`. Stop for filtered, overmounted or narrowed proc views. Keep the shell in the booted guest's normal root and namespaces.
+
+The owner alone writes the marker after verifying the snapshot and these checks. Its exact two lines, including the final newline, are bound to the guest hostname. The file must be regular, root:root, mode 0600, under `/etc` without symlinks or a separate file mount. Run this as the owner in the verified guest root shell only.
+
+```bash
+test ! -e /etc/writ-disposable-vm
+test ! -L /etc/writ-disposable-vm
+(umask 077; set -o noclobber; printf 'writ-disposable-vm/1\nname=writ-ref-1\n' > /etc/writ-disposable-vm)
+test "$(stat -c '%u:%g %a %F' /etc/writ-disposable-vm)" = '0:0 600 regular file'
+```
+
+## First guest inventory
+
+Exit the guest SSH session after designation and leave that guest running. Build only the inventory executable at the reviewed exact SHA from a clean checkout on an amd64 Ubuntu 24.04 build system with the pinned repository toolchain available. Bring the private stage directory to the workstation if the build system is separate. The expected SHA for the first run is `083e22c35db139894f2bb378d1f4b4fa5ca286db`. A later reviewed SHA may be used after confirming its verification status.
+
+```bash
+set -euo pipefail
+umask 077
+test -z "$(git status --porcelain --untracked-files=no)"
+test "$(git rev-parse HEAD)" = 083e22c35db139894f2bb378d1f4b4fa5ca286db
+cargo build --locked -p writ-hostsys --bin writ-desktop-inventory
+stage=$(mktemp -d)
+install -m 0700 target/debug/writ-desktop-inventory "$stage/"
+git rev-parse HEAD > "$stage/commit.txt"
+(cd "$stage" && sha256sum writ-desktop-inventory commit.txt > SHA256SUMS)
+printf 'Inventory stage: %s\n' "$stage"
+```
+
+In the workstation shell with `ref_ssh`, set `stage` to that verified directory and transfer the three files. Then open a new root shell in the same running guest with `ref_ssh -t 'sudo -i'`.
+
+```bash
+tar -C "$stage" -cf - writ-desktop-inventory commit.txt SHA256SUMS |
+  ref_ssh 'sudo install -d -m 0700 /root/writ-inventory && sudo tar --no-same-owner -xf - -C /root/writ-inventory'
+```
+
+Normalize only the three NSS account rules inside the guest. Verify that `/etc/nsswitch.conf`, `/etc/passwd`, `/etc/group` and `/usr/lib/os-release` are regular root:root files, on their normal filesystems, with no group or other write bits. The snapshot restores original NSS. The four throwaway role accounts deliberately have their own primary groups. Only the agent has the additional `writ-agents` membership.
+
+```bash
+set -euo pipefail
+export LC_ALL=C
+cd /root/writ-inventory
+sha256sum --check --strict SHA256SUMS
+test "$(cat commit.txt)" = 083e22c35db139894f2bb378d1f4b4fa5ca286db
+install -d -m 0700 /root/writ-evidence
+umask 077
+evidence=$(mktemp -d /root/writ-evidence/inventory.XXXXXXXX)
+root_mount=$(findmnt -n -o ID --target /)
+test ! -L /usr
+test ! -L /usr/lib
+for file in /etc/nsswitch.conf /etc/passwd /etc/group /usr/lib/os-release; do
+  test -f "$file"
+  test ! -L "$file"
+  test "$(stat -c '%u:%g' "$file")" = 0:0
+  mode=$(stat -c '%a' "$file")
+  test "$((8#$mode & 022))" -eq 0
+  test "$(findmnt -n -o ID --target "$file")" = "$root_mount"
+  stat -c '%u:%g %a %F %n' "$file"
+done > "$evidence/trusted-files.txt"
+cp -p /etc/nsswitch.conf /root/writ-inventory/nsswitch.before
+sed -Ei '/^[[:space:]]*(passwd|group|initgroups)[[:space:]]*:/d' /etc/nsswitch.conf
+printf 'passwd: files\ngroup: files\ninitgroups: files\n' >> /etc/nsswitch.conf
+grep -E '^(passwd|group|initgroups):' /etc/nsswitch.conf | tee "$evidence/nss-rules.txt"
+groupadd --system writ-agents
+useradd --system --user-group --no-create-home --shell /usr/sbin/nologin writ
+useradd --system --user-group --no-create-home --shell /usr/sbin/nologin writ-job
+useradd --user-group --no-create-home --shell /usr/sbin/nologin --groups writ-agents writ-agent
+useradd --user-group --create-home --shell /bin/bash writ-human
+chmod 0700 /home/writ-human
+for user in writ writ-job writ-agent writ-human; do id "$user"; done
+```
+
+Start a stable disposable agent process and a known endpoint holder under the disposable desktop UID. These are positive inventory inputs only. They create IPv4 and IPv6 loopback TCP listeners, one filesystem Unix socket and one abstract Unix socket. No real desktop session or access attempt is needed for this first inventory. Wait for the guest to become quiet before collecting.
+
+```bash
+cat > /home/writ-human/inventory-targets.py <<'PYTHON'
+import signal
+import socket
+
+def listener(family, address):
+    endpoint = socket.socket(family, socket.SOCK_STREAM)
+    if family == socket.AF_INET6:
+        endpoint.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+    endpoint.bind(address)
+    endpoint.listen()
+    return endpoint
+
+listeners = [
+    listener(socket.AF_INET, ("127.0.0.1", 48124)),
+    listener(socket.AF_INET6, ("::1", 48124)),
+    listener(socket.AF_UNIX, "/home/writ-human/inventory.sock"),
+    listener(socket.AF_UNIX, "\0writ-inventory"),
+]
+print("inventory endpoints ready", flush=True)
+signal.pause()
+PYTHON
+chmod 0644 /home/writ-human/inventory-targets.py
+systemd-run --quiet --unit=writ-inventory-agent --uid=writ-agent /usr/bin/sleep infinity
+systemd-run --quiet --unit=writ-inventory-desktop --uid=writ-human \
+  /usr/bin/python3 /home/writ-human/inventory-targets.py
+systemctl is-active writ-inventory-agent writ-inventory-desktop
+journalctl -u writ-inventory-desktop -n 10 --no-pager
+```
+
+Require the diagnostic commands below to succeed and to show the expected listeners and the desktop unit's PID. The kernel needs inet and Unix SOCK_DIAG handlers (including IPv6 TCP and the IPv6-only attribute). If unavailable, stop and check the booted kernel's `CONFIG_INET_DIAG`, `CONFIG_INET_TCP_DIAG`, `CONFIG_UNIX_DIAG`, IPv6 support and modules. If configured as modules and unavailable through autoload, the owner can preload `tcp_diag` and `unix_diag` in this guest with `modprobe`. Preserve AppArmor and the proc admission guards. Record the agent's main PID, start time and credentials from the independent observation below.
+
+```bash
+agent_pid=$(systemctl show -p MainPID --value writ-inventory-agent)
+desktop_pid=$(systemctl show -p MainPID --value writ-inventory-desktop)
+test "$agent_pid" -gt 1
+test "$desktop_pid" -gt 1
+{
+  cat commit.txt
+  sha256sum writ-desktop-inventory
+  uname -r
+  printf 'agent PID %s, desktop PID %s\n' "$agent_pid" "$desktop_pid"
+  ps -p "$agent_pid,$desktop_pid" -o pid,uid,gid,lstart,comm
+  for pid in "$agent_pid" "$desktop_pid"; do
+    stat_row=$(cat "/proc/$pid/stat")
+    read -r -a stat_fields <<< "${stat_row##*) }"
+    printf 'PID %s start ticks %s\n%s\n' "$pid" "${stat_fields[19]}" "$stat_row"
+    grep -E '^(Uid|Gid|Groups):' "/proc/$pid/status"
+  done
+  ss -4 -H -ltnep '( sport = :48124 )'
+  ss -6 -H -ltnep '( sport = :48124 )'
+  ss -x -H -lnep | grep -E '/home/writ-human/inventory[.]sock|@writ-inventory'
+} > "$evidence/expected.txt"
+cat "$evidence/expected.txt"
+```
+
+After checking the expected evidence, run the first inventory in the guest root shell. Read the boot ID immediately from this boot. Supply the numeric UIDs from files-only NSS. Leave stdout and stderr separate and always preserve the exit status.
+
+```bash
+boot_id=$(cat /proc/sys/kernel/random/boot_id)
+service_uid=$(id -u writ)
+job_uid=$(id -u writ-job)
+agent_uid=$(id -u writ-agent)
+desktop_uid=$(id -u writ-human)
+rc=0
+./writ-desktop-inventory writ-ref-1 "$boot_id" "$service_uid" "$job_uid" "$agent_uid" "$desktop_uid" \
+  > "$evidence/inventory.txt" 2> "$evidence/inventory.stderr" || rc=$?
+printf '%s\n' "$rc" > "$evidence/inventory.exit"
+if test "$rc" -eq 0; then
+  test "$(tail -n 1 "$evidence/inventory.txt")" = end
+fi
+```
+
+Count positive guest evidence only after exit 0 and the final `end` record. Compare the role UID rows and the agent process row with the observations in `expected.txt`, including PID, start ticks (proc stat field 22), all four UIDs and GIDs, and the supplementary group set. Match both TCP listener addresses and port, IPv6-only mode and both Unix endpoint addresses. Match each endpoint inode to a holder row containing the desktop PID and start ticks. The filesystem address hex is `2f686f6d652f777269742d68756d616e2f696e76656e746f72792e736f636b00` (trailing NUL). The abstract address hex is `00777269742d696e76656e746f7279` (leading NUL). Record the actual scope, image and binary checksums, status, exceptions and [inventory limits](DESKTOP-PROBE.md#guest-inventory). Preserve refusal and diagnostic output. Exit 3 means unavailable. Investigate guest process or socket churn, holders, inaccessible tasks and diagnostic availability in that guest before retrying. Export reviewed evidence and restore the snapshot when done.
+
+## Later reference trials and isolated containment CI
+
+The first inventory uses stand-in targets. The clean rollback discards the temporary inventory accounts. Before the broader reference trials, boot the unmarked guest for package preparation with `start_reference off` and a host network policy that restricts that boot to approved package endpoints. On the guest, install the trial-only packages and create the desktop account again.
+
+```bash
+ref_ssh 'sudo apt-get update && sudo apt-get install -y --no-install-recommends acl apparmor-utils bubblewrap busybox-static dbus-x11 dmeventd dmsetup e2fsprogs gnome-keyring xauth xvfb'
+ref_ssh 'sudo useradd -m -s /bin/bash writ-human && sudo chmod 0700 /home/writ-human'
+ref_ssh 'sudo systemctl poweroff'
+```
+
+Wait for QEMU to exit, create a separate unmarked rollback snapshot with `qemu-img snapshot -c trial-ready disk.qcow2`, and restore it once while stopped to verify rollback. Reboot with `start_reference` for restricted networking and repeat the owner designation checks for that boot. The [reference trial commands](README.md#commands) then stage and run the broader checks. Confirm cgroup v2 with `cpu memory pids`, the AppArmor user namespace restriction set to `1`, and ext4 before those trials. Full desktop acceptance still needs the actual disposable session targets and negative controls listed in M5-INTERFACES J-9.
+
+The [isolated containment CI gate](../containment-ci/README.md) requires a separate runner host and control repository, runner group, provisioner, exact gate wrapper and status App. Budget 4 vCPUs, 6 GiB guest RAM, a 24 GiB disk and 30 GiB free host disk per active runner, with 2 GiB available host RAM above the allocation. Each reviewed job attempt requires a fresh overlay and CI-only seed. Destroy it after success, failure or cancellation. The reference guest supplies only reference evidence.
 
 ## Export evidence, roll back and destroy
 
@@ -146,7 +334,7 @@ sha256sum "$archive" > "$archive.sha256"
 ref_ssh 'sudo systemctl poweroff'
 ```
 
-After QEMU exits, either roll back for another owner-designated reference trial or destroy the guest. The snapshot discards post-designation guest state, including the marker. To restore it while stopped, run:
+After QEMU exits, either roll back for another owner-designated reference trial or destroy the guest. The snapshot discards post-designation guest state, including the marker. Restore `fresh` for inventory or `trial-ready` for a prepared trial. With QEMU stopped, run the inventory rollback as follows.
 
 ```bash
 cd "$vm_dir/$ref"
@@ -157,10 +345,8 @@ qemu-img check disk.qcow2
 For destruction, verify QEMU has exited and the evidence archive has been received. The following removes precisely this reference clone's files, including the private guest access key. It keeps the verified base and exported evidence.
 
 ```bash
-cd "$vm_dir/writ-ref-1"
+cd "$vm_dir/$ref"
 rm -i -- disk.qcow2 seed.img user-data meta-data guest-access guest-access.pub known_hosts
 cd "$vm_dir"
-rmdir -- writ-ref-1
+rmdir -- "$ref"
 ```
-
-An isolated containment runner uses one new clone per reviewed job and is destroyed after each attempt, including failure and cancellation. It has separate registration, release criteria and external cleanup. The reference clone procedure stops short of registering a GitHub Actions runner.
