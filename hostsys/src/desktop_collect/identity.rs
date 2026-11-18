@@ -1,10 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{read_text, valid_pid, Input, Problem, Source};
+#[cfg(test)]
+use super::valid_pid;
+use super::{read_text, Input, Problem, Source};
 
 const ACCOUNT_BYTES: usize = 1024 * 1024;
 const ACCOUNT_ROWS: usize = 4096;
+#[cfg(test)]
 const STAT_BYTES: usize = 4096;
+#[cfg(test)]
 const STATUS_BYTES: usize = 1024 * 1024;
 const SUPPLEMENTARY_GROUPS: usize = 65_536;
 
@@ -27,7 +31,7 @@ pub(super) struct Group {
     pub(super) listed: BTreeSet<u32>,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct Credentials {
     pub(super) uids: [u32; 4],
     pub(super) gids: [u32; 4],
@@ -146,7 +150,7 @@ pub(super) fn read_accounts(source: &mut impl Source) -> Result<Accounts, Proble
     Ok(Accounts { accounts, groups })
 }
 
-fn stat_start(text: &str, pid: u32) -> Result<u64, Problem> {
+pub(super) fn stat_start(text: &str, pid: u32) -> Result<u64, Problem> {
     let row = text.strip_suffix('\n').ok_or(Problem::Incomplete)?;
     let (reported_pid, tail) = row.split_once(" (").ok_or(Problem::Malformed)?;
     if id(reported_pid)? != pid {
@@ -211,7 +215,12 @@ fn supplementary(text: &str) -> Result<BTreeSet<u32>, Problem> {
     Ok(groups)
 }
 
-fn status_credentials(text: &str, pid: u32, start: u64) -> Result<Credentials, Problem> {
+pub(super) fn status_credentials(
+    text: &str,
+    pid: u32,
+    tgid: u32,
+    start: u64,
+) -> Result<Credentials, Problem> {
     let mut fields = BTreeMap::new();
     for row in text.split_terminator('\n') {
         let (field, value) = row.split_once(':').ok_or(Problem::Malformed)?;
@@ -233,7 +242,7 @@ fn status_credentials(text: &str, pid: u32, start: u64) -> Result<Credentials, P
     }
 
     let value = |field| fields.get(field).copied().ok_or(Problem::Incomplete);
-    if id(value("Pid")?)? != pid || id(value("Tgid")?)? != pid {
+    if id(value("Pid")?)? != pid || id(value("Tgid")?)? != tgid {
         return Err(Problem::Mismatch);
     }
     Ok(Credentials {
@@ -244,6 +253,7 @@ fn status_credentials(text: &str, pid: u32, start: u64) -> Result<Credentials, P
     })
 }
 
+#[cfg(test)]
 pub(super) fn read_process(source: &mut impl Source, pid: u32) -> Result<Credentials, Problem> {
     if !valid_pid(pid) {
         return Err(Problem::Malformed);
@@ -251,7 +261,7 @@ pub(super) fn read_process(source: &mut impl Source, pid: u32) -> Result<Credent
     let stat = read_text(source, Input::ProcStat(pid), STAT_BYTES)?;
     let start = stat_start(&stat, pid)?;
     let status = read_text(source, Input::ProcStatus(pid), STATUS_BYTES)?;
-    let credentials = status_credentials(&status, pid, start)?;
+    let credentials = status_credentials(&status, pid, pid, start)?;
     let stat = read_text(source, Input::ProcStat(pid), STAT_BYTES)?;
     if stat_start(&stat, pid)? != start {
         return Err(Problem::Changed);

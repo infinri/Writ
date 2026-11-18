@@ -1,5 +1,7 @@
-//! Read-only collection and reconciliation for fixture sources.
+//! Read-only desktop identity and socket inventory.
 
+#[cfg(target_os = "linux")]
+mod guest;
 mod identity;
 mod inventory;
 #[cfg(test)]
@@ -16,11 +18,17 @@ enum Input {
     Scope,
     Passwd,
     Group,
+    #[cfg(test)]
     ProcStat(u32),
+    #[cfg(test)]
     ProcStatus(u32),
+    #[cfg(test)]
     NetUnix,
+    #[cfg(test)]
     NetTcp,
+    #[cfg(test)]
     NetTcp6,
+    #[cfg(test)]
     SocketOwners,
 }
 
@@ -88,7 +96,7 @@ struct Observed {
     missing: BTreeSet<(u32, Kind)>,
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 struct Scope {
     boot_id: String,
     pid_namespace: u64,
@@ -96,17 +104,20 @@ struct Scope {
     net_namespace: u64,
 }
 
+fn valid_boot_id(boot_id: &str) -> bool {
+    boot_id.len() == 36
+        && boot_id.bytes().enumerate().all(|(i, byte)| match i {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte),
+        })
+        && !boot_id.bytes().all(|byte| matches!(byte, b'0' | b'-'))
+}
+
 fn read_scope(source: &mut impl Source) -> Result<Scope, Problem> {
     let text = read_text(source, Input::Scope, 128)?;
     let mut fields = text.split_ascii_whitespace();
     let boot_id = fields.next().ok_or(Problem::Malformed)?;
-    if boot_id.len() != 36
-        || !boot_id.bytes().enumerate().all(|(i, byte)| match i {
-            8 | 13 | 18 | 23 => byte == b'-',
-            _ => byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte),
-        })
-        || boot_id.bytes().all(|byte| matches!(byte, b'0' | b'-'))
-    {
+    if !valid_boot_id(boot_id) {
         return Err(Problem::Malformed);
     }
     let mut namespace = || {
@@ -175,6 +186,7 @@ fn configured_processes(expected: &Expected) -> Result<BTreeSet<u32>, Problem> {
     Ok(pids)
 }
 
+#[cfg(test)]
 fn snapshot(
     source: &mut impl Source,
     pids: &BTreeSet<u32>,
@@ -269,10 +281,19 @@ fn check_identities(expected: &Expected, observed: &Observed) -> Result<(), Prob
     Ok(())
 }
 
+#[cfg(test)]
 fn collect(source: &mut impl Source, expected: &Expected) -> Result<Observed, Problem> {
     let pids = configured_processes(expected)?;
     let (before_scope, before) = snapshot(source, &pids, &expected.desktops)?;
-    let (after_scope, mut after) = snapshot(source, &pids, &expected.desktops)?;
+    let after = snapshot(source, &pids, &expected.desktops)?;
+    reconcile(expected, (before_scope, before), after)
+}
+
+fn reconcile(
+    expected: &Expected,
+    (before_scope, before): (Scope, Observed),
+    (after_scope, mut after): (Scope, Observed),
+) -> Result<Observed, Problem> {
     if before_scope != after_scope
         || before.accounts != after.accounts
         || before.processes != after.processes
@@ -293,4 +314,14 @@ fn collect(source: &mut impl Source, expected: &Expected) -> Result<Observed, Pr
         }
     }
     Ok(after)
+}
+
+/// Collect read-only desktop inventory in the owner-designated reference guest.
+/// The arguments are `VM BOOT_ID SERVICE_UID JOB_UID AGENT_UIDS DESKTOP_UIDS`,
+/// with comma-separated UID lists. Output is inventory evidence only.
+#[cfg(target_os = "linux")]
+pub fn run_guest_inventory(
+    arguments: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Result<String, String> {
+    guest::run(arguments).map_err(|reason| format!("desktop inventory unavailable: {reason}"))
 }

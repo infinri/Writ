@@ -4,17 +4,16 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 
 ## Current recovery state
 
-Collector checkpoint, 2026-11-17. Continue in a fresh Codex chat. Read this section and WORK-STATE before changing code.
+Guest inventory checkpoint, 2026-11-18. Continue in a fresh chat. Read this section and WORK-STATE before changing code.
 
 ### Repository and verification
 
-- Branch `v2/architecture-rebuild` at `infinri/Writ`. Verify local, tracking and GitHub heads and the six required jobs on the exact published collector SHA. The starting head `631985902c1cde5b31e87ec48300fbc09727ca90` passed all six jobs in [required run 44197547123](https://github.com/infinri/Writ/actions/runs/44197547123).
-- Twenty focused collector tests, pinned formatting and hostsys Clippy passed. Independent review found inconsistent Linux PID bounds, now shared across configuration, process reads and socket owners with a regression test. E-093 records verification and review limits. Preserve the private untracked `docs/audit/m0/hook-audit/` without reading, modifying or publishing it.
-- The [fixture-only collector](../../hostsys/src/desktop_collect/mod.rs) separates configured identities and selected PIDs from observed local accounts, group membership and process credentials. It reconciles two guest-scoped samples of those facts and the desktop UID's IPv4, IPv6 and addressed Unix socket inventories. Unavailable or changing observations cannot supply evidence. The [obligation map](../../m5/reference-vm/DESKTOP-PROBE.md#fixture-backed-collector-coverage) records coverage, assumptions and missing sources. Collector output carries no denial or readiness authority.
+- Branch `v2/architecture-rebuild` at `infinri/Writ`. The starting head `f3e17050858ceab69ac50559e536abec00b3c5d1` passed all six jobs in [required run 44215876990](https://github.com/infinri/Writ/actions/runs/44215876990). Verify the published descendant and the six required jobs on its exact SHA. The sandbox's original checkout had a divergent `sandbox test commit`; this batch uses an isolated worktree from the remote baseline. Preserve the private hook-audit directory without reading, modifying or publishing it.
+- [Desktop inventory](../../m5/reference-vm/DESKTOP-PROBE.md#guest-inventory) adds guest admission, full visible process and thread selection, pinned identities and bounded FD observations, plus independent SOCK_DIAG and proc endpoint samples. The existing local account and credential parsers, inventory owner checks and reconciliation apply. The binary emits scoped inventory only. See E-094 for the local checks, independent review and retained limits.
 
 ### Next exact action
 
-After verifying the published SHA and required CI, implement and independently review the guest source for namespace-bound process selection and socket ownership. Establish bounded enumeration and independent endpoint coverage, including process identity stability and unambiguous Unix address representation. Exercise it operationally only in the owner-designated disposable guest with rollback and live targets. Other target classes, denial attempts, protocol authorization, negative-control execution and report integration remain separate work.
+When the owner provides the disposable reference VM, verify the documented guard and files-only NSS prerequisites, then exercise the command in the quiet, prepared guest with known disposable agent processes and desktop endpoints. Record refusal behavior, endpoint coverage and sampling limitations. Extend the passive source with target classification and path/session identity after establishing positive guest inventory. Desktop access denials, protocol authorization, signal/ptrace checks, all negative controls, other target classes and readiness-report integration remain open. Synthetic checks grant no governed-execution authority.
 
 ### Gates and external prerequisites
 

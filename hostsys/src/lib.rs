@@ -43,5 +43,8 @@ pub use readiness::{report, verdict, ProbeId, ProbeResult, Status, Verdict};
 
 #[cfg(test)]
 mod desktop;
-#[cfg(test)]
+#[cfg(any(target_os = "linux", test))]
 mod desktop_collect;
+
+#[cfg(target_os = "linux")]
+pub use desktop_collect::run_guest_inventory;

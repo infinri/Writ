@@ -1,11 +1,20 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
+#[cfg(test)]
 use super::identity::Credentials;
-use super::{read_text, valid_pid, Input, Problem, Source};
+use super::Problem;
+#[cfg(test)]
+use super::{read_text, valid_pid, Input, Source};
 
-const TABLE_BYTES: usize = 4 * 1024 * 1024;
+#[cfg(target_os = "linux")]
+mod guest;
+#[cfg(target_os = "linux")]
+pub(super) use guest::{render, verify_endpoints};
+
+pub(super) const TABLE_BYTES: usize = 4 * 1024 * 1024;
 const TABLE_ROWS: usize = 16_384;
+#[cfg(test)]
 const OWNER_ROWS: usize = 65_536;
 const UNIX_HEADER: &str = "Num RefCount Protocol Flags Type St Inode Path";
 const TCP4_HEADER: &str =
@@ -36,10 +45,24 @@ enum Endpoint {
         address: u128,
         port: u16,
     },
-    Unix {
-        socket_type: u16,
-        name: String,
+    #[cfg(target_os = "linux")]
+    TcpObserved {
+        address: std::net::IpAddr,
+        port: u16,
+        interface: u32,
+        ipv6_only: Option<bool>,
+        cookie: [u32; 2],
     },
+    #[cfg(target_os = "linux")]
+    UnixObserved {
+        socket_type: u16,
+        name: Vec<u8>,
+        state: u8,
+        shutdown: u8,
+        cookie: [u32; 2],
+    },
+    #[cfg(test)]
+    Unix { socket_type: u16, name: String },
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -49,19 +72,20 @@ enum TcpFamily {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct Holder {
-    pid: u32,
-    start_ticks: u64,
-    uid: u32,
+pub(super) struct Holder {
+    pub(super) pid: u32,
+    pub(super) start_ticks: u64,
+    pub(super) uid: u32,
 }
 
-struct Socket {
+pub(super) struct Socket {
     inode: u64,
     tcp_uid: Option<u32>,
     kind: Kind,
     endpoint: Endpoint,
 }
 
+#[cfg(test)]
 pub(super) fn collect(
     source: &mut impl Source,
     desktops: &BTreeSet<u32>,
@@ -90,9 +114,19 @@ pub(super) fn collect(
         &read_text(source, Input::SocketOwners, TABLE_BYTES)?,
         selected_processes,
     )?;
+    collect_targets(sockets, desktops, |inode| {
+        owners.remove(&inode).ok_or(Problem::Incomplete)
+    })
+}
+
+pub(super) fn collect_targets(
+    sockets: Vec<Socket>,
+    desktops: &BTreeSet<u32>,
+    mut owners: impl FnMut(u64) -> Result<BTreeSet<Holder>, Problem>,
+) -> Result<Inventory, Problem> {
     let mut inventory = Inventory::new();
     for socket in sockets {
-        let holders = owners.remove(&socket.inode).ok_or(Problem::Incomplete)?;
+        let holders = owners(socket.inode)?;
         let uid = holders.first().ok_or(Problem::Incomplete)?.uid;
         if holders.iter().any(|holder| holder.uid != uid) {
             return Err(Problem::Ambiguous);
@@ -101,6 +135,7 @@ pub(super) fn collect(
             return Err(Problem::Mismatch);
         }
         if desktops.contains(&uid) {
+            #[cfg(test)]
             if socket.kind == Kind::Unix
                 && matches!(&socket.endpoint, Endpoint::Unix { name, .. } if !name.starts_with('/'))
             {
@@ -119,6 +154,7 @@ pub(super) fn collect(
     Ok(inventory)
 }
 
+#[cfg(test)]
 fn parse_unix(
     text: &str,
     inodes: &mut BTreeSet<u64>,
@@ -208,7 +244,7 @@ fn parse_tcp(
             return Err(Problem::Unsupported);
         }
         hex_pair(columns[4], 8, 8, 8, 8)?;
-        hex_pair(columns[5], 2, 2, 8, 16)?;
+        let (timer, _) = hex_pair(columns[5], 2, 2, 8, 16)?;
         hex(columns[6], 8, 8)?;
         let uid = decimal(columns[7])?;
         if uid == u32::MAX {
@@ -223,7 +259,7 @@ fn parse_tcp(
                 decimal::<u64>(value)?;
             }
             columns[16].parse::<i64>().map_err(|_| Problem::Malformed)?;
-        } else if inode != 0 || !matches!(state, 3 | 6 | 12) {
+        } else if inode != 0 || !matches!((state, timer), (3 | 12, 1) | (5 | 6, 3)) {
             return Err(Problem::Incomplete);
         }
         record_inode(inodes, inode)?;
@@ -252,6 +288,7 @@ fn parse_tcp(
 // Each row describes one process holding FDs for an inode. Its UID must be
 // common to all four process UIDs. The fixture source must report all holders
 // from the same namespace and decline mixed credentials.
+#[cfg(test)]
 fn parse_owners(
     text: &str,
     selected_processes: &BTreeMap<u32, Credentials>,
@@ -314,6 +351,7 @@ fn table_rows<'a>(text: &'a str, header: &str) -> Result<impl Iterator<Item = &'
     Ok(lines)
 }
 
+#[cfg(test)]
 fn take_field<'a>(row: &mut &'a str) -> Result<&'a str, Problem> {
     let remaining = row.trim_start_matches(|c: char| c.is_ascii_whitespace());
     if remaining.is_empty() {
