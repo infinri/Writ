@@ -9,8 +9,8 @@ use std::{
 
 use writ_kernel::json;
 use writ_policy_management_lab::{
-    error_response, execute_v1, execute_v1_with_publication, fixture, Error, Service, Store,
-    MAX_CREDENTIAL, MAX_REQUEST,
+    error_response, evaluator_fixture, execute_v1_with_service, fixture,
+    waiver_fixture::WaiverFixture, Error, Service, Store, MAX_CREDENTIAL, MAX_REQUEST,
 };
 use writ_policy_publication_lab::Registry;
 
@@ -30,6 +30,10 @@ fn run() -> Result<Vec<u8>, Error> {
             Store::create(Path::new(db))?;
             Ok(br#"{"ok":true,"result":{"initialized":true},"version":"/manage/v1"}"#.to_vec())
         }
+        [command, ledger] if command == "init-evaluator" => {
+            evaluator_fixture::initialize(Path::new(ledger))?;
+            Ok(br#"{"ok":true,"result":{"initialized":true},"version":"/manage/v1"}"#.to_vec())
+        }
         [command, db] if command == "init-publication" => {
             Registry::create(
                 Path::new(db),
@@ -39,7 +43,11 @@ fn run() -> Result<Vec<u8>, Error> {
             .map_err(|_| Error::Unavailable)?;
             Ok(br#"{"ok":true,"result":{"initialized":true},"version":"/manage/v1"}"#.to_vec())
         }
-        [command, db, credential_file, extra @ ..] if command == "v1" && extra.len() <= 1 => {
+        [command, db, credential_file, extra @ ..]
+            if (command == "v1" && extra.len() <= 1)
+                || (command == "v1-evaluator" && extra.len() == 1)
+                || (command == "v1-waiver" && extra.len() == 2) =>
+        {
             let path = Path::new(credential_file);
             if !path.metadata().is_ok_and(|metadata| metadata.is_file()) {
                 return Err(Error::Unauthorized);
@@ -49,7 +57,18 @@ fn run() -> Result<Vec<u8>, Error> {
             let request = read_bounded(io::stdin().lock(), MAX_REQUEST)?;
             let store = Store::open(Path::new(db))?;
             let authority = fixture::authority();
+            let service = Service::new(&store, Some(&authority));
             match extra {
+                [ledger] if command == "v1-evaluator" => {
+                    let evaluator = evaluator_fixture::open(Path::new(ledger))?;
+                    let service = service.with_evaluator(&evaluator);
+                    Ok(execute_v1_with_service(&service, &credential, &request))
+                }
+                [ledger, policy] if command == "v1-waiver" => {
+                    let waiver = WaiverFixture::open(Path::new(ledger), Path::new(policy))?;
+                    let service = service.with_waiver(&waiver);
+                    Ok(execute_v1_with_service(&service, &credential, &request))
+                }
                 [registry] => {
                     let registry = Registry::open_for_administration(
                         Path::new(registry),
@@ -58,12 +77,10 @@ fn run() -> Result<Vec<u8>, Error> {
                     )
                     .map_err(|_| Error::Unavailable)?
                     .with_management_source(store.clone());
-                    let service = Service::new(&store, Some(&authority))
-                        .with_publication(&registry)
-                        .allow_self_publication();
-                    Ok(execute_v1_with_publication(&service, &credential, &request))
+                    let service = service.with_publication(&registry).allow_self_publication();
+                    Ok(execute_v1_with_service(&service, &credential, &request))
                 }
-                _ => Ok(execute_v1(&store, Some(&authority), &credential, &request)),
+                _ => Ok(execute_v1_with_service(&service, &credential, &request)),
             }
         }
         _ => Err(Error::InvalidRequest),

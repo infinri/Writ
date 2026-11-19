@@ -180,7 +180,7 @@ fn invocation<'a>(
     verified: &'a VerifiedRequest,
     request: &'a WaiverRequest,
 ) -> WaiverInvocation<'a> {
-    WaiverInvocation { verified, request }
+    WaiverInvocation::new(verified, request)
 }
 
 fn waiver_broker<'a>(

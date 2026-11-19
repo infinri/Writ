@@ -79,6 +79,21 @@
     "digest": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+    },
+    "priorRevision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740990
+    },
+    "presentation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16384,
+      "description": "Opaque purpose-specific human presentation. The application also enforces its byte limit."
     }
   },
   "oneOf": [
@@ -571,6 +586,423 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 50
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "evaluator_id",
+        "after",
+        "limit"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "evaluator_inspect"
+        },
+        "evaluator_id": {
+          "$ref": "#/$defs/name"
+        },
+        "after": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "expected_revision",
+        "entry"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "evaluator_preview_publish"
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/priorRevision"
+        },
+        "entry": {
+          "$ref": "https://writ.dev/contracts/proposed/evaluator-registry-entry.schema.json"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "expected_revision",
+        "evaluator_id"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "evaluator_preview_revoke"
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/priorRevision"
+        },
+        "evaluator_id": {
+          "$ref": "#/$defs/name"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "expected_revision",
+        "entry",
+        "idempotency_key",
+        "intent_digest",
+        "presentation"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "evaluator_publish"
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/priorRevision"
+        },
+        "entry": {
+          "$ref": "https://writ.dev/contracts/proposed/evaluator-registry-entry.schema.json"
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/label"
+        },
+        "intent_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "presentation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "expected_revision",
+        "evaluator_id",
+        "idempotency_key",
+        "intent_digest",
+        "presentation"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "evaluator_revoke"
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/priorRevision"
+        },
+        "evaluator_id": {
+          "$ref": "#/$defs/name"
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/label"
+        },
+        "intent_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "presentation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "idempotency_key"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "evaluator_recover"
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/label"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "transition_ref",
+        "workflow_id",
+        "from_state",
+        "to_state",
+        "expected_revision",
+        "criterion_id",
+        "reason"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "waiver_request"
+        },
+        "transition_ref": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        },
+        "workflow_id": {
+          "$ref": "#/$defs/name"
+        },
+        "from_state": {
+          "$ref": "#/$defs/name"
+        },
+        "to_state": {
+          "$ref": "#/$defs/name"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "criterion_id": {
+          "$ref": "#/$defs/name"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "waiver_id",
+        "transition_ref",
+        "approver_issuer",
+        "approver_subject",
+        "idempotency_key"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "waiver_begin"
+        },
+        "waiver_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "transition_ref": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        },
+        "approver_issuer": {
+          "$ref": "#/$defs/label"
+        },
+        "approver_subject": {
+          "$ref": "#/$defs/label"
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/label"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "waiver_id",
+        "transition_ref",
+        "challenge_id",
+        "idempotency_key",
+        "dispatch_key",
+        "presentation"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "waiver_finish"
+        },
+        "waiver_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "transition_ref": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        },
+        "challenge_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/label"
+        },
+        "dispatch_key": {
+          "$ref": "#/$defs/label"
+        },
+        "presentation": {
+          "$ref": "#/$defs/presentation"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "waiver_id"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "waiver_inspect"
+        },
+        "waiver_id": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "waiver_id",
+        "transition_ref"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "waiver_validate"
+        },
+        "waiver_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "transition_ref": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "dispatch_key"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "waiver_recover"
+        },
+        "dispatch_key": {
+          "$ref": "#/$defs/label"
         }
       }
     }

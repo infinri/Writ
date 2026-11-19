@@ -2,17 +2,31 @@
 
 mod boundary;
 mod evaluation;
+#[cfg(feature = "fixtures")]
+pub mod evaluator_fixture;
+mod lifecycle;
+pub mod managed_evaluator;
+pub mod managed_waiver;
 mod publication;
 mod store;
+#[cfg(feature = "fixtures")]
+pub mod waiver_fixture;
 mod wire;
 
 #[cfg(feature = "fixtures")]
 pub mod fixture;
 
 pub use boundary::PublicationBoundary;
+pub use lifecycle::{
+    EvaluatorBoundary, EvaluatorOperation, LifecycleCall, LifecycleKind, WaiverBoundary,
+    WaiverOperation,
+};
 pub use publication::PublicationRequest;
 pub use store::Store;
-pub use wire::{error_response, execute_v1, execute_v1_with_publication, RequestV1, ResponseV1};
+pub use wire::{
+    error_response, execute_v1, execute_v1_with_publication, execute_v1_with_service, RequestV1,
+    ResponseV1,
+};
 
 use writ_kernel::json::{self, Digest, Value};
 
@@ -39,6 +53,7 @@ pub enum Role {
     Viewer,
     PolicyAuthor,
     Publisher,
+    WaiverOperator,
 }
 
 pub struct Grant {
@@ -56,6 +71,22 @@ pub struct Principal {
 /// Trusted host-side boundary for current identity and grants. No wire fields supply either.
 pub trait Authenticator {
     fn authenticate(&self, credential: &[u8]) -> Option<Principal>;
+
+    /// Pin current credential, identity and grant state until the returned guard is dropped.
+    /// Lifecycle writes require this capability. Authority changes must order against a live
+    /// guard. A guard must not re-enter the management service or the owning stores.
+    fn pin(&self, _credential: &[u8]) -> Option<Box<dyn PinnedPrincipal + '_>> {
+        None
+    }
+}
+
+pub trait PinnedPrincipal {
+    fn principal(&self) -> &Principal;
+
+    /// Recheck time-dependent credential validity without releasing the pinned state.
+    fn still_valid(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -145,6 +176,8 @@ pub struct Service<'a> {
     store: &'a Store,
     authority: Option<&'a dyn Authenticator>,
     publication: Option<&'a dyn PublicationBoundary>,
+    evaluator: Option<&'a dyn EvaluatorBoundary>,
+    waiver: Option<&'a dyn WaiverBoundary>,
     allow_self_publication: bool,
 }
 
@@ -154,6 +187,8 @@ impl<'a> Service<'a> {
             store,
             authority,
             publication: None,
+            evaluator: None,
+            waiver: None,
             allow_self_publication: false,
         }
     }
@@ -161,6 +196,16 @@ impl<'a> Service<'a> {
     /// Connect to the separately configured publication registry.
     pub fn with_publication(mut self, boundary: &'a dyn PublicationBoundary) -> Self {
         self.publication = Some(boundary);
+        self
+    }
+
+    pub fn with_evaluator(mut self, boundary: &'a dyn EvaluatorBoundary) -> Self {
+        self.evaluator = Some(boundary);
+        self
+    }
+
+    pub fn with_waiver(mut self, boundary: &'a dyn WaiverBoundary) -> Self {
+        self.waiver = Some(boundary);
         self
     }
 
@@ -235,10 +280,91 @@ impl<'a> Service<'a> {
                 reauthorize,
             )?));
         }
+        if matches!(&operation, Operation::Evaluator(..) | Operation::Waiver(..)) {
+            let pin_required = !matches!(
+                &operation,
+                Operation::Evaluator(EvaluatorOperation::Inspect, _)
+                    | Operation::Waiver(WaiverOperation::Inspect | WaiverOperation::Validate, _)
+            );
+            let check = |principal: &Principal| match &operation {
+                Operation::Evaluator(EvaluatorOperation::Inspect, _)
+                | Operation::Waiver(WaiverOperation::Inspect | WaiverOperation::Validate, _) => {
+                    authorize(principal, &scope, false)
+                }
+                Operation::Evaluator(..) => publisher(principal, &scope),
+                Operation::Waiver(..) => {
+                    if principal.realm == Realm::Management
+                        && principal
+                            .grants
+                            .iter()
+                            .any(|grant| grant.scope == scope && grant.role == Role::WaiverOperator)
+                    {
+                        Ok(())
+                    } else {
+                        Err(Error::NotFound)
+                    }
+                }
+                _ => Err(Error::InvalidRequest),
+            };
+            check(&principal)?;
+            let pinned = if pin_required {
+                Some(
+                    self.authority
+                        .and_then(|authority| authority.pin(credential))
+                        .ok_or(Error::Unauthorized)?,
+                )
+            } else {
+                None
+            };
+            let check_identity = |current: &Principal| {
+                if current.subject != principal.subject
+                    || current.realm != principal.realm
+                    || current.grants.len() > 128
+                {
+                    return Err(Error::Unauthorized);
+                }
+                check(current)
+            };
+            let reauthorize = || {
+                if let Some(guard) = &pinned {
+                    let current = guard
+                        .still_valid()
+                        .then(|| guard.principal())
+                        .ok_or(Error::Unauthorized)?;
+                    check_identity(current)
+                } else {
+                    check_identity(&self.authenticate(credential)?)
+                }
+            };
+            if pin_required {
+                reauthorize()?;
+            }
+            let call = LifecycleCall {
+                store: self.store,
+                scope: &scope,
+                subject: &principal.subject,
+                reauthorize: &reauthorize,
+            };
+            return match &operation {
+                Operation::Evaluator(kind, fields) => self
+                    .evaluator
+                    .ok_or(Error::Unavailable)?
+                    .execute(&call, *kind, fields.clone())
+                    .map(ResponseV1::Evaluator),
+                Operation::Waiver(kind, fields) => self
+                    .waiver
+                    .ok_or(Error::Unavailable)?
+                    .execute(&call, *kind, fields.clone())
+                    .map(ResponseV1::Waiver),
+                _ => Err(Error::InvalidRequest),
+            };
+        }
         let write_role = !matches!(&operation, Operation::Get(_) | Operation::History { .. });
         authorize(&principal, &scope, write_role)?;
         Ok(match operation {
-            Operation::Publication(_) => return Err(Error::Unavailable),
+            Operation::Publication(_) | Operation::Evaluator(..) | Operation::Waiver(..) => {
+                return Err(Error::Unavailable);
+            }
             Operation::Mutation(mutation) => {
                 let reauthorize = || {
                     let current = self.authenticate(credential)?;

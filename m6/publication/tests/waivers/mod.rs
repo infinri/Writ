@@ -244,10 +244,7 @@ fn waiver_signed_selection_records_scoped_human_approval_and_enforces_current_po
                     },
                 )
                 .unwrap();
-            let invocation = WaiverInvocation {
-                verified: &verified,
-                request: &reason,
-            };
+            let invocation = WaiverInvocation::new(&verified, &reason);
             let binding = broker.request_waiver(&invocation).unwrap().unwrap();
             assert_eq!(binding.expires_at, now().plus_seconds(240));
             assert!(binding
@@ -304,10 +301,7 @@ fn waiver_signed_selection_records_scoped_human_approval_and_enforces_current_po
         .with_selection(|selection| {
             let broker = Broker::new(&active, &clock, &ledger, &effects, &permit_key)
                 .with_waiver_authority(&selection, &snapshot);
-            let invocation = WaiverInvocation {
-                verified: &verified,
-                request: &reason,
-            };
+            let invocation = WaiverInvocation::new(&verified, &reason);
             assert!(broker.validate_waiver(&invocation, &id).unwrap().is_err());
             Ok(())
         })

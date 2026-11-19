@@ -173,7 +173,10 @@ pub use snapshots::{
     SnapshotRefusal, SqliteSnapshotStore, VerifiedSnapshot, SNAPSHOTS_SCHEMA,
     SNAPSHOTS_SCHEMA_VERSION,
 };
-pub use workflow::EvaluatorRegistryCommit;
+pub use workflow::{
+    EvaluatorRegistryCommit, EvaluatorRegistryReader, EvaluatorRegistryRecord,
+    EvaluatorRegistrySnapshot,
+};
 use writ_broker::store::{TxFailure, TxStage};
 
 /// The exact `writ-ledger-3` schema (the base objects of every ledger).
@@ -202,6 +205,7 @@ pub const SCHEMA: &str = concat!(
 );
 /// The schema version this crate writes and accepts.
 pub const SCHEMA_VERSION: &str = "writ-ledger-6";
+const EVALUATOR_LAB_SCHEMA_VERSION: &str = "writ-ledger-6-evaluator-lab";
 const WAIVER_SCHEMA_VERSION: &str = "writ-ledger-waiver-lab/1";
 
 fn waiver_schema() -> Result<String, StoreError> {
@@ -689,12 +693,17 @@ impl SqliteLedger {
     /// `-shm` file this call created are removed (S-2); the `.owner` lock file may
     /// remain (empty, harmless).
     pub fn create(path: &Path) -> Result<SqliteLedger, StoreError> {
-        Self::create_with_schema(path, SCHEMA, false)
+        Self::create_with_schema(path, SCHEMA, SCHEMA_VERSION, false)
+    }
+
+    /// Create an evaluator fixture ledger that ordinary ownership entry points refuse.
+    pub fn create_evaluator_lab(path: &Path) -> Result<SqliteLedger, StoreError> {
+        Self::create_with_schema(path, SCHEMA, EVALUATOR_LAB_SCHEMA_VERSION, false)
     }
 
     /// Create a new disposable D-053 waiver ledger using its distinct schema.
     pub fn create_waiver_lab(path: &Path) -> Result<SqliteLedger, StoreError> {
-        Self::create_with_schema(path, &waiver_schema()?, true)
+        Self::create_with_schema(path, &waiver_schema()?, WAIVER_SCHEMA_VERSION, true)
     }
 
     pub(crate) fn waiver_lab_enabled(&self) -> bool {
@@ -704,6 +713,7 @@ impl SqliteLedger {
     fn create_with_schema(
         path: &Path,
         schema: &str,
+        version: &str,
         waiver_lab: bool,
     ) -> Result<SqliteLedger, StoreError> {
         let canonical = new_identity(path)?;
@@ -735,10 +745,10 @@ impl SqliteLedger {
                 [LedgerId::random()?.as_str()],
             )
             .map_err(|e| unavailable("initialize", code_name(&e)))?;
-            if waiver_lab {
+            if version != SCHEMA_VERSION {
                 tx.execute(
                     "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
-                    [WAIVER_SCHEMA_VERSION],
+                    [version],
                 )
                 .map_err(|e| unavailable("initialize", code_name(&e)))?;
             }
@@ -775,6 +785,11 @@ impl SqliteLedger {
     /// gaps from failed starts are harmless.
     pub fn open(path: &Path) -> Result<SqliteLedger, StoreError> {
         Self::open_with_schema(path, SCHEMA, SCHEMA_VERSION, false)
+    }
+
+    /// Open an explicitly provisioned evaluator fixture ledger.
+    pub fn open_evaluator_lab(path: &Path) -> Result<SqliteLedger, StoreError> {
+        Self::open_with_schema(path, SCHEMA, EVALUATOR_LAB_SCHEMA_VERSION, false)
     }
 
     /// Reopen an explicitly provisioned D-053 disposable ledger.

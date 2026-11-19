@@ -254,6 +254,61 @@ pub fn verify_ingress(
     })
 }
 
+/// Verified ingress for the waiver lifecycle. It cannot be used to dispatch a promotion
+/// or effect, including when the disposable waiver fixture feature is enabled.
+///
+/// ```compile_fail
+/// use writ_broker::ingress::{VerifiedRequest, WaiverTransition};
+/// fn dispatch(_: &VerifiedRequest) {}
+/// fn cannot_dispatch(waiver: &WaiverTransition) { dispatch(waiver); }
+/// ```
+pub struct WaiverTransition {
+    verified: VerifiedRequest,
+    disposable_fixture: bool,
+}
+
+impl WaiverTransition {
+    /// Restrict an ordinarily verified ingress request to the waiver lifecycle.
+    pub fn from_verified(verified: VerifiedRequest) -> Self {
+        Self {
+            verified,
+            disposable_fixture: false,
+        }
+    }
+
+    /// Scope management intent to the exact trusted ingress request.
+    pub fn fingerprint(&self) -> &RequestFingerprint {
+        self.verified.fingerprint()
+    }
+
+    pub(crate) fn for_waiver(&self) -> (&VerifiedRequest, bool) {
+        (&self.verified, self.disposable_fixture)
+    }
+}
+
+/// Resolve the exact immutable synthetic transition used by the opt-in waiver fixture.
+#[cfg(feature = "disposable-waiver-fixture-ingress")]
+pub fn verify_disposable_waiver_transition(request: &Value) -> Result<WaiverTransition, Refusal> {
+    let refused = Refusal::IngressUnauthenticated;
+    let expected = json::parse(include_bytes!(
+        "../../m6/management/fixtures/waiver-transition.json"
+    ))
+    .map_err(|_| refused.clone())?;
+    let adapter_id = "m6-synthetic";
+    if request != &expected || !verified_by_matches(request, adapter_id) {
+        return Err(refused);
+    }
+    Ok(WaiverTransition {
+        verified: VerifiedRequest {
+            fingerprint: RequestFingerprint::of(request).ok_or(refused)?,
+            request: request.clone(),
+            adapter_id: adapter_id.to_owned(),
+            seal_key: None,
+        },
+        disposable_fixture: true,
+    })
+}
+
 /// Verify the `seal/2` seal presented with `request` (`None` when absent):
 /// the named ingress key must be active in `keys` at trusted time `now` and
 /// bound to the sealing adapter in `bindings`. A `seal/1` seal, an unknown,

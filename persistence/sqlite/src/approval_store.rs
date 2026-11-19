@@ -2484,9 +2484,11 @@ fn finish_in(
                 observed
             )
             .map_err(ap));
-            seq = next_seq(tx, "waiver", waiver_id)?;
+            let (reference, fingerprint) =
+                waiver_store::receipt_reference(waiver_id, intent.management_dispatch());
+            seq = next_seq(tx, "waiver", &reference)?;
             waiver_store::insert_receipt(tx, waiver_id, &accepted, seq)?;
-            request_ref = Some((waiver_id.clone(), b.policy_bundle_sha.clone()));
+            request_ref = Some((fingerprint, b.policy_bundle_sha.clone()));
             result = CeremonyResult::Waived {
                 waiver_id: waiver_id.clone(),
             };
@@ -3288,6 +3290,11 @@ impl SqliteLedger {
         };
         let id = random_id("chl")?;
         let result = self.transact("challenge_issue", |tx| {
+            if let Some(intent) = waiver {
+                if let Err(refusal) = intent.reauthorize_management() {
+                    return Ok(End::Rollback(Err(refusal)));
+                }
+            }
             match begin_in(tx, begin, &id, channel, waiver)? {
                 Ok((issued, context)) => Ok(End::Commit(Ok(prepare(issued, context)?))),
                 Err(refusal) => Ok(End::Rollback(Err(refusal))),
@@ -3312,6 +3319,11 @@ impl SqliteLedger {
             return self.audited(Ok(Err(no_channel())));
         };
         let result = self.transact("ceremony", |tx| {
+            if let Some(intent) = waiver {
+                if let Err(refusal) = intent.reauthorize_management() {
+                    return Ok(End::Rollback(Err(refusal)));
+                }
+            }
             // X4 (S6): the ceremony body runs inside a savepoint; a refusal undoes the body
             // and, when it identified an issued challenge, burns that challenge in this same
             // transaction (status `refused` with the code). The burn commits with the refusal;
@@ -3331,7 +3343,10 @@ impl SqliteLedger {
                     // L6: a verifier that reports itself unavailable is a transient outage,
                     // not a terminal refusal; the challenge stays issued (single use and
                     // expiring all the same).
-                    if refusal == challenge_refused(ChallengeRefusal::Expired)
+                    // A managed request may present the wrong challenge id or lose its
+                    // management grant during the attempt. Its refusal leaves evidence untouched.
+                    if waiver.is_some_and(WaiverIntent::is_managed)
+                        || refusal == challenge_refused(ChallengeRefusal::Expired)
                         || refusal == no_channel()
                     {
                         return Ok(End::Rollback(Err(refusal)));

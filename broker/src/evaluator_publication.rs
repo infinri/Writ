@@ -11,7 +11,7 @@ use crate::{
     acceptance::{class_label, AcceptanceCode},
     clock::EffectiveClock,
     contracts::RegistryEntry,
-    keys::{KeyStatus, MaterialDigest, RunnerKeyRing},
+    keys::{MaterialDigest, RunnerKeyRing},
     refusal::Refusal,
     runner::CommandRegistry,
     workflow::{
@@ -80,6 +80,11 @@ impl EvaluatorIntent {
     /// The exact scoped operation.
     pub fn request(&self) -> &AdminRequest {
         &self.request
+    }
+
+    /// The prior scoped revision bound into the human authorization.
+    pub fn expected_revision(&self) -> i64 {
+        self.expected_revision
     }
 
     /// The canonicalizable request the publisher challenge must bind.
@@ -192,6 +197,11 @@ fn text<'a>(value: &'a Value, name: &str) -> Result<&'a str, Refusal> {
 }
 
 impl EvaluatorDependencies<'_> {
+    /// Validate configured bindings without granting authority or using a ceremony.
+    pub fn preview(&self, intent: &EvaluatorIntent) -> Result<(), Refusal> {
+        self.check(intent).map(|_| ())
+    }
+
     fn check(&self, intent: &EvaluatorIntent) -> Result<Option<(String, MaterialDigest)>, Refusal> {
         let AdminRequest::RegisterEvaluator { entry } = intent.request() else {
             return Ok(None);
@@ -241,16 +251,13 @@ impl EvaluatorDependencies<'_> {
             (None, None) => {}
             _ => return Err(binding),
         }
-        match self
-            .runner_keys
-            .runner_key(key_id)
+        self.runner_keys
+            .runner_key_material_digest(key_id)
             .map_err(|_| Refusal::Acceptance(AcceptanceCode::AttestationKeyUnavailable))?
-        {
-            KeyStatus::Active(key) => Ok(Some((key_id.into(), MaterialDigest::of(key.bytes())))),
-            _ => Err(Refusal::Acceptance(
+            .map(|digest| Some((key_id.into(), digest)))
+            .ok_or(Refusal::Acceptance(
                 AcceptanceCode::AttestationUnauthenticated,
-            )),
-        }
+            ))
     }
 }
 
@@ -259,6 +266,14 @@ fn publisher_refusal(refusal: AdminRefusal) -> Refusal {
         AdminRefusal::Unauthenticated => Refusal::OperatorUnauthenticated,
         AdminRefusal::Unauthorized => Refusal::OperatorUnauthorized,
     }
+}
+
+/// The management attempt recorded alongside the owning evaluator receipt.
+pub struct ManagedEvaluatorAuthorization<'a> {
+    /// Digest identifying the exact durable management attempt.
+    pub correlation: &'a json::Digest,
+    /// Rechecks current management access and the durable attempt at commit.
+    pub reauthorize: &'a dyn Fn() -> Result<(), Refusal>,
 }
 
 /// Verified publisher context accessible to the ledger only through the broker's change.
@@ -271,6 +286,7 @@ pub struct EvaluatorPublication<'a> {
     initial_time: Timestamp,
     approval: PublisherApproval,
     runner_key: Option<(String, MaterialDigest)>,
+    management: Option<&'a ManagedEvaluatorAuthorization<'a>>,
 }
 
 impl<'a> EvaluatorPublication<'a> {
@@ -309,7 +325,21 @@ impl<'a> EvaluatorPublication<'a> {
             initial_time: now,
             approval,
             runner_key,
+            management: None,
         })
+    }
+
+    pub(crate) fn with_management(
+        mut self,
+        management: Option<&'a ManagedEvaluatorAuthorization<'a>>,
+    ) -> Self {
+        self.management = management;
+        self
+    }
+
+    /// Exact management attempt identifier, when presented by the management boundary.
+    pub fn management_correlation(&self) -> Option<&json::Digest> {
+        self.management.map(|management| management.correlation)
     }
 
     pub(crate) fn operator(&self) -> &AuthorizedOperator {
@@ -357,10 +387,19 @@ impl<'a> EvaluatorPublication<'a> {
         if finished_at < now {
             return Err(Refusal::TimeUnavailable);
         }
-        if approval == self.approval && approval.valid(self.presentation, finished_at) {
-            Ok(())
-        } else {
-            Err(Refusal::OperatorUnauthorized)
+        if approval != self.approval || !approval.valid(self.presentation, finished_at) {
+            return Err(Refusal::OperatorUnauthorized);
         }
+        if let Some(management) = self.management {
+            (management.reauthorize)()?;
+            let after_management = self.clock.read().map_err(|e| e.refusal())?.effective;
+            if after_management < finished_at {
+                return Err(Refusal::TimeUnavailable);
+            }
+            if !approval.valid(self.presentation, after_management) {
+                return Err(Refusal::OperatorUnauthorized);
+            }
+        }
+        Ok(())
     }
 }

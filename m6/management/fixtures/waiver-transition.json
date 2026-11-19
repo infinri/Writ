@@ -1,0 +1,37 @@
+{
+  "contract_version": "2.0",
+  "request_id": "req-waiver",
+  "trace_id": "trace-waiver",
+  "tenant_id": "m6-lab",
+  "project_id": "offline-proof",
+  "principal": {
+    "id": "fixture-waiver-requester",
+    "verified_by": "m6-synthetic",
+    "authn_method": "os_peer_credential",
+    "roles": [
+      "agent"
+    ]
+  },
+  "session_id": "waiver-session",
+  "agent_id": null,
+  "parent_session_id": null,
+  "idempotency_key": "waiver",
+  "expected_state_revision": 0,
+  "policy_bundle_sha": null,
+  "action": {
+    "kind": "workflow.transition",
+    "resource": {
+      "uri": "writ-workflow://workflow",
+      "canonical_resource_id": "workflow:m6-lab/offline-proof/workflow"
+    },
+    "action_digest": "sha256:763ffbeaa25089a046c304880d8a38d9fe6261151286abb5af6bb91264b67cea",
+    "attributes": {
+      "from_state": "verifying",
+      "to_state": "accepted",
+      "acceptance_record_id": "future-record",
+      "artifact_snapshot_id": "snapshot",
+      "artifact_digest": "sha256:763ffbeaa25089a046c304880d8a38d9fe6261151286abb5af6bb91264b67cea"
+    },
+    "requested_capabilities": []
+  }
+}

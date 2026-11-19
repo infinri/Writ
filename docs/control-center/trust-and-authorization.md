@@ -42,6 +42,8 @@ Built-in roles for the local beta. Custom roles are enterprise (CC-AD11).
 
 Local single-user installs may hold several roles; conflicting-role actions (for example author and publisher) then require an explicit acknowledgment that is audited. Enterprise installs can make separation of duties mandatory (CC-R06).
 
+The disposable D-056 evaluator operations require a scoped management Publisher and a separate D-052 human publication or revocation presentation. The scoped Waiver Operator grant permits routing requests and ceremonies to the D-053 approval service. The owner checks the approver's current human role, exact context and separation rules independently. Scoped management readers can inspect owner history.
+
 ## Authorization rules for administrative changes
 
 1. **Deny by default.** Every management operation is evaluated against a management authorization policy, versioned and audited like any policy (INV-12).

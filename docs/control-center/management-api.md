@@ -1,6 +1,6 @@
 # Control Center: management API architecture
 
-**Status: PARTIAL.** M6 slices 5A and 5B deliver [disposable draft, signed publication, selection and rollback operations](../../m6/management/README.md) through a typed in-process API and a fixture CLI. The registry commits selection and audit in its own transaction. Management correlates its separately persisted intent with that receipt. The transport and remaining resource operations are design targets. Decision record: [ADR-0007](../decisions/ADR-0007-control-center-management-plane.md).
+**Status: PARTIAL.** M6 slices 5A through 5C deliver [disposable policy draft, signed publication, selection, rollback, evaluator and waiver operations](../../m6/management/README.md) through a typed in-process API and a fixture CLI. Each owning service commits its mutation and audit in its own transaction. Management correlates separately persisted dispatch intent with the authoritative receipt. The transport and remaining resource operations are design targets. Decision record: [ADR-0007](../decisions/ADR-0007-control-center-management-plane.md).
 
 ## Components
 
@@ -50,6 +50,8 @@ The management service is a separate process. The kernel has **no dependency** o
 | `approvals` | requests, decisions on requests, grants (metadata), revocations | M4 |
 | `policies` | bundles, drafts, versions, simulations, publications, activations | M6 |
 | `contracts` | schemas, versions, validations, registrations, deprecations | M6 |
+| `evaluators` | scoped registry inspection, publication, revocation and history | M6 |
+| `waivers` | scoped criterion waiver request, approval, historical receipt and current validation | M6 |
 | `packs` | packs, verifications, enablement | M6 |
 | `integrations` | adapters, coverage, configurations, compatibility | M5 |
 | `knowledge` | sources, imports, documents, chunks, index health, retrieval inspections | M7 |

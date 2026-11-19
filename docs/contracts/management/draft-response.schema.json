@@ -557,6 +557,337 @@
           ]
         }
       }
+    },
+    "evaluatorReceipt": {
+      "type": "object",
+      "required": [
+        "revision",
+        "sequence",
+        "evaluator_id",
+        "status",
+        "intent_digest",
+        "entry_digest",
+        "management_correlation"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "evaluator_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+        },
+        "status": {
+          "enum": [
+            "active",
+            "revoked"
+          ]
+        },
+        "intent_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "entry_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "management_correlation": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "evaluatorHistory": {
+      "type": "object",
+      "required": [
+        "revision",
+        "entry",
+        "runner_key_revoked",
+        "history",
+        "next"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "entry": {
+          "oneOf": [
+            {
+              "$ref": "https://writ.dev/contracts/proposed/evaluator-registry-entry.schema.json"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runner_key_revoked": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "history": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "$ref": "#/$defs/evaluatorReceipt"
+          }
+        },
+        "next": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "evaluatorPreview": {
+      "type": "object",
+      "required": [
+        "intent_digest",
+        "intent"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "intent_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "intent": {
+          "type": "object",
+          "required": [
+            "purpose",
+            "operation",
+            "expected_revision",
+            "mutation"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "purpose": {
+              "const": "writ-human-evaluator-publisher/1"
+            },
+            "operation": {
+              "enum": [
+                "publish",
+                "revoke"
+              ]
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "mutation": {
+              "oneOf": [
+                {
+                  "$ref": "https://writ.dev/contracts/proposed/evaluator-registry-entry.schema.json"
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "tenant_id",
+                    "project_id",
+                    "evaluator_id"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "tenant_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "project_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "evaluator_id": {
+                      "type": "string",
+                      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "waiverReceipt": {
+      "type": "object",
+      "required": [
+        "disposition",
+        "result",
+        "context",
+        "approver_issuer",
+        "approver_subject",
+        "challenge_id",
+        "recorded_at",
+        "ledger_sequence"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "disposition": {
+          "const": "historical_receipt"
+        },
+        "result": {
+          "const": "waived"
+        },
+        "context": {
+          "$ref": "urn:writ:m6:waiver-context-v1"
+        },
+        "approver_issuer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "approver_subject": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "challenge_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "recorded_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "ledger_sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "waiverRequest": {
+      "type": "object",
+      "required": [
+        "waiver_id",
+        "context"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "waiver_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "context": {
+          "$ref": "urn:writ:m6:waiver-context-v1"
+        }
+      }
+    },
+    "waiverInspection": {
+      "type": "object",
+      "required": [
+        "waiver_id",
+        "context",
+        "historical_receipt"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "waiver_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "context": {
+          "$ref": "urn:writ:m6:waiver-context-v1"
+        },
+        "historical_receipt": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/waiverReceipt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "waiverValidation": {
+      "type": "object",
+      "required": [
+        "waiver_id",
+        "context",
+        "result",
+        "currently_valid"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "waiver_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "context": {
+          "$ref": "urn:writ:m6:waiver-context-v1"
+        },
+        "result": {
+          "const": "waived"
+        },
+        "currently_valid": {
+          "const": true
+        }
+      }
+    },
+    "waiverChallenge": {
+      "type": "object",
+      "required": [
+        "waiver_id",
+        "context",
+        "challenge_id",
+        "challenge_expires_at",
+        "client_options_hex"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "waiver_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "context": {
+          "$ref": "urn:writ:m6:waiver-context-v1"
+        },
+        "challenge_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "challenge_expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "client_options_hex": {
+          "type": "string",
+          "pattern": "^[0-9a-f]+$"
+        }
+      }
     }
   },
   "oneOf": [
@@ -603,6 +934,30 @@
             },
             {
               "$ref": "#/$defs/publication_history"
+            },
+            {
+              "$ref": "#/$defs/evaluatorReceipt"
+            },
+            {
+              "$ref": "#/$defs/evaluatorHistory"
+            },
+            {
+              "$ref": "#/$defs/evaluatorPreview"
+            },
+            {
+              "$ref": "#/$defs/waiverReceipt"
+            },
+            {
+              "$ref": "#/$defs/waiverRequest"
+            },
+            {
+              "$ref": "#/$defs/waiverInspection"
+            },
+            {
+              "$ref": "#/$defs/waiverValidation"
+            },
+            {
+              "$ref": "#/$defs/waiverChallenge"
             }
           ]
         }

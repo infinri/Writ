@@ -40,6 +40,11 @@ pub struct WaiverChallenge {
 
 /// SQLite waiver operations on the same ledger as workflow state and human authority.
 pub trait WaiverLedger: Sync {
+    /// Allow pinned fixture ingress only in the explicitly disposable waiver profile.
+    fn allows_disposable_waiver_fixture_ingress(&self) -> bool {
+        false
+    }
+
     /// Persist the exact server-derived context for display and review.
     fn request_waiver(
         &self,

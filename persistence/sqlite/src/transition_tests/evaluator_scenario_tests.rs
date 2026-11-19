@@ -4,7 +4,8 @@ use std::sync::{RwLock, RwLockReadGuard};
 
 use writ_broker::evaluator_publication::{
     CurrentEvaluatorPublisher, EvaluatorDependencies, EvaluatorImplementation,
-    EvaluatorImplementations, EvaluatorIntent, EvaluatorPublisher, PublisherApproval,
+    EvaluatorImplementations, EvaluatorIntent, EvaluatorPublisher, ManagedEvaluatorAuthorization,
+    PublisherApproval,
 };
 use writ_broker::evaluator_rubric::{RubricBinding, RubricEligibility, RubricError};
 use writ_broker::runner::{CommandRegistry, RegisteredCommand};
@@ -146,6 +147,30 @@ pub(super) fn submit_with_credential(
                 implementations: &FixtureDependencies,
             },
             intent,
+        )
+        .unwrap()
+}
+
+fn submit_managed(
+    w: &W,
+    authorities: &impl EvaluatorPublisher,
+    intent: &EvaluatorIntent,
+    correlation: &json::Digest,
+) -> Result<(), Refusal> {
+    w.broker()
+        .publish_evaluator_managed(
+            authorities,
+            &publisher(b"publisher-credential"),
+            &EvaluatorDependencies {
+                runner_keys: &w.runner_keys,
+                commands: &FixtureDependencies,
+                implementations: &FixtureDependencies,
+            },
+            intent,
+            &ManagedEvaluatorAuthorization {
+                correlation,
+                reauthorize: &|| Ok(()),
+            },
         )
         .unwrap()
 }
@@ -687,10 +712,11 @@ fn promotion_racing_revocation_follows_the_durable_commit_sequence() {
             docs: &w.docs,
             gate: &gate,
         };
-        let publisher = GatedPublisher {
+        let gated_publisher = GatedPublisher {
             publishers: &publishers,
             gate: &gate,
         };
+        let correlation = json::Digest::of_bytes(b"fixture management attempt");
         let (result, revoke) = thread::scope(|scope| {
             let promote = || {
                 let mut trust = w.trust();
@@ -711,11 +737,11 @@ fn promotion_racing_revocation_follows_the_durable_commit_sequence() {
             let revoke = || {
                 if promotion_first {
                     contending.send(()).unwrap();
-                    let result = submit(&w, &publishers, &intent);
+                    let result = submit_managed(&w, &publishers, &intent, &correlation);
                     finished.send(()).unwrap();
                     result
                 } else {
-                    submit(&w, &publisher, &intent)
+                    submit_managed(&w, &gated_publisher, &intent, &correlation)
                 }
             };
             // Pause the first operation with its fence held before starting
@@ -741,6 +767,14 @@ fn promotion_racing_revocation_follows_the_durable_commit_sequence() {
             .evaluator_publication_commit(T, P, intent.fingerprint())
             .unwrap()
             .unwrap();
+        let managed_receipt = w
+            .ledger
+            .evaluator_management_receipt(T, P, intent.fingerprint(), correlation.as_str())
+            .unwrap();
+        assert_eq!(
+            managed_receipt.map(|receipt| receipt.sequence),
+            Some(revocation.sequence),
+        );
         let promotion = w.one(
             "SELECT coalesce(max(seq), 0) FROM ledger_sequence \
              WHERE kind = 'promotion' AND reference = 'promotion:wf-1:2'",
@@ -757,4 +791,36 @@ fn promotion_racing_revocation_follows_the_durable_commit_sequence() {
             unchanged(&w);
         }
     }
+}
+
+#[test]
+fn evaluator_managed_mutations_at_the_same_revision_commit_at_most_once() {
+    let (w, publishers) = scenario("d056-competing-evaluator-mutations");
+    let candidate = publication("ci-runner", 2);
+    let revoke = revocation();
+    publishers.approve_fixture(&candidate);
+    publishers.approve_fixture(&revoke);
+    let barrier = std::sync::Barrier::new(2);
+    let authorization = |intent: &EvaluatorIntent| {
+        let exact_attempt = json::Digest::of_bytes(intent.fingerprint().as_bytes());
+        barrier.wait();
+        submit_managed(&w, &publishers, intent, &exact_attempt)
+    };
+    let results = thread::scope(|scope| {
+        let first = scope.spawn(|| authorization(&candidate));
+        let second = scope.spawn(|| authorization(&revoke));
+        [first.join().unwrap(), second.join().unwrap()]
+    });
+    assert!(matches!(
+        results,
+        [Ok(()), Err(Refusal::RegistryRevisionStale)]
+            | [Err(Refusal::RegistryRevisionStale), Ok(())]
+    ));
+    let history = w
+        .ledger
+        .evaluator_registry_history(T, P, "ci-runner", 2, 5)
+        .unwrap();
+    assert_eq!(history.revision, 3);
+    assert_eq!(history.records.len(), 1);
+    unchanged(&w);
 }

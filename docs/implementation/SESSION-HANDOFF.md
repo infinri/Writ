@@ -4,6 +4,19 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 
 ## Current recovery state
 
+[D-056](DECISION-LOG.md#d-056-m6-slice-5c-headless-evaluator-and-waiver-management-owner-2026-11-19) approves M6 slice 5C for disposable stores and test authorities. Read [WORK-STATE](WORK-STATE.md) and [E-103](TEST-EVIDENCE.md#e-103-d-056-headless-evaluator-and-waiver-management-2026-11-19) in a fresh chat.
+
+- Run the [headless evaluator and waiver lab](../../m6/management/README.md#run-evaluator-and-waiver-management). The shared service uses the D-052 broker and registry for evaluator inspection, preview, publication and revocation. It uses the D-053 owning approval lifecycle and trusted ingress for waiver request, approval, recording and current validation. Inspect and recover return historical evidence. The separate management dispatch and owner transactions are correlated by exact receipt identity.
+- The verified starting point was `003e0921934babc67ff2c43357031a2c93588d57` on [run 44596064005](https://github.com/infinri/Writ/actions/runs/44596064005), 6/6. For the published checkpoint, fetch `origin v2/architecture-rebuild` in an isolated checkout, then use `gh run list --repo infinri/Writ --branch v2/architecture-rebuild --workflow v2-docs.yml --commit <remote-sha> --limit 5` and `gh run view <run-id> --repo infinri/Writ --json headSha,conclusion,jobs`. Verify the exact remote SHA and all six jobs before continuing. E-097 preserves the unresolved earlier CI stall.
+- The original checkout retains its divergent `a1eee0d` commit and unrelated work. Start from the verified remote SHA and keep the original checkout and private hook-audit material separate.
+- Next bounded development batch, subject to separate owner approval, is disposable signed policy deactivation and retirement. Define current-selection and active-dependent refusal cases first, then extend the D-051 registry and D-055 management boundary with preview, fresh publisher intent, expected revision, audit and recovery. Preserve the refusal of weakening or omitting mandatory policies.
+- CC-M2, CC-M3 and CC-M6 remain partial. Remaining policy lifecycle operations, contract and pack administration, evaluator quorum, remaining AG-ADV-16 obligations, UI, transport and production authentication remain open. Governed activation, live deployment and legacy imports require separate authority.
+- Finish unblocked M6 development, then prioritize M5 VM testing and isolated containment CI before M7. M6 host integration depends on M5. D-048 and D-049 remain in force. D-049 expires at the start of 2026-12-18 UTC. M5 requires the owner-designated rollback-capable Ubuntu 24.04 guest, its [first inventory](../../m5/reference-vm/PROVISIONING.md#first-guest-inventory), the [full VM checklist](M5A-GATE-REVIEW.md#4-verify-in-vm-checklist-all-open) and separate [isolated containment CI](../../m5/containment-ci/README.md). M5 and M6 remain in progress. ADR-0008 remains APPROVED IN PRINCIPLE. Release and production remain NO-GO.
+
+## Prior checkpoints
+
+### 2026-11-19 (M6 slice 5B checkpoint)
+
 [D-055](DECISION-LOG.md#d-055-m6-slice-5b-headless-signed-policy-lifecycle-owner-2026-11-19) implements M6 slice 5B for disposable stores and test authorities. Read [WORK-STATE](WORK-STATE.md) and [E-102](TEST-EVIDENCE.md#e-102-d-055-headless-signed-policy-lifecycle-2026-11-19) in a fresh chat. A later M6 slice needs a separate owner decision.
 
 - Run the [headless publication lab](../../m6/management/README.md#run-signed-publication-and-rollback). The shared API and CLI create and validate drafts, preview signed pairs, obtain fresh human authorization, publish and select, inspect the audit, roll back and reopen. The registry owns the atomic selection and audit. Separate management intent records support exact recovery. Managed rollback requires attributable draft context. Prior D-051 publications retain the standalone rollback path.
@@ -11,8 +24,6 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 - Slice 5B source edits are in `/home/agent/workspace/Writ-m6-slice-5a` on local branch `work/m6-slice-5b`. The full workspace filesystem could not stage the edits, so publication used an isolated checkout on a separate volume. Start from the verified remote SHA. The original checkout retains the divergent `a1eee0d` commit and unrelated work. Keep private hook-audit material outside this work.
 - CC-M2, CC-M3 and CC-M6 remain partial. Deactivation, retirement, contract and pack administration, evaluator and waiver endpoints, UI, transport and production authentication remain open. High-stakes evaluator quorum and remaining AG-ADV-16 obligations stay open. Governed activation, live deployment and legacy import require separate authority.
 - D-048 and D-049 remain in force. D-049 expires at the start of 2026-12-18 UTC. M5 requires the owner-designated rollback-capable Ubuntu 24.04 guest, its [first inventory](../../m5/reference-vm/PROVISIONING.md#first-guest-inventory), the [full VM checklist](M5A-GATE-REVIEW.md#4-verify-in-vm-checklist-all-open) and separate [isolated containment CI](../../m5/containment-ci/README.md). M5 remains open. M6 remains in progress. ADR-0008 remains APPROVED IN PRINCIPLE. Release and production remain NO-GO.
-
-## Prior checkpoints
 
 ### 2026-11-15 through 2026-11-16 (M3 and M4 accepted for scoped development, M5a gate package prepared)
 

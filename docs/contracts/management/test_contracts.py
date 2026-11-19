@@ -35,7 +35,10 @@ class DraftContracts(unittest.TestCase):
         decision_schema = json.loads((HERE.parent / "decision.schema.json").read_text())
         authority_schemas = [
             json.loads(path.read_text()) for path in (
-                *PUBLICATION.glob("*.schema.json"), HERE.parent / "policy-bundle.schema.json"
+                *PUBLICATION.glob("*.schema.json"),
+                HERE.parent / "policy-bundle.schema.json",
+                HERE.parent / "proposed/evaluator-registry-entry.schema.json",
+                ROOT / "m6/waivers/waiver-context-v1.schema.json",
             )
         ]
         registry = Registry().with_resources(
@@ -198,3 +201,79 @@ class DraftContracts(unittest.TestCase):
             history | {"selected": receipt},
         ):
             self.assertFalse(self.response.is_valid(response(item)))
+
+    def test_evaluator_and_waiver_contracts(self):
+        entry = json.loads(
+            (HERE.parent / "proposed/examples/evaluator-registry-entry.valid.json").read_text()
+        )
+        waiver = {"waiver_id": DIGEST, "transition_ref": "fixture-transition"}
+        authorize = {"intent_digest": DIGEST, "idempotency_key": "publish", "presentation": "opaque"}
+        finish = {
+            **waiver, "challenge_id": "challenge", "idempotency_key": "ceremony",
+            "dispatch_key": "record", "presentation": "opaque",
+        }
+        for item in (
+            request("evaluator_preview_publish", expected_revision=11, entry=entry),
+            request("evaluator_publish", expected_revision=11, entry=entry, **authorize),
+            request("evaluator_preview_revoke", expected_revision=12, evaluator_id="ci-runner"),
+            request("evaluator_recover", idempotency_key="publish"),
+            request("waiver_begin", **waiver, approver_issuer="fixture-human",
+                    approver_subject="fixture-approver", idempotency_key="ceremony"),
+            request("waiver_finish", **finish),
+            request("waiver_inspect", waiver_id=DIGEST),
+            request("waiver_validate", **waiver),
+            request("waiver_recover", dispatch_key="record"),
+        ):
+            self.request.validate(item)
+        for item in (
+            request("evaluator_preview_publish", expected_revision=11, entry=entry, **authorize),
+            request("evaluator_publish", expected_revision=11, entry=entry),
+            request("evaluator_inspect", evaluator_id="ci-runner", after=0, limit=51),
+            request("waiver_begin", **waiver, approver_issuer="operator",
+                    approver_subject="fixture-approver", idempotency_key="ceremony", excluded=[]),
+            request("waiver_finish", **(finish | {"transition_ref": {}})),
+            request("waiver_finish", **finish, acceptance_record={}),
+            request("waiver_recover", idempotency_key="record"),
+        ):
+            self.assertFalse(self.request.is_valid(item), item)
+
+        receipt = {
+            "revision": 13, "sequence": 44, "evaluator_id": "ci-runner", "status": "revoked",
+            "intent_digest": DIGEST, "entry_digest": DIGEST, "management_correlation": DIGEST,
+        }
+        context = {
+            "purpose": "writ-human-criterion-waiver/1", "tenant_id": "t1", "project_id": "p1",
+            "task_id": "task", "workflow_id": "workflow", "from_state": "review",
+            "to_state": "accepted", "expected_revision": 1, "criterion_id": "review",
+            "artifact_snapshot_id": "snapshot", "artifact_digest": DIGEST,
+            "workflow_authorization_digest": DIGEST,
+            "requester": {"issuer": "fixture", "subject": "requester"},
+            "policy": {
+                "tenant_id": "t1", "project_id": "p1", "authorization_digest": DIGEST,
+                "acceptance_digest": DIGEST, "activation_revision": 1, "publication_digest": DIGEST,
+            },
+            "reason": "Fixture exception", "expires_at": "2026-11-19T12:00:00Z",
+            "exclusions": {
+                **dict.fromkeys(
+                    ("added", "agents", "artifact_changers", "linked_subjects", "policy_changers"), [],
+                ),
+                "delegation_chain": "unavailable",
+                "requesters": [{"issuer": "fixture", "subject": "requester"}],
+            },
+        }
+        historical = {
+            "disposition": "historical_receipt", "result": "waived", "context": context,
+            "approver_issuer": "fixture", "approver_subject": "approver",
+            "challenge_id": "challenge", "recorded_at": "2026-11-19T11:59:30Z", "ledger_sequence": 44,
+        }
+        present = {"waiver_id": DIGEST, "result": "waived", "context": context, "currently_valid": True}
+        for item in (receipt, historical, present, {
+            "waiver_id": DIGEST, "context": context, "historical_receipt": historical,
+        }):
+            self.response.validate(response(item))
+        for item in (
+            receipt | {"presentation": "protected"},
+            historical | {"currently_valid": True},
+            present | {"result": "satisfied"},
+        ):
+            self.assertFalse(self.response.is_valid(response(item)), item)

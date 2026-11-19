@@ -8,7 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use writ_broker::clock::{timestamp_from_parts, ClockError, EffectiveClock, FixedClock, Reading};
 use writ_broker::evaluator_publication::{
     CurrentEvaluatorPublisher, EvaluatorDependencies, EvaluatorImplementation,
-    EvaluatorImplementations, EvaluatorIntent, EvaluatorPublisher, PublisherApproval,
+    EvaluatorImplementations, EvaluatorIntent, EvaluatorPublisher, ManagedEvaluatorAuthorization,
+    PublisherApproval,
 };
 use writ_broker::execute::Broker;
 use writ_broker::keys::{MemoryKeys, PermitKey, RunnerAttestationKey};
@@ -222,7 +223,8 @@ impl Lab {
             "runner-key-1",
             RunnerAttestationKey::from_bytes(vec![0x2d; 32]).unwrap(),
         );
-        Broker::new(&active, &clock, ledger, &effects, &key).publish_evaluator(
+        let correlation = attempt(ceremony);
+        Broker::new(&active, &clock, ledger, &effects, &key).publish_evaluator_managed(
             &authority,
             &presentation,
             &EvaluatorDependencies {
@@ -231,6 +233,10 @@ impl Lab {
                 runner_keys: &runner_keys,
             },
             intent,
+            &ManagedEvaluatorAuthorization {
+                correlation: &correlation,
+                reauthorize: &|| Ok(()),
+            },
         )
     }
 }
@@ -239,6 +245,10 @@ impl Drop for Lab {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+fn attempt(ceremony: &str) -> Digest {
+    Digest::of_bytes(format!("managed-attempt:{ceremony}").as_bytes())
 }
 
 fn view(ledger: &SqliteLedger) -> (i64, Option<RegistryEntry>) {
@@ -339,6 +349,25 @@ fn recovery_reconciles_both_possible_outcomes_of_an_uncertain_commit() {
         .unwrap();
     assert_eq!(outcome.revision, 2);
     assert!(outcome.sequence > original.sequence);
+    let managed = ledger
+        .evaluator_management_receipt(
+            TENANT,
+            PROJECT,
+            intent.fingerprint(),
+            attempt("revoke").as_str(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(managed.sequence, outcome.sequence);
+    assert_eq!(
+        ledger.evaluator_management_receipt(
+            TENANT,
+            PROJECT,
+            intent.fingerprint(),
+            attempt("another-attempt").as_str(),
+        ),
+        Ok(None)
+    );
     let (revision, entry) = view(&ledger);
     assert_eq!(revision, 2);
     let entry = entry.unwrap();
@@ -382,4 +411,52 @@ fn audit_loss_cannot_fall_back_to_legacy_registry() {
     assert!(lab
         .mutate(&ledger, &revoke(1), "revocation", CommitControl::Allowed)
         .is_err());
+}
+
+#[test]
+fn evaluator_receipt_rejects_a_copied_or_relocated_sequence_reference() {
+    let (lab, ledger) = Lab::new();
+    ledger
+        .db()
+        .conn
+        .execute(
+            "INSERT INTO ledger_sequence(kind, reference) VALUES ('administration', 'other-event')",
+            [],
+        )
+        .unwrap();
+    let intent = publish(0);
+    assert_eq!(
+        lab.mutate(&ledger, &intent, "publisher", CommitControl::Allowed),
+        Ok(Ok(()))
+    );
+    let correlation = attempt("publisher");
+    let receive = || {
+        ledger.evaluator_management_receipt(
+            TENANT,
+            PROJECT,
+            intent.fingerprint(),
+            correlation.as_str(),
+        )
+    };
+    let committed = receive().unwrap().unwrap();
+    assert_eq!(committed.sequence, 2);
+    ledger
+        .db()
+        .conn
+        .execute(
+            "UPDATE ledger_sequence SET reference =
+            (SELECT reference FROM ledger_sequence WHERE seq = ?1) WHERE seq = 1",
+            [committed.sequence],
+        )
+        .unwrap();
+    assert!(receive().is_err());
+    ledger
+        .db()
+        .conn
+        .execute(
+            "UPDATE ledger_sequence SET reference = 'other-event' WHERE seq = ?1",
+            [committed.sequence],
+        )
+        .unwrap();
+    assert!(receive().is_err());
 }

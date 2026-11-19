@@ -10,7 +10,7 @@ description = "Disposable policy management for M6"
 [workspace]
 
 [features]
-fixtures = ["dep:ed25519-dalek", "dep:writ-broker"]
+fixtures = ["dep:ed25519-dalek", "writ-broker/disposable-waiver-fixture-ingress"]
 
 [[bin]]
 name = "writ-manage-fixture"
@@ -22,12 +22,23 @@ name = "writ-publication-authority-fixture"
 path = "src/fixture_authority.rs"
 required-features = ["fixtures"]
 
+[[bin]]
+name = "writ-evaluator-authority-fixture"
+path = "src/evaluator_fixture_authority.rs"
+required-features = ["fixtures"]
+
+[[bin]]
+name = "writ-waiver-authority-fixture"
+path = "src/waiver_fixture_authority.rs"
+required-features = ["fixtures"]
+
 [dependencies]
 writ-kernel = { path = "../../kernel" }
 writ-policy-compile = { path = "../compiler" }
 writ-policy-publication-lab = { path = "../publication" }
 ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["zeroize"], optional = true }
-writ-broker = { path = "../../broker", optional = true }
+writ-broker = { path = "../../broker" }
+writ-ledger-sqlite = { path = "../../persistence/sqlite" }
 rusqlite = { version = "=0.41.1", default-features = false, features = ["hooks", "limits"] }
 
 [lints.rust]

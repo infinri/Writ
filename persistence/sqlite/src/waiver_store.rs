@@ -281,7 +281,10 @@ pub(crate) fn check_request(
     if revoked {
         return Ok(Err(ap(ApprovalCode::WaiverRevoked)));
     }
-    let (policy, now, maximum) = match check_policy(intent) {
+    if let Err(refusal) = intent.reauthorize_management() {
+        return Ok(Err(refusal));
+    }
+    let (policy, _, maximum) = match check_policy(intent) {
         Ok(view) => view,
         Err(refusal) => return Ok(Err(refusal)),
     };
@@ -291,6 +294,10 @@ pub(crate) fn check_request(
     if let Err(refusal) = check_workflow(conn, intent, &policy)? {
         return Ok(Err(refusal));
     }
+    let now = match intent.recheck_management_time() {
+        Ok(time) => time,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     let expires_at = request.binding.expires_at;
     if request.created_at > now
         || expires_at <= request.created_at
@@ -410,8 +417,22 @@ pub(crate) fn insert_receipt(
     Ok(())
 }
 
+const MANAGED_REFERENCE: &str = "|writ-managed-waiver/1|";
+
+pub(crate) fn receipt_reference(waiver_id: &str, dispatch: Option<&Digest>) -> (String, String) {
+    dispatch.map_or_else(
+        || (waiver_id.to_owned(), waiver_id.to_owned()),
+        |digest| {
+            let reference = format!("{waiver_id}{MANAGED_REFERENCE}{digest}");
+            let fingerprint = Digest::of_bytes(reference.as_bytes()).to_string();
+            (reference, fingerprint)
+        },
+    )
+}
+
 struct ReceiptProvenance {
     receipt: WaiverReceipt,
+    dispatch: Option<String>,
     rp_id: String,
     origin: String,
     channel: String,
@@ -444,20 +465,31 @@ fn read_provenance(
     };
     let request = read_request(conn, waiver_id)?.ok_or(BodyError::Integrity)?;
     let expected = ceremony_binding(&request.binding).map_err(|_| BodyError::Integrity)?;
-    let row: Option<(String, String, String, String, String, String)> = conn
+    type StoredProof = (
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+    );
+    let row: Option<StoredProof> = conn
         .query_row(
-            "SELECT c.rp_id, c.origin, c.allowed_credentials, c.issued_at, c.expires_at, e.channel
+            "SELECT c.rp_id, c.origin, c.allowed_credentials, c.issued_at, c.expires_at, e.channel,
+                    s.reference, e.request_fingerprint
              FROM challenges c JOIN approval_events e ON e.challenge_id = c.challenge_id
              JOIN ledger_sequence s ON s.seq = e.ledger_seq
              WHERE c.challenge_id = ?1 AND c.status = 'consumed' AND c.operation = 'waive'
                AND c.verdict = 'waived' AND c.target_id = ?2 AND c.context_fingerprint = ?2
                AND c.issuer = ?3 AND c.subject = ?4 AND c.tenant_id = ?5 AND c.project_id = ?6
                AND c.policy_bundle_sha = ?7 AND c.revision = ?8
-               AND e.kind = 'waived' AND e.target_id = ?2 AND e.request_fingerprint = ?2
+               AND e.kind = 'waived' AND e.target_id = ?2 AND e.request_fingerprint IS NOT NULL
                AND e.actor_issuer = ?3 AND e.actor_subject = ?4 AND e.tenant_id = ?5
                AND e.project_id = ?6 AND e.policy_bundle_sha = ?7 AND e.credential_id = ?9
                AND e.at = ?10 AND e.ledger_seq = ?11 AND e.provenance_version = ?12
-               AND e.channel IS NOT NULL AND s.kind = 'waiver' AND s.reference = ?2",
+               AND e.channel IS NOT NULL AND s.kind = 'waiver'",
             rusqlite::params![
                 &challenge_id,
                 waiver_id,
@@ -480,13 +512,45 @@ fn read_provenance(
                     r.get(3)?,
                     r.get(4)?,
                     r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
                 ))
             },
         )
         .optional()?;
-    let Some((rp_id, origin, allowed, issued_at, challenge_expiry, channel)) = row else {
+    let Some((
+        rp_id,
+        origin,
+        allowed,
+        issued_at,
+        challenge_expiry,
+        channel,
+        reference,
+        audit_fingerprint,
+    )) = row
+    else {
         return Err(BodyError::Integrity);
     };
+    let dispatch = if reference == waiver_id {
+        None
+    } else {
+        Some(
+            reference
+                .strip_prefix(waiver_id)
+                .and_then(|tail| tail.strip_prefix(MANAGED_REFERENCE))
+                .filter(|digest| writ_broker::writ_kernel::ids::is_digest(digest))
+                .ok_or(BodyError::Integrity)?
+                .to_owned(),
+        )
+    };
+    let fingerprint = if dispatch.is_some() {
+        Digest::of_bytes(reference.as_bytes()).to_string()
+    } else {
+        waiver_id.to_owned()
+    };
+    if fingerprint != audit_fingerprint {
+        return Err(BodyError::Integrity);
+    }
     let allowed = json::parse(allowed.as_bytes()).map_err(|_| BodyError::Integrity)?;
     let approved_credential = allowed.as_arr().is_some_and(|ids| {
         ids.iter()
@@ -512,6 +576,7 @@ fn read_provenance(
             recorded_at,
             ledger_seq,
         },
+        dispatch,
         rp_id,
         origin,
         channel,
@@ -587,7 +652,119 @@ fn validate_in(
     Ok(Ok(request.binding))
 }
 
+impl SqliteLedger {
+    /// Read an audited waiver request within the supplied scope.
+    pub fn waiver_request_in_scope(
+        &self,
+        tenant: &str,
+        project: &str,
+        waiver_id: &str,
+    ) -> Result<Option<WaiverBinding>, StoreError> {
+        self.read_scoped_waiver(tenant, project, waiver_id, |conn| {
+            Ok(read_request(conn, waiver_id)?.map(|request| request.binding))
+        })
+    }
+
+    /// Read a historical receipt and optionally require its exact managed dispatch digest.
+    pub fn waiver_receipt_in_scope(
+        &self,
+        tenant: &str,
+        project: &str,
+        waiver_id: &str,
+        dispatch: Option<&str>,
+    ) -> Result<Option<WaiverReceipt>, StoreError> {
+        self.read_scoped_waiver(tenant, project, waiver_id, |conn| {
+            Ok(read_provenance(conn, waiver_id)?
+                .filter(|proof| {
+                    dispatch.is_none_or(|digest| proof.dispatch.as_deref() == Some(digest))
+                })
+                .map(|proof| proof.receipt))
+        })
+    }
+
+    /// Match a disposable authority's displayed waiver and options with an issued ceremony.
+    pub fn waiver_challenge_matches(
+        &self,
+        binding: &WaiverBinding,
+        challenge_id: &str,
+        subject: &SubjectId,
+        challenge_digest: &Digest,
+        now: Timestamp,
+    ) -> Result<bool, StoreError> {
+        let key = &binding.request.workflow;
+        let id = binding
+            .fingerprint()
+            .map_err(|_| unavailable("read scoped waiver challenge", "context"))?;
+        let matched =
+            self.read_scoped_waiver(&key.tenant_id, &key.project_id, id.as_str(), |conn| {
+                let Some(request) = read_request(conn, id.as_str())? else {
+                    return Ok(None);
+                };
+                if request.binding != *binding {
+                    return Ok(None);
+                }
+                let matches: bool = conn.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM challenges
+                  WHERE challenge_id = ?1 AND operation = 'waive' AND verdict = 'waived'
+                    AND status = 'issued' AND target_id = ?2 AND context_fingerprint = ?2
+                    AND challenge_digest = ?3 AND tenant_id = ?4 AND project_id = ?5
+                    AND issuer = ?6 AND subject = ?7 AND policy_bundle_sha = ?8
+                    AND revision = ?9 AND issued_at <= ?10 AND expires_at > ?10)",
+                    rusqlite::params![
+                        challenge_id,
+                        id.as_str(),
+                        challenge_digest.as_str(),
+                        key.tenant_id,
+                        key.project_id,
+                        subject.issuer,
+                        subject.subject,
+                        binding.policy.acceptance_digest,
+                        binding.request.expected_revision,
+                        now.to_string(),
+                    ],
+                    |row| row.get(0),
+                )?;
+                Ok(Some(matches))
+            })?;
+        Ok(matched.unwrap_or(false))
+    }
+
+    fn read_scoped_waiver<T>(
+        &self,
+        tenant: &str,
+        project: &str,
+        waiver_id: &str,
+        read: impl FnOnce(&Connection) -> Result<Option<T>, BodyError>,
+    ) -> Result<Option<T>, StoreError> {
+        if !self.waiver_lab_enabled() {
+            return Ok(None);
+        }
+        let inner = self.lock("read scoped waiver")?;
+        let scoped: bool = inner
+            .conn
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM approval_events
+             WHERE kind = 'waiver_requested' AND target_id = ?1
+               AND tenant_id = ?2 AND project_id = ?3)",
+                (waiver_id, tenant, project),
+                |r| r.get(0),
+            )
+            .map_err(|error| unavailable("read scoped waiver", code_name(&error)))?;
+        if !scoped {
+            return Ok(None);
+        }
+        read(&inner.conn).map_err(|error| match error {
+            BodyError::Sql(sql) => unavailable("read scoped waiver", code_name(&sql)),
+            _ => unavailable("read scoped waiver", "integrity"),
+        })
+    }
+}
+
 impl WaiverLedger for SqliteLedger {
+    fn allows_disposable_waiver_fixture_ingress(&self) -> bool {
+        self.waiver_lab_enabled()
+    }
+
     fn request_waiver(
         &self,
         intent: &WaiverIntent<'_>,
@@ -595,7 +772,12 @@ impl WaiverLedger for SqliteLedger {
         if !self.waiver_lab_enabled() || self.approval_channel().is_none() {
             return self.audited(Ok(Err(no_channel())));
         }
-        self.audited(self.transact("waiver_request", |tx| request_in(tx, intent)))
+        self.audited(self.transact("waiver_request", |tx| {
+            if let Err(refusal) = intent.reauthorize_management() {
+                return Ok(End::Rollback(Err(refusal)));
+            }
+            request_in(tx, intent)
+        }))
     }
 
     fn begin_waiver(

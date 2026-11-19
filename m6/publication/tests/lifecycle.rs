@@ -1022,6 +1022,30 @@ fn management_drafts_leave_signed_selection_grants_and_effects_unchanged() {
         paired.get("after").unwrap().get("status"),
         Some(&json::s("deny"))
     );
+    for query in [
+        br#"{"version":"/manage/v1","operation":"evaluator_inspect","scope":{"tenant":"m6-lab","project":"offline-proof"},"evaluator_id":"doc-check","after":0,"limit":1}"#.as_slice(),
+        br#"{"version":"/manage/v1","operation":"waiver_inspect","scope":{"tenant":"m6-lab","project":"offline-proof"},"waiver_id":"sha256:1111111111111111111111111111111111111111111111111111111111111111"}"#.as_slice(),
+    ] {
+        let mut child = Command::new(&cli)
+            .arg("v1")
+            .arg(&drafts)
+            .arg(&credential)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(query).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(!output.status.success());
+        assert_eq!(
+            json::parse(&output.stdout)
+                .unwrap()
+                .get("error")
+                .and_then(|error| error.get("code")),
+            Some(&json::s("UNAVAILABLE"))
+        );
+        assert_eq!(decide(), original_decision);
+    }
     let outage = Command::new(&cli)
         .arg("v1")
         .arg(dir.path().join("unavailable-management.sqlite"))

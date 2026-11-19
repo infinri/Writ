@@ -326,10 +326,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "writ-hostsys"
+version = "0.1.0"
+dependencies = [
+ "rustix",
+ "writ-kernel",
+]
+
+[[package]]
 name = "writ-kernel"
 version = "0.1.0"
 dependencies = [
  "sha2",
+]
+
+[[package]]
+name = "writ-ledger-sqlite"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "writ-broker",
+ "writ-hostsys",
 ]
 
 [[package]]
@@ -347,6 +364,7 @@ dependencies = [
  "rusqlite",
  "writ-broker",
  "writ-kernel",
+ "writ-ledger-sqlite",
  "writ-policy-compile",
  "writ-policy-publication-lab",
 ]

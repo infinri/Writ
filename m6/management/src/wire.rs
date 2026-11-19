@@ -1,12 +1,13 @@
 use writ_kernel::{
-    ids::is_digest,
+    ids::{is_digest, is_id, is_name},
     json::{self, Map, Value},
 };
 use writ_policy_publication_lab::Publication;
 
 use crate::{
-    valid_label, Authenticator, Change, DraftRef, Error, Mutation, PublicationRequest, Receipt,
-    Result, Scope, Service, Store, Version, MAX_CANDIDATE, MAX_REQUEST,
+    valid_label, Authenticator, Change, DraftRef, Error, EvaluatorOperation, Mutation,
+    PublicationRequest, Receipt, Result, Scope, Service, Store, Version, WaiverOperation,
+    MAX_CANDIDATE, MAX_REQUEST,
 };
 
 pub const API_VERSION: &str = "/manage/v1";
@@ -23,6 +24,8 @@ pub struct RequestV1 {
 
 pub(crate) enum Operation {
     Publication(PublicationRequest),
+    Evaluator(EvaluatorOperation, Map),
+    Waiver(WaiverOperation, Map),
     Mutation(Mutation),
     Get(DraftRef),
     History {
@@ -54,6 +57,8 @@ pub enum ResponseV1 {
     Simulation(Value),
     Comparison(Value),
     Publication(Value),
+    Evaluator(Value),
+    Waiver(Value),
 }
 
 #[derive(Clone, Copy)]
@@ -72,7 +77,7 @@ fn invalid(pointer: &'static str) -> Diagnostic {
 }
 
 impl RequestV1 {
-    /// Decode the strict versioned request with the same constraints as the wire boundary.
+    /// Decode the strict versioned envelope and operation fields.
     pub fn parse(input: &[u8]) -> Result<Self> {
         Self::decode(input).map_err(|diagnostic| diagnostic.code)
     }
@@ -130,14 +135,174 @@ impl RequestV1 {
             | "publication_history" => {
                 Operation::Publication(decode_publication(&mut fields, &operation)?)
             }
+            "evaluator_inspect" => {
+                Operation::Evaluator(EvaluatorOperation::Inspect, std::mem::take(&mut fields))
+            }
+            "evaluator_preview_publish" => Operation::Evaluator(
+                EvaluatorOperation::PreviewPublish,
+                std::mem::take(&mut fields),
+            ),
+            "evaluator_preview_revoke" => Operation::Evaluator(
+                EvaluatorOperation::PreviewRevoke,
+                std::mem::take(&mut fields),
+            ),
+            "evaluator_publish" => {
+                Operation::Evaluator(EvaluatorOperation::Publish, std::mem::take(&mut fields))
+            }
+            "evaluator_revoke" => {
+                Operation::Evaluator(EvaluatorOperation::Revoke, std::mem::take(&mut fields))
+            }
+            "evaluator_recover" => {
+                Operation::Evaluator(EvaluatorOperation::Recover, std::mem::take(&mut fields))
+            }
+            "waiver_request" => {
+                Operation::Waiver(WaiverOperation::Request, std::mem::take(&mut fields))
+            }
+            "waiver_begin" => {
+                Operation::Waiver(WaiverOperation::Begin, std::mem::take(&mut fields))
+            }
+            "waiver_finish" => {
+                Operation::Waiver(WaiverOperation::Finish, std::mem::take(&mut fields))
+            }
+            "waiver_inspect" => {
+                Operation::Waiver(WaiverOperation::Inspect, std::mem::take(&mut fields))
+            }
+            "waiver_validate" => {
+                Operation::Waiver(WaiverOperation::Validate, std::mem::take(&mut fields))
+            }
+            "waiver_recover" => {
+                Operation::Waiver(WaiverOperation::Recover, std::mem::take(&mut fields))
+            }
             _ => return Err(invalid("/operation")),
         };
         empty(&fields, "")?;
+        match &operation {
+            Operation::Evaluator(kind, fields) => check_lifecycle(fields, evaluator_fields(*kind))?,
+            Operation::Waiver(kind, fields) => check_lifecycle(fields, waiver_fields(*kind))?,
+            _ => {}
+        }
         Ok(Self {
             scope,
             operation,
             binding,
         })
+    }
+}
+
+enum LifecycleField {
+    Label,
+    Id,
+    Name,
+    Digest,
+    Number(i64, i64),
+    Presentation(usize),
+    Reason,
+    Entry,
+}
+
+impl LifecycleField {
+    fn accepts(&self, value: &Value) -> bool {
+        match self {
+            Self::Label => value.as_str().is_some_and(valid_label),
+            Self::Id => value.as_str().is_some_and(is_id),
+            Self::Name => value.as_str().is_some_and(is_name),
+            Self::Digest => value.as_str().is_some_and(is_digest),
+            Self::Number(min, max) => value.as_int().is_some_and(|n| (*min..=*max).contains(&n)),
+            Self::Presentation(max) => value
+                .as_str()
+                .is_some_and(|s| !s.is_empty() && s.len() <= *max),
+            Self::Reason => value.as_str().is_some_and(|s| {
+                !s.trim().is_empty() && s.chars().count() <= 500 && !s.chars().any(char::is_control)
+            }),
+            Self::Entry => writ_broker::contracts::RegistryEntry::validate(value).is_ok(),
+        }
+    }
+}
+
+type LifecycleFields = &'static [(&'static str, &'static str, LifecycleField)];
+
+fn check_lifecycle(fields: &Map, contract: LifecycleFields) -> DecodeResult<()> {
+    for (name, pointer, domain) in contract {
+        match fields.get(*name) {
+            Some(value) if domain.accepts(value) => {}
+            _ => return Err(invalid(pointer)),
+        }
+    }
+    if fields.len() != contract.len() {
+        return Err(invalid(""));
+    }
+    Ok(())
+}
+
+fn evaluator_fields(operation: EvaluatorOperation) -> LifecycleFields {
+    use EvaluatorOperation::*;
+    use LifecycleField::*;
+
+    const REVISION: (&str, &str, LifecycleField) = (
+        "expected_revision",
+        "/expected_revision",
+        Number(0, json::MAX_SAFE_INTEGER - 1),
+    );
+    const ENTRY: (&str, &str, LifecycleField) = ("entry", "/entry", Entry);
+    const ID: (&str, &str, LifecycleField) = ("evaluator_id", "/evaluator_id", Name);
+    const KEY: (&str, &str, LifecycleField) = ("idempotency_key", "/idempotency_key", Label);
+    const DIGEST: (&str, &str, LifecycleField) = ("intent_digest", "/intent_digest", Digest);
+    const PROOF: (&str, &str, LifecycleField) =
+        ("presentation", "/presentation", Presentation(512));
+    match operation {
+        Inspect => &[
+            ID,
+            ("after", "/after", Number(0, json::MAX_SAFE_INTEGER)),
+            ("limit", "/limit", Number(1, MAX_HISTORY)),
+        ],
+        PreviewPublish => &[REVISION, ENTRY],
+        PreviewRevoke => &[REVISION, ID],
+        Publish => &[REVISION, ENTRY, KEY, DIGEST, PROOF],
+        Revoke => &[REVISION, ID, KEY, DIGEST, PROOF],
+        Recover => &[KEY],
+    }
+}
+
+fn waiver_fields(operation: WaiverOperation) -> LifecycleFields {
+    use LifecycleField::*;
+    use WaiverOperation::*;
+
+    const TRANSITION: (&str, &str, LifecycleField) = ("transition_ref", "/transition_ref", Id);
+    const WAIVER: (&str, &str, LifecycleField) = ("waiver_id", "/waiver_id", Digest);
+    const KEY: (&str, &str, LifecycleField) = ("idempotency_key", "/idempotency_key", Label);
+    const DISPATCH: (&str, &str, LifecycleField) = ("dispatch_key", "/dispatch_key", Label);
+    match operation {
+        Request => &[
+            TRANSITION,
+            ("workflow_id", "/workflow_id", Name),
+            ("from_state", "/from_state", Name),
+            ("to_state", "/to_state", Name),
+            (
+                "expected_revision",
+                "/expected_revision",
+                Number(0, json::MAX_SAFE_INTEGER),
+            ),
+            ("criterion_id", "/criterion_id", Name),
+            ("reason", "/reason", Reason),
+        ],
+        Begin => &[
+            TRANSITION,
+            WAIVER,
+            KEY,
+            ("approver_issuer", "/approver_issuer", Label),
+            ("approver_subject", "/approver_subject", Label),
+        ],
+        Finish => &[
+            TRANSITION,
+            WAIVER,
+            KEY,
+            DISPATCH,
+            ("challenge_id", "/challenge_id", Id),
+            ("presentation", "/presentation", Presentation(16 * 1024)),
+        ],
+        Inspect => &[WAIVER],
+        Validate => &[TRANSITION, WAIVER],
+        Recover => &[DISPATCH],
     }
 }
 
@@ -346,11 +511,20 @@ pub fn execute_v1(
     credential: &[u8],
     request: &[u8],
 ) -> Vec<u8> {
-    execute_v1_with_publication(&Service::new(store, authority), credential, request)
+    execute_v1_with_service(&Service::new(store, authority), credential, request)
 }
 
-/// Shared byte boundary for an application service that may expose publication.
+/// Compatibility entry point for the existing publication client.
 pub fn execute_v1_with_publication(
+    service: &Service<'_>,
+    credential: &[u8],
+    request: &[u8],
+) -> Vec<u8> {
+    execute_v1_with_service(service, credential, request)
+}
+
+/// Shared byte boundary for the configured management application service.
+pub fn execute_v1_with_service(
     service: &Service<'_>,
     credential: &[u8],
     request: &[u8],
@@ -387,7 +561,9 @@ impl ResponseV1 {
             Self::Validation(value)
             | Self::Simulation(value)
             | Self::Comparison(value)
-            | Self::Publication(value) => value,
+            | Self::Publication(value)
+            | Self::Evaluator(value)
+            | Self::Waiver(value) => value,
         };
         encode(json::obj([
             ("version", json::s(API_VERSION)),

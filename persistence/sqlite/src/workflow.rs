@@ -7,10 +7,10 @@
 //! the broker's (`writ_broker::workflow`), the store reads rows, hands them to the broker's
 //! checks inside the transaction and writes what they decide.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, path::Path};
 
 use json::{Digest, Value};
-use rusqlite::{OptionalExtension, Transaction};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction};
 use writ_broker::acceptance::AcceptanceCode;
 use writ_broker::clock::timestamp_from_parts;
 use writ_broker::contracts::RegistryEntry;
@@ -25,7 +25,10 @@ use writ_broker::workflow::{
 use writ_broker::writ_kernel::{ids, json};
 
 use crate::approval_store::{consume_signoffs, next_seq, signoff_use};
-use crate::{code_name, stored_grant, unavailable, BodyError, End, SqliteLedger};
+use crate::{
+    code_name, connect, existing_identity, stored_grant, unavailable, verify, BodyError, End,
+    SqliteLedger, EVALUATOR_LAB_SCHEMA_VERSION, SCHEMA,
+};
 
 pub(crate) fn read_workflow(
     conn: &rusqlite::Connection,
@@ -161,6 +164,179 @@ pub struct EvaluatorRegistryCommit {
     pub sequence: i64,
 }
 
+/// Immutable, authenticated audit record kept by the evaluator registry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvaluatorRegistryRecord {
+    /// Scope-wide registry revision for this change.
+    pub revision: i64,
+    /// Position in the ledger-wide commit order.
+    pub sequence: i64,
+    /// Registry evaluator identifier.
+    pub evaluator_id: String,
+    /// Status recorded by the publication or revocation.
+    pub status: &'static str,
+    /// Digest of the exact D-052 intent authorized by the human.
+    pub intent_digest: String,
+    /// Digest of the entry at this revision.
+    pub entry_digest: String,
+    /// Digest of the durable management attempt, when applicable.
+    pub management_correlation: Option<String>,
+}
+
+/// A single authenticated administrative snapshot of the evaluator registry.
+pub struct EvaluatorRegistrySnapshot {
+    /// Scope-wide revision at the time of the read.
+    pub revision: i64,
+    /// Current entry and its durable runner-key revocation flag, when present.
+    pub current: Option<(RegistryEntry, bool)>,
+    /// Immutable audit records following the requested revision.
+    pub records: Vec<EvaluatorRegistryRecord>,
+}
+
+/// Read-only access to the same registry audit on disk, without taking writer ownership.
+pub struct EvaluatorRegistryReader(Connection);
+
+impl EvaluatorRegistryReader {
+    /// Open an existing disposable evaluator store for read-only preview and inspection.
+    pub fn open(path: &Path) -> Result<Self, StoreError> {
+        connect(&existing_identity(path)?, OpenFlags::SQLITE_OPEN_READ_ONLY).map(Self)
+    }
+
+    /// Read a paginated, scoped evaluator history and current entry with no durable writes.
+    pub fn history(
+        &self,
+        tenant: &str,
+        project: &str,
+        evaluator: &str,
+        after_revision: i64,
+        limit: usize,
+    ) -> Result<EvaluatorRegistrySnapshot, StoreError> {
+        self.read(|tx| registry_history(tx, tenant, project, evaluator, after_revision, limit))
+    }
+
+    /// Return only the owning receipt for this exact management attempt.
+    pub fn receipt(
+        &self,
+        tenant: &str,
+        project: &str,
+        intent_sha: &str,
+        correlation: &str,
+    ) -> Result<Option<EvaluatorRegistryRecord>, StoreError> {
+        if !ids::is_digest(correlation) {
+            return Err(unavailable("evaluator registry", "correlation"));
+        }
+        self.read(|tx| {
+            Ok(publication_record(tx, tenant, project, intent_sha)?
+                .filter(|record| record.management_correlation.as_deref() == Some(correlation)))
+        })
+    }
+
+    fn read<T>(
+        &self,
+        body: impl FnOnce(&Transaction<'_>) -> Result<T, BodyError>,
+    ) -> Result<T, StoreError> {
+        let name = "evaluator registry read-only";
+        let tx = self
+            .0
+            .unchecked_transaction()
+            .map_err(|e| unavailable(name, code_name(&e)))?;
+        verify(&tx, SCHEMA, EVALUATOR_LAB_SCHEMA_VERSION)?;
+        let result = body(&tx).map_err(|error| match error {
+            BodyError::Sql(error) => unavailable(name, code_name(&error)),
+            _ => unavailable(name, "integrity"),
+        })?;
+        tx.rollback()
+            .map_err(|e| unavailable(name, code_name(&e)))?;
+        Ok(result)
+    }
+}
+
+fn registry_history(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    project: &str,
+    evaluator: &str,
+    after_revision: i64,
+    limit: usize,
+) -> Result<EvaluatorRegistrySnapshot, BodyError> {
+    if !ids::is_id(tenant)
+        || !ids::is_id(project)
+        || !ids::is_name(evaluator)
+        || after_revision < 0
+        || !(1..=51).contains(&limit)
+    {
+        return Err(BodyError::Integrity);
+    }
+    let prefix = scope_prefix(tenant, project);
+    let head = secure_head(tx, tenant, project, &prefix)?;
+    let row = read_registry_row(tx, tenant, project, evaluator)?;
+    let current = validate_registry_row(tx, &prefix, evaluator, row.as_ref())?
+        .map(|entry| {
+            let revoked = entry.key_revoked(tx)?;
+            Ok::<_, BodyError>((entry.entry, revoked))
+        })
+        .transpose()?;
+    let target = format!("{prefix}{evaluator}/");
+    let mut query = tx.prepare(
+        "SELECT seq, reference FROM ledger_sequence WHERE kind = 'administration'
+         AND substr(reference, 1, length(?1)) = ?1
+         AND CAST(substr(reference, length(?1) + 1) AS INTEGER) > ?2
+         ORDER BY seq LIMIT ?3",
+    )?;
+    let rows = query.query_map((target, after_revision, limit as i64), |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut prior = after_revision;
+    let mut records = Vec::new();
+    for row in rows {
+        let (sequence, reference) = row?;
+        let audit = registry_audit(tx, &prefix, sequence, &reference)?;
+        if audit.evaluator != evaluator || audit.revision <= prior || audit.revision > head {
+            return Err(BodyError::Integrity);
+        }
+        prior = audit.revision;
+        records.push(audit.record(sequence));
+    }
+    Ok(EvaluatorRegistrySnapshot {
+        revision: head,
+        current,
+        records,
+    })
+}
+
+fn publication_record(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    project: &str,
+    intent_sha: &str,
+) -> Result<Option<EvaluatorRegistryRecord>, BodyError> {
+    if !ids::is_id(tenant) || !ids::is_id(project) || !ids::is_digest(intent_sha) {
+        return Err(BodyError::Integrity);
+    }
+    let prefix = scope_prefix(tenant, project);
+    let head = secure_head(tx, tenant, project, &prefix)?;
+    let digest_len = i64::try_from(intent_sha.len()).map_err(|_| BodyError::Integrity)?;
+    let mut query = tx.prepare(
+        "SELECT seq, reference FROM ledger_sequence WHERE kind = 'administration'
+         AND substr(reference, 1, length(?1)) = ?1
+         AND substr(reference, -(3 * ?3 + 2), ?3) = ?2 LIMIT 2",
+    )?;
+    let mut rows = query.query_map((&prefix, intent_sha, digest_len), |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+    })?;
+    let Some((sequence, reference)) = rows.next().transpose()? else {
+        return Ok(None);
+    };
+    if rows.next().transpose()?.is_some() {
+        return Err(BodyError::Integrity);
+    }
+    let audit = registry_audit(tx, &prefix, sequence, &reference)?;
+    if audit.revision > head || audit.intent_sha != intent_sha {
+        return Err(BodyError::Integrity);
+    }
+    Ok(Some(audit.record(sequence)))
+}
+
 impl SqliteLedger {
     /// Read one evaluator and its scoped revision from the authenticated registry.
     pub fn evaluator_registry_view(
@@ -188,6 +364,38 @@ impl SqliteLedger {
         .map_err(|failure| failure.error)
     }
 
+    /// Read a paginated, scoped evaluator history and the latest registry entry in one snapshot.
+    pub fn evaluator_registry_history(
+        &self,
+        tenant: &str,
+        project: &str,
+        evaluator: &str,
+        after_revision: i64,
+        limit: usize,
+    ) -> Result<EvaluatorRegistrySnapshot, StoreError> {
+        self.transact("evaluator registry history", |tx| {
+            registry_history(tx, tenant, project, evaluator, after_revision, limit)
+                .map(End::Rollback)
+        })
+        .map_err(|failure| failure.error)
+    }
+
+    /// Recover a previously dispatched management attempt from the owner audit.
+    pub fn evaluator_management_receipt(
+        &self,
+        tenant: &str,
+        project: &str,
+        intent_sha: &str,
+        correlation: &str,
+    ) -> Result<Option<EvaluatorRegistryRecord>, StoreError> {
+        if !ids::is_digest(correlation) {
+            return Err(unavailable("evaluator registry", "correlation"));
+        }
+        Ok(self
+            .evaluator_publication_record(tenant, project, intent_sha)?
+            .filter(|record| record.management_correlation.as_deref() == Some(correlation)))
+    }
+
     /// After an uncertain write, read the outcome for the exact authorized intent.
     pub fn evaluator_publication_commit(
         &self,
@@ -195,33 +403,22 @@ impl SqliteLedger {
         project: &str,
         intent_sha: &str,
     ) -> Result<Option<EvaluatorRegistryCommit>, StoreError> {
-        if !ids::is_id(tenant) || !ids::is_id(project) || !ids::is_digest(intent_sha) {
-            return Err(unavailable("evaluator registry", "intent"));
-        }
+        Ok(self
+            .evaluator_publication_record(tenant, project, intent_sha)?
+            .map(|record| EvaluatorRegistryCommit {
+                revision: record.revision,
+                sequence: record.sequence,
+            }))
+    }
+
+    fn evaluator_publication_record(
+        &self,
+        tenant: &str,
+        project: &str,
+        intent_sha: &str,
+    ) -> Result<Option<EvaluatorRegistryRecord>, StoreError> {
         self.transact("evaluator registry receipt", |tx| {
-            let prefix = scope_prefix(tenant, project);
-            let head = secure_head(tx, tenant, project, &prefix)?;
-            let digest_len = i64::try_from(intent_sha.len()).map_err(|_| BodyError::Integrity)?;
-            let matching = tx
-                .query_row(
-                    "SELECT seq, reference FROM ledger_sequence WHERE kind = 'administration' \
-                     AND substr(reference, 1, length(?1)) = ?1 \
-                     AND substr(reference, -(3 * ?3 + 2), ?3) = ?2 LIMIT 1",
-                    (&prefix, intent_sha, digest_len),
-                    |r| Ok((r.get(0)?, r.get::<_, String>(1)?)),
-                )
-                .optional()?;
-            let Some((sequence, reference)) = matching else {
-                return Ok(End::Rollback(None));
-            };
-            let audit = registry_audit(tx, &prefix, sequence, &reference)?;
-            if audit.revision > head || audit.intent_sha != intent_sha {
-                return Err(BodyError::Integrity);
-            }
-            Ok(End::Rollback(Some(EvaluatorRegistryCommit {
-                revision: audit.revision,
-                sequence,
-            })))
+            publication_record(tx, tenant, project, intent_sha).map(End::Rollback)
         })
         .map_err(|failure| failure.error)
     }
@@ -301,6 +498,21 @@ struct RegistryAudit<'a> {
     entry_sha: &'a str,
     runner_digest: MaterialDigest,
     status: &'static str,
+    management_correlation: Option<&'a str>,
+}
+
+impl RegistryAudit<'_> {
+    fn record(&self, sequence: i64) -> EvaluatorRegistryRecord {
+        EvaluatorRegistryRecord {
+            revision: self.revision,
+            sequence,
+            evaluator_id: self.evaluator.into(),
+            status: self.status,
+            intent_digest: self.intent_sha.into(),
+            entry_digest: self.entry_sha.into(),
+            management_correlation: self.management_correlation.map(str::to_owned),
+        }
+    }
 }
 
 fn registry_audit<'a>(
@@ -324,6 +536,18 @@ fn registry_audit<'a>(
     {
         return Err(BodyError::Integrity);
     }
+    let (runner_sha, management_correlation) = match runner_sha.split_once('~') {
+        Some((runner, managed)) => {
+            let (correlation, owned_sequence) =
+                managed.split_once('~').ok_or(BodyError::Integrity)?;
+            if !ids::is_digest(correlation) || owned_sequence.parse::<i64>().ok() != Some(sequence)
+            {
+                return Err(BodyError::Integrity);
+            }
+            (runner, Some(correlation))
+        }
+        None => (*runner_sha, None),
+    };
     let runner_digest = MaterialDigest::parse(runner_sha).ok_or(BodyError::Integrity)?;
     let Some((tenant, project)) = prefix
         .strip_prefix(PUBLICATION_PREFIX)
@@ -356,6 +580,7 @@ fn registry_audit<'a>(
         entry_sha,
         runner_digest,
         status,
+        management_correlation,
     })
 }
 
@@ -555,8 +780,18 @@ fn mutate_evaluator(
     let entry = json::canonical(&value).map_err(|_| BodyError::Integrity)?;
     let entry_sha = Digest::of_bytes(entry.as_bytes());
     let intent_sha = authorized.intent_sha();
+    let (runner_and_attempt, sequence) = if let Some(attempt) = authorized.management_correlation()
+    {
+        let sequence = next_seq(tx, "administration", "")?;
+        (
+            format!("{runner_digest}~{attempt}~{sequence}"),
+            Some(sequence),
+        )
+    } else {
+        (runner_digest.to_string(), None)
+    };
     let reference = format!(
-        "{prefix}{evaluator}/{revision}/{runner_digest}/{intent_sha}/{entry_sha}/{ceremony_sha}"
+        "{prefix}{evaluator}/{revision}/{runner_and_attempt}/{intent_sha}/{entry_sha}/{ceremony_sha}"
     );
     tx.execute(
         "INSERT INTO evaluator_registry (tenant_id, project_id, evaluator_id, \
@@ -572,7 +807,18 @@ fn mutate_evaluator(
         (&prefix, revision.to_string()),
     )?;
     admin_provenance(tx, change, tenant, project, &reference)?;
-    next_seq(tx, "administration", &reference)?;
+    if let Some(sequence) = sequence {
+        let changed = tx.execute(
+            "UPDATE ledger_sequence SET reference = ?1
+             WHERE seq = ?2 AND kind = 'administration' AND reference = ''",
+            (&reference, sequence),
+        )?;
+        if changed != 1 {
+            return Err(BodyError::Integrity);
+        }
+    } else {
+        next_seq(tx, "administration", &reference)?;
+    }
     if let Err(refusal) = authorized.recheck() {
         return Ok(End::Rollback(Err(refusal)));
     }

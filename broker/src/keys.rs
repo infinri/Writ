@@ -193,6 +193,18 @@ pub trait RunnerKeyRing {
         &self,
         key_id: &str,
     ) -> Result<KeyStatus<'_, RunnerAttestationKey>, KeysUnavailable>;
+
+    /// Active runner key identity for evaluator publication, which does not need key material.
+    /// This identity grants no ability to authenticate a runtime attestation.
+    fn runner_key_material_digest(
+        &self,
+        key_id: &str,
+    ) -> Result<Option<MaterialDigest>, KeysUnavailable> {
+        Ok(match self.runner_key(key_id)? {
+            KeyStatus::Active(key) => Some(MaterialDigest::of(key.bytes())),
+            _ => None,
+        })
+    }
 }
 
 /// An in-memory purpose-typed key ring for one key type, filled explicitly.

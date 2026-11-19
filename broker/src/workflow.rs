@@ -140,7 +140,7 @@ use std::collections::BTreeSet;
 
 use writ_kernel::contracts::{AcceptanceRequirements, ActionRequest, CurrentState, StateRevision};
 use writ_kernel::decision::Policy;
-use writ_kernel::json::{self, Value};
+use writ_kernel::json::{self, Digest, Value};
 use writ_kernel::time::Timestamp;
 use writ_kernel::transition::{check_transition, workflow_id};
 
@@ -150,7 +150,7 @@ use crate::acceptance::{
 };
 use crate::approval_store::{CeremonyBegin, CeremonyFinish, CeremonyOp, CeremonyOutcome};
 use crate::authorize::{authorize, Authorized};
-use crate::clock::ObservedTime;
+use crate::clock::{EffectiveClock, ObservedTime};
 use crate::contracts::RegistryEntry;
 use crate::effects::EffectAdapter;
 use crate::evaluator_publication::{
@@ -159,7 +159,7 @@ use crate::evaluator_publication::{
 use crate::execute::Broker;
 use crate::grants::{GrantLabel, ReserveRequest};
 use crate::human::SubjectId;
-use crate::ingress::VerifiedRequest;
+use crate::ingress::{VerifiedRequest, WaiverTransition};
 use crate::keys::{AcceptanceKeyRing, KeyStatus, MaterialDigest, RunnerKeyRing};
 use crate::refusal::{ConflictStage, Refusal};
 use crate::store::{ExecuteLedger, LedgerStore, StoreError, TxFailure, TxStage};
@@ -267,10 +267,38 @@ pub struct StoredWorkflow {
 
 /// The broker inputs for a waiver operation on an exact sealed transition (D-053).
 pub struct WaiverInvocation<'a> {
-    /// Transition request sealed by the verifying ingress adapter.
-    pub verified: &'a VerifiedRequest,
-    /// The requested scope, criterion and reason.
-    pub request: &'a WaiverRequest,
+    verified: &'a VerifiedRequest,
+    request: &'a WaiverRequest,
+    disposable_fixture: bool,
+}
+
+impl<'a> WaiverInvocation<'a> {
+    /// Bind a waiver operation to ordinary sealed ingress.
+    pub fn new(verified: &'a VerifiedRequest, request: &'a WaiverRequest) -> Self {
+        Self {
+            verified,
+            request,
+            disposable_fixture: false,
+        }
+    }
+
+    /// Bind a waiver operation to an ingress adapter's waiver-specific resolution.
+    pub fn from_transition(transition: &'a WaiverTransition, request: &'a WaiverRequest) -> Self {
+        let (verified, disposable_fixture) = transition.for_waiver();
+        Self {
+            verified,
+            request,
+            disposable_fixture,
+        }
+    }
+}
+
+/// Configured management authorization and an optional exact finish dispatch.
+pub struct WaiverManagement<'a> {
+    /// Recheck the authenticated management caller in the owning transaction.
+    pub reauthorize: &'a dyn Fn() -> Result<(), Refusal>,
+    /// Present on finish to bind the owning receipt to this exact dispatch.
+    pub dispatch: Option<&'a Digest>,
 }
 
 /// Verified workflow context used by the waiver ledger while the broker holds its fences.
@@ -284,9 +312,44 @@ pub struct WaiverIntent<'a> {
     workflow: StoredWorkflow,
     authorization_digest: String,
     acceptance_digest: String,
+    management: Option<&'a WaiverManagement<'a>>,
+    clock: &'a dyn EffectiveClock,
 }
 
 impl WaiverIntent<'_> {
+    /// Recheck the management caller inside an owning transaction, if configured.
+    pub fn reauthorize_management(&self) -> Result<(), Refusal> {
+        self.management
+            .map_or(Ok(()), |management| (management.reauthorize)())
+    }
+
+    /// Whether this operation came through the management dispatch boundary.
+    pub fn is_managed(&self) -> bool {
+        self.management.is_some()
+    }
+
+    /// The exact management dispatch, available for authoritative receipt correlation.
+    pub fn management_dispatch(&self) -> Option<&Digest> {
+        self.management.and_then(|management| management.dispatch)
+    }
+
+    /// Take a stricter time reading without lowering or replacing the persisted floor.
+    pub fn recheck_management_time(&self) -> Result<Timestamp, Refusal> {
+        let floor = self.now.at();
+        if !self.is_managed() {
+            return Ok(floor);
+        }
+        let current = self
+            .clock
+            .read()
+            .map_err(|error| error.refusal())?
+            .effective;
+        if current < floor {
+            return Err(Refusal::TimeUnavailable);
+        }
+        Ok(current)
+    }
+
     /// Exact requested scope, criterion and reason.
     pub fn request(&self) -> &WaiverRequest {
         self.request
@@ -1020,6 +1083,11 @@ where
     for<'b> &'b L: LedgerStore,
     A: EffectAdapter + ?Sized,
 {
+    /// Verify that management receipts use the same ledger as waiver mutations.
+    pub fn uses_waiver_ledger(&self, ledger: &L) -> bool {
+        std::ptr::eq(self.grants().ledger, ledger)
+    }
+
     /// Prepare and persist the exact waiver context for human review.
     pub fn request_waiver(
         &self,
@@ -1028,7 +1096,21 @@ where
     where
         L: WaiverLedger,
     {
-        self.with_waiver_intent(invocation, |ledger, intent| ledger.request_waiver(intent))
+        self.request_waiver_guarded(invocation, None)
+    }
+
+    /// Request a waiver and recheck configured management access in the ledger transaction.
+    pub fn request_waiver_guarded(
+        &self,
+        invocation: &WaiverInvocation<'_>,
+        management: Option<&WaiverManagement<'_>>,
+    ) -> Result<Result<WaiverBinding, Refusal>, TxFailure>
+    where
+        L: WaiverLedger,
+    {
+        self.with_waiver_intent(invocation, management, |ledger, intent| {
+            ledger.request_waiver(intent)
+        })
     }
 
     /// Begin a fresh human ceremony for the previously displayed waiver context.
@@ -1042,10 +1124,25 @@ where
     where
         L: WaiverLedger,
     {
+        self.begin_waiver_guarded(invocation, waiver_id, subject, idempotency_key, None)
+    }
+
+    /// Begin the human ceremony with a management access check at the ledger transaction.
+    pub fn begin_waiver_guarded(
+        &self,
+        invocation: &WaiverInvocation<'_>,
+        waiver_id: &str,
+        subject: &SubjectId,
+        idempotency_key: &str,
+        management: Option<&WaiverManagement<'_>>,
+    ) -> Result<Result<WaiverChallenge, Refusal>, TxFailure>
+    where
+        L: WaiverLedger,
+    {
         let op = CeremonyOp::Waive {
             waiver_id: waiver_id.to_string(),
         };
-        self.with_waiver_intent(invocation, |ledger, intent| {
+        self.with_waiver_intent(invocation, management, |ledger, intent| {
             ledger.begin_waiver(
                 &CeremonyBegin {
                     op: &op,
@@ -1070,10 +1167,33 @@ where
     where
         L: WaiverLedger,
     {
+        self.finish_waiver_guarded(
+            invocation,
+            waiver_id,
+            challenge_id,
+            response,
+            idempotency_key,
+            None,
+        )
+    }
+
+    /// Record a human waiver with a management access check at the ledger transaction.
+    pub fn finish_waiver_guarded(
+        &self,
+        invocation: &WaiverInvocation<'_>,
+        waiver_id: &str,
+        challenge_id: &str,
+        response: &[u8],
+        idempotency_key: &str,
+        management: Option<&WaiverManagement<'_>>,
+    ) -> Result<Result<CeremonyOutcome, Refusal>, TxFailure>
+    where
+        L: WaiverLedger,
+    {
         let op = CeremonyOp::Waive {
             waiver_id: waiver_id.to_string(),
         };
-        self.with_waiver_intent(invocation, |ledger, intent| {
+        self.with_waiver_intent(invocation, management, |ledger, intent| {
             ledger.finish_waiver(
                 &CeremonyFinish {
                     op: &op,
@@ -1096,7 +1216,7 @@ where
     where
         L: WaiverLedger,
     {
-        self.with_waiver_intent(invocation, |ledger, intent| {
+        self.with_waiver_intent(invocation, None, |ledger, intent| {
             ledger.validate_waiver(waiver_id, intent)
         })
     }
@@ -1104,8 +1224,16 @@ where
     fn with_waiver_intent<T>(
         &self,
         invocation: &WaiverInvocation<'_>,
+        management: Option<&WaiverManagement<'_>>,
         operation: impl FnOnce(&L, &WaiverIntent<'_>) -> Result<Result<T, Refusal>, TxFailure>,
-    ) -> Result<Result<T, Refusal>, TxFailure> {
+    ) -> Result<Result<T, Refusal>, TxFailure>
+    where
+        L: WaiverLedger,
+    {
+        let ledger = self.grants().ledger;
+        if invocation.disposable_fixture && !ledger.allows_disposable_waiver_fixture_ingress() {
+            return Ok(self.grants().audited(Err(Refusal::IngressUnauthenticated)));
+        }
         let Some((policy, snapshots)) = self.waiver_context() else {
             return Ok(self
                 .grants()
@@ -1116,7 +1244,6 @@ where
         let _workflow = self
             .workflow_locks
             .lock(&key.tenant_id, &workflow_lock_name(key));
-        let ledger = self.grants().ledger;
         let prepared = (|| {
             let requested = invocation.request;
             let sealed = ActionRequest::from_value(invocation.verified.request())
@@ -1194,6 +1321,8 @@ where
                 workflow,
                 authorization_digest: authorized.policy_bundle_sha().to_string(),
                 acceptance_digest: protection.acceptance_policy_bundle_sha.clone(),
+                management,
+                clock: self.grants().clock,
             })
         })();
         match prepared {
@@ -1555,7 +1684,32 @@ where
         dependencies: &EvaluatorDependencies<'_>,
         intent: &EvaluatorIntent,
     ) -> Result<Result<(), Refusal>, TxFailure> {
-        let result = self.publish_evaluator_held(authority, presentation, dependencies, intent);
+        let result =
+            self.publish_evaluator_held(authority, presentation, dependencies, intent, None);
+        result.map(|result| self.grants().audited(result))
+    }
+
+    /// Verify that management receipt reads use the same ledger as evaluator mutations.
+    pub fn uses_evaluator_ledger(&self, ledger: &L) -> bool {
+        std::ptr::eq(self.grants().ledger, ledger)
+    }
+
+    /// Same evaluator mutation, with an additionally bound management attempt and commit check.
+    pub fn publish_evaluator_managed(
+        &self,
+        authority: &impl EvaluatorPublisher,
+        presentation: &AdminPresentation<'_>,
+        dependencies: &EvaluatorDependencies<'_>,
+        intent: &EvaluatorIntent,
+        management: &crate::evaluator_publication::ManagedEvaluatorAuthorization<'_>,
+    ) -> Result<Result<(), Refusal>, TxFailure> {
+        let result = self.publish_evaluator_held(
+            authority,
+            presentation,
+            dependencies,
+            intent,
+            Some(management),
+        );
         result.map(|result| self.grants().audited(result))
     }
 
@@ -1565,6 +1719,7 @@ where
         presentation: &AdminPresentation<'_>,
         dependencies: &EvaluatorDependencies<'_>,
         intent: &EvaluatorIntent,
+        management: Option<&crate::evaluator_publication::ManagedEvaluatorAuthorization<'_>>,
     ) -> Result<Result<(), Refusal>, TxFailure> {
         let _hold = self.grants().active.exclusive();
         let prepared = (|| {
@@ -1586,7 +1741,7 @@ where
             self.grants().clock,
             now,
         ) {
-            Ok(publisher) => publisher,
+            Ok(publisher) => publisher.with_management(management),
             Err(refusal) => return Ok(Err(refusal)),
         };
         let request = intent.request().clone();

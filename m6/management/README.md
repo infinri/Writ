@@ -60,3 +60,37 @@ The lab creates and validates two pinned drafts, obtains a pre-signed pair for e
 - The publisher role is scoped to a human management principal and requires separate D-051 step-up. The default service requires a different author and publisher. The opt-in local fixture allows `fixture-author-publisher` to use both roles with `acknowledge_self: true` when that subject contributed to the draft or its clone lineage. The acknowledgment is fingerprinted and visible in audit. Existing ordinary approvals and human signoff keep their own separation rules.
 - `publication_history` accepts `after` and `limit`, returning immutable selection events with the exact management context correlated to the registry's audit ID. A coherent selected record that fails current trust is marked `verified: false`. Consumers must use the registry's verified selection path.
 - The management SQLite store records an intent before dispatch. A live witness and draft write fence order changes against the registry's own transaction. A retry with the original key and exact body reads the authoritative receipt by intent identity. If there is no receipt and the outcome is uncertain, it returns `UNAVAILABLE`; fetch and verify history before starting a new preview and fresh ceremony with a new key. The registry transaction alone commits immutable publication, selection and audit. The two SQLite stores have separate transactions.
+
+## Run evaluator and waiver management
+
+Build the opt-in binaries and run the disposable workflow. Every CLI operation opens the stores in a fresh process.
+
+```bash
+source m1/tools/env.sh
+cargo build --locked --manifest-path m6/management/Cargo.toml --features fixtures --bins
+python3 m6/management/run-lifecycle-lab.py
+```
+
+The CLI and embedding API send the same `/manage/v1` JSON to `execute_v1_with_service`. Embedders supply the appropriate owner adapter with `Service::with_evaluator` or `Service::with_waiver`. Lifecycle writes require a configured management authenticator that pins the current identity and scope until the owning transaction returns. The fixture CLI selects its local owner stores with `v1-evaluator MANAGEMENT_DB CREDENTIAL_FILE LEDGER_DB` or `v1-waiver MANAGEMENT_DB CREDENTIAL_FILE LEDGER_DB POLICY_DB`. The scenario builds new stores and provisions only synthetic fixture state.
+
+| Operation | Required fields beyond version, operation and scope |
+|---|---|
+| `evaluator_inspect` | `evaluator_id`, `after`, `limit` |
+| `evaluator_preview_publish` | `expected_revision`, `entry` |
+| `evaluator_preview_revoke` | `expected_revision`, `evaluator_id` |
+| `evaluator_publish`, `evaluator_revoke` | Corresponding preview fields plus `intent_digest`, `idempotency_key`, `presentation` |
+| `evaluator_recover` | `idempotency_key` |
+| `waiver_request` | `transition_ref`, `workflow_id`, `from_state`, `to_state`, `expected_revision`, `criterion_id`, `reason` |
+| `waiver_begin` | `transition_ref`, `waiver_id`, `approver_issuer`, `approver_subject`, `idempotency_key` |
+| `waiver_finish` | `transition_ref`, `waiver_id`, `challenge_id`, `idempotency_key`, `dispatch_key`, `presentation` |
+| `waiver_inspect` | `waiver_id` |
+| `waiver_validate` | `transition_ref`, `waiver_id` |
+| `waiver_recover` | `dispatch_key` |
+
+A scoped management Publisher can preview an evaluator change. The separate evaluator fixture authority turns the exact preview into a purpose-specific human presentation. The owner rechecks the scope, revision, live management grant, human authorization and implementation and key bindings in the fenced registry operation. The owner returns its immutable sequence and scoped revision. Inspection includes current entry and key status and paginates immutable receipt metadata and entry digests by scoped revision. The evaluator fixture uses a fixed test clock. The owner’s freshness and revocation checks are exercised with expired and revoked test authorities.
+
+A scoped Waiver Operator can submit a request and relay the human challenge and assertion. The configured ingress resolves the transition reference. The broker and ledger derive the authoritative workflow, policy, artifact and excluded parties. The external fixture authority supplies the human assertion. The ledger checks current authority and binds its single consumption to recording `waived`. Finish uses the ceremony key from begin and a separate dispatch key for management recovery.
+
+Use inspect to read a waiver's displayed context and any historical receipt. Use validate to recheck the waiver against current state. A current waiver retains the `waived` outcome, and a mandatory criterion stays incomplete. Recover returns a historical receipt scoped to the original dispatch and caller. If that exact receipt cannot be found, management returns `UNAVAILABLE` and leaves the owner mutation untried on recovery. A deliberately new attempt has a new dispatch key and must pass all current owner checks.
+
+[Request schema](../../docs/contracts/management/draft-request.schema.json) · [Response schema](../../docs/contracts/management/draft-response.schema.json)

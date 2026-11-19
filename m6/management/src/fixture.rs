@@ -10,7 +10,7 @@ use writ_policy_publication_lab::{
     TrustAuthority, VerificationKey, VerificationSource,
 };
 
-use crate::{Authenticator, Grant, Principal, Realm, Role, Scope};
+use crate::{Authenticator, Grant, PinnedPrincipal, Principal, Realm, Role, Scope};
 
 pub const TENANT: &str = "m6-lab";
 pub const PROJECT: &str = "offline-proof";
@@ -36,10 +36,32 @@ pub fn authority() -> impl Authenticator {
 
 struct FixtureAuthority;
 
+struct FixturePrincipal(Principal);
+
+impl PinnedPrincipal for FixturePrincipal {
+    fn principal(&self) -> &Principal {
+        &self.0
+    }
+}
+
 impl Authenticator for FixtureAuthority {
+    fn pin(&self, credential: &[u8]) -> Option<Box<dyn PinnedPrincipal + '_>> {
+        Some(Box::new(FixturePrincipal(self.authenticate(credential)?)))
+    }
+
     fn authenticate(&self, credential: &[u8]) -> Option<Principal> {
-        use Role::{PolicyAuthor, Publisher, Viewer};
+        use Role::{PolicyAuthor, Publisher, Viewer, WaiverOperator};
         let (realm, subject, roles): (Realm, &str, &[Role]) = match credential {
+            b"fixture-waiver-requester" => (
+                Realm::Management,
+                "fixture-waiver-requester",
+                &[WaiverOperator],
+            ),
+            b"fixture-waiver-operator" => (
+                Realm::Management,
+                "fixture-waiver-operator",
+                &[WaiverOperator],
+            ),
             b"fixture-author" => (Realm::Management, "fixture-author", &[PolicyAuthor]),
             b"fixture-viewer" => (Realm::Management, "fixture-viewer", &[Viewer]),
             b"fixture-publisher" => (Realm::Management, "fixture-publisher", &[Publisher]),
@@ -176,6 +198,20 @@ impl VerificationSource for FixtureView<'_> {
 }
 
 impl CurrentTrust for FixtureView<'_> {
+    fn waiver_publisher_subject(
+        &self,
+        publisher: &str,
+    ) -> Result<writ_broker::human::SubjectId, PublicationError> {
+        if matches!(publisher, "fixture-publisher" | "fixture-author-publisher") {
+            Ok(writ_broker::human::SubjectId::new(
+                "fixture-publisher-realm",
+                publisher,
+            ))
+        } else {
+            Err(PublicationError::Authority)
+        }
+    }
+
     fn approve(
         &self,
         intent: &Intent,
