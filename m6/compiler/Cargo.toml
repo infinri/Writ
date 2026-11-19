@@ -1,0 +1,24 @@
+[package]
+name = "writ-policy-compile"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.99"
+license = "MIT"
+publish = false
+description = "Offline compiler and kernel proof for synthetic Writ V2 policy"
+
+[workspace]
+
+[dependencies]
+writ-kernel = { path = "../../kernel" }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

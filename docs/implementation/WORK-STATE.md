@@ -1,10 +1,10 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-19 (M6 starting plan prepared, M3 and M4 accepted for scoped development) · **Branch:** v2/architecture-rebuild · **Milestones:** M5 in progress, M6 planned. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md) section "Current recovery state".
+**Last updated:** 2026-11-19 (M6 slice 1 implemented under D-050, M3 and M4 accepted for scoped development) · **Branch:** v2/architecture-rebuild · **Milestones:** M5 open, M6 in progress for slice 1 only. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md) section "Current recovery state".
 
 ## Current
 
-- [M6 starting plan](M6-START-PLAN.md) is for owner review. Implementation awaits approval of its bounded first batch and applicable contract decisions. Independent human review remains required before any legacy rule import.
+- D-050 authorizes [M6 slice 1](M6-START-PLAN.md), implemented with the [offline synthetic policy compiler](../../m6/compiler/README.md). Later signing and waiver contracts require separate decisions. Independent human review remains required before any legacy rule import.
 - P-AGENT-DESKTOP has a test-only evaluator (E-092), fixture-backed reconciliation (E-093) and a guarded guest inventory source for local accounts, agent credentials and socket ownership (E-094). Guest execution awaits the [owner provisioning and designation sequence](../../m5/reference-vm/PROVISIONING.md#first-guest-inventory). Other target classes, desktop denials, control execution and readiness-report integration remain open. See the [desktop obligation map](../../m5/reference-vm/DESKTOP-PROBE.md).
 - M5b-01/04 synthetic portability passed in E-091. Production adapter integration and live host coverage remain open.
 - M5a remains implemented in user space with its gate open. Full VM verification and isolated containment CI remain required. Local tooling/designated guest, separate CI infrastructure, later live-model credential and later real hardware are separate prerequisites.
@@ -43,10 +43,10 @@ SANDBOX PREPARED / LIVE VERIFICATION NOT EXECUTED; sandbox **torn down** 2026-11
 
 ## Last verification
 
-Verified baseline `a1892464c360ed02d55592bb0044a34d07f772b7` and six of six jobs in [required CI run 44430165101](https://github.com/infinri/Writ/actions/runs/44430165101). E-094 records the guest source, E-095 records read-only VM preflight and the candidate graph, and E-096 records the development shim. Verify the published checkpoint and exact-SHA CI as directed in the handoff.
+The starting SHA `bbb60b315298d87f2e1ef60ad22d6b3a6658d5d0` passed all six required jobs on [run 44528665621, attempt 2](https://github.com/infinri/Writ/actions/runs/44528665621/attempts/2). E-097 records the offline compiler checks and the unresolved prior CI stall. E-094 through E-096 carry the M5 guest source, preflight and development shim evidence.
 
 Earlier local evidence (2026-11-13, `b60bf33`, E-074): workspace tests 394 passed (4 ignored), kill tests 4/4 alone, closure self-tests 40, property self-tests 31, closure gate PASS and report verifies, property gate 18,430 checks 0 failed, parity 320/320, dependency gate 0 problems, docs OK. CI run 43518287362, 6/6.
 
 ## Next exact action
 
-Start a fresh chat from [SESSION-HANDOFF](SESSION-HANDOFF.md#current-recovery-state). Review the M6 starting plan with the owner before implementation. When the owner provides and designates the Ubuntu 24.04 guest, run the documented inventory and record actual evidence before extending collection. Keep the development shim closed to live effects until verified M5a foundations support real ingress and broker composition.
+Start a fresh chat from [SESSION-HANDOFF](SESSION-HANDOFF.md#current-recovery-state). Await a separate owner decision before starting another M6 slice. When the owner provides and designates the Ubuntu 24.04 guest, run the documented inventory and record actual evidence before extending collection. Keep the development shim closed to live effects until verified M5a foundations support real ingress and broker composition.

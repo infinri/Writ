@@ -59,6 +59,11 @@ jobs:
           rustfmt --edition 2021 --check m5/mcp-contracts/lib.rs
           rustc --edition 2021 -D warnings --test m5/mcp-contracts/lib.rs -o "$RUNNER_TEMP/writ-mcp-contract-tests"
           "$RUNNER_TEMP/writ-mcp-contract-tests"
+      - name: M6 offline synthetic policy compiler and kernel proof
+        run: |
+          cargo fmt --manifest-path m6/compiler/Cargo.toml --all --check
+          cargo clippy --manifest-path m6/compiler/Cargo.toml --all-targets --locked -- -D warnings
+          cargo test --manifest-path m6/compiler/Cargo.toml --locked
       - name: Format, lint, build and test (locked)
         run: |
           cargo fmt --all --check

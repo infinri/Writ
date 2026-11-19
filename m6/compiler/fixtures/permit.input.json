@@ -1,0 +1,36 @@
+{
+  "manifests": [
+    {
+      "manifest_version": "2.0",
+      "policy_id": "m6.synthetic.permit",
+      "version": "1",
+      "owner": "m6-fixture-author",
+      "tenant_scope": "m6-lab",
+      "enforcement_class": "authorization",
+      "action_kinds": [
+        "synthetic.inspect"
+      ],
+      "priority": 300,
+      "failure_posture": "deny",
+      "evaluator_binding": "m6-kernel-inspect/1",
+      "test_vectors": [
+        "approval",
+        "permit",
+        "resource-scope",
+        "scope",
+        "unknown",
+        "winner"
+      ]
+    }
+  ],
+  "companions": [
+    {
+      "entry_version": "m6-authz-entry/1",
+      "policy_id": "m6.synthetic.permit",
+      "version": "1",
+      "effect": "permit",
+      "reason_code": "M6_SYNTHETIC_PERMIT",
+      "resource_prefix": "synthetic:m6-lab/offline-proof/inventory"
+    }
+  ]
+}

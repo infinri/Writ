@@ -1,0 +1,272 @@
+[
+  {
+    "id": "approval",
+    "request": {
+      "contract_version": "2.0",
+      "request_id": "m6-approval",
+      "trace_id": "m6-trace-approval",
+      "tenant_id": "m6-lab",
+      "principal": {
+        "id": "agent:m6-fixture",
+        "verified_by": "m6-synthetic",
+        "authn_method": "fixture",
+        "roles": [
+          "agent"
+        ]
+      },
+      "project_id": "offline-proof",
+      "session_id": "m6-fixture-session",
+      "idempotency_key": "fixture-approval",
+      "expected_state_revision": 1,
+      "action": {
+        "kind": "synthetic.inspect",
+        "resource": {
+          "uri": "synthetic:m6-lab/offline-proof/inventory/restricted/report",
+          "canonical_resource_id": "synthetic:m6-lab/offline-proof/inventory/restricted/report"
+        },
+        "action_digest": "sha256:35949e83516d2e2b0e82667ef3455979788c81ea20215051f85a65197586f3c6"
+      }
+    },
+    "expected": {
+      "contract_version": "2.0",
+      "decision_id": "dec:23411cbbf16ae6c92c7bca3ee8d8818d",
+      "request_id": "m6-approval",
+      "status": "allow",
+      "policy_bundle_sha": "sha256:414a848b492393d4ab5e2f1f2e1fefa50b7a82202eff6c1e24d4817e8a0e9dd8",
+      "reason_code": "M6_SYNTHETIC_PERMIT",
+      "safe_message": null,
+      "matched_rule_ids": [
+        "m6-d19c8fc0747ed5cbc72a44d9c976826d"
+      ],
+      "state_revision": 1,
+      "decided_at": "2026-11-19T00:00:00Z",
+      "permit_reference": null,
+      "approval_request_reference": null,
+      "expires_at": "2026-11-19T00:05:00Z"
+    }
+  },
+  {
+    "id": "permit",
+    "request": {
+      "contract_version": "2.0",
+      "request_id": "m6-permit",
+      "trace_id": "m6-trace-permit",
+      "tenant_id": "m6-lab",
+      "principal": {
+        "id": "agent:m6-fixture",
+        "verified_by": "m6-synthetic",
+        "authn_method": "fixture",
+        "roles": [
+          "agent"
+        ]
+      },
+      "project_id": "offline-proof",
+      "session_id": "m6-fixture-session",
+      "idempotency_key": "fixture-permit",
+      "expected_state_revision": 1,
+      "action": {
+        "kind": "synthetic.inspect",
+        "resource": {
+          "uri": "synthetic:m6-lab/offline-proof/inventory/report",
+          "canonical_resource_id": "synthetic:m6-lab/offline-proof/inventory/report"
+        },
+        "action_digest": "sha256:60fe8894760c9c4f84ffc30c116373c22d35a32dda9db6e2505ea4dd357b240e"
+      }
+    },
+    "expected": {
+      "contract_version": "2.0",
+      "decision_id": "dec:8c7bad5c31eb191afe5be4af9fc9dd86",
+      "request_id": "m6-permit",
+      "status": "allow",
+      "policy_bundle_sha": "sha256:414a848b492393d4ab5e2f1f2e1fefa50b7a82202eff6c1e24d4817e8a0e9dd8",
+      "reason_code": "M6_SYNTHETIC_PERMIT",
+      "safe_message": null,
+      "matched_rule_ids": [
+        "m6-d19c8fc0747ed5cbc72a44d9c976826d"
+      ],
+      "state_revision": 1,
+      "decided_at": "2026-11-19T00:00:00Z",
+      "permit_reference": null,
+      "approval_request_reference": null,
+      "expires_at": "2026-11-19T00:05:00Z"
+    }
+  },
+  {
+    "id": "resource-scope",
+    "request": {
+      "contract_version": "2.0",
+      "request_id": "m6-resource-scope",
+      "trace_id": "m6-trace-resource-scope",
+      "tenant_id": "m6-lab",
+      "principal": {
+        "id": "agent:m6-fixture",
+        "verified_by": "m6-synthetic",
+        "authn_method": "fixture",
+        "roles": [
+          "agent"
+        ]
+      },
+      "project_id": "offline-proof",
+      "session_id": "m6-fixture-session",
+      "idempotency_key": "fixture-resource-scope",
+      "expected_state_revision": 1,
+      "action": {
+        "kind": "synthetic.inspect",
+        "resource": {
+          "uri": "synthetic:m6-lab/other-project/inventory",
+          "canonical_resource_id": "synthetic:m6-lab/other-project/inventory"
+        },
+        "action_digest": "sha256:d98fb8b28260abfdb9831075fa277d281d5b0d857443dcaf4b35774a0694c60c"
+      }
+    },
+    "expected": {
+      "contract_version": "2.0",
+      "decision_id": "dec:2909775b9b1c75b601f0f4c7e7c97f2e",
+      "request_id": "m6-resource-scope",
+      "status": "deny",
+      "policy_bundle_sha": "sha256:414a848b492393d4ab5e2f1f2e1fefa50b7a82202eff6c1e24d4817e8a0e9dd8",
+      "reason_code": "RESOURCE_SCOPE_MISMATCH",
+      "safe_message": null,
+      "matched_rule_ids": [],
+      "state_revision": 1,
+      "decided_at": "2026-11-19T00:00:00Z",
+      "permit_reference": null,
+      "approval_request_reference": null,
+      "expires_at": null
+    }
+  },
+  {
+    "id": "scope",
+    "request": {
+      "contract_version": "2.0",
+      "request_id": "m6-scope",
+      "trace_id": "m6-trace-scope",
+      "tenant_id": "m6-lab",
+      "principal": {
+        "id": "agent:m6-fixture",
+        "verified_by": "m6-synthetic",
+        "authn_method": "fixture",
+        "roles": [
+          "agent"
+        ]
+      },
+      "project_id": "offline-proof",
+      "session_id": "m6-fixture-session",
+      "idempotency_key": "fixture-scope",
+      "expected_state_revision": 1,
+      "action": {
+        "kind": "synthetic.inspect",
+        "resource": {
+          "uri": "synthetic:m6-lab/offline-proof/other/report",
+          "canonical_resource_id": "synthetic:m6-lab/offline-proof/other/report"
+        },
+        "action_digest": "sha256:d98fb8b28260abfdb9831075fa277d281d5b0d857443dcaf4b35774a0694c60c"
+      }
+    },
+    "expected": {
+      "contract_version": "2.0",
+      "decision_id": "dec:9711c49d41b89cb53e22bd7edc866165",
+      "request_id": "m6-scope",
+      "status": "deny",
+      "policy_bundle_sha": "sha256:414a848b492393d4ab5e2f1f2e1fefa50b7a82202eff6c1e24d4817e8a0e9dd8",
+      "reason_code": "DEFAULT_DENY",
+      "safe_message": null,
+      "matched_rule_ids": [],
+      "state_revision": 1,
+      "decided_at": "2026-11-19T00:00:00Z",
+      "permit_reference": null,
+      "approval_request_reference": null,
+      "expires_at": null
+    }
+  },
+  {
+    "id": "unknown",
+    "request": {
+      "contract_version": "2.0",
+      "request_id": "m6-unknown",
+      "trace_id": "m6-trace-unknown",
+      "tenant_id": "m6-lab",
+      "principal": {
+        "id": "agent:m6-fixture",
+        "verified_by": "m6-synthetic",
+        "authn_method": "fixture",
+        "roles": [
+          "agent"
+        ]
+      },
+      "project_id": "offline-proof",
+      "session_id": "m6-fixture-session",
+      "idempotency_key": "fixture-unknown",
+      "expected_state_revision": 1,
+      "action": {
+        "kind": "synthetic.unknown",
+        "resource": {
+          "uri": "synthetic:m6-lab/offline-proof/inventory/restricted/sealed/report",
+          "canonical_resource_id": "synthetic:m6-lab/offline-proof/inventory/restricted/sealed/report"
+        },
+        "action_digest": "sha256:a61a9fdc2a438e681ed39f2035f484337b5158f11a657c5e21ff94e3f3091c24"
+      }
+    },
+    "expected": {
+      "contract_version": "2.0",
+      "decision_id": "dec:2d80385b9f550146e4aa6b281e6eb91d",
+      "request_id": "m6-unknown",
+      "status": "deny",
+      "policy_bundle_sha": "sha256:414a848b492393d4ab5e2f1f2e1fefa50b7a82202eff6c1e24d4817e8a0e9dd8",
+      "reason_code": "UNKNOWN_CAPABILITY",
+      "safe_message": null,
+      "matched_rule_ids": [],
+      "state_revision": 1,
+      "decided_at": "2026-11-19T00:00:00Z",
+      "permit_reference": null,
+      "approval_request_reference": null,
+      "expires_at": null
+    }
+  },
+  {
+    "id": "winner",
+    "request": {
+      "contract_version": "2.0",
+      "request_id": "m6-winner",
+      "trace_id": "m6-trace-winner",
+      "tenant_id": "m6-lab",
+      "principal": {
+        "id": "agent:m6-fixture",
+        "verified_by": "m6-synthetic",
+        "authn_method": "fixture",
+        "roles": [
+          "agent"
+        ]
+      },
+      "project_id": "offline-proof",
+      "session_id": "m6-fixture-session",
+      "idempotency_key": "fixture-winner",
+      "expected_state_revision": 1,
+      "action": {
+        "kind": "synthetic.inspect",
+        "resource": {
+          "uri": "synthetic:m6-lab/offline-proof/inventory/restricted/sealed/report",
+          "canonical_resource_id": "synthetic:m6-lab/offline-proof/inventory/restricted/sealed/report"
+        },
+        "action_digest": "sha256:6893cddfbad5a3a19ffd9da0c72f2a4ecb3fb5d18c3b66f16ef8042f7dcbc59a"
+      }
+    },
+    "expected": {
+      "contract_version": "2.0",
+      "decision_id": "dec:dee4130ccb921a2d19d5575a1c429c5a",
+      "request_id": "m6-winner",
+      "status": "allow",
+      "policy_bundle_sha": "sha256:414a848b492393d4ab5e2f1f2e1fefa50b7a82202eff6c1e24d4817e8a0e9dd8",
+      "reason_code": "M6_SYNTHETIC_PERMIT",
+      "safe_message": null,
+      "matched_rule_ids": [
+        "m6-d19c8fc0747ed5cbc72a44d9c976826d"
+      ],
+      "state_revision": 1,
+      "decided_at": "2026-11-19T00:00:00Z",
+      "permit_reference": null,
+      "approval_request_reference": null,
+      "expires_at": "2026-11-19T00:05:00Z"
+    }
+  }
+]
