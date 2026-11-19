@@ -66,6 +66,41 @@ class DraftContracts(unittest.TestCase):
             with self.subTest(operation=item["operation"]):
                 self.request.validate(item)
 
+    def test_custom_contract_requests(self):
+        target = {"contract_id": "tenant:m6-lab:sample", "contract_version": "2.0.0"}
+        changed = target | {"expected_revision": 2}
+        replacement = {"replacement_version": "3.0.0", "end_date": "2026-11-19"}
+        proof = {"intent_digest": DIGEST, "presentation": "opaque", "idempotency_key": "first"}
+        schema = {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "integer"}
+        for item in (
+            request("contracts.browse"),
+            request("contracts.inspect", contract_id="action-request"),
+            request("contracts.validate-schema", schema=schema),
+            request("contracts.validate-example", **target, example=None),
+            request("contracts.create", **changed, idempotency_key="first", schema=schema),
+            request("contracts.preview", change="publish", **changed, acknowledge_self_publication=True),
+            request("contracts.preview", change="deprecate", **changed, **replacement),
+            request("contracts.preview", change="retire", **changed),
+            request("contracts.publish", **changed, **proof),
+            request("contracts.deprecate", **changed, **replacement, **proof, confirmation="typed"),
+            request("contracts.retire", **changed, **proof, confirmation="typed"),
+            request("contracts.recover", idempotency_key="first"),
+        ):
+            with self.subTest(operation=item["operation"]):
+                self.request.validate(item)
+        for item in (
+            request("contracts.browse", role="Publisher"),
+            request("contracts.validate-example", **target),
+            request("contracts.preview", change="publish", **changed, **proof),
+            request("contracts.preview", change="deprecate", **changed),
+            request("contracts.deprecate", **changed, **replacement, **proof),
+            request("contracts.retire", **changed, **proof, depends_on=[], confirmation="typed"),
+            request("contracts.publish", **changed, **proof, grant="permission"),
+            request("contracts.publish", **changed, **proof, acknowledge_self_publication="yes"),
+        ):
+            with self.subTest(operation=item["operation"]):
+                self.assertFalse(self.request.is_valid(item))
+
     def test_invalid_requests(self):
         for item in (
             request("create", **MUTATION, candidate={}, role="PolicyAuthor"),

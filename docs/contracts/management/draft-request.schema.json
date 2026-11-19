@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://writ.dev/contracts/management/v1/request.schema.json",
-  "title": "Writ /manage/v1 policy management request",
+  "title": "Writ /manage/v1 management request",
   "$defs": {
     "label": {
       "type": "string",
@@ -1150,6 +1150,498 @@
           "const": "waiver_recover"
         },
         "dispatch_key": {
+          "$ref": "#/$defs/label"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "contracts.browse"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "contract_id"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "contracts.inspect"
+        },
+        "contract_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 192
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "schema"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "contracts.validate-schema"
+        },
+        "schema": {}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "contract_id",
+        "contract_version",
+        "example"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "contracts.validate-example"
+        },
+        "contract_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 192
+        },
+        "contract_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "pattern": "^(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})$"
+        },
+        "example": {}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "contract_id",
+        "contract_version",
+        "expected_revision",
+        "idempotency_key",
+        "schema"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "contracts.create"
+        },
+        "contract_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 192
+        },
+        "contract_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "pattern": "^(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})$"
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/priorRevision"
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/label"
+        },
+        "schema": {}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "change",
+        "contract_id",
+        "contract_version",
+        "expected_revision"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "contracts.preview"
+        },
+        "change": {
+          "const": "publish"
+        },
+        "contract_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 192
+        },
+        "contract_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "pattern": "^(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})$"
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/priorRevision"
+        },
+        "acknowledge_self_publication": {
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "contract_id",
+        "contract_version",
+        "expected_revision",
+        "idempotency_key",
+        "intent_digest",
+        "presentation"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "contracts.publish"
+        },
+        "contract_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 192
+        },
+        "contract_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "pattern": "^(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})$"
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/priorRevision"
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/label"
+        },
+        "intent_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "presentation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "acknowledge_self_publication": {
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "change",
+        "contract_id",
+        "contract_version",
+        "expected_revision",
+        "replacement_version",
+        "end_date"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "contracts.preview"
+        },
+        "change": {
+          "const": "deprecate"
+        },
+        "contract_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 192
+        },
+        "contract_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "pattern": "^(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})$"
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/priorRevision"
+        },
+        "replacement_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "pattern": "^(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})$"
+        },
+        "end_date": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 10,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "contract_id",
+        "contract_version",
+        "expected_revision",
+        "replacement_version",
+        "end_date",
+        "idempotency_key",
+        "intent_digest",
+        "presentation",
+        "confirmation"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "contracts.deprecate"
+        },
+        "contract_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 192
+        },
+        "contract_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "pattern": "^(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})$"
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/priorRevision"
+        },
+        "replacement_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "pattern": "^(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})$"
+        },
+        "end_date": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 10,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/label"
+        },
+        "intent_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "presentation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "confirmation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "change",
+        "contract_id",
+        "contract_version",
+        "expected_revision"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "contracts.preview"
+        },
+        "change": {
+          "const": "retire"
+        },
+        "contract_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 192
+        },
+        "contract_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "pattern": "^(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})$"
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/priorRevision"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "contract_id",
+        "contract_version",
+        "expected_revision",
+        "idempotency_key",
+        "intent_digest",
+        "presentation",
+        "confirmation"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "contracts.retire"
+        },
+        "contract_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 192
+        },
+        "contract_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "pattern": "^(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})$"
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/priorRevision"
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/label"
+        },
+        "intent_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "presentation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "confirmation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "idempotency_key"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "contracts.recover"
+        },
+        "idempotency_key": {
           "$ref": "#/$defs/label"
         }
       }

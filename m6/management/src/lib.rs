@@ -1,6 +1,11 @@
 //! Disposable policy management at the typed /manage/v1 boundary.
 
 mod boundary;
+#[cfg(feature = "fixtures")]
+pub mod contract_fixture;
+pub mod contract_registry;
+mod contract_validation;
+pub mod contracts;
 mod evaluation;
 #[cfg(feature = "fixtures")]
 pub mod evaluator_fixture;
@@ -17,6 +22,7 @@ mod wire;
 pub mod fixture;
 
 pub use boundary::PublicationBoundary;
+pub use contracts::{ContractBoundary, ContractOperation};
 pub use lifecycle::{
     EvaluatorBoundary, EvaluatorOperation, LifecycleCall, LifecycleKind, WaiverBoundary,
     WaiverOperation,
@@ -160,6 +166,9 @@ pub enum Error {
     LimitExceeded,
     Unavailable,
     InvalidPolicy,
+    ProtectedContract,
+    InvalidContract,
+    IncompatibleContract,
     ActiveDependents,
     Unsupported,
 }
@@ -179,6 +188,7 @@ pub struct Service<'a> {
     authority: Option<&'a dyn Authenticator>,
     publication: Option<&'a dyn PublicationBoundary>,
     evaluator: Option<&'a dyn EvaluatorBoundary>,
+    contracts: Option<&'a dyn ContractBoundary>,
     waiver: Option<&'a dyn WaiverBoundary>,
     allow_self_publication: bool,
 }
@@ -190,6 +200,7 @@ impl<'a> Service<'a> {
             authority,
             publication: None,
             evaluator: None,
+            contracts: None,
             waiver: None,
             allow_self_publication: false,
         }
@@ -203,6 +214,11 @@ impl<'a> Service<'a> {
 
     pub fn with_evaluator(mut self, boundary: &'a dyn EvaluatorBoundary) -> Self {
         self.evaluator = Some(boundary);
+        self
+    }
+
+    pub fn with_contracts(mut self, boundary: &'a dyn ContractBoundary) -> Self {
+        self.contracts = Some(boundary);
         self
     }
 
@@ -307,11 +323,23 @@ impl<'a> Service<'a> {
                 reauthorize,
             )?));
         }
-        if matches!(&operation, Operation::Evaluator(..) | Operation::Waiver(..)) {
+        if matches!(
+            &operation,
+            Operation::Evaluator(..) | Operation::Waiver(..) | Operation::Contract(..)
+        ) {
             let pin_required = !matches!(
                 &operation,
                 Operation::Evaluator(EvaluatorOperation::Inspect, _)
                     | Operation::Waiver(WaiverOperation::Inspect | WaiverOperation::Validate, _)
+                    | Operation::Contract(
+                        ContractOperation::Browse
+                            | ContractOperation::Inspect
+                            | ContractOperation::ValidateSchema
+                            | ContractOperation::ValidateExample
+                            | ContractOperation::Preview
+                            | ContractOperation::Recover,
+                        _,
+                    )
             );
             let check = |principal: &Principal| match &operation {
                 Operation::Evaluator(EvaluatorOperation::Inspect, _)
@@ -319,6 +347,31 @@ impl<'a> Service<'a> {
                     authorize(principal, &scope, false)
                 }
                 Operation::Evaluator(..) => publisher(principal, &scope),
+                Operation::Contract(
+                    ContractOperation::Browse
+                    | ContractOperation::Inspect
+                    | ContractOperation::ValidateSchema
+                    | ContractOperation::ValidateExample,
+                    _,
+                ) => authorize(principal, &scope, false),
+                Operation::Contract(ContractOperation::Create, _) => {
+                    contract_author(principal, &scope)
+                }
+                Operation::Contract(ContractOperation::Recover, _) => {
+                    contract_author(principal, &scope).or_else(|_| publisher(principal, &scope))
+                }
+                Operation::Contract(_, fields) => {
+                    publisher(principal, &scope)?;
+                    if fields
+                        .get("acknowledge_self_publication")
+                        .and_then(Value::as_bool)
+                        == Some(true)
+                        && !self.allow_self_publication
+                    {
+                        return Err(Error::Unauthorized);
+                    }
+                    Ok(())
+                }
                 Operation::Waiver(..) => {
                     if principal.realm == Realm::Management
                         && principal
@@ -378,6 +431,20 @@ impl<'a> Service<'a> {
                     .ok_or(Error::Unavailable)?
                     .execute(&call, *kind, fields.clone())
                     .map(ResponseV1::Evaluator),
+                Operation::Contract(kind, fields) => self
+                    .contracts
+                    .ok_or(Error::Unavailable)?
+                    .execute(
+                        &contracts::ContractCall {
+                            operation: *kind,
+                            scope: &scope,
+                            subject: &principal.subject,
+                            reauthorize: &reauthorize,
+                        },
+                        *kind,
+                        fields.clone(),
+                    )
+                    .map(ResponseV1::Contract),
                 Operation::Waiver(kind, fields) => self
                     .waiver
                     .ok_or(Error::Unavailable)?
@@ -389,7 +456,10 @@ impl<'a> Service<'a> {
         let write_role = !matches!(&operation, Operation::Get(_) | Operation::History { .. });
         authorize(&principal, &scope, write_role)?;
         Ok(match operation {
-            Operation::Publication(_) | Operation::Evaluator(..) | Operation::Waiver(..) => {
+            Operation::Publication(_)
+            | Operation::Evaluator(..)
+            | Operation::Waiver(..)
+            | Operation::Contract(..) => {
                 return Err(Error::Unavailable);
             }
             Operation::Mutation(mutation) => {
@@ -448,6 +518,14 @@ fn authorize(principal: &Principal, scope: &Scope, author: bool) -> Result<()> {
         .any(|grant| grant.scope == *scope && (!author || grant.role == Role::PolicyAuthor))
     {
         Ok(())
+    } else {
+        Err(Error::NotFound)
+    }
+}
+
+fn contract_author(principal: &Principal, scope: &Scope) -> Result<()> {
+    if principal.realm == Realm::Management && writ_kernel::ids::is_id(&principal.subject) {
+        authorize(principal, scope, true)
     } else {
         Err(Error::NotFound)
     }

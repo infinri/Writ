@@ -81,8 +81,13 @@ jobs:
         run: |
           m3/tools/run-with-clean-fds.sh cargo test --locked --manifest-path m6/publication/Cargo.toml --test lifecycle waiver_
           m3/tools/run-with-clean-fds.sh cargo test --locked -p writ-ledger-sqlite --lib waiver_
-      - name: M6 disposable /manage/v1 policy, evaluator and waiver CLI
+      - name: Install the reviewed schema validator for the custom-contract lab
         run: |
+          python3 -m venv "$RUNNER_TEMP/writ-contract-python"
+          "$RUNNER_TEMP/writ-contract-python/bin/python3" -m pip install --disable-pip-version-check -r requirements-v2-docs.txt
+      - name: M6 disposable /manage/v1 policy, evaluator, waiver and custom-contract CLI
+        run: |
+          export WRIT_CONTRACT_PYTHON="$RUNNER_TEMP/writ-contract-python/bin/python3"
           cargo fmt --manifest-path m6/management/Cargo.toml --all --check
           cargo clippy --manifest-path m6/management/Cargo.toml --all-targets --all-features --locked -- -D warnings
           cargo test --manifest-path m6/management/Cargo.toml --no-default-features --locked
@@ -92,6 +97,7 @@ jobs:
           python3 m6/management/run-publication-lab.py
           python3 m6/management/run-retirement-lab.py
           python3 m6/management/run-lifecycle-lab.py
+          "$WRIT_CONTRACT_PYTHON" m6/management/run-contract-lab.py
           WRIT_MANAGEMENT_FIXTURE_BIN="$PWD/m6/management/target/debug/writ-manage-fixture" \
             m3/tools/run-with-clean-fds.sh cargo test --manifest-path m6/publication/Cargo.toml --locked --test lifecycle \
               management_drafts_leave_signed_selection_grants_and_effects_unchanged -- --ignored --exact

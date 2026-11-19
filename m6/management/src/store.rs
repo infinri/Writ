@@ -118,11 +118,24 @@ impl Store {
             dispatch: Arc::default(),
         };
         if let Err(error) = store.connection(false) {
-            if !recoverable(path)? {
+            if !recoverable(path, APPLICATION_ID, SCHEMA_VERSION)? {
                 return Err(error);
             }
             store.connection(true)?;
         }
+        Ok(store)
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn open_without_recovery(path: &Path) -> Result<Self> {
+        if !sqlite_header_matches(path, APPLICATION_ID, SCHEMA_VERSION)? {
+            return Err(Error::Unavailable);
+        }
+        let store = Self {
+            path: path.into(),
+            dispatch: Arc::default(),
+        };
+        store.connection(false)?;
         Ok(store)
     }
 
@@ -362,25 +375,34 @@ impl Store {
     }
 }
 
-fn recoverable(path: &Path) -> Result<bool> {
+pub(crate) fn recoverable(path: &Path, application_id: u32, schema_version: u32) -> Result<bool> {
     let mut journal = path.as_os_str().to_owned();
     journal.push("-journal");
-    let journal = PathBuf::from(journal);
-    if !fs::symlink_metadata(&journal).is_ok_and(|meta| meta.is_file())
-        || !fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file())
-    {
+    if !fs::symlink_metadata(PathBuf::from(journal)).is_ok_and(|meta| meta.is_file()) {
         return Ok(false);
     }
 
-    // Verify the stable database header before allowing SQLite to recover a hot journal.
+    sqlite_header_matches(path, application_id, schema_version)
+}
+
+pub(crate) fn sqlite_header_matches(
+    path: &Path,
+    application_id: u32,
+    schema_version: u32,
+) -> Result<bool> {
+    if !fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file()) {
+        return Ok(false);
+    }
+
     let mut header = [0_u8; 72];
-    fs::File::open(path)
-        .and_then(|mut file| file.read_exact(&mut header))
-        .map_err(unavailable)?;
-    Ok(&header[..16] == b"SQLite format 3\0"
-        && header[18..20] == [1, 1]
-        && header[60..64] == SCHEMA_VERSION.to_be_bytes()
-        && header[68..72] == APPLICATION_ID.to_be_bytes())
+    match fs::File::open(path).and_then(|mut file| file.read_exact(&mut header)) {
+        Ok(()) => Ok(&header[..16] == b"SQLite format 3\0"
+            && header[18..20] == [1, 1]
+            && header[60..64] == schema_version.to_be_bytes()
+            && header[68..72] == application_id.to_be_bytes()),
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(false),
+        Err(error) => Err(unavailable(error)),
+    }
 }
 
 fn connect(path: &Path, flags: OpenFlags) -> Result<Connection> {

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://writ.dev/contracts/management/v1/response.schema.json",
-  "title": "Writ /manage/v1 policy management response",
+  "title": "Writ /manage/v1 management response",
   "$defs": {
     "pointer": {
       "type": "string",
@@ -278,7 +278,10 @@
             "UNAVAILABLE",
             "INVALID_POLICY",
             "ACTIVE_DEPENDENTS",
-            "UNSUPPORTED"
+            "UNSUPPORTED",
+            "PROTECTED_CONTRACT",
+            "INVALID_CONTRACT",
+            "INCOMPATIBLE_CONTRACT"
           ]
         },
         "message": {
@@ -966,6 +969,595 @@
           "pattern": "^[0-9a-f]+$"
         }
       }
+    },
+    "contractCompatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "previous_version",
+        "changes"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "initial",
+            "compatible",
+            "breaking"
+          ]
+        },
+        "previous_version": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 20,
+              "pattern": "^(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})$"
+            }
+          ]
+        },
+        "changes": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {
+            "$ref": "#/$defs/diagnostic"
+          }
+        }
+      }
+    },
+    "contractIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "purpose",
+        "operation",
+        "expected_revision",
+        "confirmation",
+        "scope",
+        "contract_id",
+        "version",
+        "contract_digest",
+        "replacement_version",
+        "end_date",
+        "subject",
+        "acknowledge_self_publication"
+      ],
+      "properties": {
+        "purpose": {
+          "const": "writ-human-custom-contract-admin/1"
+        },
+        "operation": {
+          "enum": [
+            "publish",
+            "deprecate",
+            "retire"
+          ]
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 512
+        },
+        "confirmation": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          ]
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tenant",
+            "project"
+          ],
+          "properties": {
+            "tenant": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "project": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        },
+        "contract_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 192
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20,
+          "pattern": "^(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})$"
+        },
+        "contract_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "replacement_version": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 20,
+              "pattern": "^(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})$"
+            }
+          ]
+        },
+        "end_date": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+            }
+          ]
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "acknowledge_self_publication": {
+          "type": "boolean"
+        }
+      }
+    },
+    "contractReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation",
+        "status",
+        "revision",
+        "intent_digest",
+        "ceremony",
+        "at",
+        "compatibility",
+        "scope",
+        "contract_id",
+        "version",
+        "contract_digest",
+        "replacement_version",
+        "end_date",
+        "subject",
+        "acknowledge_self_publication"
+      ],
+      "properties": {
+        "operation": {
+          "enum": [
+            "create",
+            "publish",
+            "deprecate",
+            "retire"
+          ]
+        },
+        "status": {
+          "enum": [
+            "draft",
+            "published",
+            "deprecated",
+            "retired"
+          ]
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 512
+        },
+        "intent_digest": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/digest"
+            }
+          ]
+        },
+        "ceremony": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/digest"
+            }
+          ]
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "compatibility": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/contractCompatibility"
+            }
+          ]
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tenant",
+            "project"
+          ],
+          "properties": {
+            "tenant": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "project": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        },
+        "contract_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 192
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20,
+          "pattern": "^(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})$"
+        },
+        "contract_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "replacement_version": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 20,
+              "pattern": "^(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})$"
+            }
+          ]
+        },
+        "end_date": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+            }
+          ]
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "acknowledge_self_publication": {
+          "type": "boolean"
+        }
+      }
+    },
+    "contractPreview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "intent",
+        "intent_digest",
+        "compatibility"
+      ],
+      "properties": {
+        "intent": {
+          "$ref": "#/$defs/contractIntent"
+        },
+        "intent_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "compatibility": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/contractCompatibility"
+            }
+          ]
+        }
+      }
+    },
+    "contractValidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "valid",
+        "diagnostics"
+      ],
+      "properties": {
+        "valid": {
+          "type": "boolean"
+        },
+        "diagnostics": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/diagnostic"
+          }
+        }
+      }
+    },
+    "contractBrowse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "contracts"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 512
+        },
+        "contracts": {
+          "type": "array",
+          "maxItems": 145,
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "contract_id",
+                  "version",
+                  "status"
+                ],
+                "properties": {
+                  "contract_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 192
+                  },
+                  "version": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 20,
+                    "pattern": "^(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})$"
+                  },
+                  "status": {
+                    "const": "core"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "contract_id",
+                  "version",
+                  "status",
+                  "contract_digest"
+                ],
+                "properties": {
+                  "contract_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 192
+                  },
+                  "version": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 20,
+                    "pattern": "^(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})$"
+                  },
+                  "status": {
+                    "enum": [
+                      "draft",
+                      "published",
+                      "deprecated",
+                      "retired"
+                    ]
+                  },
+                  "contract_digest": {
+                    "$ref": "#/$defs/digest"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "contractInspect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "contract_id",
+        "versions",
+        "history"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 512
+        },
+        "contract_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 192
+        },
+        "versions": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "contract_id",
+                  "version",
+                  "status",
+                  "schema"
+                ],
+                "properties": {
+                  "contract_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 192
+                  },
+                  "version": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 20,
+                    "pattern": "^(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})$"
+                  },
+                  "status": {
+                    "const": "core"
+                  },
+                  "schema": {
+                    "type": "object"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "contract_id",
+                  "version",
+                  "status",
+                  "contract_digest",
+                  "replacement_version",
+                  "end_date",
+                  "schema",
+                  "dependencies"
+                ],
+                "properties": {
+                  "contract_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 192
+                  },
+                  "version": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 20,
+                    "pattern": "^(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})$"
+                  },
+                  "status": {
+                    "enum": [
+                      "draft",
+                      "published",
+                      "deprecated",
+                      "retired"
+                    ]
+                  },
+                  "contract_digest": {
+                    "$ref": "#/$defs/digest"
+                  },
+                  "replacement_version": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 20,
+                        "pattern": "^(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})\\.(?:0|[1-9][0-9]{0,5})$"
+                      }
+                    ]
+                  },
+                  "end_date": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "string",
+                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+                      }
+                    ]
+                  },
+                  "schema": {
+                    "type": "object"
+                  },
+                  "dependencies": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "array",
+                        "maxItems": 140,
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "kind",
+                            "owner"
+                          ],
+                          "properties": {
+                            "kind": {
+                              "enum": [
+                                "pack",
+                                "policy",
+                                "integration",
+                                "replacement"
+                              ]
+                            },
+                            "owner": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 64
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "history": {
+          "type": "array",
+          "maxItems": 48,
+          "items": {
+            "$ref": "#/$defs/contractReceipt"
+          }
+        }
+      }
     }
   },
   "oneOf": [
@@ -1036,6 +1628,21 @@
             },
             {
               "$ref": "#/$defs/waiverChallenge"
+            },
+            {
+              "$ref": "#/$defs/contractBrowse"
+            },
+            {
+              "$ref": "#/$defs/contractInspect"
+            },
+            {
+              "$ref": "#/$defs/contractValidation"
+            },
+            {
+              "$ref": "#/$defs/contractPreview"
+            },
+            {
+              "$ref": "#/$defs/contractReceipt"
             }
           ]
         }

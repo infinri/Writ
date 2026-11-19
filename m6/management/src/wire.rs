@@ -5,8 +5,8 @@ use writ_kernel::{
 use writ_policy_publication_lab::Publication;
 
 use crate::{
-    valid_label, Authenticator, Change, DraftRef, Error, EvaluatorOperation, Mutation,
-    PublicationRequest, Receipt, Result, Scope, Service, Store, Version, WaiverOperation,
+    valid_label, Authenticator, Change, ContractOperation, DraftRef, Error, EvaluatorOperation,
+    Mutation, PublicationRequest, Receipt, Result, Scope, Service, Store, Version, WaiverOperation,
     MAX_CANDIDATE, MAX_REQUEST,
 };
 
@@ -25,6 +25,7 @@ pub struct RequestV1 {
 pub(crate) enum Operation {
     Publication(PublicationRequest),
     Evaluator(EvaluatorOperation, Map),
+    Contract(ContractOperation, Map),
     Waiver(WaiverOperation, Map),
     Mutation(Mutation),
     Get(DraftRef),
@@ -58,6 +59,7 @@ pub enum ResponseV1 {
     Comparison(Value),
     Publication(Value),
     Evaluator(Value),
+    Contract(Value),
     Waiver(Value),
 }
 
@@ -177,6 +179,20 @@ impl RequestV1 {
             "waiver_recover" => {
                 Operation::Waiver(WaiverOperation::Recover, std::mem::take(&mut fields))
             }
+            "contracts.browse" => contract_operation(ContractOperation::Browse, &mut fields)?,
+            "contracts.inspect" => contract_operation(ContractOperation::Inspect, &mut fields)?,
+            "contracts.validate-schema" => {
+                contract_operation(ContractOperation::ValidateSchema, &mut fields)?
+            }
+            "contracts.validate-example" => {
+                contract_operation(ContractOperation::ValidateExample, &mut fields)?
+            }
+            "contracts.create" => contract_operation(ContractOperation::Create, &mut fields)?,
+            "contracts.preview" => contract_operation(ContractOperation::Preview, &mut fields)?,
+            "contracts.publish" => contract_operation(ContractOperation::Publish, &mut fields)?,
+            "contracts.deprecate" => contract_operation(ContractOperation::Deprecate, &mut fields)?,
+            "contracts.retire" => contract_operation(ContractOperation::Retire, &mut fields)?,
+            "contracts.recover" => contract_operation(ContractOperation::Recover, &mut fields)?,
             _ => return Err(invalid("/operation")),
         };
         empty(&fields, "")?;
@@ -202,6 +218,7 @@ enum LifecycleField {
     Presentation(usize),
     Reason,
     Entry,
+    AnyJson,
 }
 
 impl LifecycleField {
@@ -219,6 +236,7 @@ impl LifecycleField {
                 !s.trim().is_empty() && s.chars().count() <= 500 && !s.chars().any(char::is_control)
             }),
             Self::Entry => writ_broker::contracts::RegistryEntry::validate(value).is_ok(),
+            Self::AnyJson => true,
         }
     }
 }
@@ -236,6 +254,81 @@ fn check_lifecycle(fields: &Map, contract: LifecycleFields) -> DecodeResult<()> 
         return Err(invalid(""));
     }
     Ok(())
+}
+
+fn contract_operation(operation: ContractOperation, fields: &mut Map) -> DecodeResult<Operation> {
+    use ContractOperation::*;
+    use LifecycleField::*;
+
+    const ID: (&str, &str, LifecycleField) = ("contract_id", "/contract_id", Presentation(192));
+    const VERSION: (&str, &str, LifecycleField) =
+        ("contract_version", "/contract_version", Presentation(32));
+    const REPLACEMENT: (&str, &str, LifecycleField) = (
+        "replacement_version",
+        "/replacement_version",
+        Presentation(32),
+    );
+    const END: (&str, &str, LifecycleField) = ("end_date", "/end_date", Presentation(10));
+    const REVISION: (&str, &str, LifecycleField) = (
+        "expected_revision",
+        "/expected_revision",
+        Number(0, json::MAX_SAFE_INTEGER - 1),
+    );
+    const KEY: (&str, &str, LifecycleField) = ("idempotency_key", "/idempotency_key", Label);
+    const DIGEST: (&str, &str, LifecycleField) = ("intent_digest", "/intent_digest", Digest);
+    const PROOF: (&str, &str, LifecycleField) =
+        ("presentation", "/presentation", Presentation(512));
+    const CONFIRM: (&str, &str, LifecycleField) =
+        ("confirmation", "/confirmation", Presentation(256));
+    const SCHEMA: (&str, &str, LifecycleField) = ("schema", "/schema", AnyJson);
+    const EXAMPLE: (&str, &str, LifecycleField) = ("example", "/example", AnyJson);
+    const CHANGE: (&str, &str, LifecycleField) = ("change", "/change", Label);
+    const ACK: &str = "acknowledge_self_publication";
+
+    let change = fields.get("change").and_then(Value::as_str);
+    let required: LifecycleFields = match operation {
+        Browse => &[],
+        Inspect => &[ID],
+        ValidateSchema => &[SCHEMA],
+        ValidateExample => &[ID, VERSION, EXAMPLE],
+        Create => &[ID, VERSION, SCHEMA, REVISION, KEY],
+        Preview => match change {
+            Some("publish" | "retire") => &[CHANGE, ID, VERSION, REVISION],
+            Some("deprecate") => &[CHANGE, ID, VERSION, REVISION, REPLACEMENT, END],
+            _ => return Err(invalid("/change")),
+        },
+        Publish => &[ID, VERSION, REVISION, KEY, DIGEST, PROOF],
+        Deprecate => &[
+            ID,
+            VERSION,
+            REVISION,
+            REPLACEMENT,
+            END,
+            KEY,
+            DIGEST,
+            PROOF,
+            CONFIRM,
+        ],
+        Retire => &[ID, VERSION, REVISION, KEY, DIGEST, PROOF, CONFIRM],
+        Recover => &[KEY],
+    };
+    let ack = if operation == Publish || (operation == Preview && change == Some("publish")) {
+        fields.remove(ACK)
+    } else {
+        None
+    };
+    if ack.as_ref().is_some_and(|value| value.as_bool().is_none()) {
+        return Err(invalid("/acknowledge_self_publication"));
+    }
+    check_lifecycle(fields, required)?;
+    if let Some(ack) = ack {
+        fields.insert(ACK.into(), ack);
+    }
+    let mut fields = std::mem::take(fields);
+    if let Some(version) = fields.remove("contract_version") {
+        fields.insert("version".into(), version);
+    }
+    Ok(Operation::Contract(operation, fields))
 }
 
 fn evaluator_fields(operation: EvaluatorOperation) -> LifecycleFields {
@@ -607,6 +700,7 @@ impl ResponseV1 {
             | Self::Simulation(value)
             | Self::Comparison(value)
             | Self::Publication(value)
+            | Self::Contract(value)
             | Self::Evaluator(value)
             | Self::Waiver(value) => value,
         };
@@ -674,6 +768,15 @@ fn encode_error(diagnostic: Diagnostic) -> Vec<u8> {
         Error::ActiveDependents => (
             "ACTIVE_DEPENDENTS",
             "The publication has active dependents.",
+        ),
+        Error::ProtectedContract => ("PROTECTED_CONTRACT", "Core contracts are immutable."),
+        Error::InvalidContract => (
+            "INVALID_CONTRACT",
+            "The custom contract violates its profile or lifecycle.",
+        ),
+        Error::IncompatibleContract => (
+            "INCOMPATIBLE_CONTRACT",
+            "Compatibility does not permit the requested publication.",
         ),
         Error::Unsupported => (
             "UNSUPPORTED",

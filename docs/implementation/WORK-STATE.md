@@ -1,13 +1,14 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-19 (M6 slices 5A through 5D implemented for disposable stores and test authorities under D-054 through D-057, M3 and M4 accepted for scoped development) · **Branch:** v2/architecture-rebuild · **Milestones:** M5 and M6 in progress. M5 VM and isolated containment CI gates are open. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md) section "Current recovery state".
+**Last updated:** 2026-11-19 (M6 slices 5A through 5E implemented for disposable stores and test authorities under D-054 through D-058, M3 and M4 accepted for scoped development) · **Branch:** v2/architecture-rebuild · **Milestones:** M5 and M6 in progress. M5 VM and isolated containment CI gates are open. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md) section "Current recovery state".
 
 ## Current
 
+- D-058 delivers [headless custom-contract administration](../../m6/management/README.md#run-custom-contract-administration). The owning registry protects source-owned core schemas and commits immutable custom versions, scoped lifecycle changes, audit and receipts. The custom schema validator and registry are outside the kernel and broker.
 - D-057 adds [disposable signed retirement](../../m6/management/README.md#run-signed-policy-retirement) to the shared API and fixture CLI. The owner commits retirement and audit together after confirming that the target is inactive and a complete dependency check found no active references. The compiler profile refuses deactivation and the registry protects mandatory acceptance criteria on direct publication and rollback.
 - D-056 delivers [evaluator and waiver management](../../m6/management/README.md#run-evaluator-and-waiver-management) through the shared API and fixture CLI. D-052 and D-053 remain the registry and waiver owners. Management dispatch correlates with authoritative receipts across separate transactions. Validation rechecks current waiver state independently of historical inspection.
 - D-055 exposes [signed publication, atomic selection and rollback](../../m6/management/README.md#run-signed-publication-and-rollback) through the same in-process boundary and opt-in CLI. Separate human authorization binds the exact proposed operation and draft context. The registry owns selection and audit. Management resolves uncertain outcomes by exact intent and authoritative receipt.
-- D-054 delivers the [disposable /manage/v1 policy draft workflow](../../m6/management/README.md) with scoped version history, compiler validation, pure-kernel simulation, structural and complete Decision comparison, and a shared fixture CLI. CC-M2, CC-M3 and CC-M6 are partial. Optional signed policy removal, contract and pack administration, UI, transport and production authentication remain open.
+- D-054 delivers the [disposable /manage/v1 policy draft workflow](../../m6/management/README.md) with scoped version history, compiler validation, pure-kernel simulation, structural and complete Decision comparison, and a shared fixture CLI. CC-M2, CC-M3 and CC-M6 are partial. Optional signed policy removal, pack administration, UI, transport and production authentication remain open.
 
 - D-053 delivers the [disposable scoped waiver scenario](../../m6/waivers/README.md). A distinct human approval records `waived` with an audited receipt. Reference checks enforce the exact signed policy and current workflow and authority. Mandatory waiver criteria stay incomplete under the existing kernel checks.
 - D-050 delivered the [offline synthetic compiler](../../m6/compiler/README.md). D-051 delivered the [disposable signed publication lab](../../m6/publication/README.md), including selection, rollback, recovery and controlled effects with test authorities. Evaluator publication, waiver semantics and management UI remain outside D-051. Legacy rule imports require independent human review.
@@ -50,6 +51,8 @@ SANDBOX PREPARED / LIVE VERIFICATION NOT EXECUTED; sandbox **torn down** 2026-11
 
 ## Last verification
 
+D-058 started from `43eb8bf0993fc359e937f1290bb3f6a2dd353b14`, verified on [required run 44612305086](https://github.com/infinri/Writ/actions/runs/44612305086). [E-105](TEST-EVIDENCE.md#e-105-d-058-disposable-custom-contract-administration-2026-11-19) records the slice evidence. The [recovery checkpoint](SESSION-HANDOFF.md#current-recovery-state) gives the exact-SHA CI check.
+
 D-057 started from `99861181cab9d5dbff5364e8a0ad420a7063968f`, verified on [required run 44606340000](https://github.com/infinri/Writ/actions/runs/44606340000). [E-104](TEST-EVIDENCE.md#e-104-d-057-disposable-signed-policy-retirement-2026-11-19) records the slice evidence. The [recovery checkpoint](SESSION-HANDOFF.md#current-recovery-state) gives the exact-SHA CI check.
 
 D-056 started from `003e0921934babc67ff2c43357031a2c93588d57`, verified on [required run 44596064005](https://github.com/infinri/Writ/actions/runs/44596064005). [E-103](TEST-EVIDENCE.md#e-103-d-056-headless-evaluator-and-waiver-management-2026-11-19) records the slice evidence. The [recovery checkpoint](SESSION-HANDOFF.md#current-recovery-state) gives the exact-SHA CI check.
@@ -67,4 +70,4 @@ Earlier local evidence (2026-11-13, `b60bf33`, E-074): workspace tests 394 passe
 
 ## Next exact action
 
-Resume in a fresh chat from [SESSION-HANDOFF](SESSION-HANDOFF.md#current-recovery-state). The next M6 scope needs separate owner approval. Contract and pack administration, evaluator quorum and the remaining acceptance obligations are open. Finish unblocked M6 development, then prioritize the designated Ubuntu 24.04 VM inventory and full checklist plus isolated containment CI before M7. M6 host integration depends on verified M5 foundations.
+Resume in a fresh chat from [SESSION-HANDOFF](SESSION-HANDOFF.md#current-recovery-state). Prioritize the owner-designated Ubuntu 24.04 VM inventory and full checklist plus isolated containment CI before M7. Optional policy removal, pack administration, evaluator quorum, remaining AG-ADV-16 obligations, UI, transport and production authentication are open. Any further M6 scope needs separate owner approval. M6 host integration depends on verified M5 foundations.

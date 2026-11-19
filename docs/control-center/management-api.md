@@ -1,6 +1,6 @@
 # Control Center: management API architecture
 
-**Status: PARTIAL.** M6 slices 5A through 5C deliver [disposable policy draft, signed publication, selection, rollback, evaluator and waiver operations](../../m6/management/README.md) through a typed in-process API and a fixture CLI. Each owning service commits its mutation and audit in its own transaction. Management correlates separately persisted dispatch intent with the authoritative receipt. The transport and remaining resource operations are design targets. Decision record: [ADR-0007](../decisions/ADR-0007-control-center-management-plane.md).
+**Status: PARTIAL.** M6 slices 5A through 5E deliver [disposable policy, evaluator, waiver and custom-contract administration](../../m6/management/README.md) through a typed in-process API and a fixture CLI. Each owning service commits its mutation and audit in its own transaction. The custom-contract owner also records idempotency and recovery in that transaction. Where management persists separate dispatch intent, it correlates that intent with the authoritative receipt. The transport and remaining resource operations are design targets. Decision record: [ADR-0007](../decisions/ADR-0007-control-center-management-plane.md).
 
 ## Components
 
@@ -67,7 +67,7 @@ These must be available through both the `writ` CLI and the API, so headless ins
 2. Search and show audit events, decisions, effects and their explanations; export with integrity proof; verify an export offline.
 3. List, show, approve, deny and revoke approval requests (approval still requires step-up human authentication).
 4. Validate, simulate, publish, activate, deactivate, roll back and retire policy bundles.
-5. Validate an example against a contract.
+5. Browse and inspect core and scoped custom contracts, validate examples, and administer the custom-contract lifecycle.
 6. Install, verify, enable and disable Capability Packs; show adapter coverage.
 7. Import, reindex, archive and delete knowledge sources; show reconciliation reports.
 8. Show, supersede, archive and delete memories.

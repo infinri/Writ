@@ -9,8 +9,9 @@ use std::{
 
 use writ_kernel::json;
 use writ_policy_management_lab::{
-    error_response, evaluator_fixture, execute_v1_with_service, fixture,
-    waiver_fixture::WaiverFixture, Error, Service, Store, MAX_CREDENTIAL, MAX_REQUEST,
+    contract_fixture, contract_registry::ContractRegistry, error_response, evaluator_fixture,
+    execute_v1_with_service, fixture, waiver_fixture::WaiverFixture, Error, Service, Store,
+    MAX_CREDENTIAL, MAX_REQUEST,
 };
 use writ_policy_publication_lab::Registry;
 
@@ -30,6 +31,14 @@ fn run() -> Result<Vec<u8>, Error> {
             Store::create(Path::new(db))?;
             Ok(br#"{"ok":true,"result":{"initialized":true},"version":"/manage/v1"}"#.to_vec())
         }
+        [command, registry] if command == "init-contracts" => {
+            contract_fixture::initialize(Path::new(registry))?;
+            Ok(br#"{"ok":true,"result":{"initialized":true},"version":"/manage/v1"}"#.to_vec())
+        }
+        [command, registry] if command == "recover-contract-storage" => {
+            ContractRegistry::recover_storage(Path::new(registry), &contract_fixture::scope())?;
+            Ok(br#"{"ok":true,"result":{"recovered":true},"version":"/manage/v1"}"#.to_vec())
+        }
         [command, ledger] if command == "init-evaluator" => {
             evaluator_fixture::initialize(Path::new(ledger))?;
             Ok(br#"{"ok":true,"result":{"initialized":true},"version":"/manage/v1"}"#.to_vec())
@@ -45,6 +54,7 @@ fn run() -> Result<Vec<u8>, Error> {
         }
         [command, db, credential_file, extra @ ..]
             if (command == "v1" && extra.len() <= 1)
+                || (command == "v1-contracts" && extra.len() == 1)
                 || (command == "v1-evaluator" && extra.len() == 1)
                 || (command == "v1-waiver" && extra.len() == 2) =>
         {
@@ -55,10 +65,19 @@ fn run() -> Result<Vec<u8>, Error> {
             let credential = fs::File::open(path).map_err(|_| Error::Unauthorized)?;
             let credential = read_bounded(credential, MAX_CREDENTIAL)?;
             let request = read_bounded(io::stdin().lock(), MAX_REQUEST)?;
-            let store = Store::open(Path::new(db))?;
+            let store = if command == "v1-contracts" {
+                Store::open_without_recovery(Path::new(db))?
+            } else {
+                Store::open(Path::new(db))?
+            };
             let authority = fixture::authority();
             let service = Service::new(&store, Some(&authority));
             match extra {
+                [registry] if command == "v1-contracts" => {
+                    let registry = contract_fixture::open(Path::new(registry))?;
+                    let service = service.with_contracts(&registry).allow_self_publication();
+                    Ok(execute_v1_with_service(&service, &credential, &request))
+                }
                 [ledger] if command == "v1-evaluator" => {
                     let evaluator = evaluator_fixture::open(Path::new(ledger))?;
                     let service = service.with_evaluator(&evaluator);

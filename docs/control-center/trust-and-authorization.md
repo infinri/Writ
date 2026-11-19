@@ -44,6 +44,8 @@ Local single-user installs may hold several roles; conflicting-role actions (for
 
 The disposable D-056 evaluator operations require a scoped management Publisher and a separate D-052 human publication or revocation presentation. The scoped Waiver Operator grant permits routing requests and ceremonies to the D-053 approval service. The owner checks the approver's current human role, exact context and separation rules independently. Scoped management readers can inspect owner history.
 
+The D-058 custom-contract registry permits scoped readers to browse, inspect and validate. A scoped human Policy Author can create a custom draft. A scoped human Publisher can preview or change a published lifecycle state. Mutations pin the current management grant through the owning commit. Publication, deprecation and retirement also require a fresh human presentation for `writ-human-custom-contract-admin/1`. The owner binds the operation, tenant, project, subject, version, schema digest, revision and applicable confirmation and replacement. Recovery is scoped to the original subject and requires a current authorized human role.
+
 ## Authorization rules for administrative changes
 
 1. **Deny by default.** Every management operation is evaluated against a management authorization policy, versioned and audited like any policy (INV-12).

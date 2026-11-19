@@ -36,6 +36,7 @@ States: `draft` > `published` > `deprecated` > `retired`.
 - Custom contracts live in a tenant or pack namespace and cannot reuse a core id.
 - Publishing a new version runs breaking-change detection: removing a field, narrowing a type, adding a required field or changing semantics marked in the schema is breaking and requires a major version (CC-C04).
 - Deprecation records a replacement and an end date; retiring is refused while any active pack, policy or integration depends on the version (CC-C05).
+- [D-058 implements the disposable headless lifecycle](../../m6/management/README.md#run-custom-contract-administration). Retirement checks the end date and complete owner dependency evidence, including active replacement links. Custom publication has no runtime enforcement, permissions or evaluator enrollment.
 
 ## Knowledge sources
 

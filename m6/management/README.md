@@ -110,3 +110,44 @@ A scoped Waiver Operator can submit a request and relay the human challenge and 
 Use inspect to read a waiver's displayed context and any historical receipt. Use validate to recheck the waiver against current state. A current waiver retains the `waived` outcome, and a mandatory criterion stays incomplete. Recover returns a historical receipt scoped to the original dispatch and caller. If that exact receipt cannot be found, management returns `UNAVAILABLE` and leaves the owner mutation untried on recovery. A deliberately new attempt has a new dispatch key and must pass all current owner checks.
 
 [Request schema](../../docs/contracts/management/draft-request.schema.json) · [Response schema](../../docs/contracts/management/draft-response.schema.json)
+
+## Run custom-contract administration
+
+[D-058](../../docs/implementation/DECISION-LOG.md#d-058-m6-slice-5e-headless-custom-contract-administration-owner-2026-11-19) uses disposable stores, the existing pinned SQLite and Rust toolchains, and the same `jsonschema==4.23.0` previously reviewed for V2 repository schemas. Install it from the existing requirements file in an isolated Python environment.
+
+```sh
+. m1/tools/env.sh
+lab=$(mktemp -d)
+python3 -m venv "$lab/python"
+"$lab/python/bin/python3" -m pip install -r requirements-v2-docs.txt
+export WRIT_CONTRACT_PYTHON="$lab/python/bin/python3"
+cargo build --locked --manifest-path m6/management/Cargo.toml --features fixtures --bins
+"$WRIT_CONTRACT_PYTHON" m6/management/run-contract-lab.py
+```
+
+`writ-manage-fixture init-contracts CONTRACT_DB` initializes the separate owner store. `writ-manage-fixture v1-contracts MANAGEMENT_DB CREDENTIAL_FILE CONTRACT_DB` sends the standard v1 envelope to the same service as an embedder. The scope in the lab is tenant `m6-lab`, project `offline-proof`. The owner recognizes `tenant:m6-lab:<slug>` and `pack:sample-pack:<slug>`. Each store binds exactly one tenant and project. Pack membership comes from owner configuration. Core names and normalized aliases remain reserved in every namespace. Core browsing catalogs source schemas under the read-only fixture version `1.0.0`. Inspect displays the source schema with its original identifiers and field descriptions.
+
+| `/manage/v1` operation | Fields in addition to the envelope |
+|---|---|
+| `contracts.browse` | None |
+| `contracts.inspect` | `contract_id` |
+| `contracts.validate-schema` | `schema` |
+| `contracts.validate-example` | `contract_id`, `contract_version`, `example` |
+| `contracts.create` | `contract_id`, `contract_version`, `schema`, `expected_revision`, `idempotency_key` |
+| `contracts.preview` | `change` (`publish`, `deprecate` or `retire`), `contract_id`, `contract_version`, `expected_revision`. For deprecation include `replacement_version` and UTC `end_date` (`YYYY-MM-DD`). |
+| `contracts.publish`, `contracts.deprecate`, `contracts.retire` | Corresponding preview fields except `change`, plus `intent_digest`, `presentation` and `idempotency_key`. Deprecation and retirement also require the exact previewed `confirmation`. |
+| `contracts.recover` | Original `idempotency_key` |
+
+A human Policy Author creates a validated draft. Each version stores immutable schema bytes from creation forward. A human Publisher previews the proposed change without writing either store. Send the full successful preview to `writ-contract-authority-fixture STEP_UP_FILE CEREMONY_ID`. The fixture step-up credential is the exact file content `fixture-contract-publisher-step-up`. The separate authority emits a presentation for the contract purpose and exact intent. The same author and Publisher need the fixture's explicit `acknowledge_self_publication: true` on publish preview and commit. Type the previewed destructive confirmation as `deprecate <id>@<version>` or `retire <id>@<version>`.
+
+Each successful mutation advances the scope revision and writes its audit, idempotency binding and authoritative receipt in the owning SQLite transaction. Drafts, published, deprecated and retired versions are visible in history. The owner reports active fixture pack, policy and integration references, plus live links from deprecated versions. Retirement requires complete owner inventory, an available replacement and the recorded UTC end date to have arrived. Pass the original body and key to replay or use `contracts.recover` under the original subject to retrieve the committed receipt after an uncertain result. Changed replay bodies are refused. The management database and registry database have independent transactions. If an interrupted process leaves a hot owner journal, run the host-only `writ-manage-fixture recover-contract-storage CONTRACT_DB` before retrying inspection or receipt recovery. Ordinary contract preview opens both stores read-only.
+
+### Validation profile
+
+Custom schemas must explicitly declare `https://json-schema.org/draft/2020-12/schema`. The profile supports `type`, `properties`, `required`, boolean `additionalProperties`, schema-valued `items`, `minLength`, `maxLength`, `minimum`, `maximum`, `minItems`, `maxItems`, `enum` and `const`, plus `title` and `description` annotations. It accepts sibling-free `$ref` entries to exact named root `$defs` in the submitted schema. Definitions are a closed catalog. The validator rejects nested definitions, unresolved names, cycles and every other keyword, including patterns, format, applicator combinations and dynamic refs. It performs no network or path retrieval. The existing core schemas keep their own Draft 2020-12 assertions, with formats treated as annotations as in the repository validator.
+
+Writ's canonical JSON restricts numeric input to safe integers. Schemas and examples are each limited to 16 KiB, 32 path levels and 2,048 JSON values. The local catalog allows 32 definitions. Expansion allows 256 schema nodes and 40 KiB of normalized JSON, within the document traversal limits. Example diagnostics are sorted by RFC 6901 pointer and code. Missing fields and extra properties name the affected path. More than 32 unique errors returns `DIAGNOSTIC_LIMIT`. An invalid or over-limit document never produces a successful validation result. The pinned validator runs in an isolated Python child with a cleared environment, three CPU seconds and 256 MiB of address space. Its absolute executable and package environment are owner configuration. Missing or failed tooling refuses validation.
+
+### Compatibility profile
+
+The owner compares with the highest previously published version of the same contract, including historical deprecations and retirements. Publication versions must increase. The comparison expands the bounded catalog and ignores description and title changes. Field removal, newly required fields, narrower types, tighter bounds, newly constrained array items or open-object fields, and closing an open object are breaking. Optional additions to an already closed object and proven widenings of existing constraints are compatible. Changed `enum` and `const` assertions are outside the comparison profile and are refused regardless of the version. A known breaking change requires a higher major version. The preview and authoritative publication receipt report the comparison. Comparisons that would exceed the 16 KiB result budget are refused before preparation completes. Custom contracts do not participate in kernel Decisions, permission grants, evaluator enrollment or runtime enforcement.

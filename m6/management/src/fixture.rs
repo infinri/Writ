@@ -236,33 +236,58 @@ impl CurrentTrust for FixtureView<'_> {
             return Err(refused);
         }
         let presentation = std::str::from_utf8(presentation).map_err(|_| refused)?;
-        let (claim, signature) = presentation.rsplit_once('|').ok_or(refused)?;
-        let mut fields = claim.split('|');
-        let human = fields.next().ok_or(refused)?;
-        let ceremony = fields.next().filter(|label| is_id(label)).ok_or(refused)?;
-        let issued_at = fields
-            .next()
-            .and_then(Timestamp::parse_strict)
-            .ok_or(refused)?;
-        let digest = fields.next().ok_or(refused)?;
-        if !matches!(human, "fixture-publisher" | "fixture-author-publisher")
-            || fields.next().is_some()
-            || intent.fingerprint()?.as_str() != digest
-        {
+        let approval = verify_fixture_ceremony(
+            presentation,
+            CEREMONY_DOMAIN,
+            &CEREMONY_PUBLIC_KEY,
+            intent.fingerprint()?.as_str(),
+        )
+        .ok_or(refused)?;
+        if !matches!(
+            approval.human,
+            "fixture-publisher" | "fixture-author-publisher"
+        ) {
             return Err(refused);
         }
-        let key = VerifyingKey::from_bytes(&CEREMONY_PUBLIC_KEY).map_err(|_| refused)?;
-        let signature = Signature::from_bytes(&decode_signature(signature).ok_or(refused)?);
-        let signed = format!("{CEREMONY_DOMAIN}{claim}");
-        key.verify_strict(signed.as_bytes(), &signature)
-            .map_err(|_| refused)?;
         Ok(Approval {
-            human: human.into(),
-            ceremony: ceremony.into(),
-            issued_at,
-            expires_at: issued_at.plus_seconds(60),
+            human: approval.human.into(),
+            ceremony: approval.ceremony.into(),
+            issued_at: approval.issued_at,
+            expires_at: approval.issued_at.plus_seconds(60),
         })
     }
+}
+
+pub(crate) struct VerifiedFixtureCeremony<'a> {
+    pub human: &'a str,
+    pub ceremony: &'a str,
+    pub issued_at: Timestamp,
+}
+
+pub(crate) fn verify_fixture_ceremony<'a>(
+    presentation: &'a str,
+    domain: &str,
+    public_key: &[u8; 32],
+    expected_digest: &str,
+) -> Option<VerifiedFixtureCeremony<'a>> {
+    let (claim, signature) = presentation.rsplit_once('|')?;
+    let mut fields = claim.split('|');
+    let human = fields.next().filter(|label| is_id(label))?;
+    let ceremony = fields.next().filter(|label| is_id(label))?;
+    let issued_at = fields.next().and_then(Timestamp::parse_strict)?;
+    let digest = fields.next()?;
+    if fields.next().is_some() || digest != expected_digest {
+        return None;
+    }
+    let key = VerifyingKey::from_bytes(public_key).ok()?;
+    let signature = Signature::from_bytes(&decode_signature(signature)?);
+    let signed = format!("{domain}{claim}");
+    key.verify_strict(signed.as_bytes(), &signature).ok()?;
+    Some(VerifiedFixtureCeremony {
+        human,
+        ceremony,
+        issued_at,
+    })
 }
 
 fn decode_signature(text: &str) -> Option<[u8; 64]> {
