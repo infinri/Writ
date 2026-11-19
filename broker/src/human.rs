@@ -193,6 +193,8 @@ pub enum Permission {
     Approver,
     /// Sign off human acceptance criteria.
     SignoffAuthority,
+    /// Approve scoped waivers of eligible acceptance criteria.
+    WaiverAuthority,
     /// Administer workflows, policies, registry and enrollment.
     Operator,
     /// Revoke grants, signoffs, credentials, subjects or roles.

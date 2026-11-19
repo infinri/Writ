@@ -1,10 +1,14 @@
+use std::collections::BTreeMap;
+
 use writ_kernel::{
     contracts::{AcceptanceRequirements, CriterionClass},
     json::{self, Value},
     policy::{self, LoadedBundle},
 };
 
-use crate::{wire, Error, Publication, Scope};
+use writ_broker::waiver::WAIVER_MAX_SECONDS;
+
+use crate::{signature::ACCEPTANCE_V2, wire, Error, Publication, Scope};
 
 const ACCEPTANCE_ID: &str = "m6-acceptance";
 const ACTION: &str = "synthetic.inspect";
@@ -12,6 +16,7 @@ const ACTION: &str = "synthetic.inspect";
 pub(crate) struct Policies {
     pub(crate) authorization: LoadedBundle,
     pub(crate) acceptance: AcceptanceRequirements,
+    pub(crate) waivers: BTreeMap<String, u32>,
 }
 
 fn resource_prefix(scope: &Scope) -> String {
@@ -59,30 +64,46 @@ pub(crate) fn load(
     }) {
         return Err(Error::Scope);
     }
-    let acceptance = acceptance(&publication.acceptance.payload, version)?;
+    let (acceptance, waivers) = acceptance(&publication.acceptance.payload, version)?;
     Ok(Policies {
         authorization,
         acceptance,
+        waivers,
     })
 }
 
-fn acceptance(payload: &Value, version: i64) -> Result<AcceptanceRequirements, Error> {
+fn acceptance(
+    payload: &Value,
+    version: i64,
+) -> Result<(AcceptanceRequirements, BTreeMap<String, u32>), Error> {
     let map = wire::exact(
         payload,
         &["version", "policy_id", "policy_version", "criteria"],
     )?;
-    if wire::text(map, "version")? != "writ-acceptance-policy/1"
-        || wire::text(map, "policy_id")? != ACCEPTANCE_ID
+    if wire::text(map, "policy_id")? != ACCEPTANCE_ID
         || wire::text(map, "policy_version")? != version.to_string()
     {
         return Err(Error::InvalidPolicy);
     }
+    let mut waivers = BTreeMap::new();
+    let criteria = match wire::text(map, "version")? {
+        "writ-acceptance-policy/1" => map["criteria"].clone(),
+        ACCEPTANCE_V2 => {
+            let declared = map["criteria"].as_arr().ok_or(Error::InvalidPolicy)?;
+            let projected = declared
+                .iter()
+                .map(|criterion| project_criterion(criterion, &mut waivers))
+                .collect::<Result<Vec<_>, _>>()?;
+            Value::Arr(projected)
+        }
+        _ => return Err(Error::InvalidPolicy),
+    };
     let digest = wire::digest(payload)?;
     let requirements = AcceptanceRequirements::from_value(&json::obj([
         ("acceptance_policy_id", map["policy_id"].clone()),
         ("acceptance_policy_version", map["policy_version"].clone()),
         ("acceptance_policy_bundle_sha", json::s(digest.as_str())),
-        ("criteria", map["criteria"].clone()),
+        ("criteria", criteria),
     ]))
     .map_err(|_| Error::InvalidPolicy)?;
     if !requirements.criteria.iter().any(|criterion| {
@@ -90,5 +111,42 @@ fn acceptance(payload: &Value, version: i64) -> Result<AcceptanceRequirements, E
     }) {
         return Err(Error::InvalidPolicy);
     }
-    Ok(requirements)
+    Ok((requirements, waivers))
+}
+
+fn project_criterion(
+    criterion: &Value,
+    waivers: &mut BTreeMap<String, u32>,
+) -> Result<Value, Error> {
+    let fields = wire::exact(
+        criterion,
+        &[
+            "criterion_id",
+            "required_class",
+            "origin",
+            "max_waiver_seconds",
+        ],
+    )?;
+    let id = wire::text(fields, "criterion_id")?;
+    let origin = wire::text(fields, "origin")?;
+    let seconds = fields["max_waiver_seconds"]
+        .as_int()
+        .and_then(|seconds| u32::try_from(seconds).ok())
+        .filter(|seconds| *seconds <= WAIVER_MAX_SECONDS)
+        .ok_or(Error::InvalidPolicy)?;
+    let expected_origin = if id == "waiver-review" {
+        "project"
+    } else {
+        "invariant"
+    };
+    if origin != expected_origin || (origin == "invariant" && seconds != 0) {
+        return Err(Error::InvalidPolicy);
+    }
+    if seconds > 0 && waivers.insert(id.to_owned(), seconds).is_some() {
+        return Err(Error::InvalidPolicy);
+    }
+    Ok(json::obj([
+        ("criterion_id", fields["criterion_id"].clone()),
+        ("required_class", fields["required_class"].clone()),
+    ]))
 }

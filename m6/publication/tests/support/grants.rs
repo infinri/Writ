@@ -150,12 +150,21 @@ fn ceremony(
 
 pub fn fixture_ledger(path: &Path) -> SqliteLedger {
     drop(SqliteLedger::create(path).unwrap());
+    enroll_fixture(path, Permission::Approver).0
+}
+
+pub fn waiver_ledger(path: &Path) -> (SqliteLedger, SubjectId) {
+    drop(SqliteLedger::create_waiver_lab(path).unwrap());
+    enroll_fixture(path, Permission::WaiverAuthority)
+}
+
+fn enroll_fixture(path: &Path, permission: Permission) -> (SqliteLedger, SubjectId) {
     let operator = human("fixture-operator");
     let ApproverRegistration {
         approver,
         credential,
         ledger,
-    } = enrollable_approver(path, &operator);
+    } = enrollable_approver(path, &operator, permission == Permission::WaiverAuthority);
     let scope = scope();
     let enrolled = ceremony(
         &ledger,
@@ -167,7 +176,7 @@ pub fn fixture_ledger(path: &Path) -> SqliteLedger {
                 credential: Some(credential),
                 linked_identities: vec![],
                 roles: vec![NewRole {
-                    permission: Permission::Approver,
+                    permission,
                     tenant_id: scope.tenant().into(),
                     project_id: scope.project().into(),
                 }],
@@ -176,8 +185,13 @@ pub fn fixture_ledger(path: &Path) -> SqliteLedger {
         },
         "m6-enroll-approver",
     );
-    assert_eq!(enrolled, CeremonyResult::Enrolled { subject: approver });
-    ledger
+    assert_eq!(
+        enrolled,
+        CeremonyResult::Enrolled {
+            subject: approver.clone()
+        }
+    );
+    (ledger, approver)
 }
 
 struct ApproverRegistration {
@@ -186,12 +200,20 @@ struct ApproverRegistration {
     ledger: SqliteLedger,
 }
 
-fn enrollable_approver(path: &Path, operator: &SubjectId) -> ApproverRegistration {
-    let bootstrap = BootstrapSession::open(path)
-        .unwrap()
-        .unwrap()
-        .with_approval_channel(channel())
-        .unwrap();
+fn enrollable_approver(
+    path: &Path,
+    operator: &SubjectId,
+    waiver_lab: bool,
+) -> ApproverRegistration {
+    let bootstrap = if waiver_lab {
+        BootstrapSession::open_waiver_lab(path)
+    } else {
+        BootstrapSession::open(path)
+    }
+    .unwrap()
+    .unwrap()
+    .with_approval_channel(channel())
+    .unwrap();
     let clock = FixedClock::new(now());
     let time = bootstrap.observe(&clock).unwrap();
     let initial = bootstrap
@@ -215,10 +237,14 @@ fn enrollable_approver(path: &Path, operator: &SubjectId) -> ApproverRegistratio
         .unwrap()
         .unwrap();
 
-    let ledger = SqliteLedger::open(path)
-        .unwrap()
-        .with_approval_channel(channel())
-        .unwrap();
+    let ledger = if waiver_lab {
+        SqliteLedger::open_waiver_lab(path)
+    } else {
+        SqliteLedger::open(path)
+    }
+    .unwrap()
+    .with_approval_channel(channel())
+    .unwrap();
     let approver = human("fixture-effect-approver");
     let session = OperatorSession {
         operator: operator.clone(),

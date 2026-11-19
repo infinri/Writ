@@ -78,6 +78,8 @@ pub mod process;
 pub mod refusal;
 pub mod runner;
 pub mod store;
+pub mod waiver;
+pub mod waiver_lifecycle;
 pub mod workflow;
 
 /// The kernel this broker decides with, re-exported so that store

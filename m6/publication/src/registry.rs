@@ -1,12 +1,18 @@
 use std::path::Path;
 
-use writ_broker::clock::TrustedClock;
+use writ_broker::{
+    clock::{ObservedTime, TrustedClock},
+    human::SubjectId,
+    refusal::Refusal,
+    waiver::{WaiverPolicyGuard, WaiverPolicyIdentity, WaiverPolicyView},
+};
 use writ_kernel::{contracts::AcceptanceRequirements, policy::LoadedBundle, time::Timestamp};
 
 use crate::{
     policy::{self, Policies},
+    signature::verified_until,
     store::{Audit, Commit, Store},
-    verify, Approval, Error, Intent, Operation, Publication, Purpose, Scope, VerificationSource,
+    wire, Approval, Error, Intent, Operation, Publication, Purpose, Scope, VerificationSource,
 };
 
 /// The trusted, pinned view used for one ordered registry operation.
@@ -18,6 +24,12 @@ pub trait CurrentTrust: VerificationSource + TrustedClock + Sync {
         presentation: &[u8],
         now: Timestamp,
     ) -> Result<Approval, Error>;
+
+    /// Resolve the D-051 publisher's stable audit identity to its qualified
+    /// M4 subject. Deployments must explicitly configure this bridge for waivers.
+    fn waiver_publisher_subject(&self, _publisher: &str) -> Result<SubjectId, Error> {
+        Err(Error::Authority)
+    }
 }
 
 /// Authority configured by a trusted caller when opening the registry.
@@ -39,6 +51,7 @@ pub struct Selection<'a> {
     checked_at: Timestamp,
     trust: &'a dyn CurrentTrust,
     scope: &'a Scope,
+    audit: &'a [Audit],
 }
 
 impl Selection<'_> {
@@ -75,6 +88,50 @@ impl Selection<'_> {
     /// Trusted time sampled at selection load.
     pub fn checked_at(&self) -> Timestamp {
         self.checked_at
+    }
+}
+
+impl WaiverPolicyGuard for Selection<'_> {
+    fn current(&self, now: ObservedTime) -> Result<WaiverPolicyView, Refusal> {
+        let unavailable = |_| Refusal::AcceptancePolicyUnavailable;
+        let checked_at = now.at();
+        if checked_at < self.checked_at {
+            return Err(Refusal::TimeUnavailable);
+        }
+        let expires_at = signed_window_at(self.publication, self.scope, self.trust, checked_at)
+            .map_err(unavailable)?;
+        let publishers = self
+            .audit
+            .iter()
+            .filter(|event| {
+                (event.operation != Operation::Retire && event.revision == self.revision)
+                    || (event.operation == Operation::Publish
+                        && event.publication_version == self.version)
+            })
+            .map(|event| self.trust.waiver_publisher_subject(&event.human))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(unavailable)?;
+        let digest = wire::digest(&self.publication.to_value()).map_err(unavailable)?;
+        WaiverPolicyView::new(
+            WaiverPolicyIdentity {
+                tenant_id: self.scope.tenant().to_owned(),
+                project_id: self.scope.project().to_owned(),
+                authorization_digest: self.policies.authorization.sha.to_string(),
+                acceptance_digest: self
+                    .policies
+                    .acceptance
+                    .policy
+                    .acceptance_policy_bundle_sha
+                    .clone(),
+                activation_revision: self.revision,
+                publication_digest: digest.to_string(),
+            },
+            self.policies.waivers.clone(),
+            publishers,
+            checked_at,
+            expires_at,
+            self.policies.acceptance.clone(),
+        )
     }
 }
 
@@ -167,18 +224,21 @@ impl<T: TrustAuthority> Registry<T> {
         operation: impl FnOnce(Selection<'_>) -> Result<R, Error>,
     ) -> Result<R, Error> {
         let trust = self.authority.current()?;
-        self.store.with_selected(|revision, version, publication| {
-            let (policies, checked_at) = checked(publication, self.store.scope(), version, &trust)?;
-            operation(Selection {
-                revision,
-                version,
-                publication,
-                policies: &policies,
-                checked_at,
-                trust: &trust,
-                scope: self.store.scope(),
+        self.store
+            .with_selected(|revision, version, publication, audit| {
+                let (policies, checked_at) =
+                    checked(publication, self.store.scope(), version, &trust)?;
+                operation(Selection {
+                    revision,
+                    version,
+                    publication,
+                    policies: &policies,
+                    checked_at,
+                    trust: &trust,
+                    scope: self.store.scope(),
+                    audit,
+                })
             })
-        })
     }
 
     /// Read the append-only, structurally verified audit history.
@@ -203,20 +263,38 @@ fn current_signatures(
     scope: &Scope,
     trust: &dyn CurrentTrust,
 ) -> Result<Timestamp, Error> {
+    signed_window(publication, scope, trust).map(|(now, _)| now)
+}
+
+fn signed_window(
+    publication: &Publication,
+    scope: &Scope,
+    trust: &dyn CurrentTrust,
+) -> Result<(Timestamp, Timestamp), Error> {
     let now = trust.now().map_err(|_| Error::Time)?;
-    verify(
+    let expires_at = signed_window_at(publication, scope, trust, now)?;
+    Ok((now, expires_at))
+}
+
+fn signed_window_at(
+    publication: &Publication,
+    scope: &Scope,
+    trust: &dyn CurrentTrust,
+    now: Timestamp,
+) -> Result<Timestamp, Error> {
+    let authorization = verified_until(
         &publication.authorization,
         Purpose::Authorization,
         scope,
         now,
         trust,
     )?;
-    verify(
+    let acceptance = verified_until(
         &publication.acceptance,
         Purpose::Acceptance,
         scope,
         now,
         trust,
     )?;
-    Ok(now)
+    Ok(authorization.min(acceptance))
 }

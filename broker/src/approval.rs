@@ -114,6 +114,16 @@ pub enum ApprovalCode {
     /// `SIGNOFF_MISMATCH`, diagnostic `invalid interval`: a caller-requested
     /// signoff expiry not after trusted time (Y1).
     SignoffIntervalInvalid,
+    /// No scoped waiver request or receipt exists.
+    WaiverUnknown,
+    /// The waiver differs from its current trusted context or provenance.
+    WaiverMismatch,
+    /// The waiver is at or past its approved expiry.
+    WaiverExpired,
+    /// The waiver was revoked.
+    WaiverRevoked,
+    /// Current signed policy does not allow waiving the criterion.
+    WaiverIneligible,
 }
 
 impl ApprovalCode {
@@ -140,6 +150,11 @@ impl ApprovalCode {
             SignoffExpired | SignoffLifetimeExceeded => "SIGNOFF_EXPIRED",
             SignoffConsumed => "SIGNOFF_CONSUMED",
             SignoffIntervalInvalid => "SIGNOFF_MISMATCH",
+            WaiverUnknown => "WAIVER_UNKNOWN",
+            WaiverMismatch => "WAIVER_MISMATCH",
+            WaiverExpired => "WAIVER_EXPIRED",
+            WaiverRevoked => "WAIVER_REVOKED",
+            WaiverIneligible => "WAIVER_INELIGIBLE",
         }
     }
 
@@ -668,6 +683,8 @@ pub enum ChallengeOperation {
     Revoke,
     /// Sign off a human criterion.
     Signoff,
+    /// Record a scoped waiver for an acceptance criterion.
+    Waive,
     /// Enroll a credential (administrative ceremony).
     Enroll,
     /// Change a role assignment.
@@ -689,6 +706,7 @@ impl ChallengeOperation {
             ChallengeOperation::Deny => "deny",
             ChallengeOperation::Revoke => "revoke",
             ChallengeOperation::Signoff => "signoff",
+            ChallengeOperation::Waive => "waive",
             ChallengeOperation::Enroll => "enroll",
             ChallengeOperation::RoleChange => "role_change",
             ChallengeOperation::RegistrationStart => "registration_start",
@@ -704,6 +722,7 @@ impl ChallengeOperation {
             Deny,
             Revoke,
             Signoff,
+            Waive,
             Enroll,
             RoleChange,
             RegistrationStart,
@@ -720,6 +739,7 @@ impl ChallengeOperation {
             ChallengeOperation::Deny => "denied",
             ChallengeOperation::Revoke => "revoked",
             ChallengeOperation::Signoff => "signed_off",
+            ChallengeOperation::Waive => "waived",
             ChallengeOperation::Enroll => "enrolled",
             ChallengeOperation::RoleChange => "role_changed",
             ChallengeOperation::RegistrationStart => "start",
@@ -1096,6 +1116,8 @@ pub enum RevocationTarget {
     Grant(String),
     /// A signoff id.
     Signoff(String),
+    /// A recorded waiver id.
+    Waiver(String),
     /// A credential id.
     Credential(String),
     /// A subject.
@@ -1111,6 +1133,7 @@ impl RevocationTarget {
         match self {
             RevocationTarget::Grant(id) => format!("grant:{id}"),
             RevocationTarget::Signoff(id) => format!("signoff:{id}"),
+            RevocationTarget::Waiver(id) => format!("waiver:{id}"),
             RevocationTarget::Credential(id) => format!("credential:{id}"),
             RevocationTarget::Role(id) => format!("role:{id}"),
             RevocationTarget::Subject(s) => {
@@ -1124,6 +1147,7 @@ impl RevocationTarget {
             RevocationTarget::Subject(s) => s.is_well_formed(),
             RevocationTarget::Grant(id)
             | RevocationTarget::Signoff(id)
+            | RevocationTarget::Waiver(id)
             | RevocationTarget::Credential(id)
             | RevocationTarget::Role(id) => !id.is_empty(),
         }

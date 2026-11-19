@@ -602,13 +602,18 @@ impl Store {
 
     pub(crate) fn with_selected<R>(
         &self,
-        use_selection: impl FnOnce(i64, i64, &Publication) -> Result<R, Error>,
+        use_selection: impl FnOnce(i64, i64, &Publication, &[Audit]) -> Result<R, Error>,
     ) -> Result<R, Error> {
         let connection = self.connection.lock().map_err(|_| Error::Storage)?;
         let history = recover(&connection, &self.scope)?;
         let version = history.head.publication_version.ok_or(Error::Recovery)?;
         let entry = history.publications.get(&version).ok_or(Error::Recovery)?;
-        let result = use_selection(history.head.revision, version, &entry.publication);
+        let result = use_selection(
+            history.head.revision,
+            version,
+            &entry.publication,
+            &history.audit,
+        );
         drop(connection);
         result
     }
@@ -703,7 +708,7 @@ mod tests {
 
     fn selected(store: &Store) -> (i64, i64, Publication) {
         store
-            .with_selected(|revision, version, publication| {
+            .with_selected(|revision, version, publication, _| {
                 Ok((revision, version, publication.clone()))
             })
             .unwrap()
@@ -721,7 +726,10 @@ mod tests {
         let replay_authorization = publication("auth-1", "accept-3", "proof-1");
         let third = publication("auth-3", "accept-3", "proof-3");
 
-        assert_eq!(store.with_selected(|_, _, _| Ok(())), Err(Error::Recovery));
+        assert_eq!(
+            store.with_selected(|_, _, _, _| Ok(())),
+            Err(Error::Recovery)
+        );
         change(&store, Operation::Publish, 0, 1, &first, "c1").unwrap();
         assert_eq!(
             change(&store, Operation::Publish, 0, 2, &second, "c2"),

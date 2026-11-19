@@ -26,10 +26,10 @@ use rusqlite::{Connection, OptionalExtension, Transaction};
 use writ_broker::acceptance::SignoffUse;
 use writ_broker::approval::context_fingerprint;
 use writ_broker::approval::{
-    decide, signoff_expiry, ApprovalCode, ApprovalRequest, ApprovalStatus, Challenge,
-    ChallengeBinding, ChallengeOperation, ChallengeRefusal, ChallengeStatus, NewApprovalRequest,
-    NewChallenge, NewSignoff, OwnUnusedGrant, RevocationTarget, Signoff, SignoffExclusions,
-    SignoffFields, StoredChallenge, CHALLENGE_TTL_SECONDS, PROVENANCE_VERSION_2,
+    challenge_expiry, decide, signoff_expiry, ApprovalCode, ApprovalRequest, ApprovalStatus,
+    Challenge, ChallengeBinding, ChallengeOperation, ChallengeRefusal, ChallengeStatus,
+    NewApprovalRequest, NewChallenge, NewSignoff, OwnUnusedGrant, RevocationTarget, Signoff,
+    SignoffExclusions, SignoffFields, StoredChallenge, CHALLENGE_TTL_SECONDS, PROVENANCE_VERSION_2,
 };
 use writ_broker::approval_store::{
     approval_binding, kind_text, parse_kind, parse_permission, permission_text,
@@ -46,22 +46,26 @@ use writ_broker::approval_store::{
 use writ_broker::clock::ObservedTime;
 use writ_broker::grants::{ApprovalLink, GrantBinding, GrantLabel, NewGrant, Verdict};
 use writ_broker::human::{
-    check_actor, check_human_permission, check_service_permission, same_subject, ActiveCredentials,
-    Actor, ApprovalChannel, CeremonyState, CredentialStatus, EnrollmentRecord, LedgerCapability,
-    Permission, PrincipalKind, RegistrationBinding, RegistrationOperation, RelyingParty,
-    RoleAssignment, StoredCredential, SubjectId, SubjectRecord, SubjectStatus, VerifiedAssertion,
-    VerifiedRegistration, VerifierError, ES256,
+    check_actor, check_human_permission, check_service_permission, same_subject,
+    signoff_separation, ActiveCredentials, Actor, ApprovalChannel, CeremonyState, CredentialStatus,
+    EnrollmentRecord, LedgerCapability, Permission, PrincipalKind, RegistrationBinding,
+    RegistrationOperation, RelyingParty, RoleAssignment, StoredCredential, SubjectId,
+    SubjectRecord, SubjectStatus, VerifiedAssertion, VerifiedRegistration, VerifierError, ES256,
 };
 use writ_broker::refusal::Refusal;
 use writ_broker::store::{StoreError, TxFailure, TxStage};
+use writ_broker::waiver::WaiverBinding;
+use writ_broker::waiver_lifecycle::{ceremony_binding, check_waiver_approval};
+use writ_broker::workflow::WaiverIntent;
 use writ_broker::writ_kernel::json::{self, Digest, Value};
 use writ_broker::writ_kernel::time::Timestamp;
 
+use crate::waiver_store;
 use crate::workflow::read_workflow;
 use crate::{code_name, stored_grant, unavailable, BodyError, End, SqliteLedger};
 
 /// A transaction body's answer: a refusal rolls back, a store failure fails closed.
-type Outcome<T> = Result<Result<T, Refusal>, BodyError>;
+pub(crate) type Outcome<T> = Result<Result<T, Refusal>, BodyError>;
 
 /// Early return of a refusal from an [`Outcome`] body.
 macro_rules! check {
@@ -73,7 +77,7 @@ macro_rules! check {
     };
 }
 
-fn ap(code: ApprovalCode) -> Refusal {
+pub(crate) fn ap(code: ApprovalCode) -> Refusal {
     Refusal::Approval(code)
 }
 
@@ -83,7 +87,7 @@ fn challenge_refused(r: ChallengeRefusal) -> Refusal {
 
 /// The answer of a ledger without a configured approval channel (M1), and of a verifier
 /// that reports itself unavailable: not a terminal refusal (L6), nothing is burnt.
-fn no_channel() -> Refusal {
+pub(crate) fn no_channel() -> Refusal {
     ap(ApprovalCode::AssertionInvalid(VerifierError::Unavailable))
 }
 
@@ -91,7 +95,7 @@ fn cap() -> LedgerCapability {
     LedgerCapability::for_ledger_implementation()
 }
 
-fn ts(text: &str) -> Result<Timestamp, BodyError> {
+pub(crate) fn ts(text: &str) -> Result<Timestamp, BodyError> {
     Timestamp::parse_rfc3339(text).ok_or(BodyError::Integrity)
 }
 
@@ -350,7 +354,7 @@ pub(crate) fn signoff_exclusions(
             out.linked_subjects.push(SubjectId::new(&issuer, &subject));
         }
     }
-    let (artifact, policy) = changers(conn, b)?;
+    let (artifact, policy) = changers(conn, &b.tenant_id, &b.project_id, &b.workflow_id)?;
     out.artifact_changers = artifact;
     out.policy_changers = policy;
     Ok(Some((out.normalized(), consistent)))
@@ -380,7 +384,10 @@ fn subject_value(s: &SubjectId) -> Value {
     ])
 }
 
-fn subject_record(conn: &Connection, s: &SubjectId) -> Result<Option<SubjectRecord>, BodyError> {
+pub(crate) fn subject_record(
+    conn: &Connection,
+    s: &SubjectId,
+) -> Result<Option<SubjectRecord>, BodyError> {
     let row: Option<(String, Option<String>)> = conn
         .query_row(
             "SELECT kind, revoked_at FROM subjects WHERE issuer = ?1 AND subject = ?2",
@@ -401,7 +408,10 @@ fn subject_record(conn: &Connection, s: &SubjectId) -> Result<Option<SubjectReco
     }))
 }
 
-fn assignments(conn: &Connection, s: &SubjectId) -> Result<Vec<RoleAssignment>, BodyError> {
+pub(crate) fn assignments(
+    conn: &Connection,
+    s: &SubjectId,
+) -> Result<Vec<RoleAssignment>, BodyError> {
     let mut stmt = conn.prepare(
         "SELECT assignment_id, kind, permission, tenant_id, project_id, granted_at, revoked_at \
          FROM role_assignments WHERE issuer = ?1 AND subject = ?2 ORDER BY assignment_id",
@@ -435,7 +445,10 @@ fn assignments(conn: &Connection, s: &SubjectId) -> Result<Vec<RoleAssignment>, 
     Ok(out)
 }
 
-fn enrollment(conn: &Connection, s: &SubjectId) -> Result<Option<EnrollmentRecord>, BodyError> {
+pub(crate) fn enrollment(
+    conn: &Connection,
+    s: &SubjectId,
+) -> Result<Option<EnrollmentRecord>, BodyError> {
     let row: Option<(String, String, String)> = conn
         .query_row(
             "SELECT enrolled_at, enrolled_by_issuer, enrolled_by FROM enrollments \
@@ -748,6 +761,7 @@ enum TargetKind {
         /// The effective expiry (Y1): computed at begin, the stored value at finish.
         expires_at: Timestamp,
     },
+    Waiver(Box<waiver_store::StoredWaiverRequest>),
     Enroll,
     /// A role change: the subject whose assignment changes.
     RoleChange {
@@ -778,16 +792,9 @@ impl Target {
 }
 
 fn revoked_target(conn: &Connection, target: &RevocationTarget) -> rusqlite::Result<bool> {
-    let kind = match target {
-        RevocationTarget::Grant(_) => "grant",
-        RevocationTarget::Signoff(_) => "signoff",
-        RevocationTarget::Credential(_) => "credential",
-        RevocationTarget::Subject(_) => "subject",
-        RevocationTarget::Role(_) => "role",
-    };
     conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM revocations WHERE target_kind = ?1 AND target_id = ?2)",
-        (kind, target.target_id()),
+        (target_kind_text(target), target.target_id()),
         |r| r.get(0),
     )
 }
@@ -796,6 +803,7 @@ fn target_kind_text(target: &RevocationTarget) -> &'static str {
     match target {
         RevocationTarget::Grant(_) => "grant",
         RevocationTarget::Signoff(_) => "signoff",
+        RevocationTarget::Waiver(_) => "waiver",
         RevocationTarget::Credential(_) => "credential",
         RevocationTarget::Subject(_) => "subject",
         RevocationTarget::Role(_) => "role",
@@ -852,6 +860,17 @@ fn revoke_target(conn: &Connection, target: &RevocationTarget, reason: &str) -> 
                 (b.tenant_id.clone(), b.project_id.clone()),
                 signoff.context(),
                 already.then(|| ap(ApprovalCode::SignoffRevoked)),
+            )
+        }
+        RevocationTarget::Waiver(id) => {
+            let Some(receipt) = waiver_store::read_receipt(conn, id)? else {
+                return Ok(Err(ap(ApprovalCode::WaiverUnknown)));
+            };
+            let key = &receipt.binding.request.workflow;
+            (
+                (key.tenant_id.clone(), key.project_id.clone()),
+                receipt.binding.value(),
+                already.then(|| ap(ApprovalCode::WaiverRevoked)),
             )
         }
         RevocationTarget::Credential(id) => {
@@ -1263,6 +1282,7 @@ fn target(
     op: &CeremonyOp,
     expiry: SignoffExpiry,
     rp: Option<&RelyingParty>,
+    waiver: Option<&WaiverIntent<'_>>,
 ) -> Outcome<Target> {
     match op {
         CeremonyOp::Approve { request_id } | CeremonyOp::Deny { request_id } => {
@@ -1347,6 +1367,27 @@ fn target(
                     excluded: Box::new(excluded),
                     expires_at,
                 },
+            }))
+        }
+        CeremonyOp::Waive { waiver_id } => {
+            let Some(intent) = waiver else {
+                return Ok(Err(challenge_refused(ChallengeRefusal::OperationMismatch)));
+            };
+            let Some(request) = waiver_store::read_request(conn, waiver_id)? else {
+                return Ok(Err(ap(ApprovalCode::WaiverUnknown)));
+            };
+            let recorded = waiver_store::read_receipt(conn, waiver_id)?.is_some();
+            let blocked = waiver_store::check_request(conn, &request, intent)?
+                .err()
+                .or_else(|| recorded.then(|| ap(ApprovalCode::RequestClosed)));
+            let binding = ceremony_binding(&request.binding).map_err(|_| BodyError::Integrity)?;
+            Ok(Ok(Target {
+                binding,
+                context: request.binding.value(),
+                permission: Permission::WaiverAuthority,
+                expiry: Some(request.binding.expires_at),
+                blocked,
+                kind: TargetKind::Waiver(Box::new(request)),
             }))
         }
         CeremonyOp::Enroll {
@@ -1448,13 +1489,15 @@ fn begin_in(
     b: &CeremonyBegin<'_>,
     challenge_id: &str,
     channel: &ApprovalChannel,
-) -> Outcome<IssuedChallenge> {
+    waiver: Option<&WaiverIntent<'_>>,
+) -> Outcome<(IssuedChallenge, Option<WaiverBinding>)> {
     let now = b.now.at();
     let t = check!(target(
         tx,
         b.op,
         SignoffExpiry::Compute(now),
-        Some(channel.relying_party())
+        Some(channel.relying_party()),
+        waiver
     )?);
     if let Some(refusal) = t.blocked.clone() {
         return Ok(Err(refusal));
@@ -1480,6 +1523,14 @@ fn begin_in(
         return Ok(Err(ap(ApprovalCode::PermissionMissing)));
     };
     let creds = check!(rows.select(&t, now));
+    if let TargetKind::Waiver(request) = &t.kind {
+        check!(signoff_separation(
+            b.subject,
+            rows.enrollment.as_ref(),
+            &request.binding.exclusions.all()
+        )
+        .map_err(ap));
+    }
     // D-043 Y2: a registration start is performed by the operator it names.
     if let CeremonyOp::RegistrationStart { operator, .. } = b.op {
         if operator != b.subject {
@@ -1502,6 +1553,19 @@ fn begin_in(
     let start = check!(channel
         .begin(b.subject, &creds)
         .map_err(|e| ap(ApprovalCode::AssertionInvalid(e))));
+    let waiver_context = match t.kind {
+        TargetKind::Waiver(request) => {
+            let Some(intent) = waiver else {
+                return Err(BodyError::Integrity);
+            };
+            let observed = check!(waiver_store::check_request(tx, &request, intent)?);
+            if observed >= challenge_expiry(now, request.binding.expires_at) {
+                return Ok(Err(challenge_refused(ChallengeRefusal::Expired)));
+            }
+            Some(request.binding)
+        }
+        _ => None,
+    };
     let challenge = check!(Challenge::issue(NewChallenge {
         challenge_id: challenge_id.to_string(),
         challenge_digest: start.challenge_digest,
@@ -1566,11 +1630,14 @@ fn begin_in(
             signoff_expires_at,
         ],
     )?;
-    Ok(Ok(IssuedChallenge {
-        challenge_id: challenge.challenge_id().to_string(),
-        client_options: start.client_options,
-        expires_at: challenge.expires_at(),
-    }))
+    Ok(Ok((
+        IssuedChallenge {
+            challenge_id: challenge.challenge_id().to_string(),
+            client_options: start.client_options,
+            expires_at: challenge.expires_at(),
+        },
+        waiver_context,
+    )))
 }
 
 /// A stored challenge row with its digests as text.
@@ -1788,6 +1855,17 @@ fn replay(
                 |r| r.get(0),
             )?,
         },
+        "waived" => {
+            let Some(receipt) = waiver_store::read_receipt(conn, &row.target_id)? else {
+                return Err(BodyError::Integrity);
+            };
+            if receipt.challenge_id != challenge_id || receipt.ledger_seq != seq {
+                return Err(BodyError::Integrity);
+            }
+            CeremonyResult::Waived {
+                waiver_id: row.target_id.clone(),
+            }
+        }
         "enrolled" => {
             let (issuer, subject): (String, String) = conn.query_row(
                 "SELECT issuer, subject FROM enrollments WHERE challenge_id = ?1",
@@ -1909,7 +1987,7 @@ fn use_state(conn: &Connection, target: &RevocationTarget) -> rusqlite::Result<U
 }
 
 #[allow(clippy::too_many_arguments)]
-fn approval_event(
+pub(crate) fn approval_event(
     tx: &Transaction<'_>,
     kind: &str,
     target_id: &str,
@@ -2064,9 +2142,11 @@ fn write_enrollment(
 /// project's acceptance policy, from durable administrative events (C2, X7). Administrative
 /// events record no revision, so this is every such change of the workflow and project, a
 /// superset of the changes for the exact revision (fail closed).
-fn changers(
+pub(crate) fn changers(
     conn: &Connection,
-    b: &NewSignoff,
+    tenant: &str,
+    project: &str,
+    workflow: &str,
 ) -> rusqlite::Result<(Vec<SubjectId>, Vec<SubjectId>)> {
     let read = |sql: &str, args: &[&str]| -> rusqlite::Result<Vec<SubjectId>> {
         let mut stmt = conn.prepare(sql)?;
@@ -2084,13 +2164,13 @@ fn changers(
         "SELECT DISTINCT operator_issuer, operator_id FROM admin_events \
          WHERE operation IN ('create_workflow', 'update_artifact') \
          AND tenant_id = ?1 AND project_id = ?2 AND target = ?3 ORDER BY 1, 2",
-        &[&b.tenant_id, &b.project_id, &b.workflow_id],
+        &[tenant, project, workflow],
     )?;
     let policy = read(
         "SELECT DISTINCT operator_issuer, operator_id FROM admin_events \
          WHERE operation = 'activate_acceptance_policy' AND tenant_id = ?1 AND project_id = ?2 \
          ORDER BY 1, 2",
-        &[&b.tenant_id, &b.project_id],
+        &[tenant, project],
     )?;
     Ok((artifact, policy))
 }
@@ -2136,6 +2216,7 @@ fn finish_in(
     tx: &Transaction<'_>,
     f: &CeremonyFinish<'_>,
     channel: &ApprovalChannel,
+    waiver: Option<&WaiverIntent<'_>>,
 ) -> Outcome<CeremonyOutcome> {
     let now = f.now.at();
     let Some(row) = challenge_row(tx, f.challenge_id)? else {
@@ -2154,7 +2235,8 @@ fn finish_in(
         tx,
         f.op,
         SignoffExpiry::Stored(row.signoff_expires_at),
-        Some(channel.relying_party())
+        Some(channel.relying_party()),
+        waiver
     )?);
     let Some(rows) = ActorRows::read(tx, &row.subject)? else {
         return Ok(Err(ap(ApprovalCode::PermissionMissing)));
@@ -2168,6 +2250,13 @@ fn finish_in(
         )
         .map_err(|e| ap(ApprovalCode::AssertionInvalid(e))));
     if row.status == ChallengeStatus::Consumed {
+        if matches!(t.kind, TargetKind::Waiver(_))
+            && t.blocked != Some(ap(ApprovalCode::RequestClosed))
+        {
+            return Ok(Err(t
+                .blocked
+                .unwrap_or_else(|| ap(ApprovalCode::WaiverMismatch))));
+        }
         return replay(tx, f.challenge_id, &row, &assertion, &t.binding, f);
     }
     let challenge = check!(rebuild(f.challenge_id, row, &assertion, &t.binding));
@@ -2305,7 +2394,9 @@ fn finish_in(
                      AND revoked_at IS NULL",
                     (id, r.at.to_string()),
                 )?,
-                RevocationTarget::Grant(_) | RevocationTarget::Signoff(_) => 1,
+                RevocationTarget::Grant(_)
+                | RevocationTarget::Signoff(_)
+                | RevocationTarget::Waiver(_) => 1,
             };
             if marked != 1 {
                 return Err(BodyError::StateConflict);
@@ -2374,6 +2465,32 @@ fn finish_in(
                 signoff_id: n.signoff_id.clone(),
             };
             kind = "signed_off";
+        }
+        (CeremonyOp::Waive { waiver_id }, TargetKind::Waiver(request)) => {
+            check!(check_waiver_approval(&request.binding, &accepted, &actor).map_err(ap));
+            let Some(intent) = waiver else {
+                return Err(BodyError::Integrity);
+            };
+            let observed = check!(waiver_store::check_request(tx, &request, intent)?);
+            if observed >= challenge.expires_at() {
+                return Ok(Err(challenge_refused(ChallengeRefusal::Expired)));
+            }
+            check!(check_human_permission(
+                actor.record,
+                actor.assignments,
+                Permission::WaiverAuthority,
+                &b.tenant_id,
+                &b.project_id,
+                observed
+            )
+            .map_err(ap));
+            seq = next_seq(tx, "waiver", waiver_id)?;
+            waiver_store::insert_receipt(tx, waiver_id, &accepted, seq)?;
+            request_ref = Some((waiver_id.clone(), b.policy_bundle_sha.clone()));
+            result = CeremonyResult::Waived {
+                waiver_id: waiver_id.clone(),
+            };
+            kind = "waived";
         }
         (CeremonyOp::Enroll { enrollment, .. }, TargetKind::Enroll) => {
             check!(check_actor(&actor, &accepted, Permission::Operator).map_err(ap));
@@ -2622,7 +2739,10 @@ fn random_id(prefix: &str) -> Result<String, TxFailure> {
 }
 
 /// Map a body answer to its transaction end: refusals and replays roll back.
-fn end<T>(out: Result<T, Refusal>, replayed: impl Fn(&T) -> bool) -> End<Result<T, Refusal>> {
+pub(crate) fn end<T>(
+    out: Result<T, Refusal>,
+    replayed: impl Fn(&T) -> bool,
+) -> End<Result<T, Refusal>> {
     match out {
         Ok(v) if !replayed(&v) => End::Commit(Ok(v)),
         other => End::Rollback(other),
@@ -2632,7 +2752,7 @@ fn end<T>(out: Result<T, Refusal>, replayed: impl Fn(&T) -> bool) -> End<Result<
 impl SqliteLedger {
     /// Audit a refusal of the approval channel in its own transaction (storage rule 2: a
     /// failed audit never changes the answer).
-    fn audited<T>(
+    pub(crate) fn audited<T>(
         &self,
         result: Result<Result<T, Refusal>, TxFailure>,
     ) -> Result<Result<T, Refusal>, TxFailure> {
@@ -3051,7 +3171,17 @@ pub struct BootstrapSession {
 impl BootstrapSession {
     /// Open the ledger at `path` for its bootstrap (struct documentation).
     pub fn open(path: &std::path::Path) -> Result<Result<BootstrapSession, Refusal>, StoreError> {
-        let ledger = SqliteLedger::open(path)?;
+        Self::from_owned_ledger(SqliteLedger::open(path)?)
+    }
+
+    /// Open an explicitly provisioned D-053 disposable ledger for bootstrap.
+    pub fn open_waiver_lab(
+        path: &std::path::Path,
+    ) -> Result<Result<BootstrapSession, Refusal>, StoreError> {
+        Self::from_owned_ledger(SqliteLedger::open_waiver_lab(path)?)
+    }
+
+    fn from_owned_ledger(ledger: SqliteLedger) -> Result<Result<Self, Refusal>, StoreError> {
         let used = {
             let inner = ledger.lock("read")?;
             bootstrapped(&inner.conn).map_err(|e| unavailable("read", code_name(&e)))?
@@ -3112,6 +3242,114 @@ impl RegistrationLedger for BootstrapSession {
     ) -> Result<Result<VerifiedRegistration, Refusal>, TxFailure> {
         self.ledger
             .finish_registration_as(finish, RegistrationOperation::Bootstrap)
+    }
+}
+
+impl SqliteLedger {
+    fn supports_ceremony(&self, op: &CeremonyOp, waiver: Option<&WaiverIntent<'_>>) -> bool {
+        match op {
+            CeremonyOp::Waive { .. } => self.waiver_lab_enabled() && waiver.is_some(),
+            CeremonyOp::Revoke {
+                target: RevocationTarget::Waiver(_),
+                ..
+            }
+            | CeremonyOp::RoleChange {
+                change:
+                    RoleChange::Grant {
+                        permission: Permission::WaiverAuthority,
+                        ..
+                    },
+            } => self.waiver_lab_enabled(),
+            CeremonyOp::Enroll { enrollment, .. } => {
+                self.waiver_lab_enabled()
+                    || enrollment
+                        .roles
+                        .iter()
+                        .all(|r| r.permission != Permission::WaiverAuthority)
+            }
+            _ => true,
+        }
+    }
+
+    pub(crate) fn begin_ceremony_for<T>(
+        &self,
+        begin: &CeremonyBegin<'_>,
+        waiver: Option<&WaiverIntent<'_>>,
+        prepare: impl FnOnce(IssuedChallenge, Option<WaiverBinding>) -> Result<T, BodyError>,
+    ) -> Result<Result<T, Refusal>, TxFailure> {
+        if !self.supports_ceremony(begin.op, waiver) {
+            return self.audited(Ok(Err(challenge_refused(
+                ChallengeRefusal::OperationMismatch,
+            ))));
+        }
+        // M1: only the configured channel's verifier; none configured, no ceremony.
+        let Some(channel) = self.approval_channel() else {
+            return self.audited(Ok(Err(no_channel())));
+        };
+        let id = random_id("chl")?;
+        let result = self.transact("challenge_issue", |tx| {
+            match begin_in(tx, begin, &id, channel, waiver)? {
+                Ok((issued, context)) => Ok(End::Commit(Ok(prepare(issued, context)?))),
+                Err(refusal) => Ok(End::Rollback(Err(refusal))),
+            }
+        });
+        self.audited(result)
+    }
+
+    pub(crate) fn finish_ceremony_for(
+        &self,
+        finish: &CeremonyFinish<'_>,
+        waiver: Option<&WaiverIntent<'_>>,
+    ) -> Result<Result<CeremonyOutcome, Refusal>, TxFailure> {
+        if !self.supports_ceremony(finish.op, waiver) {
+            return self.audited(Ok(Err(challenge_refused(
+                ChallengeRefusal::OperationMismatch,
+            ))));
+        }
+        // M1: without a configured channel nothing is verified and nothing is burnt (the
+        // challenge stays issued, single use and expiring).
+        let Some(channel) = self.approval_channel() else {
+            return self.audited(Ok(Err(no_channel())));
+        };
+        let result = self.transact("ceremony", |tx| {
+            // X4 (S6): the ceremony body runs inside a savepoint; a refusal undoes the body
+            // and, when it identified an issued challenge, burns that challenge in this same
+            // transaction (status `refused` with the code). The burn commits with the refusal;
+            // if that commit fails or its outcome is unknown the answer is the storage failure
+            // (fail closed), and the next ceremony reads the stored status again.
+            tx.execute_batch("SAVEPOINT ceremony_body")?;
+            match finish_in(tx, finish, channel, waiver)? {
+                Ok(outcome) if outcome.replayed => Ok(End::Rollback(Ok(outcome))),
+                Ok(outcome) => {
+                    tx.execute_batch("RELEASE ceremony_body")?;
+                    Ok(End::Commit(Ok(outcome)))
+                }
+                Err(refusal) => {
+                    tx.execute_batch("ROLLBACK TO ceremony_body; RELEASE ceremony_body")?;
+                    // A challenge expired on trusted time is already unusable (time never moves
+                    // back past the persisted floor); the `expire` step marks it.
+                    // L6: a verifier that reports itself unavailable is a transient outage,
+                    // not a terminal refusal; the challenge stays issued (single use and
+                    // expiring all the same).
+                    if refusal == challenge_refused(ChallengeRefusal::Expired)
+                        || refusal == no_channel()
+                    {
+                        return Ok(End::Rollback(Err(refusal)));
+                    }
+                    let burned = tx.execute(
+                        "UPDATE challenges SET status = 'refused', refusal_code = ?2 \
+                         WHERE challenge_id = ?1 AND status = 'issued'",
+                        (finish.challenge_id, refusal.code()),
+                    )?;
+                    Ok(if burned == 1 {
+                        End::Commit(Err(refusal))
+                    } else {
+                        End::Rollback(Err(refusal))
+                    })
+                }
+            }
+        });
+        self.audited(result)
     }
 }
 
@@ -3206,65 +3444,14 @@ impl ApprovalLedger for SqliteLedger {
         &self,
         begin: &CeremonyBegin<'_>,
     ) -> Result<Result<IssuedChallenge, Refusal>, TxFailure> {
-        // M1: only the configured channel's verifier; none configured, no ceremony.
-        let Some(channel) = self.approval_channel() else {
-            return self.audited(Ok(Err(no_channel())));
-        };
-        let id = random_id("chl")?;
-        let result = self.transact("challenge_issue", |tx| {
-            Ok(end(begin_in(tx, begin, &id, channel)?, |_| false))
-        });
-        self.audited(result)
+        self.begin_ceremony_for(begin, None, |issued, _| Ok(issued))
     }
 
     fn finish_ceremony(
         &self,
         finish: &CeremonyFinish<'_>,
     ) -> Result<Result<CeremonyOutcome, Refusal>, TxFailure> {
-        // M1: without a configured channel nothing is verified and nothing is burnt (the
-        // challenge stays issued, single use and expiring).
-        let Some(channel) = self.approval_channel() else {
-            return self.audited(Ok(Err(no_channel())));
-        };
-        let result = self.transact("ceremony", |tx| {
-            // X4 (S6): the ceremony body runs inside a savepoint; a refusal undoes the body
-            // and, when it identified an issued challenge, burns that challenge in this same
-            // transaction (status `refused` with the code). The burn commits with the refusal;
-            // if that commit fails or its outcome is unknown the answer is the storage failure
-            // (fail closed), and the next ceremony reads the stored status again.
-            tx.execute_batch("SAVEPOINT ceremony_body")?;
-            match finish_in(tx, finish, channel)? {
-                Ok(outcome) if outcome.replayed => Ok(End::Rollback(Ok(outcome))),
-                Ok(outcome) => {
-                    tx.execute_batch("RELEASE ceremony_body")?;
-                    Ok(End::Commit(Ok(outcome)))
-                }
-                Err(refusal) => {
-                    tx.execute_batch("ROLLBACK TO ceremony_body; RELEASE ceremony_body")?;
-                    // A challenge expired on trusted time is already unusable (time never moves
-                    // back past the persisted floor); the `expire` step marks it.
-                    // L6: a verifier that reports itself unavailable is a transient outage,
-                    // not a terminal refusal; the challenge stays issued (single use and
-                    // expiring all the same).
-                    if refusal == challenge_refused(ChallengeRefusal::Expired)
-                        || refusal == no_channel()
-                    {
-                        return Ok(End::Rollback(Err(refusal)));
-                    }
-                    let burned = tx.execute(
-                        "UPDATE challenges SET status = 'refused', refusal_code = ?2 \
-                         WHERE challenge_id = ?1 AND status = 'issued'",
-                        (finish.challenge_id, refusal.code()),
-                    )?;
-                    Ok(if burned == 1 {
-                        End::Commit(Err(refusal))
-                    } else {
-                        End::Rollback(Err(refusal))
-                    })
-                }
-            }
-        });
-        self.audited(result)
+        self.finish_ceremony_for(finish, None)
     }
 
     fn signoff(&self, signoff_id: &str) -> Result<Option<SignoffState>, StoreError> {
@@ -3294,6 +3481,11 @@ impl ApprovalLedger for SqliteLedger {
         &self,
         read: &RecordRead<'_>,
     ) -> Result<Result<RecordView, ReadRefused>, StoreError> {
+        if let ReadTarget::Ceremony(op) = read.target {
+            if !self.supports_ceremony(op, None) {
+                return Ok(Err(ReadRefused));
+            }
+        }
         let inner = self.lock("read")?;
         // M1: a session is valid only under the configured channel it was opened with.
         let Some(channel) = self.approval_channel() else {
@@ -3345,7 +3537,8 @@ impl SqliteLedger {
                 &inner.conn,
                 op,
                 SignoffExpiry::Compute(now.at()),
-                rp.as_ref()
+                rp.as_ref(),
+                None
             )?);
             Ok(Ok(displayed(t)?))
         };
@@ -3533,7 +3726,7 @@ fn read_in(
                 parties: Default::default(),
                 requested_expires_at: None,
             };
-            let Ok(first) = target(conn, &op, SignoffExpiry::Compute(now), Some(rp))? else {
+            let Ok(first) = target(conn, &op, SignoffExpiry::Compute(now), Some(rp), None)? else {
                 return refused();
             };
             let TargetKind::Signoff { expires_at, .. } = &first.kind else {
@@ -3546,7 +3739,7 @@ fn read_in(
             {
                 *requested_expires_at = Some(*expires_at);
             }
-            let Ok(t) = target(conn, &op, SignoffExpiry::Compute(now), Some(rp))? else {
+            let Ok(t) = target(conn, &op, SignoffExpiry::Compute(now), Some(rp), None)? else {
                 return refused();
             };
             if t.binding.context_fingerprint != first.binding.context_fingerprint
@@ -3562,7 +3755,7 @@ fn read_in(
         ReadTarget::Ceremony(op) => {
             let needed: &[Permission] = match &**op {
                 // A login is never a readable target.
-                CeremonyOp::ReadSession { .. } => return refused(),
+                CeremonyOp::ReadSession { .. } | CeremonyOp::Waive { .. } => return refused(),
                 // D-043 Y2: a registration start is read only by the operator it names.
                 CeremonyOp::RegistrationStart { operator, .. } if operator != s.subject() => {
                     return refused()
@@ -3578,7 +3771,7 @@ fn read_in(
             if !needed.iter().any(|p| holds_somewhere(*p)) {
                 return refused();
             }
-            let Ok(t) = target(conn, op, SignoffExpiry::Compute(now), Some(rp))? else {
+            let Ok(t) = target(conn, op, SignoffExpiry::Compute(now), Some(rp), None)? else {
                 return refused();
             };
             if rows.select(&t, now).is_err() {

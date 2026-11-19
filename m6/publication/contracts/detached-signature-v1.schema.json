@@ -66,7 +66,8 @@
           "type": "string",
           "enum": [
             "writ-authorization-bundle/2.0",
-            "writ-acceptance-policy/1"
+            "writ-acceptance-policy/1",
+            "writ-acceptance-policy/2"
           ]
         },
         "not_before": {
@@ -108,7 +109,10 @@
           "then": {
             "properties": {
               "payload_format": {
-                "const": "writ-acceptance-policy/1"
+                "enum": [
+                  "writ-acceptance-policy/1",
+                  "writ-acceptance-policy/2"
+                ]
               }
             }
           }

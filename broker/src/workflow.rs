@@ -138,7 +138,7 @@
 
 use std::collections::BTreeSet;
 
-use writ_kernel::contracts::{AcceptanceRequirements, CurrentState, StateRevision};
+use writ_kernel::contracts::{AcceptanceRequirements, ActionRequest, CurrentState, StateRevision};
 use writ_kernel::decision::Policy;
 use writ_kernel::json::{self, Value};
 use writ_kernel::time::Timestamp;
@@ -148,6 +148,7 @@ use crate::acceptance::{
     check_use, verify_attestation, verify_record, AcceptanceCode, RecordVersion, SignoffUse,
     UseContext, VerifiedAttestation, VerifiedRecord,
 };
+use crate::approval_store::{CeremonyBegin, CeremonyFinish, CeremonyOp, CeremonyOutcome};
 use crate::authorize::{authorize, Authorized};
 use crate::clock::ObservedTime;
 use crate::contracts::RegistryEntry;
@@ -162,6 +163,8 @@ use crate::ingress::VerifiedRequest;
 use crate::keys::{AcceptanceKeyRing, KeyStatus, MaterialDigest, RunnerKeyRing};
 use crate::refusal::{ConflictStage, Refusal};
 use crate::store::{ExecuteLedger, LedgerStore, StoreError, TxFailure, TxStage};
+use crate::waiver::{WaiverBinding, WaiverPolicyGuard, WaiverRequest};
+use crate::waiver_lifecycle::{WaiverChallenge, WaiverLedger};
 
 /// The action kind of a promotion.
 pub const TRANSITION_KIND: &str = "workflow.transition";
@@ -260,6 +263,74 @@ pub struct StoredWorkflow {
     pub artifact_digest: String,
     /// The latest protected promotion, if any.
     pub last_promotion: Option<LastPromotion>,
+}
+
+/// The broker inputs for a waiver operation on an exact sealed transition (D-053).
+pub struct WaiverInvocation<'a> {
+    /// Transition request sealed by the verifying ingress adapter.
+    pub verified: &'a VerifiedRequest,
+    /// The requested scope, criterion and reason.
+    pub request: &'a WaiverRequest,
+}
+
+/// Verified workflow context used by the waiver ledger while the broker holds its fences.
+pub struct WaiverIntent<'a> {
+    request: &'a WaiverRequest,
+    policy: &'a dyn WaiverPolicyGuard,
+    requester: SubjectId,
+    agent: Option<SubjectId>,
+    now: ObservedTime,
+    deadline: Option<Timestamp>,
+    workflow: StoredWorkflow,
+    authorization_digest: String,
+    acceptance_digest: String,
+}
+
+impl WaiverIntent<'_> {
+    /// Exact requested scope, criterion and reason.
+    pub fn request(&self) -> &WaiverRequest {
+        self.request
+    }
+
+    /// Sealed requester identity under the verifying adapter.
+    pub fn requester(&self) -> &SubjectId {
+        &self.requester
+    }
+
+    /// Sealed agent identity under the verifying adapter, when present.
+    pub fn agent(&self) -> Option<&SubjectId> {
+        self.agent.as_ref()
+    }
+
+    /// Trusted time and persisted floor for this operation.
+    pub fn now(&self) -> ObservedTime {
+        self.now
+    }
+
+    /// The sealed request deadline, when present.
+    pub fn deadline(&self) -> Option<Timestamp> {
+        self.deadline
+    }
+
+    /// The broker's workflow read, for comparison to the transactional read.
+    pub fn workflow(&self) -> &StoredWorkflow {
+        &self.workflow
+    }
+
+    /// Current signed policy selection for transactional verification.
+    pub fn policy(&self) -> &dyn WaiverPolicyGuard {
+        self.policy
+    }
+
+    /// The use-time transition authorization digest held by the broker.
+    pub fn workflow_authorization_digest(&self) -> &str {
+        &self.authorization_digest
+    }
+
+    /// The acceptance dependency declared by the active authorization bundle.
+    pub fn acceptance_digest(&self) -> &str {
+        &self.acceptance_digest
+    }
 }
 
 /// The promotion receipt of the latest protected commit (D-019 N-3).
@@ -949,6 +1020,188 @@ where
     for<'b> &'b L: LedgerStore,
     A: EffectAdapter + ?Sized,
 {
+    /// Prepare and persist the exact waiver context for human review.
+    pub fn request_waiver(
+        &self,
+        invocation: &WaiverInvocation<'_>,
+    ) -> Result<Result<WaiverBinding, Refusal>, TxFailure>
+    where
+        L: WaiverLedger,
+    {
+        self.with_waiver_intent(invocation, |ledger, intent| ledger.request_waiver(intent))
+    }
+
+    /// Begin a fresh human ceremony for the previously displayed waiver context.
+    pub fn begin_waiver(
+        &self,
+        invocation: &WaiverInvocation<'_>,
+        waiver_id: &str,
+        subject: &SubjectId,
+        idempotency_key: &str,
+    ) -> Result<Result<WaiverChallenge, Refusal>, TxFailure>
+    where
+        L: WaiverLedger,
+    {
+        let op = CeremonyOp::Waive {
+            waiver_id: waiver_id.to_string(),
+        };
+        self.with_waiver_intent(invocation, |ledger, intent| {
+            ledger.begin_waiver(
+                &CeremonyBegin {
+                    op: &op,
+                    subject,
+                    idempotency_key,
+                    now: intent.now(),
+                },
+                intent,
+            )
+        })
+    }
+
+    /// Verify the human assertion and record the waiver in one ledger transaction.
+    pub fn finish_waiver(
+        &self,
+        invocation: &WaiverInvocation<'_>,
+        waiver_id: &str,
+        challenge_id: &str,
+        response: &[u8],
+        idempotency_key: &str,
+    ) -> Result<Result<CeremonyOutcome, Refusal>, TxFailure>
+    where
+        L: WaiverLedger,
+    {
+        let op = CeremonyOp::Waive {
+            waiver_id: waiver_id.to_string(),
+        };
+        self.with_waiver_intent(invocation, |ledger, intent| {
+            ledger.finish_waiver(
+                &CeremonyFinish {
+                    op: &op,
+                    challenge_id,
+                    response,
+                    idempotency_key,
+                    now: intent.now(),
+                },
+                intent,
+            )
+        })
+    }
+
+    /// Resolve a recorded waiver in current context. The result carries a waived criterion.
+    pub fn validate_waiver(
+        &self,
+        invocation: &WaiverInvocation<'_>,
+        waiver_id: &str,
+    ) -> Result<Result<WaiverBinding, Refusal>, TxFailure>
+    where
+        L: WaiverLedger,
+    {
+        self.with_waiver_intent(invocation, |ledger, intent| {
+            ledger.validate_waiver(waiver_id, intent)
+        })
+    }
+
+    fn with_waiver_intent<T>(
+        &self,
+        invocation: &WaiverInvocation<'_>,
+        operation: impl FnOnce(&L, &WaiverIntent<'_>) -> Result<Result<T, Refusal>, TxFailure>,
+    ) -> Result<Result<T, Refusal>, TxFailure> {
+        let Some((policy, snapshots)) = self.waiver_context() else {
+            return Ok(self
+                .grants()
+                .audited(Err(Refusal::AcceptancePolicyUnavailable)));
+        };
+        let shared = self.grants().active.shared();
+        let key = &invocation.request.workflow;
+        let _workflow = self
+            .workflow_locks
+            .lock(&key.tenant_id, &workflow_lock_name(key));
+        let ledger = self.grants().ledger;
+        let prepared = (|| {
+            let requested = invocation.request;
+            let sealed = ActionRequest::from_value(invocation.verified.request())
+                .map_err(|_| Refusal::RequestScopeMismatch)?;
+            let resource = sealed
+                .action
+                .resource
+                .canonical_resource_id
+                .as_deref()
+                .ok_or(Refusal::RequestScopeMismatch)?;
+            if sealed.tenant_id != key.tenant_id
+                || sealed.project_id != key.project_id
+                || sealed.action.kind != TRANSITION_KIND
+                || sealed.parent_session_id.is_some()
+                || workflow_id(resource, &key.tenant_id, &key.project_id).as_deref()
+                    != Some(key.workflow_id.as_str())
+                || sealed.expected_state_revision.map(StateRevision::get)
+                    != Some(requested.expected_revision)
+            {
+                return Err(Refusal::RequestScopeMismatch);
+            }
+            let workflow = ledger
+                .workflow(key)
+                .map_err(Refusal::LedgerUnavailable)?
+                .ok_or(Refusal::WorkflowUnknown)?;
+            let revision = StateRevision::new(workflow.revision)
+                .ok_or(Refusal::RevisionConflict(ConflictStage::StoredRevision))?;
+            let now = self.grants().observe()?;
+            let inputs = shared.trusted_inputs(revision);
+            let authorized =
+                authorize(invocation.verified, &inputs, &now).map_err(use_time_conflict)?;
+            let protection = match shared.policy() {
+                Policy::Loaded(bundle) => bundle.protection(),
+                Policy::Absent | Policy::Rejected => None,
+            }
+            .ok_or(Refusal::AcceptancePolicyUnavailable)?;
+            let transition = check_transition(authorized.request(), resource, Some(protection))
+                .map_err(|code| Refusal::Kernel(code.as_str()))?;
+            let artifact = transition.binding.ok_or(Refusal::RequestScopeMismatch)?;
+            if transition.from_state != requested.from_state
+                || transition.to_state != requested.to_state
+                || transition.from_state != workflow.state
+                || artifact.artifact_snapshot_id != workflow.artifact_snapshot_id
+                || artifact.artifact_digest != workflow.artifact_digest
+            {
+                return Err(Refusal::RequestScopeMismatch);
+            }
+            match snapshots
+                .check(
+                    &key.tenant_id,
+                    &key.project_id,
+                    &workflow.artifact_snapshot_id,
+                    &workflow.artifact_digest,
+                )
+                .map_err(|_| acceptance(AcceptanceCode::ArtifactIntegrityUnavailable))?
+            {
+                SnapshotCheck::Matches => {}
+                SnapshotCheck::Differs | SnapshotCheck::Unknown => {
+                    return Err(acceptance(AcceptanceCode::ArtifactIntegrityViolation));
+                }
+            }
+            let realm = &sealed.principal.verified_by;
+            let requester = SubjectId::new(realm, &sealed.principal.id);
+            let agent = sealed.agent_id.as_ref().map(|id| SubjectId::new(realm, id));
+            if !requester.is_well_formed() || agent.as_ref().is_some_and(|p| !p.is_well_formed()) {
+                return Err(Refusal::RequestScopeMismatch);
+            }
+            Ok(WaiverIntent {
+                request: requested,
+                policy,
+                requester,
+                agent,
+                now,
+                deadline: sealed.deadline_at,
+                workflow,
+                authorization_digest: authorized.policy_bundle_sha().to_string(),
+                acceptance_digest: protection.acceptance_policy_bundle_sha.clone(),
+            })
+        })();
+        match prepared {
+            Ok(intent) => operation(ledger, &intent),
+            Err(refusal) => Ok(self.grants().audited(Err(refusal))),
+        }
+    }
+
     /// Promote a workflow (module documentation). Refusals are audited.
     pub fn promote(
         &self,

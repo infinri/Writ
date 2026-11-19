@@ -18,7 +18,7 @@ jobs:
         run: python3 scripts/check-v2-docs.py
       - name: Proposed acceptance and host adapter contracts
         run: python3 -m unittest discover -s docs/contracts/proposed
-      - name: M6 detached policy and publication schemas
+      - name: M6 signed policy, publication and scoped waiver schemas
         run: python3 -m unittest discover -s m6/publication/contracts
   m2-kernel:
     name: Production Rust workspace (writ-kernel, writ-broker, writ-ledger-sqlite)
@@ -75,6 +75,10 @@ jobs:
           python3 m6/publication/check_dependencies.py
       - name: M6 disposable evaluator registry, rubric and protected promotion
         run: m3/tools/run-with-clean-fds.sh cargo test --locked -p writ-ledger-sqlite --lib evaluator_
+      - name: M6 disposable scoped waiver, signed policy and protected promotion
+        run: |
+          m3/tools/run-with-clean-fds.sh cargo test --locked --manifest-path m6/publication/Cargo.toml --test lifecycle waiver_
+          m3/tools/run-with-clean-fds.sh cargo test --locked -p writ-ledger-sqlite --lib waiver_
       - name: Format, lint, build and test (locked)
         run: |
           cargo fmt --all --check

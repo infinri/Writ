@@ -346,6 +346,10 @@ impl W {
                 SqliteEffectStore::create(&dir.join("effects.db"), ledger.ledger_id()).unwrap();
             (ledger, effects)
         };
+        W::with_stores(dir, ledger, effects)
+    }
+
+    fn with_stores(dir: PathBuf, ledger: SqliteLedger, effects: SqliteEffectStore) -> W {
         let mut record_keys = MemoryKeys::new();
         record_keys.register(
             "acc-key-1",
@@ -1394,3 +1398,4 @@ fn a_ledger_revoked_attestation_key_refuses_promotion_although_the_ring_still_ho
 }
 
 mod evaluator_scenario_tests;
+mod waiver_scenario_tests;

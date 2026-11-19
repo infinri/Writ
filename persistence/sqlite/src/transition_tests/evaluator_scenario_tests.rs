@@ -14,7 +14,7 @@ use writ_broker::writ_kernel::contracts::CriterionClass;
 use super::*;
 
 #[derive(Default)]
-struct Publishers(RwLock<BTreeMap<String, PublisherApproval>>);
+pub(super) struct Publishers(RwLock<BTreeMap<String, PublisherApproval>>);
 
 struct CurrentPublishers<'a>(RwLockReadGuard<'a, BTreeMap<String, PublisherApproval>>);
 
@@ -27,7 +27,7 @@ fn publisher(credential: &[u8]) -> AdminPresentation<'_> {
 }
 
 impl Publishers {
-    fn approve_fixture(&self, intent: &EvaluatorIntent) {
+    pub(super) fn approve_fixture(&self, intent: &EvaluatorIntent) {
         self.0.write().unwrap().insert(
             intent.fingerprint().into(),
             PublisherApproval {
@@ -127,10 +127,19 @@ fn submit(
     authorities: &impl EvaluatorPublisher,
     intent: &EvaluatorIntent,
 ) -> Result<(), Refusal> {
+    submit_with_credential(w, authorities, intent, b"publisher-credential")
+}
+
+pub(super) fn submit_with_credential(
+    w: &W,
+    authorities: &impl EvaluatorPublisher,
+    intent: &EvaluatorIntent,
+    credential: &[u8],
+) -> Result<(), Refusal> {
     w.broker()
         .publish_evaluator(
             authorities,
-            &publisher(b"publisher-credential"),
+            &publisher(credential),
             &EvaluatorDependencies {
                 runner_keys: &w.runner_keys,
                 commands: &FixtureDependencies,
@@ -159,7 +168,7 @@ fn entry(id: &str, expected: i64) -> Value {
     entry
 }
 
-fn publication(id: &str, expected: i64) -> EvaluatorIntent {
+pub(super) fn publication(id: &str, expected: i64) -> EvaluatorIntent {
     EvaluatorIntent::new(
         expected,
         AdminRequest::RegisterEvaluator {

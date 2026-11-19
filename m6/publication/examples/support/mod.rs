@@ -15,6 +15,7 @@ use writ_broker::{
     effects::EffectAdapter,
     execute::{Broker, Executed},
     grants::GrantLabel,
+    human::SubjectId,
     ingress::{verify_ingress, Seal, VerifiedRequest},
     keys::{IngressKey, MemoryKeyRing, PermitKey},
     permit::Permit,
@@ -223,6 +224,13 @@ impl CurrentTrust for FixtureView<'_> {
             return Err(Error::Authority);
         }
         Ok(approval.clone())
+    }
+
+    fn waiver_publisher_subject(&self, publisher: &str) -> Result<SubjectId, Error> {
+        if publisher != "lab-human-publisher" {
+            return Err(Error::Authority);
+        }
+        Ok(SubjectId::new("lab-publisher-realm", publisher))
     }
 }
 

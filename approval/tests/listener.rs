@@ -276,6 +276,9 @@ impl Fake {
             CeremonyOp::Signoff { binding, .. } => CeremonyResult::SignedOff {
                 signoff_id: binding.signoff_id.clone(),
             },
+            CeremonyOp::Waive { .. } => {
+                return Ok(Err(Refusal::Approval(ApprovalCode::WaiverUnknown)))
+            }
             CeremonyOp::Enroll { enrollment, .. } => CeremonyResult::Enrolled {
                 subject: enrollment.subject.clone(),
             },
@@ -316,6 +319,7 @@ impl Fake {
         let (context, operation, target_id) = match op {
             CeremonyOp::Approve { .. }
             | CeremonyOp::Deny { .. }
+            | CeremonyOp::Waive { .. }
             | CeremonyOp::ReadSession { .. } => {
                 return Ok(Err(Refusal::Approval(ApprovalCode::RequestUnknown)))
             }

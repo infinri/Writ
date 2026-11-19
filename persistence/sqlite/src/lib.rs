@@ -85,7 +85,7 @@
 //!
 //! **Schema versions:** a new ledger is `writ-ledger-6` (`schema.sql`, `schema_v4.sql`,
 //! `schema_v5.sql`, then `schema_v6.sql`, plus a random `ledger_id`). [`SqliteLedger::open`]
-//! accepts only `writ-ledger-6`. [`SqliteLedger::upgrade`] is the explicit operator upgrade of
+//! accepts only `writ-ledger-6`. D-053 disposable ledgers use an explicit profile. [`SqliteLedger::upgrade`] is the explicit operator upgrade of
 //! an exact `writ-ledger-3`, `writ-ledger-4` or `writ-ledger-5` ledger: it adds the missing
 //! tables in one transaction and keeps every row; grants carried over from `writ-ledger-3` have
 //! no provenance and stay non-executable (D-035 item 5), and every grant that existed before
@@ -155,6 +155,7 @@ mod fs_journal;
 mod keys;
 mod runner_store;
 mod snapshots;
+mod waiver_store;
 mod workflow;
 pub use approval_store::BootstrapSession;
 pub use effects::{SqliteEffectStore, EFFECTS_SCHEMA, EFFECTS_SCHEMA_VERSION};
@@ -201,6 +202,38 @@ pub const SCHEMA: &str = concat!(
 );
 /// The schema version this crate writes and accepts.
 pub const SCHEMA_VERSION: &str = "writ-ledger-6";
+const WAIVER_SCHEMA_VERSION: &str = "writ-ledger-waiver-lab/1";
+
+fn waiver_schema() -> Result<String, StoreError> {
+    let mut schema = SCHEMA.to_owned();
+    for (tail, additional) in [
+        (
+            "'read_session', 'key_revocation'",
+            ", 'waiver_request', 'waiver'",
+        ),
+        (
+            "'approver', 'signoff_authority', 'operator', 'revoker'",
+            ", 'waiver_authority'",
+        ),
+        ("'registration_start', 'read_session'", ", 'waive'"),
+        (
+            "'grant', 'signoff', 'credential', 'subject', 'role'",
+            ", 'waiver'",
+        ),
+        (
+            "'role_changed', 'registration_started', 'read_session'",
+            ", 'waiver_requested', 'waived'",
+        ),
+    ] {
+        let constraint = format!("{tail}))");
+        if schema.matches(&constraint).count() != 1 {
+            return Err(unavailable("initialize", "waiver schema"));
+        }
+        schema = schema.replacen(&constraint, &format!("{tail}{additional}))"), 1);
+    }
+    schema.push_str(include_str!("schema_waiver.sql"));
+    Ok(schema)
+}
 /// Older versions [`SqliteLedger::upgrade`] accepts.
 pub const SCHEMA_VERSION_V3: &str = "writ-ledger-3";
 /// See [`SCHEMA_VERSION_V3`].
@@ -242,6 +275,7 @@ pub struct SqliteLedger {
     inner: Mutex<Inner>,
     epoch: u64,
     id: LedgerId,
+    waiver_lab: bool,
     /// The approval channel configured once for approval service (M1); none: every
     /// ceremony and registration is refused.
     channel: std::sync::OnceLock<writ_broker::human::ApprovalChannel>,
@@ -540,7 +574,11 @@ fn bump_epoch(conn: &mut Connection) -> Result<u64, StoreError> {
     Ok(next)
 }
 
-fn finish(mut conn: Connection, lock: OwnerLock) -> Result<SqliteLedger, StoreError> {
+fn finish(
+    mut conn: Connection,
+    lock: OwnerLock,
+    waiver_lab: bool,
+) -> Result<SqliteLedger, StoreError> {
     conn.execute_batch("PRAGMA synchronous = FULL;")
         .map_err(|e| unavailable("initialize", code_name(&e)))?;
     let id = meta_value(&conn, "ledger_id")
@@ -557,6 +595,7 @@ fn finish(mut conn: Connection, lock: OwnerLock) -> Result<SqliteLedger, StoreEr
         }),
         epoch,
         id,
+        waiver_lab,
         channel: std::sync::OnceLock::new(),
         _lock: Some(lock),
     })
@@ -650,6 +689,23 @@ impl SqliteLedger {
     /// `-shm` file this call created are removed (S-2); the `.owner` lock file may
     /// remain (empty, harmless).
     pub fn create(path: &Path) -> Result<SqliteLedger, StoreError> {
+        Self::create_with_schema(path, SCHEMA, false)
+    }
+
+    /// Create a new disposable D-053 waiver ledger using its distinct schema.
+    pub fn create_waiver_lab(path: &Path) -> Result<SqliteLedger, StoreError> {
+        Self::create_with_schema(path, &waiver_schema()?, true)
+    }
+
+    pub(crate) fn waiver_lab_enabled(&self) -> bool {
+        self.waiver_lab
+    }
+
+    fn create_with_schema(
+        path: &Path,
+        schema: &str,
+        waiver_lab: bool,
+    ) -> Result<SqliteLedger, StoreError> {
         let canonical = new_identity(path)?;
         let lock = take_ownership(&canonical)?;
         match OpenOptions::new()
@@ -672,13 +728,20 @@ impl SqliteLedger {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(|e| unavailable("initialize", code_name(&e)))?;
-            tx.execute_batch(SCHEMA)
+            tx.execute_batch(schema)
                 .map_err(|e| unavailable("initialize", code_name(&e)))?;
             tx.execute(
                 "INSERT INTO meta (key, value) VALUES ('ledger_id', ?1)",
                 [LedgerId::random()?.as_str()],
             )
             .map_err(|e| unavailable("initialize", code_name(&e)))?;
+            if waiver_lab {
+                tx.execute(
+                    "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
+                    [WAIVER_SCHEMA_VERSION],
+                )
+                .map_err(|e| unavailable("initialize", code_name(&e)))?;
+            }
             tx.commit()
                 .map_err(|e| unavailable("initialize", code_name(&e)))?;
             let mode: String = conn
@@ -689,7 +752,7 @@ impl SqliteLedger {
             }
             Ok(conn)
         })();
-        match result.and_then(|conn| finish(conn, lock)) {
+        match result.and_then(|conn| finish(conn, lock, waiver_lab)) {
             Ok(ledger) => Ok(ledger),
             Err(e) => {
                 let _ = fs::remove_file(&canonical);
@@ -711,11 +774,25 @@ impl SqliteLedger {
     /// the epoch increment cannot occur in this implementation; epochs are monotonic and
     /// gaps from failed starts are harmless.
     pub fn open(path: &Path) -> Result<SqliteLedger, StoreError> {
+        Self::open_with_schema(path, SCHEMA, SCHEMA_VERSION, false)
+    }
+
+    /// Reopen an explicitly provisioned D-053 disposable ledger.
+    pub fn open_waiver_lab(path: &Path) -> Result<SqliteLedger, StoreError> {
+        Self::open_with_schema(path, &waiver_schema()?, WAIVER_SCHEMA_VERSION, true)
+    }
+
+    fn open_with_schema(
+        path: &Path,
+        schema: &str,
+        version: &str,
+        waiver_lab: bool,
+    ) -> Result<SqliteLedger, StoreError> {
         let canonical = existing_identity(path)?;
         let lock = take_ownership(&canonical)?;
         let conn = connect(&canonical, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-        verify(&conn, SCHEMA, SCHEMA_VERSION)?;
-        finish(conn, lock)
+        verify(&conn, schema, version)?;
+        finish(conn, lock, waiver_lab)
     }
 
     /// Configure the approval channel this owned ledger serves (verifier, RP id, origin
@@ -804,7 +881,7 @@ impl SqliteLedger {
         .map_err(sql)?;
         tx.commit().map_err(sql)?;
         verify(&conn, SCHEMA, SCHEMA_VERSION)?;
-        finish(conn, lock)
+        finish(conn, lock, false)
     }
 
     /// This ledger's identity (bind its effect store to it).

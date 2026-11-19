@@ -52,7 +52,14 @@
       ],
       "properties": {
         "payload": {
-          "$ref": "urn:writ:m6:acceptance-policy-v1"
+          "oneOf": [
+            {
+              "$ref": "urn:writ:m6:acceptance-policy-v1"
+            },
+            {
+              "$ref": "urn:writ:m6:acceptance-policy-v2"
+            }
+          ]
         },
         "envelope": {
           "$ref": "urn:writ:m6:detached-signature-v1",
@@ -61,6 +68,47 @@
               "properties": {
                 "purpose": {
                   "const": "acceptance"
+                }
+              }
+            }
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "version": {
+                "const": "writ-acceptance-policy/2"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "envelope": {
+            "properties": {
+              "protected": {
+                "properties": {
+                  "payload_format": {
+                    "const": "writ-acceptance-policy/2"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "envelope": {
+            "properties": {
+              "protected": {
+                "properties": {
+                  "payload_format": {
+                    "const": "writ-acceptance-policy/1"
+                  }
                 }
               }
             }

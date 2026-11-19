@@ -771,6 +771,10 @@ pub struct Broker<'a, L: ?Sized, A: ?Sized> {
     /// to commit (effect prerequisites, D-036). Taken after the gate and
     /// before the per-key lock.
     pub(crate) workflow_locks: KeyLocks,
+    waiver_authority: Option<(
+        &'a dyn crate::waiver::WaiverPolicyGuard,
+        &'a dyn crate::workflow::SnapshotStore,
+    )>,
 }
 
 impl<'a, L, A> Broker<'a, L, A>
@@ -813,7 +817,29 @@ where
             fs_roots: Vec::new(),
             permit_keys,
             workflow_locks: KeyLocks::new(),
+            waiver_authority: None,
         }
+    }
+
+    /// Opt this broker into the disposable waiver profile with a pinned signed
+    /// selection and its trusted immutable snapshot store. Configure at the
+    /// composition boundary before accepting sealed workflow requests.
+    pub fn with_waiver_authority(
+        mut self,
+        policy: &'a dyn crate::waiver::WaiverPolicyGuard,
+        snapshots: &'a dyn crate::workflow::SnapshotStore,
+    ) -> Self {
+        self.waiver_authority = Some((policy, snapshots));
+        self
+    }
+
+    pub(crate) fn waiver_context(
+        &self,
+    ) -> Option<(
+        &'a dyn crate::waiver::WaiverPolicyGuard,
+        &'a dyn crate::workflow::SnapshotStore,
+    )> {
+        self.waiver_authority
     }
 
     /// The same broker with `runner` as the adapter of [`crate::runner::RUNNER_EFFECT_KIND`]

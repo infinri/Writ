@@ -1,9 +1,10 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-19 (M6 slice 2 implemented under D-051, M6 slice 3 implemented for test-authority development under D-052, M3 and M4 accepted for scoped development) · **Branch:** v2/architecture-rebuild · **Milestones:** M5 open, M6 in progress. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md) section "Current recovery state".
+**Last updated:** 2026-11-19 (M6 slice 4 implemented for disposable stores and test authorities under D-053, M3 and M4 accepted for scoped development) · **Branch:** v2/architecture-rebuild · **Milestones:** M5 open, M6 in progress. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md) section "Current recovery state".
 
 ## Current
 
+- D-053 delivers the [disposable scoped waiver scenario](../../m6/waivers/README.md). A distinct human approval records `waived` with an audited receipt. Reference checks enforce the exact signed policy and current workflow and authority. Mandatory waiver criteria stay incomplete under the existing kernel checks.
 - D-050 delivered the [offline synthetic compiler](../../m6/compiler/README.md). D-051 delivered the [disposable signed publication lab](../../m6/publication/README.md), including selection, rollback, recovery and controlled effects with test authorities. Evaluator publication, waiver semantics and management UI remain outside D-051. Legacy rule imports require independent human review.
 - D-052 delivers the [disposable evaluator publication scenario](../../m6/evaluators/README.md) with authenticated publication and revocation, durable scoped registry revisions, exact pack rubric binding and existing use-time acceptance checks. High-stakes evaluator quorum and the remaining AG-ADV-16 obligations are open.
 - P-AGENT-DESKTOP has a test-only evaluator (E-092), fixture-backed reconciliation (E-093) and a guarded guest inventory source for local accounts, agent credentials and socket ownership (E-094). Guest execution awaits the [owner provisioning and designation sequence](../../m5/reference-vm/PROVISIONING.md#first-guest-inventory). Other target classes, desktop denials, control execution and readiness-report integration remain open. See the [desktop obligation map](../../m5/reference-vm/DESKTOP-PROBE.md).
@@ -43,6 +44,8 @@ SANDBOX PREPARED / LIVE VERIFICATION NOT EXECUTED; sandbox **torn down** 2026-11
 - Pages deploy blocked by repository environment protection (pre-existing).
 
 ## Last verification
+
+The D-053 starting SHA `42af745af8759b80b00d6154871f0f079792e156` passed all six required jobs on [run 44565962417](https://github.com/infinri/Writ/actions/runs/44565962417). [E-100](TEST-EVIDENCE.md#e-100-d-053-disposable-scoped-waiver-2026-11-19) records the integrated verification.
 
 The D-052 starting SHA `924fa7c3586b08df5180c63359393f376cfbf5d3` passed all six required jobs on [run 44547085950](https://github.com/infinri/Writ/actions/runs/44547085950). [E-099](TEST-EVIDENCE.md#e-099-d-052-disposable-evaluator-publication-2026-11-19) records the integrated evidence.
 

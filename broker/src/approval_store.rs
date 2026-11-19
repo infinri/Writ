@@ -116,6 +116,7 @@ pub fn permission_text(p: Permission) -> &'static str {
     match p {
         Permission::Approver => "approver",
         Permission::SignoffAuthority => "signoff_authority",
+        Permission::WaiverAuthority => "waiver_authority",
         Permission::Operator => "operator",
         Permission::Revoker => "revoker",
     }
@@ -124,9 +125,15 @@ pub fn permission_text(p: Permission) -> &'static str {
 /// Parse a stored permission.
 pub fn parse_permission(text: &str) -> Option<Permission> {
     use Permission::*;
-    [Approver, SignoffAuthority, Operator, Revoker]
-        .into_iter()
-        .find(|p| permission_text(*p) == text)
+    [
+        Approver,
+        SignoffAuthority,
+        WaiverAuthority,
+        Operator,
+        Revoker,
+    ]
+    .into_iter()
+    .find(|p| permission_text(*p) == text)
 }
 
 /// The stored text of a principal kind.
@@ -793,6 +800,11 @@ pub enum CeremonyOp {
         /// exactly that stored value and never reads this field.
         requested_expires_at: Option<Timestamp>,
     },
+    /// Approve and atomically record a purpose-bound waiver request.
+    Waive {
+        /// The durable request's complete context fingerprint.
+        waiver_id: String,
+    },
     /// Enroll a subject (administrative ceremony).
     Enroll {
         /// The enrollment.
@@ -844,6 +856,7 @@ impl CeremonyOp {
             CeremonyOp::Deny { .. } => ChallengeOperation::Deny,
             CeremonyOp::Revoke { .. } => ChallengeOperation::Revoke,
             CeremonyOp::Signoff { .. } => ChallengeOperation::Signoff,
+            CeremonyOp::Waive { .. } => ChallengeOperation::Waive,
             CeremonyOp::Enroll { .. } => ChallengeOperation::Enroll,
             CeremonyOp::RoleChange { .. } => ChallengeOperation::RoleChange,
             CeremonyOp::RegistrationStart { .. } => ChallengeOperation::RegistrationStart,
@@ -949,6 +962,11 @@ pub enum CeremonyResult {
     SignedOff {
         /// Its id.
         signoff_id: String,
+    },
+    /// The waiver was recorded and its exact human approval consumed.
+    Waived {
+        /// The durable receipt's complete context fingerprint.
+        waiver_id: String,
     },
     /// The subject is enrolled.
     Enrolled {

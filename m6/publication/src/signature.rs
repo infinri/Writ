@@ -9,6 +9,7 @@ use writ_kernel::{
 use crate::{wire, Error, Scope, SignedPolicy};
 
 const ENVELOPE_VERSION: &str = "writ-detached-policy-signature/1";
+pub(crate) const ACCEPTANCE_V2: &str = "writ-acceptance-policy/2";
 const ALGORITHM: &str = "Ed25519";
 const SIGNING_DOMAIN: &[u8] = b"writ.policy.detached-signature/1\0";
 
@@ -30,7 +31,7 @@ impl Purpose {
         }
     }
 
-    /// The only supported payload format for this purpose.
+    /// The original payload format for this purpose.
     pub fn payload_format(self) -> &'static str {
         match self {
             Self::Authorization => "writ-authorization-bundle/2.0",
@@ -46,17 +47,21 @@ impl Purpose {
         }
     }
 
-    fn check_payload_format(self, payload: &Value) -> Result<(), Error> {
-        let supported = match self {
-            Self::Authorization => {
-                payload.get("contract_version").and_then(Value::as_str) == Some("2.0")
-                    && payload.get("publisher_signature").is_none()
+    fn format(self, payload: &Value) -> Result<&'static str, Error> {
+        match self {
+            Self::Authorization
+                if payload.get("contract_version").and_then(Value::as_str) == Some("2.0")
+                    && payload.get("publisher_signature").is_none() =>
+            {
+                Ok(self.payload_format())
             }
-            Self::Acceptance => {
-                payload.get("version").and_then(Value::as_str) == Some(self.payload_format())
-            }
-        };
-        supported.then_some(()).ok_or(Error::Format)
+            Self::Acceptance => match payload.get("version").and_then(Value::as_str) {
+                Some(ACCEPTANCE_V2) => Ok(ACCEPTANCE_V2),
+                Some(version) if version == self.payload_format() => Ok(self.payload_format()),
+                _ => Err(Error::Format),
+            },
+            _ => Err(Error::Format),
+        }
     }
 }
 
@@ -64,6 +69,7 @@ impl Purpose {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Protected {
     purpose: Purpose,
+    payload_format: &'static str,
     scope: Scope,
     payload_digest: String,
     key_id: String,
@@ -81,9 +87,9 @@ impl Protected {
         not_before: Timestamp,
         expires_at: Timestamp,
     ) -> Result<Self, Error> {
-        purpose.check_payload_format(payload)?;
         Self::checked(
             purpose,
+            purpose.format(payload)?,
             scope,
             wire::digest(payload)?.as_str(),
             key_id,
@@ -94,6 +100,7 @@ impl Protected {
 
     fn checked(
         purpose: Purpose,
+        payload_format: &'static str,
         scope: Scope,
         payload_digest: &str,
         key_id: &str,
@@ -107,6 +114,7 @@ impl Protected {
         }
         Ok(Self {
             purpose,
+            payload_format,
             scope,
             payload_digest: wire::digest_text(payload_digest)?.to_owned(),
             key_id: wire::identifier(key_id)?.to_owned(),
@@ -134,12 +142,17 @@ impl Protected {
         let purpose = Purpose::parse(wire::text(map, "purpose")?)?;
         if wire::text(map, "version")? != ENVELOPE_VERSION
             || wire::text(map, "algorithm")? != ALGORITHM
-            || wire::text(map, "payload_format")? != purpose.payload_format()
         {
             return Err(Error::Format);
         }
+        let payload_format = match wire::text(map, "payload_format")? {
+            ACCEPTANCE_V2 if purpose == Purpose::Acceptance => ACCEPTANCE_V2,
+            format if format == purpose.payload_format() => purpose.payload_format(),
+            _ => return Err(Error::Format),
+        };
         Self::checked(
             purpose,
+            payload_format,
             Scope::from_value(&map["scope"])?,
             wire::text(map, "payload_digest")?,
             wire::text(map, "publisher_key_id")?,
@@ -157,7 +170,7 @@ impl Protected {
             ("scope", self.scope.to_value()),
             ("payload_digest", json::s(&self.payload_digest)),
             ("publisher_key_id", json::s(&self.key_id)),
-            ("payload_format", json::s(self.purpose.payload_format())),
+            ("payload_format", json::s(self.payload_format)),
             ("not_before", json::s(&self.not_before.to_string())),
             ("expires_at", json::s(&self.expires_at.to_string())),
         ])
@@ -191,7 +204,9 @@ impl Protected {
         if wire::digest(payload)?.as_str() != self.payload_digest {
             return Err(Error::Signature);
         }
-        self.purpose.check_payload_format(payload)
+        (self.purpose.format(payload)? == self.payload_format)
+            .then_some(())
+            .ok_or(Error::Format)
     }
 }
 
@@ -257,6 +272,16 @@ pub fn verify(
     now: Timestamp,
     source: &(impl VerificationSource + ?Sized),
 ) -> Result<(), Error> {
+    verified_until(document, purpose, scope, now, source).map(|_| ())
+}
+
+pub(crate) fn verified_until(
+    document: &SignedPolicy,
+    purpose: Purpose,
+    scope: &Scope,
+    now: Timestamp,
+    source: &(impl VerificationSource + ?Sized),
+) -> Result<Timestamp, Error> {
     let envelope = wire::exact(&document.envelope, &["protected", "signature"])?;
     let protected = Protected::from_value(&envelope["protected"])?;
     let signature = Signature::from_bytes(&wire::hex(wire::text(envelope, "signature")?)?);
@@ -294,5 +319,6 @@ pub fn verify(
     }
     verifier
         .verify_strict(&protected.signing_bytes()?, &signature)
-        .map_err(|_| Error::Signature)
+        .map_err(|_| Error::Signature)?;
+    Ok(protected.expires_at.min(key.expires_at))
 }

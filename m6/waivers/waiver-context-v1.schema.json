@@ -1,0 +1,206 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:writ:m6:waiver-context-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "purpose",
+    "tenant_id",
+    "project_id",
+    "task_id",
+    "workflow_id",
+    "from_state",
+    "to_state",
+    "expected_revision",
+    "criterion_id",
+    "artifact_snapshot_id",
+    "artifact_digest",
+    "policy",
+    "workflow_authorization_digest",
+    "requester",
+    "exclusions",
+    "reason",
+    "expires_at"
+  ],
+  "properties": {
+    "purpose": {
+      "const": "writ-human-criterion-waiver/1"
+    },
+    "tenant_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+    },
+    "project_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+    },
+    "workflow_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+    },
+    "from_state": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+    },
+    "to_state": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+    },
+    "expected_revision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "criterion_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+    },
+    "artifact_snapshot_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+    },
+    "artifact_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tenant_id",
+        "project_id",
+        "authorization_digest",
+        "acceptance_digest",
+        "activation_revision",
+        "publication_digest"
+      ],
+      "properties": {
+        "tenant_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        },
+        "project_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        },
+        "authorization_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "acceptance_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "activation_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "publication_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "workflow_authorization_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "requester": {
+      "$ref": "#/$defs/subject"
+    },
+    "exclusions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "added",
+        "agents",
+        "artifact_changers",
+        "delegation_chain",
+        "linked_subjects",
+        "policy_changers",
+        "requesters"
+      ],
+      "properties": {
+        "added": {
+          "const": []
+        },
+        "agents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/subject"
+          },
+          "uniqueItems": true
+        },
+        "artifact_changers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/subject"
+          },
+          "uniqueItems": true
+        },
+        "delegation_chain": {
+          "const": "unavailable"
+        },
+        "linked_subjects": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/subject"
+          },
+          "uniqueItems": true
+        },
+        "policy_changers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/subject"
+          },
+          "uniqueItems": true
+        },
+        "requesters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/subject"
+          },
+          "uniqueItems": true,
+          "minItems": 1,
+          "maxItems": 1
+        }
+      }
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "pattern": "[^\\s]"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$"
+    }
+  },
+  "$defs": {
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "issuer",
+        "subject"
+      ],
+      "properties": {
+        "issuer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

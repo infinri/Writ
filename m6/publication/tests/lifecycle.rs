@@ -850,3 +850,5 @@ fn signature_and_human_expiry_inside_second_approval_refuses_commit() {
     assert_eq!(registry.publish(&intent, &p, &approved), Err(Error::Time));
     assert!(registry.audit().unwrap().is_empty());
 }
+
+mod waivers;
