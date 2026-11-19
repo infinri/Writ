@@ -1,6 +1,6 @@
 # M6 starting plan
 
-**Status:** IN PROGRESS, with slices 1 and 2 implemented for development under D-050 and D-051. M5 remains open. ADR-0008 remains APPROVED IN PRINCIPLE. Release and production remain NO-GO.
+**Status:** IN PROGRESS, with slices 1 and 2 implemented for development under D-050 and D-051 and slice 3 approved for test-authority development under D-052. M5 remains open. ADR-0008 remains APPROVED IN PRINCIPLE. Release and production remain NO-GO.
 
 D-050 approves the scope and compiler contract in decision 1. The [offline compiler](../../m6/compiler/README.md) implements the first batch with a local conflict report and executable proof for synthetic V2 fixtures. D-051 implements the second batch in the [disposable publication lab](../../m6/publication/README.md). The later slices map the carried obligations and their dependencies. Each slice needs scope approval and resolution of its applicable contract decisions before implementation.
 
@@ -47,7 +47,7 @@ Implemented under D-051 using slice 1 and the existing policy requirements and b
 
 ### 3. Publish and revoke an evaluator and bind a pack rubric
 
-Depends on slice 2's publisher authorization and audit path and D-034's evaluator contract. Deliver a test-authority publication and revocation path and a rubric validation result. Reuse the semantic RegistryEntry validator, trusted workflow reads and registered command digests for the integration fixture. Extend the current register-only revision advance to revocation, with durable status and provenance in the same transaction.
+[D-052](DECISION-LOG.md#d-052-m6-slice-3-evaluator-publication-revocation-and-pack-rubric-binding-owner-2026-11-19) approves this slice for test-authority development. It depends on slice 2's publisher authorization and audit path and D-034's evaluator contract. Deliver a test-authority publication and revocation path and a rubric validation result. Reuse the semantic RegistryEntry validator, trusted workflow reads and registered command digests for the integration fixture. Extend the current register-only revision advance to revocation, with durable status and provenance in the same transaction.
 
 - Publish a scoped test evaluator, advance the registry revision, bind a proposed rubric to that exact version and criteria, and use an authenticated acceptance fixture against the resulting view. Refuse stale edits, unknown or wrong-scope entries, class or criterion mismatches, key or implementation mismatch, and attempts by agents or packs to publish evaluators or raise their trust.
 - Revoke an evaluator or its key and refuse the previously usable record at use time. Race revocation with promotion and assert the outcome follows the existing fence and durable revision order. A refused promotion does not advance workflow state or consume evidence. Registry outage and failed audit refuse the dependent operation (AG-ADV-16).
