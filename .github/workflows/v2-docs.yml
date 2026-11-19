@@ -13,7 +13,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install schema validator
-        run: python3 -m pip install --disable-pip-version-check -r requirements-v2-docs.txt
+        run: |
+          python3 -m venv "$RUNNER_TEMP/writ-docs-python"
+          "$RUNNER_TEMP/writ-docs-python/bin/python3" -m pip install --disable-pip-version-check -r requirements-v2-docs.txt
+          echo "$RUNNER_TEMP/writ-docs-python/bin" >> "$GITHUB_PATH"
       - name: Check docs, HTML, schemas, packs and task fixtures
         run: python3 scripts/check-v2-docs.py
       - name: Proposed acceptance and host adapter contracts

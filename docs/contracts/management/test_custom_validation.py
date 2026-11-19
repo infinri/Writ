@@ -19,8 +19,10 @@ def evaluate(value, **example):
     response = subprocess.run(
         [sys.executable, "-I", "-B", str(VALIDATOR)],
         input=json.dumps({"core": False, "schema": value, **example}),
-        capture_output=True, check=True, text=True, timeout=10,
+        capture_output=True, text=True, timeout=10,
     )
+    if response.returncode != 0:
+        raise AssertionError(f"validator subprocess exited {response.returncode}: {response.stderr}")
     return json.loads(response.stdout)
 
 
