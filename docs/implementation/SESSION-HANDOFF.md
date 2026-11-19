@@ -4,23 +4,13 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 
 ## Current recovery state
 
-M5 development MCP shim checkpoint. Start a fresh chat from this section and [WORK-STATE](WORK-STATE.md).
+M6 starting plan and M5 recovery checkpoint. Start a fresh chat from this section and [WORK-STATE](WORK-STATE.md).
 
-### Repository and verification
-
-- Started from `cc43dc397de1c76dd3aa464b30865a2993ab0c33` on `infinri/Writ` branch `v2/architecture-rebuild`. Verified the remote SHA and all six jobs in [required CI run 44421116315](https://github.com/infinri/Writ/actions/runs/44421116315). On recovery, verify the published descendant and its exact-SHA required CI.
-- The isolated checkout is `/home/agent/workspace/Writ-guest-source`. The original checkout retains the divergent `a1eee0d40e2e331046640d98497c2fbc1b3e0d0f` and unrelated work. Keep private hook-audit material out of review and publication.
-
-### Implemented and exercised
-
-- [Development MCP shim](../../m5/mcp-shim/README.md), under D-047 and D-049. rmcp 3.9.0 negotiates 2025-11-25. Typed arrival-order admission and test-only recording-peer forwarding were exercised over OS pipes, and the public executable was exercised as a subprocess. The live executable has no effect backend. E-096 records what ran.
-- The [final dependency review](m5-deps/d047-rmcp-review.md#d-049-final-adoption-review) records exact checksums, enabled features and standalone and combined graph fingerprints. D-049 expires at the start of 2026-12-18 UTC and applies only to the built shim and the Chrono maintenance advisory. Changed graphs require review. D-048 continues to cover the original unbuilt lock entry. The SDK and Chrono are absent from the kernel, broker and service closures. The built candidate fails release eligibility.
-
-### External prerequisites and next action
-
-- Wait for the owner-designated Ubuntu 24.04 guest. Run the documented [first inventory procedure](../../m5/reference-vm/PROVISIONING.md#first-guest-inventory) using the inventory source already implemented in E-094. Collect actual positive evidence before extending passive collection. Inspect refusals without weakening guards.
-- Preserve the [full reference checklist](M5A-GATE-REVIEW.md#4-verify-in-vm-checklist-all-open) and the [separate isolated containment CI gate](../../m5/containment-ci/README.md). Ordinary CI and the recording RPC peer supply development evidence. Governed activation, real effect ingress and broker composition require verified M5a foundations. Live-model and hardware trials have separate prerequisites in WORK-STATE.
-- M5 remains in progress. ADR-0008 remains APPROVED IN PRINCIPLE. Release and production remain NO-GO.
+- The [M6 starting plan](M6-START-PLAN.md) is for owner review. The proposed first batch is offline rule compilation, conflict analysis and executable enforcer proof for synthetic V2 fixtures. Wait for approval of scope and the compiler contract. Later signing and waiver contracts have separate decisions. Independent human rule review is still required before any legacy rule import.
+- This checkpoint starts from `a1892464c360ed02d55592bb0044a34d07f772b7` on `infinri/Writ` branch `v2/architecture-rebuild`. All six jobs passed on that SHA in [required CI run 44430165101](https://github.com/infinri/Writ/actions/runs/44430165101). Local verification passed the V2 documentation and schema check and all 29 proposed-contract tests. On recovery, verify the published descendant and its own exact-SHA required CI. This checkpoint was prepared in the separate `/home/agent/workspace/Writ-m6-plan` worktree. The original checkout retains the divergent `a1eee0d` and unrelated work. Keep private hook-audit material out of review and publication.
+- The [development MCP shim](../../m5/mcp-shim/README.md) is implemented (E-096). D-049 permits only the exact reviewed development shim graph and Chrono maintenance advisory, expiring at the start of 2026-12-18 UTC. Dependency changes trigger review. [Decision and limits](DECISION-LOG.md#d-049-built-chrono-exception-for-the-development-mcp-shim-owner-2026-11-18), [dependency evidence](m5-deps/d047-rmcp-review.md#d-049-final-adoption-review)
+- The owner must provide and designate the rollback-capable Ubuntu 24.04 guest. With that guest available, run the documented first inventory (E-094) and record positive evidence before extending collection. Inspect refusals with the existing admission guards. The full VM checklist and separate isolated containment CI remain required for the M5a gate. Verified M5a foundations gate governed activation, real effect ingress and broker composition. [Owner designation](../../m5/reference-vm/PROVISIONING.md#owner-designation-and-guest-trials), [first inventory](../../m5/reference-vm/PROVISIONING.md#first-guest-inventory), [VM checklist](M5A-GATE-REVIEW.md#4-verify-in-vm-checklist-all-open), [isolated containment CI](../../m5/containment-ci/README.md)
+- M5 remains open and M6 remains planned. ADR-0008 remains APPROVED IN PRINCIPLE. Release and production remain NO-GO.
 
 ## Prior checkpoints
 
