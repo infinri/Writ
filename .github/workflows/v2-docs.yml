@@ -66,12 +66,12 @@ jobs:
           rustfmt --edition 2021 --check m5/mcp-contracts/lib.rs
           rustc --edition 2021 -D warnings --test m5/mcp-contracts/lib.rs -o "$RUNNER_TEMP/writ-mcp-contract-tests"
           "$RUNNER_TEMP/writ-mcp-contract-tests"
-      - name: M6 offline synthetic policy compiler and kernel proof
+      - name: M6 offline synthetic policy compiler, kernel proof and optional removal
         run: |
           cargo fmt --manifest-path m6/compiler/Cargo.toml --all --check
           cargo clippy --manifest-path m6/compiler/Cargo.toml --all-targets --locked -- -D warnings
           cargo test --manifest-path m6/compiler/Cargo.toml --locked
-      - name: M6 disposable signed publication and verified selection
+      - name: M6 disposable signed publication, verified selection and direct optional-removal controls
         run: |
           cargo fmt --manifest-path m6/publication/Cargo.toml --all --check
           cargo clippy --manifest-path m6/publication/Cargo.toml --all-targets --locked -- -D warnings
@@ -88,7 +88,7 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/writ-contract-python"
           "$RUNNER_TEMP/writ-contract-python/bin/python3" -m pip install --disable-pip-version-check -r requirements-v2-docs.txt
-      - name: M6 disposable /manage/v1 policy, evaluator, waiver, custom-contract and pack CLI
+      - name: M6 disposable /manage/v1 policy lifecycle, evaluator, waiver, custom-contract and pack CLI
         run: |
           export WRIT_CONTRACT_PYTHON="$RUNNER_TEMP/writ-contract-python/bin/python3"
           cargo fmt --manifest-path m6/management/Cargo.toml --all --check

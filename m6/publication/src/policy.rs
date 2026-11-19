@@ -8,7 +8,7 @@ use writ_kernel::{
 
 use writ_broker::waiver::WAIVER_MAX_SECONDS;
 
-use crate::{signature::ACCEPTANCE_V2, wire, Error, Publication, Scope};
+use crate::{signature::ACCEPTANCE_V2, wire, Error, Operation, Publication, Scope};
 
 const ACCEPTANCE_ID: &str = "m6-acceptance";
 const ACTION: &str = "synthetic.inspect";
@@ -28,13 +28,24 @@ pub(crate) fn load(
     scope: &Scope,
     version: i64,
 ) -> Result<Policies, Error> {
-    let prereq = wire::exact(
-        &publication.prerequisites,
-        &["version", "draft", "proof_digest"],
-    )?;
-    if wire::text(prereq, "version")? != "writ-policy-prerequisites/1" {
-        return Err(Error::Format);
-    }
+    let document = &publication.prerequisites;
+    let prereq = if let Some(removal) = publication.removal() {
+        let prereq = wire::exact(document, &["version", "draft", "proof_digest", "removal"])?;
+        let binding = wire::exact(removal, &["policy_id", "source_publication_digest"])?;
+        if wire::text(prereq, "version")? != "writ-policy-prerequisites/2"
+            || wire::text(binding, "policy_id")? != writ_policy_compile::OPTIONAL_INSPECT_POLICY
+        {
+            return Err(Error::InvalidPolicy);
+        }
+        wire::digest_text(wire::text(binding, "source_publication_digest")?)?;
+        prereq
+    } else {
+        let prereq = wire::exact(document, &["version", "draft", "proof_digest"])?;
+        if wire::text(prereq, "version")? != "writ-policy-prerequisites/1" {
+            return Err(Error::Format);
+        }
+        prereq
+    };
     let expected = wire::digest_text(wire::text(prereq, "proof_digest")?)?;
     let draft = wire::canonical(&prereq["draft"])?;
     let report = writ_policy_compile::evaluate(draft.as_bytes());
@@ -90,6 +101,66 @@ pub(crate) fn preserve_required_criteria(
     } else {
         Err(Error::InvalidPolicy)
     }
+}
+
+pub(crate) fn check_selection(
+    operation: Operation,
+    publication: &Publication,
+    selected: Option<(i64, &Publication)>,
+) -> Result<Option<Value>, Error> {
+    let removal = publication.removal();
+    if operation == Operation::Rollback && removal.is_some() {
+        return Err(Error::InvalidPolicy);
+    }
+    let Some((_, current)) = selected else {
+        return if removal.is_some() {
+            Err(Error::InvalidPolicy)
+        } else {
+            Ok(None)
+        };
+    };
+    let draft = current
+        .prerequisites
+        .get("draft")
+        .ok_or(Error::InvalidPolicy)?;
+    if let Some(binding) = removal.filter(|_| operation == Operation::Publish) {
+        let (replacement, decisions) =
+            writ_policy_compile::optional_inspect_removal(draft).ok_or(Error::InvalidPolicy)?;
+        if publication.prerequisites.get("draft") != Some(&replacement)
+            || binding
+                .get("source_publication_digest")
+                .and_then(Value::as_str)
+                != Some(current.fingerprint()?.as_str())
+            || current.acceptance.payload.without("policy_version")
+                != publication.acceptance.payload.without("policy_version")
+        {
+            return Err(Error::InvalidPolicy);
+        }
+        return Ok(Some(decisions));
+    }
+    let has_optional = draft
+        .get("manifests")
+        .and_then(Value::as_arr)
+        .ok_or(Error::InvalidPolicy)?
+        .iter()
+        .any(|manifest| {
+            manifest.get("policy_id").and_then(Value::as_str)
+                == Some(writ_policy_compile::OPTIONAL_INSPECT_POLICY)
+        });
+    if has_optional || current.removal().is_some() {
+        let next = publication
+            .prerequisites
+            .get("draft")
+            .ok_or(Error::InvalidPolicy)?;
+        if (has_optional && next != draft)
+            || (current.removal().is_some()
+                && !writ_policy_compile::optional_inspect_removal(next)
+                    .is_some_and(|(base, _)| &base == draft))
+        {
+            return Err(Error::InvalidPolicy);
+        }
+    }
+    Ok(None)
 }
 
 pub(crate) fn refuse_deactivation(
@@ -197,4 +268,36 @@ fn project_criterion(
         ("criterion_id", fields["criterion_id"].clone()),
         ("required_class", fields["required_class"].clone()),
     ]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SignedPolicy;
+
+    #[test]
+    fn historical_removal_is_not_a_rollback_target() {
+        let policy = SignedPolicy {
+            payload: Value::Null,
+            envelope: Value::Null,
+        };
+        let source = Publication {
+            authorization: policy.clone(),
+            acceptance: policy,
+            prerequisites: json::obj([
+                ("version", json::s("writ-policy-prerequisites/1")),
+                ("draft", json::obj([("manifests", Value::Arr(vec![]))])),
+                ("proof_digest", Value::Null),
+            ]),
+        };
+        let removal = source.clone().bind_optional_removal(&source);
+        assert!(matches!(
+            removal.and_then(|removal| check_selection(
+                Operation::Rollback,
+                &removal,
+                Some((3, &source))
+            )),
+            Err(Error::InvalidPolicy)
+        ));
+    }
 }

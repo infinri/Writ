@@ -19,6 +19,14 @@ pub trait PublicationBoundary {
     ) -> Result<Publication, Error> {
         Err(Error::DependencyUnavailable)
     }
+    fn preview_optional_removal(
+        &self,
+        _expected_revision: i64,
+        _replacement_version: i64,
+        _candidate: &Publication,
+    ) -> Result<writ_kernel::json::Value, Error> {
+        Err(Error::Unsupported)
+    }
     fn refuse_deactivation(
         &self,
         _expected_revision: i64,
@@ -60,6 +68,15 @@ impl<T: TrustAuthority> PublicationBoundary for Registry<T> {
         confirmation: &str,
     ) -> Result<Publication, Error> {
         Registry::preview_retire(self, expected_revision, publication_version, confirmation)
+    }
+
+    fn preview_optional_removal(
+        &self,
+        expected_revision: i64,
+        replacement_version: i64,
+        candidate: &Publication,
+    ) -> Result<writ_kernel::json::Value, Error> {
+        Registry::preview_optional_removal(self, expected_revision, replacement_version, candidate)
     }
 
     fn refuse_deactivation(

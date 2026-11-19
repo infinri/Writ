@@ -75,7 +75,20 @@ The scenario selects a verified signed replacement, retires the original inactiv
 
 - `preview_retire` takes the same fields as `preview_rollback` plus the exact text `confirmation: "retire <publication_version>"`. Send the same fields to `retire` with the preview's `intent_digest` and a fresh presentation from the separate fixture authority. The preview and receipt report the expected activation revision because retirement does not advance it. `publication_history` includes the retirement and its correlated context. Retry with the exact original body and key to recover the receipt.
 - The registry checks current selection and complete owning dependency state before retiring the target. An active dependent at preflight returns `ACTIVE_DEPENDENTS`. If a dependent appears after preflight, the write and its exact retry return `REVISION_CONFLICT`. Unavailable or incomplete dependency state returns `UNAVAILABLE`. The fixture operates in its closed disposable scope.
-- `preview_deactivate` and `deactivate` take `expected_revision`, `publication_version`, `policy_id` and `confirmation` with the exact text `deactivate <policy_id>`. The owner returns `INVALID_POLICY` for mandatory acceptance content and `UNSUPPORTED` for synthetic authorization rule removal. This compiler profile issues no deactivation ceremony.
+- The earlier refusal-only request shape remains readable. Mandatory acceptance content still refuses and removing a synthetic rule without a verified signed replacement cannot proceed.
+
+## Run signed optional policy removal
+
+D-060 supports exactly the source-classified `m6.synthetic.optional-inspect` rule in the pinned synthetic profile. Run the shared API and fixture CLI scenario:
+
+```sh
+. m1/tools/env.sh
+m3/tools/run-with-clean-fds.sh cargo test --locked --manifest-path m6/management/Cargo.toml --features fixtures --test publication_workflow optional_removal_api_cli_and_authoritative_reopen
+```
+
+Create a replacement draft from the compiler's `deny.input.json`. The separate fixture authority's `sign-removal VERSION` command reads the exact selected publication on stdin, compiles the authorized replacement and returns the detached, signed pair bound to the selected publication digest. Use `preview_deactivate` with the replacement publication and draft, expected activation revision, new publication version, idempotency key, self-publish acknowledgment, policy ID and the exact confirmation `deactivate m6.synthetic.optional-inspect`. Its context includes both complete Decisions for each of the six proof cases. The preview writes nothing and uses no ceremony.
+
+Authorize the preview with the separate fixture publisher and submit the same fields to `deactivate` with its intent digest and presentation. The publication audit records the append and selection as a publish event. The exact removal, typed confirmation and Decision changes are bound through the managed intent. On an uncertain response, retry the exact body and key to read the owning receipt. If there is no authoritative receipt, the service reports `UNAVAILABLE` and does not redispatch. Inspect history before starting a fresh preview and ceremony. The two databases have separate transactions.
 
 ## Run evaluator and waiver management
 

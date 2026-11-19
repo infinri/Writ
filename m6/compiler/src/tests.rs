@@ -258,3 +258,46 @@ fn simulation_refuses_unsupported_rules_with_value_free_json_pointers() {
         )]
     );
 }
+
+#[test]
+fn exact_optional_removal_preserves_existing_proof_and_all_complete_decisions() {
+    let source = include_bytes!("../fixtures/optional-inspect.input.json");
+    let active = json::parse(source).unwrap();
+    let (replacement, decisions) = optional_inspect_removal(&active).unwrap();
+    assert_eq!(replacement, json::parse(DENY.as_bytes()).unwrap());
+    let before = decisions.get("before").unwrap().as_arr().unwrap();
+    let after = decisions.get("after").unwrap().as_arr().unwrap();
+    for (before, after) in before.iter().zip(after) {
+        assert_eq!(before.get("id"), after.get("id"));
+        let (old, new) = (
+            before.get("decision").unwrap(),
+            after.get("decision").unwrap(),
+        );
+        assert_ne!(old.get("decision_id"), new.get("decision_id"));
+        assert_ne!(old.get("policy_bundle_sha"), new.get("policy_bundle_sha"));
+        match before.get("id").and_then(Value::as_str).unwrap() {
+            "scope" => {
+                assert_eq!(old.get("status"), Some(&json::s("allow")));
+                assert_eq!(new.get("status"), Some(&json::s("deny")));
+                assert_eq!(new.get("reason_code"), Some(&json::s("DEFAULT_DENY")));
+            }
+            "winner" => {
+                assert_eq!(
+                    old.get("reason_code"),
+                    Some(&json::s("M6_SYNTHETIC_FORBID"))
+                );
+                assert_eq!(old.get("reason_code"), new.get("reason_code"));
+                assert_eq!(old.get("matched_rule_ids"), new.get("matched_rule_ids"));
+            }
+            _ => {
+                assert_eq!(old.get("status"), new.get("status"));
+                assert_eq!(old.get("reason_code"), new.get("reason_code"));
+            }
+        }
+    }
+    assert!(optional_inspect_removal(&replacement).is_none());
+    let mut stale = active;
+    let manifests = array(object(&mut stale).get_mut("manifests").unwrap());
+    object(&mut manifests[0]).insert("priority".into(), Value::Int(9));
+    assert!(optional_inspect_removal(&stale).is_none());
+}

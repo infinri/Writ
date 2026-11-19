@@ -61,6 +61,17 @@ pub enum PublicationRequest {
         intent_digest: String,
         presentation: Vec<u8>,
     },
+    OptionalRemoval {
+        draft: DraftRef,
+        expected_revision: i64,
+        publication_version: i64,
+        candidate: Box<Publication>,
+        policy_id: String,
+        confirmation: String,
+        acknowledge_self: bool,
+        key: String,
+        approval: Option<(String, Vec<u8>)>,
+    },
     Deactivate {
         expected_revision: i64,
         publication_version: i64,
@@ -75,6 +86,7 @@ pub enum PublicationRequest {
 
 enum Target {
     Publish(DraftRef, Publication),
+    OptionalRemoval(DraftRef, Publication, String),
     Rollback,
     Retire(String),
 }
@@ -82,7 +94,7 @@ enum Target {
 impl Target {
     fn operation(&self) -> Operation {
         match self {
-            Self::Publish(..) => Operation::Publish,
+            Self::Publish(..) | Self::OptionalRemoval(..) => Operation::Publish,
             Self::Rollback => Operation::Rollback,
             Self::Retire(_) => Operation::Retire,
         }
@@ -90,7 +102,7 @@ impl Target {
 
     fn candidate(&self) -> Option<&Publication> {
         match self {
-            Self::Publish(_, candidate) => Some(candidate),
+            Self::Publish(_, candidate) | Self::OptionalRemoval(_, candidate, _) => Some(candidate),
             Self::Rollback | Self::Retire(_) => None,
         }
     }
@@ -153,6 +165,40 @@ pub(crate) fn execute(
                 )
                 .map_err(registry_error)?;
             return Err(Error::Unsupported);
+        }
+        OptionalRemoval {
+            draft,
+            expected_revision,
+            publication_version,
+            candidate,
+            policy_id,
+            confirmation,
+            acknowledge_self,
+            key,
+            approval,
+        } => {
+            if confirmation != Intent::deactivation_phrase(&policy_id) {
+                return Err(Error::InvalidRequest);
+            }
+            if policy_id != writ_policy_compile::OPTIONAL_INSPECT_POLICY
+                || candidate
+                    .removal()
+                    .and_then(|binding| binding.get("policy_id"))
+                    != Some(&json::s(&policy_id))
+            {
+                return Err(Error::InvalidPolicy);
+            }
+            (
+                Target::OptionalRemoval(draft, *candidate, confirmation),
+                expected_revision,
+                publication_version,
+                acknowledge_self,
+                key,
+                approval.map(|(intent_digest, presentation)| Submission {
+                    intent_digest,
+                    presentation,
+                }),
+            )
         }
         PreviewRetire {
             expected_revision,
@@ -300,7 +346,19 @@ struct Coordinator<'a> {
 
 impl Coordinator<'_> {
     fn propose(&self, db: &Connection, plan: &Plan) -> Result<Proposed> {
+        let difference = match &plan.target {
+            Target::OptionalRemoval(_, candidate, _) => Some(
+                self.registry
+                    .preview_optional_removal(plan.expected_revision, plan.version, candidate)
+                    .map_err(registry_error)?,
+            ),
+            Target::Publish(_, candidate) if candidate.removal().is_some() => {
+                return Err(Error::InvalidPolicy);
+            }
+            _ => None,
+        };
         let target = match &plan.target {
+            Target::OptionalRemoval(_, candidate, _) => Ok(candidate.clone()),
             Target::Retire(confirmation) => {
                 self.registry
                     .preview_retire(plan.expected_revision, plan.version, confirmation)
@@ -313,7 +371,7 @@ impl Coordinator<'_> {
         }
         .map_err(registry_error)?;
         let draft = match &plan.target {
-            Target::Publish(draft, _) => Some(draft.clone()),
+            Target::Publish(draft, _) | Target::OptionalRemoval(draft, _, _) => Some(draft.clone()),
             Target::Rollback | Target::Retire(_) => {
                 let audit = self.registry.audit().map_err(registry_error)?;
                 let source = audit
@@ -345,7 +403,7 @@ impl Coordinator<'_> {
         ]);
         let (draft, self_publication) = if let Some(draft) = draft {
             let draft_head = current_revision(db, self.scope, &draft.id)?;
-            if matches!(plan.target, Target::Publish(..)) && draft_head != draft.revision {
+            if plan.target.operation() == Operation::Publish && draft_head != draft.revision {
                 return Err(Error::RevisionConflict);
             }
             let row = load(db, self.scope, &draft)?;
@@ -375,6 +433,17 @@ impl Coordinator<'_> {
         );
         if let Target::Retire(confirmation) = &plan.target {
             document.insert("confirmation".into(), json::s(confirmation));
+        }
+        if let Target::OptionalRemoval(_, _, confirmation) = &plan.target {
+            document.insert("removal_confirmation".into(), json::s(confirmation));
+            document.insert(
+                "removal".into(),
+                target.removal().cloned().ok_or(Error::InvalidPolicy)?,
+            );
+            document.insert(
+                "decision_changes".into(),
+                difference.ok_or(Error::InvalidPolicy)?,
+            );
         }
         let document = Value::Obj(document);
         let digest = value_digest(&document)?;
@@ -655,6 +724,24 @@ pub(crate) fn verify_registered_intent(store: &Store, intent: &Intent) -> Result
     let intent_digest = intent.fingerprint().map_err(registry_error)?;
     let db = store.connection(false)?;
     let context = stored_context(&db, &scope, subject, intent_digest.as_str(), digest)?;
+    if let Some(removal) = command.get("removal") {
+        let policy = removal
+            .get("policy_id")
+            .and_then(Value::as_str)
+            .ok_or(Error::Unauthorized)?;
+        let confirmation = json::s(&Intent::deactivation_phrase(policy));
+        if context.get("removal") != Some(removal)
+            || context.get("removal_confirmation") != Some(&confirmation)
+            || context.get("decision_changes").is_none()
+        {
+            return Err(Error::Unauthorized);
+        }
+    } else if context.get("removal").is_some()
+        || context.get("removal_confirmation").is_some()
+        || context.get("decision_changes").is_some()
+    {
+        return Err(Error::Unauthorized);
+    }
     if context.get("confirmation").and_then(Value::as_str) != intent.retirement_confirmation() {
         return Err(Error::Unauthorized);
     }
@@ -782,7 +869,7 @@ fn receipt(commit: &Commit, intent: &str) -> Value {
 
 fn request_digest(plan: &Plan, submission: &Submission) -> Result<Digest> {
     let draft = match &plan.target {
-        Target::Publish(draft, _) => draft_value(draft),
+        Target::Publish(draft, _) | Target::OptionalRemoval(draft, _, _) => draft_value(draft),
         Target::Rollback | Target::Retire(_) => Value::Null,
     };
     let candidate = plan
@@ -820,6 +907,9 @@ fn request_digest(plan: &Plan, submission: &Submission) -> Result<Digest> {
     ]);
     if let Target::Retire(confirmation) = &plan.target {
         document.insert("confirmation".into(), json::s(confirmation));
+    }
+    if let Target::OptionalRemoval(_, _, confirmation) = &plan.target {
+        document.insert("removal_confirmation".into(), json::s(confirmation));
     }
     value_digest(&Value::Obj(document))
 }

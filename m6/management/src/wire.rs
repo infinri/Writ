@@ -534,6 +534,32 @@ fn decode_publication(fields: &mut Map, operation: &str) -> DecodeResult<Publica
         MAX_PUBLICATION_VERSION,
     )?;
     if matches!(operation, "preview_deactivate" | "deactivate") {
+        if fields.contains_key("publication") {
+            let draft = reference(fields, "draft", "/draft")?;
+            let publication = take(fields, "publication", "/publication")?;
+            let candidate =
+                Publication::from_value(&publication).map_err(|_| invalid("/publication"))?;
+            let Value::Bool(acknowledge_self) =
+                take(fields, "acknowledge_self", "/acknowledge_self")?
+            else {
+                return Err(invalid("/acknowledge_self"));
+            };
+            return Ok(PublicationRequest::OptionalRemoval {
+                draft,
+                expected_revision,
+                publication_version,
+                candidate: Box::new(candidate),
+                policy_id: label(fields, "policy_id", "/policy_id")?,
+                confirmation: confirmation(fields)?,
+                acknowledge_self,
+                key: label(fields, "idempotency_key", "/idempotency_key")?,
+                approval: if operation == "deactivate" {
+                    Some(presentation(fields)?)
+                } else {
+                    None
+                },
+            });
+        }
         return Ok(PublicationRequest::Deactivate {
             expected_revision,
             publication_version,

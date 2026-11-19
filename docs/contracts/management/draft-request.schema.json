@@ -728,6 +728,164 @@
         "version",
         "scope",
         "operation",
+        "expected_revision",
+        "publication_version",
+        "confirmation",
+        "policy_id",
+        "draft",
+        "publication",
+        "idempotency_key",
+        "acknowledge_self",
+        "intent_digest",
+        "presentation"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "deactivate"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "publication_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999999999
+        },
+        "confirmation": {
+          "const": "deactivate m6.synthetic.optional-inspect"
+        },
+        "policy_id": {
+          "const": "m6.synthetic.optional-inspect"
+        },
+        "draft": {
+          "$ref": "#/$defs/draft"
+        },
+        "publication": {
+          "allOf": [
+            {
+              "$ref": "urn:writ:m6:publication-v1"
+            },
+            {
+              "properties": {
+                "prerequisites": {
+                  "required": [
+                    "removal"
+                  ],
+                  "properties": {
+                    "version": {
+                      "const": "writ-policy-prerequisites/2"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/label"
+        },
+        "acknowledge_self": {
+          "type": "boolean"
+        },
+        "intent_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "presentation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "expected_revision",
+        "publication_version",
+        "confirmation",
+        "policy_id",
+        "draft",
+        "publication",
+        "idempotency_key",
+        "acknowledge_self"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "preview_deactivate"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "publication_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999999999
+        },
+        "confirmation": {
+          "const": "deactivate m6.synthetic.optional-inspect"
+        },
+        "policy_id": {
+          "const": "m6.synthetic.optional-inspect"
+        },
+        "draft": {
+          "$ref": "#/$defs/draft"
+        },
+        "publication": {
+          "allOf": [
+            {
+              "$ref": "urn:writ:m6:publication-v1"
+            },
+            {
+              "properties": {
+                "prerequisites": {
+                  "required": [
+                    "removal"
+                  ],
+                  "properties": {
+                    "version": {
+                      "const": "writ-policy-prerequisites/2"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/label"
+        },
+        "acknowledge_self": {
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
         "after",
         "limit"
       ],

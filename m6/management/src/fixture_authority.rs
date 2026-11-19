@@ -47,6 +47,22 @@ fn sign_policy(purpose: Purpose, key_id: &str, payload: Value) -> Result<SignedP
 }
 
 fn sign_publication(draft: &[u8], version: i64) -> Result<Value, Error> {
+    let acceptance = json::obj([
+        ("version", json::s("writ-acceptance-policy/1")),
+        ("policy_id", json::s("m6-acceptance")),
+        ("policy_version", json::s(&version.to_string())),
+        (
+            "criteria",
+            Value::Arr(vec![json::obj([
+                ("criterion_id", json::s("review")),
+                ("required_class", json::s("human")),
+            ])]),
+        ),
+    ]);
+    sign_draft(draft, acceptance)
+}
+
+fn sign_draft(draft: &[u8], acceptance: Value) -> Result<Value, Error> {
     let report = writ_policy_compile::evaluate(draft);
     if !report.accepted {
         return Err(Error::InvalidPolicy);
@@ -60,18 +76,6 @@ fn sign_publication(draft: &[u8], version: i64) -> Result<Value, Error> {
         .get("bundle")
         .ok_or(Error::InvalidPolicy)?
         .without("publisher_signature");
-    let acceptance = json::obj([
-        ("version", json::s("writ-acceptance-policy/1")),
-        ("policy_id", json::s("m6-acceptance")),
-        ("policy_version", json::s(&version.to_string())),
-        (
-            "criteria",
-            Value::Arr(vec![json::obj([
-                ("criterion_id", json::s("review")),
-                ("required_class", json::s("human")),
-            ])]),
-        ),
-    ]);
     Ok(Publication {
         authorization: sign_policy(
             Purpose::Authorization,
@@ -140,6 +144,26 @@ fn authorize(preview: &[u8], credential: &[u8], ceremony: &str) -> Result<Value,
             return Err(Error::Authority);
         }
     }
+    if let Some(removal) = intent.get("removal") {
+        let source = json::parse(include_bytes!(
+            "../../compiler/fixtures/optional-inspect.input.json"
+        ))
+        .map_err(|_| Error::InvalidPolicy)?;
+        let (_, decisions) =
+            writ_policy_compile::optional_inspect_removal(&source).ok_or(Error::InvalidPolicy)?;
+        let policy = removal
+            .get("policy_id")
+            .and_then(Value::as_str)
+            .ok_or(Error::Format)?;
+        if policy != writ_policy_compile::OPTIONAL_INSPECT_POLICY
+            || context.get("removal") != Some(removal)
+            || context.get("removal_confirmation")
+                != Some(&json::s(&Intent::deactivation_phrase(policy)))
+            || context.get("decision_changes") != Some(&decisions)
+        {
+            return Err(Error::Authority);
+        }
+    }
     let now = fixture::fixture_time().map_err(|_| Error::Time)?;
     let claim = format!("{human}|{ceremony}|{now}|{exact}");
     let signed = format!("{}{claim}", fixture::CEREMONY_DOMAIN);
@@ -167,13 +191,37 @@ fn read_bounded(reader: impl Read, max: usize) -> Result<Vec<u8>, Error> {
 fn run() -> Result<Value, Error> {
     let args: Vec<_> = env::args_os().skip(1).take(4).collect();
     match args.as_slice() {
-        [command, version] if command == "sign-publication" => {
+        [command, version] if command == "sign-publication" || command == "sign-removal" => {
             let version = version
                 .to_str()
                 .and_then(|text| text.parse::<i64>().ok())
                 .filter(|version| (1..=999_999_999).contains(version))
                 .ok_or(Error::Format)?;
-            sign_publication(&read_bounded(io::stdin().lock(), MAX_CANDIDATE)?, version)
+            if command == "sign-publication" {
+                return sign_publication(
+                    &read_bounded(io::stdin().lock(), MAX_CANDIDATE)?,
+                    version,
+                );
+            }
+            let input = read_bounded(io::stdin().lock(), MAX_REQUEST)?;
+            let source = Publication::from_value(&json::parse(&input).map_err(|_| Error::Format)?)?;
+            let draft = source
+                .prerequisites
+                .get("draft")
+                .ok_or(Error::InvalidPolicy)?;
+            let (replacement, _) =
+                writ_policy_compile::optional_inspect_removal(draft).ok_or(Error::InvalidPolicy)?;
+            let text = json::canonical(&replacement).map_err(|_| Error::Format)?;
+            let mut acceptance = source
+                .acceptance
+                .payload
+                .as_obj()
+                .ok_or(Error::InvalidPolicy)?
+                .clone();
+            acceptance.insert("policy_version".into(), json::s(&version.to_string()));
+            let signed =
+                Publication::from_value(&sign_draft(text.as_bytes(), Value::Obj(acceptance))?)?;
+            Ok(signed.bind_optional_removal(&source)?.to_value())
         }
         [command, path, ceremony] if command == "authorize-publication" => {
             let path = Path::new(path);

@@ -6,7 +6,9 @@ use writ_broker::{
     refusal::Refusal,
     waiver::{WaiverPolicyGuard, WaiverPolicyIdentity, WaiverPolicyView},
 };
-use writ_kernel::{contracts::AcceptanceRequirements, policy::LoadedBundle, time::Timestamp};
+use writ_kernel::{
+    contracts::AcceptanceRequirements, json::Value, policy::LoadedBundle, time::Timestamp,
+};
 
 use crate::{
     policy::{self, Policies},
@@ -204,21 +206,53 @@ impl<T: TrustAuthority> Registry<T> {
         candidate: Option<&Publication>,
     ) -> Result<Publication, Error> {
         let trust = self.authority.current()?;
+        let operation = if candidate.is_some() {
+            Operation::Publish
+        } else {
+            Operation::Rollback
+        };
         self.store.preview(
-            if candidate.is_some() {
-                Operation::Publish
-            } else {
-                Operation::Rollback
-            },
+            operation,
             expected_revision,
             publication_version,
             candidate,
             |publication, selected| {
                 let (policies, _) =
                     checked(publication, self.scope(), publication_version, &trust)?;
-                policy::preserve_required_criteria(&policies, selected)
+                policy::preserve_required_criteria(&policies, selected)?;
+                if policy::check_selection(operation, publication, selected)?.is_some() {
+                    let (version, current) = selected.ok_or(Error::InvalidPolicy)?;
+                    checked(current, self.scope(), version, &trust)?;
+                }
+                Ok(())
             },
         )
+    }
+
+    /// Verify an exact signed replacement and preview its complete offline Decisions.
+    pub fn preview_optional_removal(
+        &self,
+        expected_revision: i64,
+        replacement_version: i64,
+        candidate: &Publication,
+    ) -> Result<Value, Error> {
+        let trust = self.authority.current()?;
+        let mut difference = None;
+        self.store.preview(
+            Operation::Publish,
+            expected_revision,
+            replacement_version,
+            Some(candidate),
+            |publication, selected| {
+                checked(publication, self.scope(), replacement_version, &trust)?;
+                let (version, current) = selected.ok_or(Error::InvalidPolicy)?;
+                checked(current, self.scope(), version, &trust)?;
+                difference = policy::check_selection(Operation::Publish, publication, selected)?;
+                difference.as_ref().ok_or(Error::InvalidPolicy)?;
+                Ok(())
+            },
+        )?;
+        difference.ok_or(Error::InvalidPolicy)
     }
 
     /// Check retirement eligibility without requesting approval or changing state.
@@ -380,9 +414,20 @@ impl<T: TrustAuthority> Registry<T> {
                     intent.publication_version(),
                     &trust,
                 )?;
-                if intent.operation() != Operation::Retire {
+                let source = if intent.operation() == Operation::Retire {
+                    None
+                } else {
                     policy::preserve_required_criteria(&policies, selected)?;
-                }
+                    if policy::check_selection(intent.operation(), publication, selected)?.is_some()
+                    {
+                        let (version, current) = selected.ok_or(Error::InvalidPolicy)?;
+                        policy::load(current, intent.scope(), version)?;
+                        signed_window_at(current, intent.scope(), &trust, before)?;
+                        Some(current)
+                    } else {
+                        None
+                    }
+                };
                 let approval = trust.approve(intent, presentation, before)?;
                 if !intent.matches_approval(&approval) {
                     return Err(Error::Authority);
@@ -399,6 +444,9 @@ impl<T: TrustAuthority> Registry<T> {
                 let now = current_signatures(publication, intent.scope(), &trust)?;
                 if now < before {
                     return Err(Error::Time);
+                }
+                if let Some(source) = source {
+                    signed_window_at(source, intent.scope(), &trust, now)?;
                 }
                 approval.check(now)?;
                 Ok((approval, now))

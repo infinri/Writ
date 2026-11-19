@@ -609,3 +609,11 @@ The owner approves a disposable, scoped declarative pack registry and test autho
 - Exercise the full disposable lifecycle, retirement dependency, negative cases and complete Decision parity in required CI. Review authority, ordering and recovery independently before publishing by fast-forward to `v2/architecture-rebuild`.
 
 The starting SHA `ebbf8f04f1ef4afe9c5f31f16e01bdd841f7ccd2` passed all six required jobs on [run 44619390302](https://github.com/infinri/Writ/actions/runs/44619390302). M6 and its partial Control Center obligations remain in progress. Optional policy removal, evaluator quorum, remaining AG-ADV-16 requirements, UI, transport, production authentication and M5 integration remain open. Preserve D-048, D-049, the earlier unresolved CI stall and all M5 gates. Prioritize M5 VM testing and isolated containment CI before M7. ADR-0008 remains APPROVED IN PRINCIPLE. Release and production remain NO-GO.
+
+## D-060: Supported synthetic optional policy removal (owner, 2026-11-19)
+
+The owner authorizes extending the D-050 compiler profile to express and prove exact optional policy removal under D-057, using disposable stores and test authorities. Mandatory classification comes from trusted policy. The owning registry must independently preserve mandatory controls, acceptance requirements, hard-deny precedence and core invariants.
+
+The shared /manage/v1 service and opt-in fixture CLI use a read-only preview of the exact removal and complete Decision changes, a compiled and validated signed replacement pair, and fresh scoped human authorization. Recheck current authority, trust, proof and expected revision at commit. Reuse the owning registry transaction for append, selection and audit and recover the exact authoritative receipt after reopening. Keep management and registry transactions separate, with exact intent reconciliation after uncertain outcomes. Keep signing keys in the separate fixture authority. Preserve earlier proof bundles.
+
+This authorization covers no live effect dispatch, governed host activation, UI, listener, production authentication, legacy imports or change to evaluator quorum semantics. M6 remains open. Preserve D-048 and D-049, the unresolved E-097 CI stall and all M5 gates. ADR-0008 remains APPROVED IN PRINCIPLE. Release and production remain NO-GO.

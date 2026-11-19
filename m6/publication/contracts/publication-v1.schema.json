@@ -117,40 +117,98 @@
       }
     },
     "prerequisites": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "version",
-        "draft",
-        "proof_digest"
-      ],
-      "properties": {
-        "version": {
-          "const": "writ-policy-prerequisites/1"
-        },
-        "draft": {
+      "oneOf": [
+        {
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "manifests",
-            "companions"
+            "version",
+            "draft",
+            "proof_digest"
           ],
           "properties": {
-            "manifests": {
-              "type": "array",
-              "minItems": 1
+            "version": {
+              "const": "writ-policy-prerequisites/1"
             },
-            "companions": {
-              "type": "array",
-              "minItems": 1
+            "draft": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "manifests",
+                "companions"
+              ],
+              "properties": {
+                "manifests": {
+                  "type": "array",
+                  "minItems": 1
+                },
+                "companions": {
+                  "type": "array",
+                  "minItems": 1
+                }
+              }
+            },
+            "proof_digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
             }
           }
         },
-        "proof_digest": {
-          "type": "string",
-          "pattern": "^sha256:[0-9a-f]{64}$"
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "draft",
+            "proof_digest",
+            "removal"
+          ],
+          "properties": {
+            "version": {
+              "const": "writ-policy-prerequisites/2"
+            },
+            "draft": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "manifests",
+                "companions"
+              ],
+              "properties": {
+                "manifests": {
+                  "type": "array",
+                  "minItems": 1
+                },
+                "companions": {
+                  "type": "array",
+                  "minItems": 1
+                }
+              }
+            },
+            "proof_digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "removal": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "policy_id",
+                "source_publication_digest"
+              ],
+              "properties": {
+                "policy_id": {
+                  "const": "m6.synthetic.optional-inspect"
+                },
+                "source_publication_digest": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                }
+              }
+            }
+          }
         }
-      }
+      ]
     }
   }
 }

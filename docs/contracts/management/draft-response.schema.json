@@ -374,6 +374,78 @@
         "confirmation": {
           "type": "string",
           "pattern": "^retire [1-9][0-9]{0,8}(?![\\s\\S])"
+        },
+        "removal": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "policy_id",
+            "source_publication_digest"
+          ],
+          "properties": {
+            "policy_id": {
+              "const": "m6.synthetic.optional-inspect"
+            },
+            "source_publication_digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        "removal_confirmation": {
+          "const": "deactivate m6.synthetic.optional-inspect"
+        },
+        "decision_changes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "before",
+            "after"
+          ],
+          "properties": {
+            "before": {
+              "type": "array",
+              "minItems": 6,
+              "maxItems": 6,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "decision"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "decision": {
+                    "$ref": "https://writ.dev/contracts/v2/decision.schema.json"
+                  }
+                }
+              }
+            },
+            "after": {
+              "type": "array",
+              "minItems": 6,
+              "maxItems": 6,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "decision"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "decision": {
+                    "$ref": "https://writ.dev/contracts/v2/decision.schema.json"
+                  }
+                }
+              }
+            }
+          }
         }
       },
       "dependentRequired": {
@@ -388,6 +460,18 @@
         "draft_head_revision": [
           "draft",
           "draft_digest"
+        ],
+        "removal": [
+          "removal_confirmation",
+          "decision_changes"
+        ],
+        "removal_confirmation": [
+          "removal",
+          "decision_changes"
+        ],
+        "decision_changes": [
+          "removal",
+          "removal_confirmation"
         ]
       },
       "if": {

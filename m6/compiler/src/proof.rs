@@ -9,7 +9,7 @@ pub(crate) struct Suite {
     pub(crate) fixtures: &'static str,
 }
 
-pub(crate) const SUITES: [Suite; 3] = [
+pub(crate) const SUITES: [Suite; 4] = [
     Suite {
         seal: include_str!("../fixtures/permit.seal.json"),
         fixtures: include_str!("../fixtures/permit.cases.json"),
@@ -21,6 +21,10 @@ pub(crate) const SUITES: [Suite; 3] = [
     Suite {
         seal: include_str!("../fixtures/deny.seal.json"),
         fixtures: include_str!("../fixtures/deny.cases.json"),
+    },
+    Suite {
+        seal: include_str!("../fixtures/optional-inspect.seal.json"),
+        fixtures: include_str!("../fixtures/optional-inspect.cases.json"),
     },
 ];
 
@@ -207,7 +211,14 @@ fn run_fixtures(
         }
         let expected_reason = match id {
             "resource-scope" => Some("RESOURCE_SCOPE_MISMATCH"),
-            "scope" => Some("DEFAULT_DENY"),
+            "scope"
+                if !draft.rules.iter().any(|rule| {
+                    rule.manifest.get("policy_id").and_then(Value::as_str)
+                        == Some(crate::OPTIONAL_INSPECT_POLICY)
+                }) =>
+            {
+                Some("DEFAULT_DENY")
+            }
             "unknown" => Some("UNKNOWN_CAPABILITY"),
             _ => None,
         };

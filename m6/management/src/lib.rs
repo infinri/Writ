@@ -294,7 +294,14 @@ impl<'a> Service<'a> {
                 }
             };
             check(&principal)?;
-            let pinned = if matches!(&request, PublicationRequest::Retire { .. }) {
+            let pinned = if matches!(
+                &request,
+                PublicationRequest::Retire { .. }
+                    | PublicationRequest::OptionalRemoval {
+                        approval: Some(_),
+                        ..
+                    }
+            ) {
                 Some(
                     self.authority
                         .and_then(|authority| authority.pin(credential))

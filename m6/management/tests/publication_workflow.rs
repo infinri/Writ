@@ -291,6 +291,7 @@ fn commit(preview: Value, receipt: &Value, presentation: Value) -> Value {
         Some("preview_publish") => "publish",
         Some("preview_rollback") => "rollback",
         Some("preview_retire") => "retire",
+        Some("preview_deactivate") => "deactivate",
         _ => panic!("expected a preview"),
     };
     let preview = changed(preview, "operation", json::s(operation));
@@ -987,4 +988,172 @@ fn managed_intent(shown: &Value, candidate: &Publication) -> Intent {
             .unwrap(),
     );
     intent
+}
+
+#[test]
+fn optional_removal_api_cli_and_authoritative_reopen() {
+    let lab = Lab::new();
+    let trust = fixture::FixtureTrust::default();
+    let author = lab.credential("author", AUTHOR);
+    let publisher = lab.credential("publisher", PUBLISHER);
+    let step_up = lab.credential("step-up", b"fixture-publisher-step-up");
+    let source = include_bytes!("../../compiler/fixtures/optional-inspect.input.json");
+    for (name, input) in [("source", source.as_slice()), ("replacement", DENY)] {
+        result(&lab.cli(&author, &save("create", name, 0, name, input)));
+    }
+    let source_publication = signed(source, 1);
+    let proposal = preview(
+        0,
+        1,
+        "select-source",
+        Some((draft("source", 1), source_publication.clone())),
+        false,
+    );
+    let shown = lab.cli(&publisher, &proposal);
+    result(&lab.cli(
+        &publisher,
+        &commit(proposal, &shown, token(&shown, &step_up, "select-source")),
+    ));
+    let ordinary = preview(
+        1,
+        2,
+        "ordinary",
+        Some((draft("replacement", 1), signed(DENY, 2))),
+        false,
+    );
+    refused_with(&lab.cli(&publisher, &ordinary), "INVALID_POLICY");
+    let replacement = run_json(
+        AUTHORITY,
+        [OsStr::new("sign-removal"), OsStr::new("2")],
+        canonical(&source_publication).as_bytes(),
+    );
+    let policy = writ_policy_compile::OPTIONAL_INSPECT_POLICY;
+    let mut proposal = preview(
+        1,
+        2,
+        "remove-optional",
+        Some((draft("replacement", 1), replacement)),
+        false,
+    );
+    refused_with(&lab.cli(&publisher, &proposal), "INVALID_POLICY");
+    proposal = changed(proposal, "operation", json::s("preview_deactivate"));
+    proposal = changed(proposal, "policy_id", json::s(policy));
+    proposal = changed(
+        proposal,
+        "confirmation",
+        json::s(&Intent::deactivation_phrase(policy)),
+    );
+
+    let before = lab.cli(&publisher, &history());
+    let shown = lab.cli(&publisher, &proposal);
+    assert_eq!(shown, lab.api(&trust, PUBLISHER, &proposal, false));
+    assert_eq!(lab.cli(&publisher, &history()), before);
+    let context = result(&shown).get("context").unwrap();
+    let delta = context.get("decision_changes").unwrap();
+    for (side, status) in [("before", "allow"), ("after", "deny")] {
+        let cases = delta.get(side).unwrap().as_arr().unwrap();
+        assert_eq!(cases.len(), 6);
+        let changed_case = cases
+            .iter()
+            .find(|case| case.get("id") == Some(&json::s("scope")))
+            .unwrap();
+        assert_eq!(
+            changed_case.get("decision").unwrap().get("status"),
+            Some(&json::s(status))
+        );
+    }
+    let shown_body = result(&shown);
+    let changed_context = changed(context.clone(), "decision_changes", Value::Null);
+    let exact_context = json::digest(&changed_context).unwrap();
+    let mut intent = shown_body.get("intent").unwrap().clone();
+    let management = changed(
+        intent.get("management").unwrap().clone(),
+        "digest",
+        json::s(exact_context.as_str()),
+    );
+    intent = changed(intent, "management", management);
+    let digest = json::digest(&intent).unwrap();
+    let modified = changed(
+        changed(
+            changed(shown_body.clone(), "context", changed_context),
+            "intent",
+            intent,
+        ),
+        "intent_digest",
+        json::s(digest.as_str()),
+    );
+    let displayed = changed(shown.clone(), "result", modified);
+    let refusal = run(
+        AUTHORITY,
+        [
+            OsStr::new("authorize-publication"),
+            step_up.as_os_str(),
+            OsStr::new("wrong-decisions"),
+        ],
+        canonical(&displayed).as_bytes(),
+    );
+    assert!(!refusal.status.success());
+    let fault_preview = changed(
+        proposal.clone(),
+        "idempotency_key",
+        json::s("uncertain-removal"),
+    );
+    let fault_shown = lab.cli(&publisher, &fault_preview);
+    let fault_request = commit(
+        fault_preview,
+        &fault_shown,
+        token(&fault_shown, &step_up, "uncertain-removal"),
+    );
+    let registry_db = rusqlite::Connection::open(&lab.registry).unwrap();
+    registry_db
+        .execute_batch(
+            "CREATE TRIGGER fault BEFORE INSERT ON publication_audit
+         BEGIN SELECT RAISE(ABORT, 'fixture audit failure'); END;",
+        )
+        .unwrap();
+    refused_with(&lab.cli(&publisher, &fault_request), "UNAVAILABLE");
+    registry_db.execute_batch("DROP TRIGGER fault").unwrap();
+    refused_with(&lab.cli(&publisher, &fault_request), "UNAVAILABLE");
+    assert_eq!(lab.cli(&publisher, &history()), before);
+
+    let authorized = commit(proposal, &shown, token(&shown, &step_up, "remove-optional"));
+    let mandatory = changed(
+        changed(
+            authorized.clone(),
+            "policy_id",
+            json::s("m6.synthetic.deny"),
+        ),
+        "confirmation",
+        json::s("deactivate m6.synthetic.deny"),
+    );
+    refused_with(&lab.cli(&publisher, &mandatory), "INVALID_POLICY");
+    let altered = changed(
+        authorized.clone(),
+        "idempotency_key",
+        json::s("changed-removal"),
+    );
+    refused_with(&lab.cli(&publisher, &altered), "REVISION_CONFLICT");
+    assert_eq!(lab.cli(&publisher, &history()), before);
+
+    // Discard the committed response. Another authorized selection advances the
+    // head before the original caller reopens both stores and asks for its receipt.
+    let _undelivered = lab.api(&trust, PUBLISHER, &authorized, false);
+    let advance = preview(2, 1, "restore-optional", None, false);
+    let later = lab.cli(&publisher, &advance);
+    result(&lab.cli(
+        &publisher,
+        &commit(advance, &later, token(&later, &step_up, "restore-optional")),
+    ));
+    let reopened = lab.cli(&publisher, &history());
+    let receipt = lab.cli(&publisher, &authorized);
+    assert_eq!(result(&receipt).get("revision"), Some(&Value::Int(2)));
+    assert_eq!(result(&receipt).get("audit_id"), Some(&Value::Int(2)));
+    assert_eq!(lab.cli(&publisher, &history()), reopened);
+    let events = result(&reopened).get("events").unwrap().as_arr().unwrap();
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[1].get("context"), Some(context));
+    assert_eq!(
+        events[1].get("intent_digest"),
+        result(&receipt).get("intent_digest")
+    );
 }

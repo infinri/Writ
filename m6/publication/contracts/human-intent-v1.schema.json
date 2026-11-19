@@ -100,6 +100,23 @@
     "confirmation": {
       "type": "string",
       "pattern": "^retire [1-9][0-9]{0,8}(?![\\s\\S])"
+    },
+    "removal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy_id",
+        "source_publication_digest"
+      ],
+      "properties": {
+        "policy_id": {
+          "const": "m6.synthetic.optional-inspect"
+        },
+        "source_publication_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
     }
   },
   "if": {
@@ -119,6 +136,18 @@
       "required": [
         "confirmation"
       ]
+    }
+  },
+  "dependentSchemas": {
+    "removal": {
+      "properties": {
+        "operation": {
+          "const": "publish"
+        },
+        "expected_revision": {
+          "minimum": 1
+        }
+      }
     }
   }
 }

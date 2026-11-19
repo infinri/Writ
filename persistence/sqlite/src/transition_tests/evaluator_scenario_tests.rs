@@ -1,6 +1,6 @@
 //! D-052 disposable evaluator registry scenario using the protected promotion path.
 
-use std::sync::{RwLock, RwLockReadGuard};
+use std::sync::{atomic::AtomicUsize, RwLock, RwLockReadGuard};
 
 use writ_broker::evaluator_publication::{
     CurrentEvaluatorPublisher, EvaluatorDependencies, EvaluatorImplementation,
@@ -8,6 +8,7 @@ use writ_broker::evaluator_publication::{
     PublisherApproval,
 };
 use writ_broker::evaluator_rubric::{RubricBinding, RubricEligibility, RubricError};
+use writ_broker::keys::{KeyStatus, KeysUnavailable, RunnerKeyRing};
 use writ_broker::runner::{CommandRegistry, RegisteredCommand};
 use writ_broker::writ_kernel::commands;
 use writ_broker::writ_kernel::contracts::CriterionClass;
@@ -15,7 +16,7 @@ use writ_broker::writ_kernel::contracts::CriterionClass;
 use super::*;
 
 #[derive(Default)]
-pub(super) struct Publishers(RwLock<BTreeMap<String, PublisherApproval>>);
+pub(super) struct Publishers(RwLock<BTreeMap<String, PublisherApproval>>, AtomicBool);
 
 struct CurrentPublishers<'a>(RwLockReadGuard<'a, BTreeMap<String, PublisherApproval>>);
 
@@ -48,6 +49,9 @@ impl Publishers {
 
 impl EvaluatorPublisher for Publishers {
     fn current(&self) -> Result<impl CurrentEvaluatorPublisher + '_, AdminRefusal> {
+        if self.1.load(Ordering::SeqCst) {
+            return Err(AdminRefusal::Unauthorized);
+        }
         Ok(CurrentPublishers(self.0.read().unwrap()))
     }
 }
@@ -407,6 +411,104 @@ fn publication_requires_an_exact_authorized_intent_and_scoped_dependencies() {
     assert_eq!(check(&w, &rubric()), Ok(RubricEligibility::Eligible));
 }
 
+struct UnavailableEvaluatorDependencies;
+
+impl EvaluatorImplementations for UnavailableEvaluatorDependencies {
+    fn get(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &str,
+    ) -> Result<Option<EvaluatorImplementation>, SourceUnavailable> {
+        Err(SourceUnavailable)
+    }
+}
+
+impl CommandRegistry for UnavailableEvaluatorDependencies {
+    fn command(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+    ) -> Result<Option<RegisteredCommand>, SourceUnavailable> {
+        Err(SourceUnavailable)
+    }
+}
+
+#[test]
+fn evaluator_publication_refuses_unavailable_implementation_command_and_key_sources() {
+    let mut w = W::new("d052-evaluator-publication-trust-outages");
+    let authorities = Publishers::default();
+    let exact = publication("ci-runner", 0);
+    authorities.approve_fixture(&exact);
+    for (commands, implementations) in [
+        (
+            &FixtureDependencies as &dyn CommandRegistry,
+            &UnavailableEvaluatorDependencies as &dyn EvaluatorImplementations,
+        ),
+        (
+            &UnavailableEvaluatorDependencies as &dyn CommandRegistry,
+            &FixtureDependencies as &dyn EvaluatorImplementations,
+        ),
+    ] {
+        let dependencies = EvaluatorDependencies {
+            runner_keys: &w.runner_keys,
+            commands,
+            implementations,
+        };
+        assert_eq!(
+            w.broker()
+                .publish_evaluator(
+                    &authorities,
+                    &publisher(b"publisher-credential"),
+                    &dependencies,
+                    &exact
+                )
+                .unwrap(),
+            Err(acceptance(AcceptanceCode::RegistryUnavailable))
+        );
+    }
+    w.runner_keys.set_unavailable(true);
+    assert_eq!(
+        submit(&w, &authorities, &exact),
+        Err(acceptance(AcceptanceCode::AttestationKeyUnavailable))
+    );
+    assert_eq!(w.one("SELECT count(*) FROM evaluator_registry"), 0);
+    assert!(w
+        .ledger
+        .evaluator_publication_commit(T, P, exact.fingerprint())
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        w.ledger
+            .evaluator_registry_view(T, P, "ci-runner")
+            .unwrap()
+            .0,
+        0
+    );
+    w.runner_keys.set_unavailable(false);
+    authorities.1.store(true, Ordering::SeqCst);
+    assert_eq!(
+        submit(&w, &authorities, &exact),
+        Err(Refusal::OperatorUnauthorized)
+    );
+    assert!(w
+        .ledger
+        .evaluator_publication_commit(T, P, exact.fingerprint())
+        .unwrap()
+        .is_none());
+    authorities.1.store(false, Ordering::SeqCst);
+    submit(&w, &authorities, &exact).unwrap();
+    assert_eq!(
+        w.ledger
+            .evaluator_registry_view(T, P, "ci-runner")
+            .unwrap()
+            .0,
+        1
+    );
+}
+
 #[test]
 fn disposable_publication_rubric_promotion_revocation_and_reopen() {
     // These disposable stores have identical workflow, evaluator and evidence
@@ -593,6 +695,51 @@ fn secure_promotion_requires_the_registry_audit_and_the_published_key() {
         Err(acceptance(AcceptanceCode::AttestationUnauthenticated)),
     );
     unchanged(&w);
+}
+
+#[test]
+fn evaluator_promotion_pins_the_authenticated_evaluator_version() {
+    let (w, _) = scenario("d052-evaluator-version");
+    let request = accept("k1", 1);
+    let original = w.docs.get("acc-1").unwrap().unwrap();
+    let mut evaluations = original
+        .get("evaluations")
+        .unwrap()
+        .as_arr()
+        .unwrap()
+        .to_vec();
+    evaluations[0] = set(&evaluations[0], &["evaluator_version"], json::s("1.5.0"));
+    let wrong_version = set(&original, &["evaluations"], Value::Arr(evaluations));
+    w.docs.put("acc-1", sign(&wrong_version, &RECORD_KEY));
+
+    assert_eq!(
+        w.promote(&request),
+        Err(acceptance(AcceptanceCode::EvaluatorBindingMismatch))
+    );
+    unchanged(&w);
+
+    w.docs.put("acc-1", original);
+    assert_eq!(w.promote(&request), Ok(committed(2)));
+    assert_eq!(w.one("SELECT count(*) FROM consumed_records"), 1);
+    assert_eq!(w.one("SELECT count(*) FROM consumed_attestations"), 1);
+}
+
+#[test]
+fn evaluator_promotion_refuses_an_unavailable_runner_key_source() {
+    let (mut w, _) = scenario("d052-evaluator-key-unavailable");
+    let request = accept("k1", 1);
+    w.runner_keys.set_unavailable(true);
+
+    assert_eq!(
+        w.promote(&request),
+        Err(acceptance(AcceptanceCode::AttestationKeyUnavailable))
+    );
+    unchanged(&w);
+
+    w.runner_keys.set_unavailable(false);
+    assert_eq!(w.promote(&request), Ok(committed(2)));
+    assert_eq!(w.one("SELECT count(*) FROM consumed_records"), 1);
+    assert_eq!(w.one("SELECT count(*) FROM consumed_attestations"), 1);
 }
 
 #[test]
@@ -791,6 +938,116 @@ fn promotion_racing_revocation_follows_the_durable_commit_sequence() {
             unchanged(&w);
         }
     }
+}
+
+#[test]
+fn evaluator_key_revocation_committing_during_promotion_refuses_evidence() {
+    let (w, _) = scenario("d052-evaluator-key-revocation-race");
+    let (entered, waiting) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let gate = OperationGate {
+        entered,
+        release: Mutex::new(released),
+    };
+    let records = GatedRecords {
+        docs: &w.docs,
+        gate: &gate,
+    };
+    let result = thread::scope(|scope| {
+        let promotion = scope.spawn(|| {
+            let mut trust = w.trust();
+            trust.records = &records;
+            w.broker()
+                .promote(&trust, &verify(&accept("k1", 1)), None)
+                .result
+        });
+        waiting.recv_timeout(Duration::from_secs(10)).unwrap();
+        revoke_material(
+            &w,
+            writ_broker::keys::KeyPurpose::RunnerAttestation,
+            &RUNNER_KEY,
+        );
+        release.send(()).unwrap();
+        promotion.join().unwrap()
+    });
+
+    assert_eq!(
+        result,
+        Err(acceptance(AcceptanceCode::AttestationUnauthenticated))
+    );
+    assert_eq!(w.one("SELECT count(*) FROM key_revocations"), 1);
+    unchanged(&w);
+}
+
+struct GatedRunnerKeys<'a> {
+    keys: &'a MemoryKeys<RunnerAttestationKey>,
+    reads: AtomicUsize,
+    gate: &'a OperationGate,
+}
+
+impl RunnerKeyRing for GatedRunnerKeys<'_> {
+    fn runner_key(
+        &self,
+        key_id: &str,
+    ) -> Result<KeyStatus<'_, RunnerAttestationKey>, KeysUnavailable> {
+        // The first read authenticates the attestation. The second rechecks the
+        // published evaluator's material inside the promotion transaction.
+        if self.reads.fetch_add(1, Ordering::SeqCst) == 1 {
+            self.gate.open();
+        }
+        self.keys.runner_key(key_id)
+    }
+}
+
+#[test]
+fn evaluator_promotion_commit_orders_before_the_contending_key_revocation() {
+    let (w, _) = scenario("d052-promotion-before-key-revocation");
+    let (entered, waiting) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let gate = OperationGate {
+        entered,
+        release: Mutex::new(released),
+    };
+    let keys = GatedRunnerKeys {
+        keys: &w.runner_keys,
+        reads: AtomicUsize::new(0),
+        gate: &gate,
+    };
+    let (contending, started) = mpsc::channel();
+    let (finished, while_held) = mpsc::channel();
+    thread::scope(|scope| {
+        let promote = scope.spawn(|| {
+            let mut trust = w.trust();
+            trust.runner_keys = &keys;
+            w.broker()
+                .promote(&trust, &verify(&accept("k1", 1)), None)
+                .result
+        });
+        waiting.recv_timeout(Duration::from_secs(10)).unwrap();
+        let revoke = scope.spawn(|| {
+            contending.send(()).unwrap();
+            revoke_material(
+                &w,
+                writ_broker::keys::KeyPurpose::RunnerAttestation,
+                &RUNNER_KEY,
+            );
+            finished.send(()).unwrap();
+        });
+        started.recv_timeout(Duration::from_secs(10)).unwrap();
+        let early = while_held.recv_timeout(Duration::from_millis(50));
+        release.send(()).unwrap();
+        assert_eq!(early, Err(mpsc::RecvTimeoutError::Timeout));
+        assert_eq!(promote.join().unwrap(), Ok(committed(2)));
+        revoke.join().unwrap();
+    });
+    let promotion_seq = w.one(
+        "SELECT seq FROM ledger_sequence WHERE kind = 'promotion' AND reference = 'promotion:wf-1:2'",
+    );
+    let revocation_seq = w.one("SELECT ledger_seq FROM key_revocations");
+    assert!(promotion_seq > 0 && promotion_seq < revocation_seq);
+    assert_eq!(w.state(), ("accepted".into(), 2));
+    assert_eq!(w.one("SELECT count(*) FROM consumed_records"), 1);
+    assert_eq!(w.one("SELECT count(*) FROM consumed_attestations"), 1);
 }
 
 #[test]

@@ -184,6 +184,37 @@ impl Publication {
         digest(&self.content_digests()?.without("prerequisites"))
     }
 
+    /// Attach the exact selected publication to a separately signed replacement.
+    /// This binds unsigned prerequisites without changing either signed payload.
+    pub fn bind_optional_removal(mut self, source: &Self) -> Result<Self, Error> {
+        let prereq = exact(&self.prerequisites, &["version", "draft", "proof_digest"])?;
+        if text(prereq, "version")? != "writ-policy-prerequisites/1" {
+            return Err(Error::Format);
+        }
+        let mut fields = prereq.clone();
+        fields.insert("version".into(), json::s("writ-policy-prerequisites/2"));
+        fields.insert(
+            "removal".into(),
+            json::obj([
+                (
+                    "policy_id",
+                    json::s(writ_policy_compile::OPTIONAL_INSPECT_POLICY),
+                ),
+                (
+                    "source_publication_digest",
+                    json::s(source.fingerprint()?.as_str()),
+                ),
+            ]),
+        );
+        self.prerequisites = Value::Obj(fields);
+        Ok(self)
+    }
+
+    /// The explicit removal binding included in the approved publisher intent.
+    pub fn removal(&self) -> Option<&Value> {
+        self.prerequisites.get("removal")
+    }
+
     fn content_digests(&self) -> Result<Value, Error> {
         Ok(json::obj([
             (
@@ -243,6 +274,7 @@ pub struct Intent {
     publication: Digest,
     content: Value,
     confirmation: Option<String>,
+    removal: Option<Value>,
     management: Option<ManagedIntent>,
 }
 
@@ -269,6 +301,10 @@ impl Intent {
             publication: publication.fingerprint()?,
             content: publication.content_digests()?,
             confirmation: None,
+            removal: (operation == Operation::Publish)
+                .then(|| publication.removal())
+                .flatten()
+                .cloned(),
             management: None,
         })
     }
@@ -371,6 +407,9 @@ impl Intent {
         ]);
         if let Some(confirmation) = self.retirement_confirmation() {
             fields.insert("confirmation".into(), json::s(confirmation));
+        }
+        if let Some(removal) = &self.removal {
+            fields.insert("removal".into(), removal.clone());
         }
         if let Some(context) = self.management() {
             fields.insert(

@@ -8,6 +8,49 @@ mod proof;
 use writ_kernel::json::{self, Value};
 use writ_kernel::policy::{load_bundle, LoadedBundle};
 
+/// The sole source-classified optional authorization rule in the supported profile.
+pub const OPTIONAL_INSPECT_POLICY: &str = "m6.synthetic.optional-inspect";
+
+/// Compile the exact optional removal from a verified synthetic input.
+/// Returns the unsigned replacement and paired complete Decisions from pinned evidence.
+pub fn optional_inspect_removal(active: &Value) -> Option<(Value, Value)> {
+    let before = evaluate(json::canonical(active).ok()?.as_bytes());
+    if !before.accepted {
+        return None;
+    }
+    let mut replacement = active.as_obj()?.clone();
+    for field in ["manifests", "companions"] {
+        let entries = active.get(field)?.as_arr()?;
+        let retained: Vec<_> = entries
+            .iter()
+            .filter(|entry| {
+                entry.get("policy_id").and_then(Value::as_str) != Some(OPTIONAL_INSPECT_POLICY)
+            })
+            .cloned()
+            .collect();
+        if retained.len() + 1 != entries.len() {
+            return None;
+        }
+        replacement.insert(field.into(), Value::Arr(retained));
+    }
+    let replacement = Value::Obj(replacement);
+    let after = evaluate(json::canonical(&replacement).ok()?.as_bytes());
+    if !after.accepted {
+        return None;
+    }
+    let decisions = |report: Report| {
+        Some(
+            report
+                .document
+                .get("kernel_proof")?
+                .get("fixture_results")?
+                .clone(),
+        )
+    };
+    let decisions = json::obj([("before", decisions(before)?), ("after", decisions(after)?)]);
+    Some((replacement, decisions))
+}
+
 /// Stable compiler diagnostic with a location in the unsigned input.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Diagnostic {

@@ -1041,12 +1041,14 @@ struct AdvanceDuringApproval {
     authority: FixtureAuthority,
     offset: AtomicI64,
     approvals: AtomicI64,
+    advance_seconds: i64,
 }
 
 struct View<'a, T> {
     trust: T,
     offset: &'a AtomicI64,
     approvals: &'a AtomicI64,
+    advance_seconds: i64,
 }
 
 impl TrustAuthority for AdvanceDuringApproval {
@@ -1055,6 +1057,7 @@ impl TrustAuthority for AdvanceDuringApproval {
             trust: self.authority.current()?,
             offset: &self.offset,
             approvals: &self.approvals,
+            advance_seconds: self.advance_seconds,
         })
     }
 }
@@ -1083,7 +1086,7 @@ impl<T: CurrentTrust> CurrentTrust for View<'_, T> {
     ) -> Result<Approval, Error> {
         let approval = self.trust.approve(intent, presentation, time)?;
         if self.approvals.fetch_add(1, Ordering::SeqCst) == 1 {
-            self.offset.store(600, Ordering::SeqCst);
+            self.offset.store(self.advance_seconds, Ordering::SeqCst);
         }
         Ok(approval)
     }
@@ -1103,6 +1106,7 @@ fn signature_and_human_expiry_inside_second_approval_refuses_commit() {
             authority,
             offset: AtomicI64::new(0),
             approvals: AtomicI64::new(0),
+            advance_seconds: 600,
         },
     )
     .unwrap();
@@ -1335,4 +1339,267 @@ fn management_drafts_leave_signed_selection_grants_and_effects_unchanged() {
     );
     assert_eq!(count(&ledger_path, "grant_uses"), 1);
     assert_eq!(count(&effects_path, "effects"), 1);
+}
+
+#[test]
+fn optional_removal_owner_fences_authority_faults_competition_and_recovery() {
+    let dir = Disposable::create().unwrap();
+    let path = dir.path().join("policy.sqlite");
+    let (authority, signer) = FixtureSigner::pair();
+    let registry = Registry::create(&path, scope(), authority.clone()).unwrap();
+    let source = signer.publication(
+        include_bytes!("../../compiler/fixtures/optional-inspect.input.json"),
+        1,
+    );
+    publish(&registry, &authority, &source, 0, 1, "optional-source");
+    let ordinary = signer.publication(DENY, 2);
+    let replacement = ordinary.clone().bind_optional_removal(&source).unwrap();
+    let exact = intent(Operation::Publish, 1, 2, &replacement);
+    let presentation = authority.authorize(&exact, "optional-removal");
+    let before = registry.audit().unwrap();
+    let difference = registry
+        .preview_optional_removal(1, 2, &replacement)
+        .unwrap();
+    assert_eq!(difference.get("after").unwrap().as_arr().unwrap().len(), 6);
+
+    let unrelated = signer.publication(ALLOW, 1);
+    let mut stale = replacement.clone();
+    stale.prerequisites = edit(
+        &stale.prerequisites,
+        "proof_digest",
+        json::s(&format!("sha256:{}", "0".repeat(64))),
+    );
+    let misbound = ordinary.clone().bind_optional_removal(&unrelated).unwrap();
+    let weakening = signer
+        .publication(APPROVAL, 2)
+        .bind_optional_removal(&source)
+        .unwrap();
+    for (n, candidate) in [ordinary, stale, misbound, weakening].iter().enumerate() {
+        let command = intent(Operation::Publish, 1, 2, candidate);
+        let approved = authority.authorize(&command, &format!("invalid-removal-{n}"));
+        assert_eq!(
+            registry.publish(&command, candidate, &approved),
+            Err(Error::InvalidPolicy)
+        );
+    }
+    let wrong_scope = Intent::new(
+        Scope::new("m6-lab", "other-project").unwrap(),
+        Operation::Publish,
+        1,
+        2,
+        &replacement,
+    )
+    .unwrap();
+    assert_eq!(
+        registry.publish(&wrong_scope, &replacement, &presentation),
+        Err(Error::Scope)
+    );
+    let mut wrong_purpose = replacement.clone();
+    wrong_purpose.acceptance = replacement.authorization.clone();
+    let purpose_intent = intent(Operation::Publish, 1, 2, &wrong_purpose);
+    let purpose_presentation = authority.authorize(&purpose_intent, "wrong-policy-purpose");
+    assert!(registry
+        .publish(&purpose_intent, &wrong_purpose, &purpose_presentation)
+        .is_err());
+    authority.publisher_enabled(false);
+    assert_eq!(
+        registry.publish(&exact, &replacement, &presentation),
+        Err(Error::Authority)
+    );
+    authority.publisher_enabled(true);
+
+    let connection = Connection::open(&path).unwrap();
+    for action in ["INSERT ON publication_audit", "UPDATE ON registry_head"] {
+        connection.execute_batch(&format!(
+            "CREATE TRIGGER fault BEFORE {action} BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;"
+        )).unwrap();
+        assert_eq!(
+            registry.publish(&exact, &replacement, &presentation),
+            Err(Error::Storage)
+        );
+        assert_eq!(registry.audit().unwrap(), before);
+        assert_eq!(count(&path, "publications"), 1);
+        connection.execute_batch("DROP TRIGGER fault").unwrap();
+    }
+    assert_eq!(selected(&registry), (1, 1));
+    drop(connection);
+    let lab = broker(dir.path(), &registry);
+    let cases = json::parse(include_bytes!(
+        "../../compiler/fixtures/optional-inspect.cases.json"
+    ))
+    .unwrap();
+    let case = cases
+        .as_arr()
+        .unwrap()
+        .iter()
+        .find(|case| case.get("id") == Some(&json::s("scope")))
+        .unwrap();
+    let request = seal_request(
+        &case
+            .get("request")
+            .unwrap()
+            .without("expected_state_revision"),
+    );
+    let (result, permit) = lab.execute(&request, None).unwrap();
+    assert!(result.is_ok(), "{result:?}");
+    let permit = permit.unwrap();
+    let barrier = Barrier::new(2);
+    let (first, second) = thread::scope(|threads| {
+        let select = |ceremony| {
+            let approval = authority.authorize(&exact, ceremony);
+            barrier.wait();
+            registry.publish(&exact, &replacement, &approval)
+        };
+        let first = threads.spawn(move || select("remove-first"));
+        let second = threads.spawn(move || select("remove-second"));
+        (first.join().unwrap(), second.join().unwrap())
+    });
+    let commit = match (first, second) {
+        (Ok(commit), Err(Error::Conflict)) | (Err(Error::Conflict), Ok(commit)) => commit,
+        other => panic!("one exact removal must commit: {other:?}"),
+    };
+    assert_eq!(
+        registry.publish(&exact, &replacement, &presentation),
+        Err(Error::Conflict)
+    );
+    assert_eq!(
+        lab.present(&permit, request.request()),
+        Err(Error::StalePermit)
+    );
+    assert_eq!(
+        count(&dir.path().join("effects.sqlite"), "consumed_permits"),
+        1
+    );
+    drop(lab);
+    drop(registry);
+    let reopened = Registry::open(&path, scope(), authority.clone()).unwrap();
+    assert_eq!(reopened.current_selection().unwrap(), Some(commit));
+    let audit = reopened.audit().unwrap();
+    assert_eq!(audit[0], before[0]);
+    assert_eq!(
+        audit[1].intent_digest,
+        exact.fingerprint().unwrap().as_str()
+    );
+    reopened
+        .with_selection(|view| {
+            assert_eq!(view.publication(), &replacement);
+            Ok(())
+        })
+        .unwrap();
+
+    let restore = intent(Operation::Rollback, 2, 1, &source);
+    reopened
+        .change(
+            &restore,
+            None,
+            &authority.authorize(&restore, "restore-optional"),
+        )
+        .unwrap();
+    let stale_removal = intent(Operation::Rollback, 3, 2, &replacement);
+    let rollback = authority.authorize(&stale_removal, "old-removal-rollback");
+    assert_eq!(
+        reopened.change(&stale_removal, None, &rollback),
+        Err(Error::Replay)
+    );
+    assert_eq!(selected(&reopened), (3, 1));
+    assert_eq!(reopened.audit().unwrap().len(), 3);
+}
+
+#[test]
+fn optional_removal_preserves_independently_signed_v2_waiver_bounds() {
+    let dir = Disposable::create().unwrap();
+    let (authority, signer) = FixtureSigner::pair();
+    let registry = Registry::create(
+        &dir.path().join("policy.sqlite"),
+        scope(),
+        authority.clone(),
+    )
+    .unwrap();
+    let signed = |draft: &[u8], version, seconds| {
+        let mut pair = signer.publication(draft, version);
+        let criterion = |id, origin, limit| {
+            json::obj([
+                ("criterion_id", json::s(id)),
+                ("required_class", json::s("human")),
+                ("origin", json::s(origin)),
+                ("max_waiver_seconds", Value::Int(limit)),
+            ])
+        };
+        let payload = edit(
+            &edit(
+                &pair.acceptance.payload,
+                "version",
+                json::s("writ-acceptance-policy/2"),
+            ),
+            "criteria",
+            Value::Arr(vec![
+                criterion("review", "invariant", 0),
+                criterion("waiver-review", "project", seconds),
+            ]),
+        );
+        pair.acceptance = signer.sign_policy(Purpose::Acceptance, payload);
+        pair
+    };
+    let source = signed(
+        include_bytes!("../../compiler/fixtures/optional-inspect.input.json"),
+        1,
+        60,
+    );
+    publish(&registry, &authority, &source, 0, 1, "v2-source");
+    let changed = signed(DENY, 2, 120).bind_optional_removal(&source).unwrap();
+    let requested = intent(Operation::Publish, 1, 2, &changed);
+    let approval = authority.authorize(&requested, "v2-changed-limit");
+    assert_eq!(
+        registry.publish(&requested, &changed, &approval),
+        Err(Error::InvalidPolicy)
+    );
+    assert_eq!(selected(&registry), (1, 1));
+    assert_eq!(registry.audit().unwrap().len(), 1);
+    let preserved = signed(DENY, 2, 60).bind_optional_removal(&source).unwrap();
+    publish(&registry, &authority, &preserved, 1, 2, "v2-preserved");
+}
+
+#[test]
+fn optional_removal_refuses_source_expiry_inside_second_approval() {
+    let dir = Disposable::create().unwrap();
+    let path = dir.path().join("policy.sqlite");
+    let (authority, signer) = FixtureSigner::pair();
+    let mut source = signer.publication(
+        include_bytes!("../../compiler/fixtures/optional-inspect.input.json"),
+        1,
+    );
+    source.acceptance = signer.sign_until(
+        Purpose::Acceptance,
+        source.acceptance.payload,
+        now().plus_seconds(1),
+    );
+    let registry = Registry::create(&path, scope(), authority.clone()).unwrap();
+    publish(&registry, &authority, &source, 0, 1, "short-source");
+    let before = registry.audit().unwrap();
+    drop(registry);
+    let replacement = signer
+        .publication(DENY, 2)
+        .bind_optional_removal(&source)
+        .unwrap();
+    let request = intent(Operation::Publish, 1, 2, &replacement);
+    let approval = authority.authorize(&request, "source-expires-during-removal");
+    let registry = Registry::open(
+        &path,
+        scope(),
+        AdvanceDuringApproval {
+            authority: authority.clone(),
+            offset: AtomicI64::new(0),
+            approvals: AtomicI64::new(0),
+            advance_seconds: 2,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        registry.publish(&request, &replacement, &approval),
+        Err(Error::Time)
+    );
+    drop(registry);
+    let reopened = Registry::open(&path, scope(), authority).unwrap();
+    assert_eq!(selected(&reopened), (1, 1));
+    assert_eq!(reopened.audit().unwrap(), before);
 }

@@ -193,6 +193,14 @@ class DraftContracts(unittest.TestCase):
             "expected_revision": 2, "publication_version": 2, "policy_id": "m6.synthetic.permit",
             "confirmation": "deactivate m6.synthetic.permit",
         }
+        removal = {"policy_id": "m6.synthetic.optional-inspect", "source_publication_digest": DIGEST}
+        replacement = pair | {"prerequisites": pair["prerequisites"] | {
+            "version": "writ-policy-prerequisites/2", "removal": removal,
+        }}
+        supported_removal = deactivation | common | {
+            "policy_id": removal["policy_id"], "confirmation": f"deactivate {removal['policy_id']}",
+            "draft": DRAFT, "publication": replacement,
+        }
         for item in (
             request("preview_publish", **publish),
             request("publish", **publish, **authorization),
@@ -202,6 +210,8 @@ class DraftContracts(unittest.TestCase):
             request("retire", **retirement, **authorization),
             request("preview_deactivate", **deactivation),
             request("deactivate", **deactivation),
+            request("preview_deactivate", **supported_removal),
+            request("deactivate", **supported_removal, **authorization),
             request("publication_history", after=0, limit=50),
         ):
             self.request.validate(item)
@@ -219,6 +229,9 @@ class DraftContracts(unittest.TestCase):
             request("rollback", **retirement, **authorization),
             request("deactivate", **deactivation, **authorization),
             request("preview_deactivate", **(deactivation | {"policy_id": []})),
+            request("deactivate", **supported_removal),
+            request("preview_deactivate", **(supported_removal | {"publication": pair})),
+            request("deactivate", **(supported_removal | {"mandatory": False}), **authorization),
         ):
             with self.subTest(operation=item["operation"]):
                 self.assertFalse(self.request.is_valid(item))
@@ -256,9 +269,17 @@ class DraftContracts(unittest.TestCase):
         retirement_history = history | {
             "events": [event | {"operation": "retire", "context": standalone_context}],
         }
+        removal = {"policy_id": "m6.synthetic.optional-inspect", "source_publication_digest": DIGEST}
+        proof_cases = [{"id": str(i), "decision": self.decision} for i in range(6)]
+        removal_context = context | {"removal": removal, "removal_confirmation": "deactivate m6.synthetic.optional-inspect",
+                                     "decision_changes": {"before": proof_cases, "after": proof_cases}}
+        removal_preview = preview | {
+            "intent": intent | {"operation": "publish", "removal": removal},
+            "context": removal_context,
+        }
         for item in (
             preview, receipt | {"intent_digest": DIGEST}, history, retirement_preview,
-            retirement_preview | {"context": standalone_context}, retirement_history,
+            retirement_preview | {"context": standalone_context}, retirement_history, removal_preview,
         ):
             self.response.validate(response(item))
         for item in (
@@ -269,6 +290,7 @@ class DraftContracts(unittest.TestCase):
             preview | {"context": context | {"self_publication_acknowledged": "yes"}},
             preview | {"context": {key: val for key, val in context.items() if key != "proof_digest"}},
             receipt | {"intent_digest": DIGEST, "presentation": "private"},
+            removal_preview | {"context": removal_context | {"decision_changes": {"before": [], "after": []}}},
             history | {"selected": receipt},
         ):
             self.assertFalse(self.response.is_valid(response(item)))
