@@ -34,12 +34,14 @@ reachable from service/ sources through the service's Writ dependency closure), 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
 import sys
 import tomllib
 import urllib.request
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -59,7 +61,12 @@ MEMBERS = {"writ-kernel": "kernel/deps-allowlist.json", "writ-broker": "broker/d
            "writ-rpc": "rpc/deps-allowlist.json",
            "writ-service": "service/deps-allowlist.json",
            "writ-containment": "containment/deps-allowlist.json",
-           "writ-fs-effects": "fs-effects/deps-allowlist.json"}
+           "writ-fs-effects": "fs-effects/deps-allowlist.json",
+           "writ-mcp-shim": "m5/mcp-shim/deps-allowlist.json"}
+
+SHIM = "writ-mcp-shim"
+CHRONO = ("chrono", "0.4.45")
+CHRONO_KEY = "@".join(CHRONO)
 
 
 def entry_for(allowed: dict, name: str, ver: str):
@@ -637,6 +644,72 @@ def locked_only_problems(exceptions: dict, unbuilt: dict, graph: dict) -> list[s
     ]
 
 
+def shim_review_graph(target: str, *, workspace: bool = False, test: bool = False) -> bytes:
+    """Canonical Cargo tree for the shim, including paths, versions and active features."""
+    cmd = ["cargo", "tree", "--locked", "--target", target, "--no-dedupe", "--prefix", "depth",
+           "--format", "{p}|{f}", "-e", "normal,build,dev" if test else "normal,build"]
+    cmd += ["--workspace"] if workspace else ["-p", SHIM]
+    if test:
+        cmd += ["--all-features"]
+    rows = []
+    root = None
+    with subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, text=True) as proc:
+        for raw in proc.stdout:
+            line = raw.rstrip()
+            if not line:
+                continue
+            if line.startswith("0"):
+                root = line[1:].split()[0]
+            if root == SHIM:
+                package, features = line.split("|", 1)
+                package = re.sub(r" \(/[^)]+\)", " (workspace)", package)
+                rows.append(f"{package}|{','.join(sorted(filter(None, features.split(','))))}")
+        if proc.wait():
+            raise subprocess.CalledProcessError(proc.returncode, cmd)
+    if not rows:
+        raise ValueError("reviewed shim graph missing from Cargo tree")
+    return ("\n".join(rows) + "\n").encode()
+
+
+def built_chrono_problems(entry: dict, graphs: tuple[dict, ...], lock: dict,
+                          today: date, evidence: dict) -> list[str]:
+    """D-049 validates each actual combined graph and the exact development review."""
+    problems = []
+    for graph in graphs:
+        if set(graph) != set(MEMBERS):
+            problems.append("D-049 requires a complete combined workspace graph")
+        if not {CHRONO, ("rmcp", "3.9.0")} <= graph.get(SHIM, set()):
+            problems.append("D-049 requires the exact rmcp 3.9.0 / chrono 0.4.45 shim")
+        for member, packages in sorted(graph.items()):
+            for name, version in sorted(packages):
+                if (name == "chrono" or name.startswith("rmcp") or name == SHIM) and (
+                    member != SHIM or (name, version) not in {CHRONO, ("rmcp", "3.9.0")}
+                ):
+                    problems.append(f"D-049: {member} reaches out-of-scope package {name} {version}")
+    if (entry.get("decision"), entry.get("ids"), entry.get("member")) != (
+        "D-049", ["RUSTSEC-2026-0543"], SHIM
+    ):
+        problems.append("D-049 covers only the exact Chrono maintenance advisory in the shim")
+    if today >= date.fromisoformat(entry["expires_on"]):
+        problems.append(f"D-049 built Chrono exception expired on {entry['expires_on']} UTC")
+    if entry.get("checksum") != lock.get(CHRONO, {}).get("checksum") or CHRONO not in lock:
+        problems.append("D-049 Chrono checksum differs from the reviewed one")
+    for key, digest in evidence.items():
+        if entry.get("review_sha256", {}).get(key) != digest:
+            problems.append(f"D-049 {key} changed, review dependencies before building the candidate")
+    return problems
+
+
+def shim_review_evidence() -> dict:
+    return {name: hashlib.sha256(content).hexdigest() for name, content in {
+        "lock": (ROOT / "Cargo.lock").read_bytes(),
+        "standalone_all": shim_review_graph("all"),
+        "standalone_linux": shim_review_graph("x86_64-unknown-linux-gnu"),
+        "combined_all": shim_review_graph("all", workspace=True),
+        "combined_test_all": shim_review_graph("all", workspace=True, test=True),
+    }.items()}
+
+
 def osv(pkgs: list[dict]) -> dict:
     body = json.dumps({"queries": [{"package": {"ecosystem": "crates.io", "name": p["name"]}, "version": p["version"]}
                                    for p in pkgs]}).encode()
@@ -711,18 +784,41 @@ def main() -> int:
         problems.append(f"combined release build: {p[0]} {p[1]} not approved by any member")
     for p in sorted(set().union(*test.values()) - approved - dev_approved):
         problems.append(f"combined test build: {p[0]} {p[1]} not approved by any member (normal or dev)")
-    for k in sorted(set(unbuilt) & set().union(*test.values())):
-        problems.append(f"{k[0]} {k[1]} is recorded as locked but never built, yet a supported build uses it (review it)")
-    if any(entry.get("locked_only") for entry in exceptions.values()):
-        all_features = combined("normal,build,dev", all_features=True)
-        scope_problems = locked_only_problems(exceptions, unbuilt, all_features)
-        problems += scope_problems
-        if scope_problems:
-            exceptions = {key: entry for key, entry in exceptions.items() if not entry.get("locked_only")}
+    all_features = combined("normal,build,dev", all_features=True)
+    built_entry = allows[SHIM].get("built_advisory_exception", {})
+    built = any(CHRONO in packages for packages in all_features.values())
+    combined_built = set().union(*test.values())
+    overlap = (set(unbuilt) & combined_built) - {CHRONO}
+    reviewed_shim = set()
+    if built:
+        # D-048 never applies to a compiled package, even if D-049 is invalid or expired.
+        exceptions.pop(CHRONO_KEY, None)
+        if not built_entry:
+            problems.append("built Chrono requires a separate D-049 disposition")
+        else:
+            scope = built_chrono_problems(built_entry, (release, test, all_features), by_key,
+                                          datetime.now(UTC).date(), shim_review_evidence())
+            problems += scope
+            if not scope:
+                exceptions[CHRONO_KEY] = built_entry
+                # The reviewed shim activates dependencies otherwise kept only
+                # in the lock by approval. They stay unbuilt outside this shim.
+                outside_shim = set().union(*(packages for graph in (release, test, all_features)
+                                             for member, packages in graph.items() if member != SHIM))
+                reviewed_shim = approved_keys(allows[SHIM]["packages"]) - outside_shim
+            if a.release:
+                problems.append("D-049 is development-only and the built candidate is not release eligible")
+    for name, version in sorted(overlap - reviewed_shim):
+        problems.append(f"{name} {version} is recorded as locked but never built, yet a supported build uses it (review it)")
+    scope_problems = locked_only_problems(exceptions, unbuilt, all_features)
+    problems += scope_problems
+    if scope_problems:
+        exceptions = {key: entry for key, entry in exceptions.items() if not entry.get("locked_only")}
     kernel_extra = sorted(release.get("writ-kernel", set()) - clos.get("writ-kernel", set()))
     notes = []
+    hits = osv(pkgs) if a.osv or a.release else {}
     if a.osv or a.release:
-        adv_problems, notes = advisories(osv(pkgs), exceptions, a.release)
+        adv_problems, notes = advisories(hits, exceptions, a.release)
         problems += [f"advisory: {x}" for x in adv_problems]
     if a.sbom:
         props = {}
@@ -735,10 +831,16 @@ def main() -> int:
                     out.append({"name": "writ:allow-list", "value": f"{allow_path} {group}"})
                     if entry.get("licence_decision"):
                         out.append({"name": "writ:licence-decision", "value": entry["licence_decision"]})
-            for key, exc in allow.get("advisory_exceptions", {}).items():
+        for (name, ver), ids in hits.items():
+            props.setdefault((name, ver), []).extend(
+                {"name": "writ:advisory", "value": advisory} for advisory in ids)
+        if not a.release:
+            for key, exc in exceptions.items():
                 name, ver = key.split("@", 1)
+                expiry = f", expires {exc['expires_on']} UTC" if exc.get("expires_on") else ""
                 props.setdefault((name, ver), []).append(
-                    {"name": "writ:advisory-exception", "value": f"{exc['scope']} {exc['ids']} ({exc['decision']})"})
+                    {"name": "writ:advisory-exception",
+                     "value": f"{exc['scope']} {exc['ids']} ({exc['decision']}){expiry}"})
         a.sbom.write_text(json.dumps({"bomFormat": "CycloneDX", "specVersion": "1.5", "components": [
             {"type": "library", "name": p["name"], "version": p["version"], "purl": f"pkg:cargo/{p['name']}@{p['version']}",
              "licenses": [{"expression": lic.get((p["name"], p["version"]))}],

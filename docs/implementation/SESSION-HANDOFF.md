@@ -4,20 +4,22 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 
 ## Current recovery state
 
-M5 blocker-resolution checkpoint, 2026-11-18. Start a fresh chat from this section and [WORK-STATE](WORK-STATE.md).
+M5 development MCP shim checkpoint. Start a fresh chat from this section and [WORK-STATE](WORK-STATE.md).
 
-### Repository and execution evidence
+### Repository and verification
 
-- Started from `083e22c35db139894f2bb378d1f4b4fa5ca286db` on `infinri/Writ` branch `v2/architecture-rebuild`. Verified GitHub had that head and all six jobs passed in [required CI run 44415046715](https://github.com/infinri/Writ/actions/runs/44415046715). This checkpoint is a documentation-only descendant. On recovery, verify the branch and required workflow by exact SHA.
-- The isolated checkout is `/home/agent/workspace/Writ-guest-source`. The original checkout retains the divergent local `a1eee0d40e2e331046640d98497c2fbc1b3e0d0f` and unrelated work. Keep the private hook-audit material out of review and publication.
-- The [guest inventory source](../../m5/reference-vm/DESKTOP-PROBE.md#guest-inventory) ships at the starting SHA. E-094 records synthetic and refusal evidence. E-095 records this batch's actual preflight and dependency investigation. Positive guest inventory and every live desktop denial, control and readiness check remain open.
+- Started from `cc43dc397de1c76dd3aa464b30865a2993ab0c33` on `infinri/Writ` branch `v2/architecture-rebuild`. Verified the remote SHA and all six jobs in [required CI run 44421116315](https://github.com/infinri/Writ/actions/runs/44421116315). On recovery, verify the published descendant and its exact-SHA required CI.
+- The isolated checkout is `/home/agent/workspace/Writ-guest-source`. The original checkout retains the divergent `a1eee0d40e2e331046640d98497c2fbc1b3e0d0f` and unrelated work. Keep private hook-audit material out of review and publication.
+
+### Implemented and exercised
+
+- [Development MCP shim](../../m5/mcp-shim/README.md), under D-047 and D-049. rmcp 3.9.0 negotiates 2025-11-25. Typed arrival-order admission and test-only recording-peer forwarding were exercised over OS pipes, and the public executable was exercised as a subprocess. The live executable has no effect backend. E-096 records what ran.
+- The [final dependency review](m5-deps/d047-rmcp-review.md#d-049-final-adoption-review) records exact checksums, enabled features and standalone and combined graph fingerprints. D-049 expires at the start of 2026-12-18 UTC and applies only to the built shim and the Chrono maintenance advisory. Changed graphs require review. D-048 continues to cover the original unbuilt lock entry. The SDK and Chrono are absent from the kernel, broker and service closures. The built candidate fails release eligibility.
 
 ### External prerequisites and next action
 
-- The sandbox lacks KVM access and provisioning tools. Follow the [owner provisioning sequence](../../m5/reference-vm/PROVISIONING.md) on the owner host. Once an owner-designated, rollback-ready Ubuntu 24.04 guest is available, run only the documented [first inventory procedure](../../m5/reference-vm/PROVISIONING.md#first-guest-inventory) and record its actual evidence. Resolve any refusal in the guest without weakening guards. Passive target classification and path/session identity wait for positive inventory evidence.
-- MCP adoption stays held. The [M5b-02 decision packet](m5-deps/d047-rmcp-review.md) records the candidate graph, lifecycle requirements and recheck trigger. D-048 applies only to locked but unbuilt Chrono 0.4.45. Keep MCP and model SDKs out of kernel, broker and service closures. Governed integration requires verified M5a foundations.
-- The [full M5a reference checklist](M5A-GATE-REVIEW.md#4-verify-in-vm-checklist-all-open) and the [isolated containment CI gate](../../m5/containment-ci/README.md) remain open. The latter independently requires the restricted control repository, runner group, host provisioner, exact gate wrapper and status App. Ordinary CI provides user-space evidence.
-- Live-model trials later require a dedicated revocable credential. Device trials later require an owner-operated roaming FIDO2 key and platform authenticator. The referenced trial checklists still govern their prerequisites.
+- Wait for the owner-designated Ubuntu 24.04 guest. Run the documented [first inventory procedure](../../m5/reference-vm/PROVISIONING.md#first-guest-inventory) using the inventory source already implemented in E-094. Collect actual positive evidence before extending passive collection. Inspect refusals without weakening guards.
+- Preserve the [full reference checklist](M5A-GATE-REVIEW.md#4-verify-in-vm-checklist-all-open) and the [separate isolated containment CI gate](../../m5/containment-ci/README.md). Ordinary CI and the recording RPC peer supply development evidence. Governed activation, real effect ingress and broker composition require verified M5a foundations. Live-model and hardware trials have separate prerequisites in WORK-STATE.
 - M5 remains in progress. ADR-0008 remains APPROVED IN PRINCIPLE. Release and production remain NO-GO.
 
 ## Prior checkpoints

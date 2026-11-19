@@ -1203,7 +1203,7 @@
       "version": "0.4.45",
       "checksum": "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327",
       "licence": "MIT OR Apache-2.0",
-      "role": "in Cargo.lock only (optional dependency of an approved package, never enabled); no supported build compiles it"
+      "role": "Optional WebAuthn dependency, never built through the approval closure (D-048). D-049 independently gates the shim graph."
     },
     "core-foundation-sys": {
       "version": "0.8.7",

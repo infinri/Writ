@@ -96,3 +96,9 @@ The Unicode-3.0 part covers Unicode data tables in these packages; the code part
 ### Disjunctive licences used under the MIT or Apache-2.0 option
 
 Exact entries in `approval/deps-allowlist.json` (`licence_decision`) for packages offering MIT or Apache-2.0 among other options (for example `fiat-crypto`, `r-efi`, `wasi`, `memchr`, `zerocopy`, `tinyvec`); Writ uses them under MIT or Apache-2.0.
+
+## Development-only MCP shim (D-047, D-049)
+
+The Linux development shim uses unmodified registry artifacts. D-047 approves Apache-2.0 for [rmcp 3.9.0](https://crates.io/crates/rmcp/3.9.0) only. The archive contains the Apache-2.0 licence and matches SHA-256 `d24a7e92f4bcaa36b97fa93c4fa7ca8f3e669eced949345b3462dba333c7f909`. Exact transitive versions, checksums and licence choices appear in the [shim allow-list](m5/mcp-shim/deps-allowlist.json) and generated SBOM.
+
+The shim compiles Chrono 0.4.45 under MIT or Apache-2.0, archive SHA-256 `1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327`. [RUSTSEC-2026-0543](https://rustsec.org/advisories/RUSTSEC-2026-0543.html) is an informational unmaintained notice with no patched version. D-049 is scoped to this exact development graph and expires on 2026-12-18 UTC. The separate D-048 disposition applies when the package is locked but unbuilt. Release eligibility remains blocked.

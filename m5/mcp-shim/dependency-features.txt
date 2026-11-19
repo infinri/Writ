@@ -1,0 +1,210 @@
+# D-049 effective package features, Cargo 1.99.1
+# Each row is package/version|comma-separated active features.
+# Exact registry identities and checksums are in deps-allowlist.json.
+
+[standalone all-targets]
+android_system_properties v0.1.6|
+autocfg v1.5.1|
+bitflags v2.13.2|std
+block-buffer v0.10.4|
+block-buffer v0.12.1|
+bumpalo v3.20.4|default
+bytes v1.12.1|default,std
+cc v1.11.2|
+cfg-if v1.0.5|
+chrono v0.4.45|alloc,clock,iana-time-zone,now,oldtime,serde,std,winapi,windows-link
+const-oid v0.10.2|
+core-foundation-sys v0.8.7|default,link
+cpufeatures v0.2.17|
+cpufeatures v0.3.1|
+crypto-common v0.1.7|
+crypto-common v0.2.2|
+digest v0.10.7|block-buffer,core-api,default
+digest v0.11.3|alloc,block-api,default,oid
+dyn-clone v1.0.20|
+equivalent v1.0.3|
+errno v0.3.14|std
+find-msvc-tools v0.1.15|
+futures v0.3.34|alloc,async-await,default,executor,futures-executor,std
+futures-channel v0.3.34|alloc,futures-sink,sink,std
+futures-core v0.3.34|alloc,default,std
+futures-executor v0.3.34|std
+futures-io v0.3.34|std
+futures-macro v0.3.34 (proc-macro)|
+futures-sink v0.3.34|alloc,default,std
+futures-task v0.3.34|alloc,std
+futures-util v0.3.34|alloc,async-await,async-await-macro,channel,futures-channel,futures-io,futures-macro,futures-sink,io,memchr,sink,slab,std
+generic-array v0.14.7|more_lengths
+getrandom v0.4.3|
+hashbrown v0.17.1|
+hybrid-array v0.4.15|
+iana-time-zone v0.1.65|fallback
+iana-time-zone-haiku v0.1.2|
+indexmap v2.14.2|default,serde,std
+itoa v1.0.18|
+js-sys v0.3.107|default,std,unsafe-eval
+libc v0.2.191|default,std
+linux-raw-sys v0.12.1|auxvec,elf,errno,general,if_ether,ioctl,net,netlink,no_std,prctl,xdp
+log v0.4.35|
+memchr v2.8.3|alloc,default,std
+mio v1.2.4|net,os-ext,os-poll
+num-traits v0.2.19|
+once_cell v1.21.4|alloc,default,race,std
+pastey v0.2.3 (proc-macro)|
+pin-project-lite v0.2.17|
+proc-macro2 v1.0.107|default,proc-macro
+quote v1.0.47|default,proc-macro
+r-efi v6.0.0|
+ref-cast v1.0.27|
+ref-cast-impl v1.0.27 (proc-macro)|
+rmcp v3.9.0|schemars,server,transport-async-rw,uuid
+rustix v1.1.6|alloc,fs,net,process,std
+rustversion v1.0.23 (proc-macro)|
+schemars v1.2.3|chrono04,default,derive,schemars_derive,std
+schemars_derive v1.2.3 (proc-macro)|
+serde v1.0.229|alloc,default,derive,rc,serde_derive,std
+serde_core v1.0.229|alloc,rc,result,std
+serde_derive v1.0.229 (proc-macro)|default
+serde_derive_internals v0.30.0|
+serde_json v1.0.154|alloc,default,std
+sha2 v0.10.8|
+sha2 v0.11.1|alloc,default,oid
+shlex v2.0.1|default,std
+slab v0.4.12|std
+socket2 v0.6.5|all
+syn v2.0.119|clone-impls,extra-traits,full,parsing,printing,proc-macro,visit-mut
+syn v3.0.9|clone-impls,default,derive,extra-traits,full,parsing,printing,proc-macro,visit,visit-mut
+thiserror v2.0.21|default,std
+thiserror-impl v2.0.21 (proc-macro)|
+tokio v1.54.1|bytes,default,io-util,libc,macros,mio,net,rt,socket2,sync,time,tokio-macros,windows-sys
+tokio-macros v2.7.2 (proc-macro)|
+tokio-util v0.7.20|codec,default,libc
+tracing v0.1.44|attributes,default,std,tracing-attributes
+tracing-attributes v0.1.31 (proc-macro)|
+tracing-core v0.1.36|once_cell,std
+typenum v1.20.1|const-generics
+unicode-ident v1.0.27|
+uuid v1.29.0|default,rng,std,v4
+version_check v0.9.5|
+wasi v0.11.1+wasi-snapshot-preview1|default,std
+wasm-bindgen v0.2.130|default,std
+wasm-bindgen-macro v0.2.130 (proc-macro)|
+wasm-bindgen-macro-support v0.2.130|
+wasm-bindgen-shared v0.2.130|
+windows-core v0.62.2|default,std
+windows-implement v0.60.2 (proc-macro)|
+windows-interface v0.59.3 (proc-macro)|
+windows-link v0.2.1|
+windows-result v0.4.1|std
+windows-strings v0.5.1|std
+windows-sys v0.61.2|Wdk,Wdk_Foundation,Wdk_Storage,Wdk_Storage_FileSystem,Wdk_System,Wdk_System_IO,Win32,Win32_Foundation,Win32_Networking,Win32_Networking_WinSock,Win32_Security,Win32_Storage,Win32_Storage_FileSystem,Win32_System,Win32_System_Diagnostics,Win32_System_Diagnostics_Debug,Win32_System_IO,Win32_System_Pipes,Win32_System_SystemServices,Win32_System_Threading,Win32_System_WindowsProgramming,default
+writ-hostsys v0.1.0 (workspace)|
+writ-kernel v0.1.0 (workspace)|
+writ-mcp-shim v0.1.0 (workspace)|
+writ-rpc v0.1.0 (workspace)|
+zmij v1.0.23|
+
+[standalone-linux difference from standalone all-targets]
+- android_system_properties v0.1.6|
+- bumpalo v3.20.4|default
+- cc v1.11.2|
+- chrono v0.4.45|alloc,clock,iana-time-zone,now,oldtime,serde,std,winapi,windows-link
+- core-foundation-sys v0.8.7|default,link
+- errno v0.3.14|std
+- find-msvc-tools v0.1.15|
+- iana-time-zone v0.1.65|fallback
+- iana-time-zone-haiku v0.1.2|
+- js-sys v0.3.107|default,std,unsafe-eval
+- log v0.4.35|
+- r-efi v6.0.0|
+- rustversion v1.0.23 (proc-macro)|
+- shlex v2.0.1|default,std
+- syn v3.0.9|clone-impls,default,derive,extra-traits,full,parsing,printing,proc-macro,visit,visit-mut
+- tokio v1.54.1|bytes,default,io-util,libc,macros,mio,net,rt,socket2,sync,time,tokio-macros,windows-sys
+- wasi v0.11.1+wasi-snapshot-preview1|default,std
+- wasm-bindgen v0.2.130|default,std
+- wasm-bindgen-macro v0.2.130 (proc-macro)|
+- wasm-bindgen-macro-support v0.2.130|
+- wasm-bindgen-shared v0.2.130|
+- windows-core v0.62.2|default,std
+- windows-implement v0.60.2 (proc-macro)|
+- windows-interface v0.59.3 (proc-macro)|
+- windows-link v0.2.1|
+- windows-result v0.4.1|std
+- windows-strings v0.5.1|std
+- windows-sys v0.61.2|Wdk,Wdk_Foundation,Wdk_Storage,Wdk_Storage_FileSystem,Wdk_System,Wdk_System_IO,Win32,Win32_Foundation,Win32_Networking,Win32_Networking_WinSock,Win32_Security,Win32_Storage,Win32_Storage_FileSystem,Win32_System,Win32_System_Diagnostics,Win32_System_Diagnostics_Debug,Win32_System_IO,Win32_System_Pipes,Win32_System_SystemServices,Win32_System_Threading,Win32_System_WindowsProgramming,default
++ chrono v0.4.45|alloc,now,serde,std
++ syn v3.0.9|clone-impls,default,derive,full,parsing,printing,proc-macro
++ tokio v1.54.1|bytes,default,io-util,libc,macros,mio,net,rt,socket2,sync,time,tokio-macros
+
+[combined-all difference from standalone all-targets]
+- const-oid v0.10.2|
+- crypto-common v0.2.2|
+- digest v0.10.7|block-buffer,core-api,default
+- digest v0.11.3|alloc,block-api,default,oid
+- errno v0.3.14|std
+- getrandom v0.4.3|
+- hybrid-array v0.4.15|
+- num-traits v0.2.19|
+- rustix v1.1.6|alloc,fs,net,process,std
+- syn v2.0.119|clone-impls,extra-traits,full,parsing,printing,proc-macro,visit-mut
+- syn v3.0.9|clone-impls,default,derive,extra-traits,full,parsing,printing,proc-macro,visit,visit-mut
+- tokio v1.54.1|bytes,default,io-util,libc,macros,mio,net,rt,socket2,sync,time,tokio-macros,windows-sys
+- uuid v1.29.0|default,rng,std,v4
+- windows-sys v0.61.2|Wdk,Wdk_Foundation,Wdk_Storage,Wdk_Storage_FileSystem,Wdk_System,Wdk_System_IO,Win32,Win32_Foundation,Win32_Networking,Win32_Networking_WinSock,Win32_Security,Win32_Storage,Win32_Storage_FileSystem,Win32_System,Win32_System_Diagnostics,Win32_System_Diagnostics_Debug,Win32_System_IO,Win32_System_Pipes,Win32_System_SystemServices,Win32_System_Threading,Win32_System_WindowsProgramming,default
++ cmov v0.5.4|
++ const-oid v0.10.2|db
++ crypto-common v0.2.2|getrandom,rand_core
++ ctutils v0.4.7|subtle
++ digest v0.10.7|block-buffer,core-api,default,mac,subtle
++ digest v0.11.3|alloc,block-api,default,mac,oid
++ errno v0.3.14|default,std
++ getrandom v0.4.3|std,sys_rng
++ hybrid-array v0.4.15|alloc,serde,subtle,zeroize
++ num-traits v0.2.19|default,i128,std
++ rand_core v0.10.1|
++ rustix v1.1.6|alloc,event,fs,net,pipe,process,std,thread,time
++ signal-hook-registry v1.4.8|
++ subtle v2.6.1|const-generics,default,i128,std
++ syn v2.0.119|clone-impls,default,derive,extra-traits,full,parsing,printing,proc-macro,visit,visit-mut
++ syn v3.0.9|clone-impls,default,derive,extra-traits,fold,full,parsing,printing,proc-macro,visit,visit-mut
++ tokio v1.54.1|bytes,default,io-util,libc,macros,mio,net,rt,signal,signal-hook-registry,socket2,sync,time,tokio-macros,windows-sys
++ uuid v1.29.0|default,rng,serde,std,v4
++ windows-sys v0.61.2|Wdk,Wdk_Foundation,Wdk_Storage,Wdk_Storage_FileSystem,Wdk_System,Wdk_System_IO,Win32,Win32_Foundation,Win32_Networking,Win32_Networking_WinSock,Win32_Security,Win32_Storage,Win32_Storage_FileSystem,Win32_System,Win32_System_Console,Win32_System_Diagnostics,Win32_System_Diagnostics_Debug,Win32_System_IO,Win32_System_Pipes,Win32_System_SystemServices,Win32_System_Threading,Win32_System_WindowsProgramming,default
++ zeroize v1.9.1|alloc,default,serde
+
+[combined-test-all difference from standalone all-targets]
+- const-oid v0.10.2|
+- crypto-common v0.2.2|
+- digest v0.10.7|block-buffer,core-api,default
+- digest v0.11.3|alloc,block-api,default,oid
+- errno v0.3.14|std
+- getrandom v0.4.3|
+- hybrid-array v0.4.15|
+- num-traits v0.2.19|
+- rustix v1.1.6|alloc,fs,net,process,std
+- syn v2.0.119|clone-impls,extra-traits,full,parsing,printing,proc-macro,visit-mut
+- syn v3.0.9|clone-impls,default,derive,extra-traits,full,parsing,printing,proc-macro,visit,visit-mut
+- tokio v1.54.1|bytes,default,io-util,libc,macros,mio,net,rt,socket2,sync,time,tokio-macros,windows-sys
+- uuid v1.29.0|default,rng,std,v4
+- windows-sys v0.61.2|Wdk,Wdk_Foundation,Wdk_Storage,Wdk_Storage_FileSystem,Wdk_System,Wdk_System_IO,Win32,Win32_Foundation,Win32_Networking,Win32_Networking_WinSock,Win32_Security,Win32_Storage,Win32_Storage_FileSystem,Win32_System,Win32_System_Diagnostics,Win32_System_Diagnostics_Debug,Win32_System_IO,Win32_System_Pipes,Win32_System_SystemServices,Win32_System_Threading,Win32_System_WindowsProgramming,default
++ cmov v0.5.4|
++ const-oid v0.10.2|db
++ crypto-common v0.2.2|getrandom,rand_core
++ ctutils v0.4.7|subtle
++ digest v0.10.7|block-buffer,core-api,default,mac,subtle
++ digest v0.11.3|alloc,block-api,default,mac,oid
++ errno v0.3.14|default,std
++ getrandom v0.4.3|std,sys_rng
++ hybrid-array v0.4.15|alloc,serde,subtle,zeroize
++ num-traits v0.2.19|default,i128,std
++ rand_core v0.10.1|
++ rustix v1.1.6|alloc,event,fs,net,pipe,process,std,thread,time
++ signal-hook-registry v1.4.8|
++ subtle v2.6.1|const-generics,default,i128,std
++ syn v2.0.119|clone-impls,default,derive,extra-traits,full,parsing,printing,proc-macro,visit,visit-mut
++ syn v3.0.9|clone-impls,default,derive,extra-traits,fold,full,parsing,printing,proc-macro,visit,visit-mut
++ tokio v1.54.1|bytes,default,io-util,libc,macros,mio,net,rt,rt-multi-thread,signal,signal-hook-registry,socket2,sync,test-util,time,tokio-macros,windows-sys
++ uuid v1.29.0|default,rng,serde,std,v4
++ windows-sys v0.61.2|Wdk,Wdk_Foundation,Wdk_Storage,Wdk_Storage_FileSystem,Wdk_System,Wdk_System_IO,Win32,Win32_Foundation,Win32_Networking,Win32_Networking_WinSock,Win32_Security,Win32_Storage,Win32_Storage_FileSystem,Win32_System,Win32_System_Console,Win32_System_Diagnostics,Win32_System_Diagnostics_Debug,Win32_System_IO,Win32_System_Pipes,Win32_System_SystemServices,Win32_System_Threading,Win32_System_WindowsProgramming,default
++ zeroize v1.9.1|alloc,default,serde

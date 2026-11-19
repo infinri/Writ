@@ -1,0 +1,21 @@
+[package]
+name = "writ-mcp-shim"
+version = "0.1.0"
+description = "Writ development MCP agent-side shim (M5b-02, M5b-03)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rmcp = { version = "=3.9.0", default-features = false, features = ["server", "transport-async-rw"] }
+tokio = { version = "=1.54.1", default-features = false, features = ["rt", "io-util", "net", "sync", "time"] }
+writ-hostsys = { path = "../../hostsys" }
+writ-kernel = { path = "../../kernel" }
+writ-rpc = { path = "../../rpc" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+serde_json = { version = "=1.0.154", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

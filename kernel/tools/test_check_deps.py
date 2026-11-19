@@ -127,6 +127,37 @@ class Advisories(unittest.TestCase):
         graph["writ-approval"].add(key)
         self.assertIn("chrono@0.4.45", check_deps.locked_only_problems(exceptions, unbuilt, graph)[0])
 
+    def test_built_chrono_exact_graph_scope_expiry_and_new_advisory(self):
+        from datetime import date
+
+        key = check_deps.CHRONO
+        allow = json.loads((check_deps.ROOT / check_deps.MEMBERS[check_deps.SHIM]).read_text())
+        entry = allow["built_advisory_exception"]
+        graph = {member: set() for member in check_deps.MEMBERS}
+        graph[check_deps.SHIM] = {key, ("rmcp", "3.9.0")}
+        lock = {key: {"checksum": entry["checksum"]}}
+        review = entry["review_sha256"]
+        before = date(2026, 12, 17)
+        check = check_deps.built_chrono_problems
+
+        self.assertEqual(check(entry, (graph,), lock, before, review), [])
+        self.assertIn("expired", check(entry, (graph,), lock, date(2026, 12, 18), review)[0])
+        self.assertIn("checksum", check(entry, (graph,), {}, before, review)[0])
+        self.assertIn("standalone_all changed", check(entry, (graph,), lock, before,
+                                                     {**review, "standalone_all": "different"})[0])
+        for member in ("writ-kernel", "writ-broker", "writ-service", "writ-approval"):
+            for package in (key, ("rmcp", "3.9.0"), (check_deps.SHIM, "0.1.0")):
+                with self.subTest(member=member, package=package):
+                    contaminated = {**graph, member: {package}}
+                    self.assertIn("out-of-scope", check(entry, (graph, contaminated), lock, before, review)[0])
+        self.assertIn("complete", check(entry, ({check_deps.SHIM: graph[check_deps.SHIM]},),
+                                         lock, before, review)[0])
+        hit = {key: entry["ids"]}
+        exceptions = {check_deps.CHRONO_KEY: entry}
+        self.assertEqual(len(check_deps.advisories(hit, exceptions, False)[1]), 1)
+        self.assertEqual(len(check_deps.advisories(hit, exceptions, True)[0]), 1)
+        self.assertEqual(len(check_deps.advisories({key: [*entry["ids"], "NEW"]}, exceptions, False)[0]), 1)
+
     def test_all_features_graph_rejects_an_unknown_row(self):
         with patch.object(check_deps.subprocess, "run") as cargo:
             cargo.return_value.stdout = "0writ-approval v0.1.0 (/checkout/approval)\n1unknown dependency row\n"

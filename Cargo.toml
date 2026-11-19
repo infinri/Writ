@@ -1,9 +1,9 @@
-# Writ V2 production Rust workspace (ADR-0002 ACCEPTED, D-030).
-# Only production crates are members. m0/ (Python reference harness) and m1/ (bake-off
-# prototypes and evidence) stay outside the workspace and are never built from here.
+# Writ V2 Rust workspace (ADR-0002 ACCEPTED, D-030).
+# Includes the development-only MCP shim. The M0 reference harness and the M1
+# bake-off prototypes stay outside the workspace.
 [workspace]
 resolver = "2"
-members = ["kernel", "broker", "persistence/sqlite", "approval", "approval-server", "keys", "hostsys", "rpc", "service", "containment", "fs-effects"]
+members = ["kernel", "broker", "persistence/sqlite", "approval", "approval-server", "keys", "hostsys", "rpc", "service", "containment", "fs-effects", "m5/mcp-shim"]
 exclude = ["m0", "m1"]
 
 [workspace.package]
