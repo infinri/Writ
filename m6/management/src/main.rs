@@ -39,6 +39,10 @@ fn run() -> Result<Vec<u8>, Error> {
             pack_fixture::initialize(Path::new(registry), Path::new(evaluator))?;
             Ok(br#"{"ok":true,"result":{"initialized":true},"version":"/manage/v1"}"#.to_vec())
         }
+        [command, management] if command == "recover-management-storage" => {
+            Store::open(Path::new(management))?;
+            Ok(br#"{"ok":true,"result":{"recovered":true},"version":"/manage/v1"}"#.to_vec())
+        }
         [command, registry] if command == "recover-contract-storage" => {
             ContractRegistry::recover_storage(Path::new(registry), &contract_fixture::scope())?;
             Ok(br#"{"ok":true,"result":{"recovered":true},"version":"/manage/v1"}"#.to_vec())

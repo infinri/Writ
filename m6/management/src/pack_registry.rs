@@ -183,7 +183,7 @@ impl<'a> PackRegistry<'a> {
         }
 
         let db = self.contracts.pack_connection(false)?;
-        if let Some(receipt) = known_receipt(&db, caller, &key, request.as_str())? {
+        if let Some(receipt) = known_receipt(&db, caller, &key, request.as_str(), false)? {
             return Ok(receipt);
         }
         drop(db);
@@ -193,7 +193,7 @@ impl<'a> PackRegistry<'a> {
             let tx = db
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(unavailable)?;
-            if let Some(receipt) = known_receipt(&tx, caller, &key, request.as_str())? {
+            if let Some(receipt) = known_receipt(&tx, caller, &key, request.as_str(), true)? {
                 return Ok(receipt);
             }
             let prepared = self.prepare(&tx, snapshot, caller, &change)?;
@@ -653,6 +653,7 @@ fn known_receipt(
     caller: &Caller<'_>,
     key: &Idempotency,
     request: &str,
+    owner_locked: bool,
 ) -> Result<Option<Value>> {
     if let Some(management) = caller.management {
         match management.correlation(LifecycleKind::Pack, &key.raw) {
@@ -662,6 +663,9 @@ fn known_receipt(
                 }
                 return recover(db, caller, key, &correlation).map(Some);
             }
+            // The owner audit can become visible after the first correlation read.
+            // Require the owner writer reservation before treating a miss as final.
+            Err(Error::NotFound) if !owner_locked => return Ok(None),
             Err(Error::NotFound) => {}
             Err(error) => return Err(error),
         }

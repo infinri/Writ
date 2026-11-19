@@ -359,3 +359,175 @@ fn pack_storage_and_audit_failures_leave_no_authoritative_receipt() {
     }
     assert_history(&lab, 2, Some("1.0.0"), &[&install, &response]);
 }
+
+#[test]
+fn concurrent_exact_retries_share_the_committed_receipt() {
+    let lab = Lab::new();
+    let contract = lab.publish_contract("1.0.0", 0);
+    let install = install_first(&lab, &contract);
+    let enable = enable_request(&lab, 1);
+    let (original, retry) = enable_before_dependency(&lab, &enable, &lab.contracts, &enable);
+    result(&original);
+    assert_eq!(retry, original);
+    assert_history(&lab, 2, Some("1.0.0"), &[&install, &original]);
+}
+
+struct CrashAuthority<'a> {
+    authority: &'a FixturePackAuthority,
+    ready: &'a Path,
+}
+
+struct CrashApproval<'a> {
+    approval: Box<dyn CurrentContractApproval + 'a>,
+    ready: &'a Path,
+    checked: std::cell::Cell<bool>,
+}
+
+impl CurrentContractApproval for CrashApproval<'_> {
+    fn ceremony(&self) -> &writ_kernel::json::Digest {
+        self.approval.ceremony()
+    }
+
+    fn still_valid(&self) -> bool {
+        let valid = self.approval.still_valid();
+        if valid && self.checked.replace(true) {
+            await_kill(self.ready);
+        }
+        valid
+    }
+}
+
+impl PackAuthority for CrashAuthority<'_> {
+    fn now(&self) -> Result<Timestamp> {
+        self.authority.now()
+    }
+
+    fn publisher(
+        &self,
+        scope: &Scope,
+        pack_id: &str,
+        publisher: &str,
+        key_id: &str,
+        message: &[u8],
+        signature: &str,
+    ) -> Result<Box<dyn CurrentPackPublisher + '_>> {
+        self.authority
+            .publisher(scope, pack_id, publisher, key_id, message, signature)
+    }
+
+    fn approve(
+        &self,
+        intent: &Value,
+        presentation: &str,
+    ) -> Result<Box<dyn CurrentContractApproval + '_>> {
+        Ok(Box::new(CrashApproval {
+            approval: self.authority.approve(intent, presentation)?,
+            ready: self.ready,
+            checked: std::cell::Cell::new(false),
+        }))
+    }
+}
+
+fn await_kill(ready: &Path) -> ! {
+    fs::write(ready, b"ready").unwrap();
+    loop {
+        thread::park();
+    }
+}
+
+fn crash_child(dir: PathBuf) {
+    let store = Store::open_without_recovery(&dir.join("management.sqlite")).unwrap();
+    let contracts = contract_fixture::open(&dir.join("contracts.sqlite")).unwrap();
+    let evaluator = dir.join("evaluator.sqlite");
+    let ready = dir.join("crash-ready");
+    let mode = fs::read_to_string(dir.join("crash-mode")).unwrap();
+    let input = fs::read(dir.join("crash-request")).unwrap();
+    let authority = fixture::authority();
+    let trust = FixturePackAuthority::default();
+    let crash_before = CrashAuthority {
+        authority: &trust,
+        ready: &ready,
+    };
+    let pack_authority: &dyn PackAuthority = if mode == "before-owner-commit" {
+        &crash_before
+    } else {
+        &trust
+    };
+    let packs = PackRegistry::new(
+        &contracts,
+        &evaluator,
+        evaluator_fixture::pack_dependencies(),
+        pack_authority,
+    );
+    let service = Service::new(&store, Some(&authority)).with_packs(&packs);
+    let response = execute_v1_with_service(&service, PUBLISHER.as_bytes(), &input);
+    assert_eq!(mode, "after-owner-commit");
+    fs::write(dir.join("crash-response"), response).unwrap();
+    await_kill(&ready);
+}
+
+#[test]
+fn process_death_on_either_side_of_owner_commit_recovers_exactly() {
+    const CHILD: &str = "WRIT_TEST_PACK_CRASH_DIRECTORY";
+    if let Some(dir) = std::env::var_os(CHILD) {
+        crash_child(dir.into());
+        return;
+    }
+
+    for mode in ["before-owner-commit", "after-owner-commit"] {
+        let lab = Lab::new();
+        let contract = lab.publish_contract("1.0.0", 0);
+        let install = install_first(&lab, &contract);
+        let enable = enable_request(&lab, 1);
+        fs::write(lab.dir.join("crash-mode"), mode).unwrap();
+        fs::write(
+            lab.dir.join("crash-request"),
+            json::canonical(&enable).unwrap(),
+        )
+        .unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "ordering::process_death_on_either_side_of_owner_commit_recovers_exactly",
+            ])
+            .env(CHILD, &lab.dir)
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let ready = lab.dir.join("crash-ready");
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while !ready.is_file()
+            && std::time::Instant::now() < deadline
+            && child.try_wait().unwrap().is_none()
+        {
+            thread::sleep(Duration::from_millis(20));
+        }
+        let reached = ready.is_file();
+        let _ = child.kill();
+        let status = child.wait().unwrap();
+        assert!(reached && !status.success(), "{mode}: {status:?}");
+
+        for (command, path) in [
+            ("recover-management-storage", &lab.store),
+            ("recover-contract-storage", &lab.contracts),
+        ] {
+            let mut cli = Command::new(MANAGE);
+            cli.arg(command).arg(path);
+            result(&invoke(cli, &json::obj([])));
+        }
+        if mode == "before-owner-commit" {
+            assert_history(&lab, 1, None, &[&install]);
+            assert_eq!(
+                code(&lab.cli(PUBLISHER, &recover_request("enable-first"))),
+                Some("UNAVAILABLE")
+            );
+            assert_eq!(code(&lab.api(PUBLISHER, &enable)), Some("UNAVAILABLE"));
+            assert_history(&lab, 1, None, &[&install]);
+        } else {
+            let receipt = json::parse(&fs::read(lab.dir.join("crash-response")).unwrap()).unwrap();
+            result(&receipt);
+            assert_recovery(&lab, "enable-first", &enable, &receipt);
+            assert_history(&lab, 2, Some("1.0.0"), &[&install, &receipt]);
+        }
+    }
+}
