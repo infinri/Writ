@@ -1,0 +1,33 @@
+[package]
+name = "writ-policy-management-lab"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.99"
+license = "MIT"
+publish = false
+description = "Disposable versioned policy draft management for M6 slice 5A"
+
+[workspace]
+
+[features]
+fixtures = []
+
+[[bin]]
+name = "writ-manage-fixture"
+path = "src/main.rs"
+required-features = ["fixtures"]
+
+[dependencies]
+writ-kernel = { path = "../../kernel" }
+writ-policy-compile = { path = "../compiler" }
+rusqlite = { version = "=0.41.1", default-features = false, features = ["hooks", "limits"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

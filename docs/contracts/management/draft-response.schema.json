@@ -1,0 +1,352 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://writ.dev/contracts/management/v1/response.schema.json",
+  "title": "Writ /manage/v1 policy draft response",
+  "$defs": {
+    "pointer": {
+      "type": "string",
+      "pattern": "^(?:/(?:[^~/]|~[01])*)*$"
+    },
+    "version": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "revision",
+        "digest",
+        "source"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "source": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "revision"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[A-Za-z0-9._-]+$"
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "pointer"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]+$"
+        },
+        "pointer": {
+          "$ref": "#/$defs/pointer"
+        }
+      }
+    },
+    "case": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 15
+    },
+    "decision": {
+      "$ref": "https://writ.dev/contracts/v2/decision.schema.json"
+    },
+    "mutation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "audit_id"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "audit_id": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          ]
+        }
+      }
+    },
+    "history": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "versions",
+        "next"
+      ],
+      "properties": {
+        "versions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/version"
+          },
+          "maxItems": 50
+        },
+        "next": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          ]
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "compilable",
+        "offline_proven",
+        "deployed_enforcement",
+        "runtime_authority",
+        "diagnostics"
+      ],
+      "properties": {
+        "compilable": {
+          "type": "boolean"
+        },
+        "offline_proven": {
+          "type": "boolean"
+        },
+        "deployed_enforcement": {
+          "const": "UNVERIFIED"
+        },
+        "runtime_authority": {
+          "const": false
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/diagnostic"
+          }
+        }
+      }
+    },
+    "simulation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime_authority",
+        "cases"
+      ],
+      "properties": {
+        "runtime_authority": {
+          "const": false
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "case",
+              "decision"
+            ],
+            "properties": {
+              "case": {
+                "$ref": "#/$defs/case"
+              },
+              "decision": {
+                "$ref": "#/$defs/decision"
+              }
+            }
+          },
+          "maxItems": 16
+        }
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime_authority",
+        "structure",
+        "cases"
+      ],
+      "properties": {
+        "runtime_authority": {
+          "const": false
+        },
+        "structure": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/pointer"
+          }
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "case",
+              "changed",
+              "before",
+              "after"
+            ],
+            "properties": {
+              "case": {
+                "$ref": "#/$defs/case"
+              },
+              "changed": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/pointer"
+                }
+              },
+              "before": {
+                "$ref": "#/$defs/decision"
+              },
+              "after": {
+                "$ref": "#/$defs/decision"
+              }
+            }
+          },
+          "maxItems": 16
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "pointer"
+      ],
+      "properties": {
+        "code": {
+          "enum": [
+            "INVALID_REQUEST",
+            "UNAUTHORIZED",
+            "NOT_FOUND",
+            "REVISION_CONFLICT",
+            "IDEMPOTENCY_CONFLICT",
+            "LIMIT_EXCEEDED",
+            "UNAVAILABLE",
+            "INVALID_POLICY"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "pointer": {
+          "$ref": "#/$defs/pointer"
+        }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "ok",
+        "result"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "ok": {
+          "const": true
+        },
+        "result": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/mutation"
+            },
+            {
+              "$ref": "#/$defs/version"
+            },
+            {
+              "$ref": "#/$defs/history"
+            },
+            {
+              "$ref": "#/$defs/validation"
+            },
+            {
+              "$ref": "#/$defs/simulation"
+            },
+            {
+              "$ref": "#/$defs/comparison"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "ok",
+        "error"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "ok": {
+          "const": false
+        },
+        "error": {
+          "$ref": "#/$defs/error"
+        }
+      }
+    }
+  ]
+}

@@ -6,6 +6,7 @@ use writ_kernel::json::{self, Map, Value};
 use writ_kernel::policy::load_bundle;
 
 use crate::conflict::supported_prefix;
+use crate::Diagnostic;
 
 pub(crate) const ACTION: &str = "synthetic.inspect";
 
@@ -217,22 +218,43 @@ fn inputs(input: &Value) -> EntryResult<(&[Value], &[Value])> {
     Ok((manifests, companions))
 }
 
+fn entry_pointer(group: &str, index: usize, code: &str) -> String {
+    let path = format!("/{group}/{index}");
+    let field = match code {
+        "MANIFEST_TENANT_UNSUPPORTED" => "tenant_scope",
+        "MANIFEST_ACTION_KINDS_UNSUPPORTED" => "action_kinds",
+        "MANIFEST_PRIORITY_INVALID" => "priority",
+        "MANIFEST_BINDING_INVALID" => "evaluator_binding",
+        "MANIFEST_TEST_VECTORS_INVALID" | "MANIFEST_TEST_VECTORS_DUPLICATE" => "test_vectors",
+        "COMPANION_VERSION_UNSUPPORTED" => "entry_version",
+        "COMPANION_EFFECT_UNSUPPORTED" => "effect",
+        "COMPANION_REASON_INVALID" => "reason_code",
+        "COMPANION_PREFIX_INVALID" => "resource_prefix",
+        _ => return path,
+    };
+    format!("{path}/{field}")
+}
+
 fn entries<T>(
     values: &[Value],
     parse: impl Fn(&Value) -> EntryResult<(Key, T)>,
     duplicate_code: &'static str,
-    errors: &mut BTreeSet<&'static str>,
-) -> BTreeMap<Key, T> {
+    group: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> BTreeMap<Key, (usize, T)> {
     let mut by_key = BTreeMap::new();
-    for value in values {
+    for (index, value) in values.iter().enumerate() {
         match parse(value) {
             Ok((key, row)) => {
-                if by_key.insert(key, row).is_some() {
-                    errors.insert(duplicate_code);
+                if by_key.insert(key, (index, row)).is_some() {
+                    errors.push(Diagnostic::new(
+                        duplicate_code,
+                        entry_pointer(group, index, duplicate_code),
+                    ));
                 }
             }
             Err(code) => {
-                errors.insert(code);
+                errors.push(Diagnostic::new(code, entry_pointer(group, index, code)));
             }
         }
     }
@@ -248,45 +270,61 @@ fn statement_id((policy_id, version): &Key) -> EntryResult<String> {
     Ok(format!("m6-{}", &digest.as_str()[7..39]))
 }
 
-fn compile_bundle(input: &[u8]) -> Result<Draft, Vec<&'static str>> {
-    let document = json::parse(input).map_err(|error| vec![error.code()])?;
-    let (manifests, companions) = inputs(&document).map_err(|code| vec![code])?;
-    let schema = json::parse(MANIFEST_SCHEMA).map_err(|_| vec!["MANIFEST_SCHEMA_INVALID"])?;
+pub(crate) fn compile_detailed(input: &[u8]) -> Result<Draft, Vec<Diagnostic>> {
+    let at_root = |code| vec![Diagnostic::new(code, "")];
+    let document = json::parse(input).map_err(|error| at_root(error.code()))?;
+    let (manifests, companions) = inputs(&document).map_err(|code| {
+        let pointer = match code {
+            "INPUT_MANIFESTS_INVALID" => "/manifests",
+            "INPUT_COMPANIONS_INVALID" => "/companions",
+            _ => "",
+        };
+        vec![Diagnostic::new(code, pointer)]
+    })?;
+    let schema = json::parse(MANIFEST_SCHEMA).map_err(|_| at_root("MANIFEST_SCHEMA_INVALID"))?;
     let Some(required) = schema.get("required").and_then(Value::as_arr) else {
-        return Err(vec!["MANIFEST_SCHEMA_INVALID"]);
+        return Err(at_root("MANIFEST_SCHEMA_INVALID"));
     };
     let Some(properties) = schema.get("properties").and_then(Value::as_obj) else {
-        return Err(vec!["MANIFEST_SCHEMA_INVALID"]);
+        return Err(at_root("MANIFEST_SCHEMA_INVALID"));
     };
 
-    let mut errors = BTreeSet::new();
+    let mut errors = Vec::new();
     let manifests = entries(
         manifests,
         |value| manifest(value, required, properties),
         "MANIFEST_KEY_DUPLICATE",
+        "manifests",
         &mut errors,
     );
     let mut companions = entries(
         companions,
         companion,
         "COMPANION_KEY_DUPLICATE_OR_CONFLICTING",
+        "companions",
         &mut errors,
     );
     if !errors.is_empty() {
-        return Err(errors.into_iter().collect());
+        return Err(errors);
     }
 
     let mut compiled = BTreeMap::new();
-    for (key, manifest) in manifests {
-        let Some(companion) = companions.remove(&key) else {
-            errors.insert("COMPANION_MISSING");
+    for (key, (manifest_index, manifest)) in manifests {
+        let Some((companion_index, companion)) = companions.remove(&key) else {
+            errors.push(Diagnostic::new(
+                "COMPANION_MISSING",
+                format!("/manifests/{manifest_index}"),
+            ));
             continue;
         };
         if !supported_prefix(&companion.prefix, &manifest.tenant) {
-            errors.insert("COMPANION_PREFIX_UNSUPPORTED");
+            errors.push(Diagnostic::new(
+                "COMPANION_PREFIX_UNSUPPORTED",
+                format!("/companions/{companion_index}/resource_prefix"),
+            ));
             continue;
         }
-        let statement_id = statement_id(&key).map_err(|code| vec![code])?;
+        let statement_id = statement_id(&key).map_err(at_root)?;
         let statement = json::obj([
             ("statement_id", json::s(&statement_id)),
             ("effect", json::s(&companion.effect)),
@@ -302,14 +340,20 @@ fn compile_bundle(input: &[u8]) -> Result<Draft, Vec<&'static str>> {
             .insert(statement_id, (manifest, statement))
             .is_some()
         {
-            errors.insert("STATEMENT_ID_COLLISION");
+            errors.push(Diagnostic::new(
+                "STATEMENT_ID_COLLISION",
+                format!("/manifests/{manifest_index}"),
+            ));
         }
     }
-    if !companions.is_empty() {
-        errors.insert("COMPANION_WITHOUT_MANIFEST");
+    for (index, _) in companions.into_values() {
+        errors.push(Diagnostic::new(
+            "COMPANION_WITHOUT_MANIFEST",
+            format!("/companions/{index}"),
+        ));
     }
     if !errors.is_empty() {
-        return Err(errors.into_iter().collect());
+        return Err(errors);
     }
 
     let bundle = json::obj([
@@ -328,7 +372,7 @@ fn compile_bundle(input: &[u8]) -> Result<Draft, Vec<&'static str>> {
             Value::Arr(compiled.values().map(|(_, value)| value.clone()).collect()),
         ),
     ]);
-    let loaded = load_bundle(&bundle).map_err(|_| vec!["KERNEL_BUNDLE_REJECTED"])?;
+    let loaded = load_bundle(&bundle).map_err(|_| at_root("KERNEL_BUNDLE_REJECTED"))?;
     let rules = loaded
         .bundle
         .statements
@@ -346,12 +390,19 @@ fn compile_bundle(input: &[u8]) -> Result<Draft, Vec<&'static str>> {
             })
         })
         .collect::<EntryResult<Vec<_>>>()
-        .map_err(|code| vec![code])?;
+        .map_err(at_root)?;
     Ok(Draft { bundle, rules })
 }
 
 pub(crate) fn compile(input: &[u8]) -> Result<Draft, Vec<String>> {
-    compile_bundle(input).map_err(|codes| codes.into_iter().map(str::to_owned).collect())
+    compile_detailed(input).map_err(|diagnostics| {
+        diagnostics
+            .into_iter()
+            .map(|issue| issue.code)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    })
 }
 
 #[cfg(test)]

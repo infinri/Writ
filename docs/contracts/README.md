@@ -7,6 +7,10 @@
 - [Action Request](action-request.schema.json), [Decision](decision.schema.json), [Effect Receipt](effect-receipt.schema.json), [Audit Event](audit-event.schema.json), [Policy Manifest](policy-manifest.schema.json).
 - M0-03a drafts: [Principal Proof](principal-proof.schema.json), [Approval Grant](approval-grant.schema.json), [Broker Permit](broker-permit.schema.json), [Policy Bundle](policy-bundle.schema.json). Digests use the canonical JSON form defined in `m0/writ_m0/canonical.py` ([D-006](../implementation/DECISION-LOG.md)). ApprovalGrant binds the sorted `requested_capabilities` set (SR-02). The M0 broker accepts ActionRequests only when sealed by a registered adapter ([D-010](../implementation/DECISION-LOG.md)); permits are single use (SR-07). BrokerPermit and EffectReceipt bind `request_fingerprint`, the canonical digest of the complete request (SR-10, SR-11, D-012). Evidence and Artifact require `project_id`; sources resolve per tenant and project, and evaluation fails for artifacts or signoffs outside the task's tenant, project and task (SR-05, SR-12, D-013).
 
+## Draft management
+
+The [request](management/draft-request.schema.json) and [response](management/draft-response.schema.json) contracts cover the [disposable /manage/v1 policy draft workflow](../../m6/management/README.md) under D-054.
+
 ## Model and domain independence
 
 - [Model Capabilities](model-capabilities.schema.json), [Model Request](model-request.schema.json), [Model Event](model-event.schema.json).

@@ -852,3 +852,169 @@ fn signature_and_human_expiry_inside_second_approval_refuses_commit() {
 }
 
 mod waivers;
+
+#[test]
+#[ignore = "required CI supplies the explicitly built fixture CLI"]
+fn management_drafts_leave_signed_selection_grants_and_effects_unchanged() {
+    use std::{
+        env, fs,
+        io::Write,
+        process::{Command, Stdio},
+    };
+
+    let dir = Disposable::create().unwrap();
+    let cli = env::var_os("WRIT_MANAGEMENT_FIXTURE_BIN").unwrap();
+    let drafts = dir.path().join("drafts.sqlite");
+    let credential = dir.path().join("fixture-credential");
+    fs::write(&credential, b"fixture-author").unwrap();
+    assert!(Command::new(&cli)
+        .arg("init")
+        .arg(&drafts)
+        .output()
+        .unwrap()
+        .status
+        .success());
+
+    let (authority, signer) = FixtureSigner::pair();
+    let registry = Registry::create(
+        &dir.path().join("policy.sqlite"),
+        scope(),
+        authority.clone(),
+    )
+    .unwrap();
+    let approval = signer.publication(APPROVAL, 1);
+    publish(
+        &registry,
+        &authority,
+        &approval,
+        0,
+        1,
+        "approval-stays-active",
+    );
+    let ledger_path = dir.path().join("ledger.sqlite");
+    let effects_path = dir.path().join("effects.sqlite");
+    let ledger = grants::fixture_ledger(&ledger_path);
+    let effects = SqliteEffectStore::create(&effects_path, ledger.ledger_id()).unwrap();
+    let broker = LabBroker::new(&registry, ledger, effects);
+    let protected = request("real-fixture-grant");
+    assert_eq!(
+        broker.execute(&protected, None).unwrap().0,
+        Err(Refusal::ApprovalRequired)
+    );
+    let approval_request: String =
+        Connection::open_with_flags(&ledger_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap()
+            .query_row("SELECT request_id FROM approval_requests", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+    let grant = grants::approve(&broker.ledger, &approval_request);
+
+    let invoke = |operation, fields: &[(&str, Value)]| {
+        let mut query = json::obj([
+            ("version", json::s("/manage/v1")),
+            ("operation", json::s(operation)),
+            (
+                "scope",
+                json::obj([
+                    ("tenant", json::s("m6-lab")),
+                    ("project", json::s("offline-proof")),
+                ]),
+            ),
+        ])
+        .as_obj()
+        .unwrap()
+        .clone();
+        query.extend(
+            fields
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), value.clone())),
+        );
+        let mut child = Command::new(&cli)
+            .arg("v1")
+            .arg(&drafts)
+            .arg(&credential)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let input = json::canonical(&Value::Obj(query)).unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "{:?}", json::parse(&output.stdout));
+        json::parse(&output.stdout)
+            .unwrap()
+            .get("result")
+            .unwrap()
+            .clone()
+    };
+    for (operation, policy, revision) in [("create", APPROVAL, 0), ("edit", DENY, 1)] {
+        let fields = [
+            ("id", json::s("draft")),
+            ("expected_revision", Value::Int(revision)),
+            ("idempotency_key", json::s(operation)),
+            ("preview", Value::Bool(false)),
+            ("candidate", json::parse(policy).unwrap()),
+        ];
+        assert_eq!(
+            invoke(operation, &fields).get("revision"),
+            Some(&Value::Int(revision + 1))
+        );
+    }
+    let comparison = invoke(
+        "compare",
+        &[
+            (
+                "before",
+                json::obj([("id", json::s("draft")), ("revision", Value::Int(1))]),
+            ),
+            (
+                "after",
+                json::obj([("id", json::s("draft")), ("revision", Value::Int(2))]),
+            ),
+            (
+                "corpus",
+                Value::Arr(vec![json::obj([
+                    ("kind", json::s("synthetic.inspect")),
+                    (
+                        "resource",
+                        json::s(
+                            "synthetic:m6-lab/offline-proof/inventory/restricted/sealed/report",
+                        ),
+                    ),
+                ])]),
+            ),
+        ],
+    );
+    assert_eq!(
+        comparison.get("runtime_authority"),
+        Some(&Value::Bool(false))
+    );
+    let paired = &comparison.get("cases").unwrap().as_arr().unwrap()[0];
+    assert_eq!(
+        paired.get("before").unwrap().get("status"),
+        Some(&json::s("require_approval"))
+    );
+    assert_eq!(
+        paired.get("after").unwrap().get("status"),
+        Some(&json::s("deny"))
+    );
+    assert_eq!(selected(&registry), (1, 1));
+    assert_eq!(registry.audit().unwrap().len(), 1);
+    assert_eq!(count(&ledger_path, "approval_requests"), 1);
+    assert_eq!(count(&ledger_path, "grant_uses"), 0);
+    assert_eq!(count(&ledger_path, "receipts"), 0);
+    assert_eq!(count(&effects_path, "effects"), 0);
+    assert_eq!(count(&effects_path, "consumed_permits"), 0);
+    assert_eq!(
+        broker.execute(&protected, Some(&grant)).unwrap().0,
+        Ok(Executed::EffectCompleted)
+    );
+    assert_eq!(count(&ledger_path, "grant_uses"), 1);
+    assert_eq!(count(&effects_path, "effects"), 1);
+}

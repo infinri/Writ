@@ -1,8 +1,10 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-19 (M6 slice 4 implemented for disposable stores and test authorities under D-053, M3 and M4 accepted for scoped development) · **Branch:** v2/architecture-rebuild · **Milestones:** M5 open, M6 in progress. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md) section "Current recovery state".
+**Last updated:** 2026-11-19 (M6 slice 5A implemented for disposable stores and test authorities under D-054, M3 and M4 accepted for scoped development) · **Branch:** v2/architecture-rebuild · **Milestones:** M5 open, M6 in progress. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md) section "Current recovery state".
 
 ## Current
+
+- D-054 delivers the [disposable /manage/v1 policy draft workflow](../../m6/management/README.md) with scoped version history, compiler validation, pure-kernel simulation, structural and complete Decision comparison, and a shared fixture CLI. CC-M2, CC-M3 and CC-M6 are partial. Publication, activation, rollback, evaluator and waiver management endpoints, production authentication and transport remain open.
 
 - D-053 delivers the [disposable scoped waiver scenario](../../m6/waivers/README.md). A distinct human approval records `waived` with an audited receipt. Reference checks enforce the exact signed policy and current workflow and authority. Mandatory waiver criteria stay incomplete under the existing kernel checks.
 - D-050 delivered the [offline synthetic compiler](../../m6/compiler/README.md). D-051 delivered the [disposable signed publication lab](../../m6/publication/README.md), including selection, rollback, recovery and controlled effects with test authorities. Evaluator publication, waiver semantics and management UI remain outside D-051. Legacy rule imports require independent human review.
@@ -44,6 +46,8 @@ SANDBOX PREPARED / LIVE VERIFICATION NOT EXECUTED; sandbox **torn down** 2026-11
 - Pages deploy blocked by repository environment protection (pre-existing).
 
 ## Last verification
+
+The D-054 starting SHA `7888daa13ccebe3e77ef8f82e5b3c3e7a7a76fb0` passed all six required jobs on [run 44578501669](https://github.com/infinri/Writ/actions/runs/44578501669). [E-101](TEST-EVIDENCE.md#e-101-d-054-disposable-policy-draft-management-2026-11-19) records the slice evidence. The [recovery checkpoint](SESSION-HANDOFF.md#current-recovery-state) gives the exact-SHA CI check.
 
 D-053 code SHA `03a7accd54886d6ee2b098a35aa50a260bb7068d` passed all six required jobs on [run 44575884746](https://github.com/infinri/Writ/actions/runs/44575884746). The starting SHA `42af745af8759b80b00d6154871f0f079792e156` passed all six required jobs on [run 44565962417](https://github.com/infinri/Writ/actions/runs/44565962417). [E-100](TEST-EVIDENCE.md#e-100-d-053-disposable-scoped-waiver-2026-11-19) records the integrated verification.
 

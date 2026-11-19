@@ -58,7 +58,10 @@ fn rule_report(rule: &Rule, verified: bool) -> Value {
     ])
 }
 
-fn prove(draft: &Draft, registry: &[Enforcer], suites: &[Suite]) -> Result<Value, Vec<String>> {
+pub(crate) fn registered_enforcer<'a>(
+    draft: &Draft,
+    registry: &'a [Enforcer],
+) -> Result<&'a Enforcer, Vec<String>> {
     let mut diagnostics = Vec::new();
     let mut enforcer: Option<&Enforcer> = None;
     for rule in &draft.rules {
@@ -76,7 +79,11 @@ fn prove(draft: &Draft, registry: &[Enforcer], suites: &[Suite]) -> Result<Value
     if !diagnostics.is_empty() {
         return Err(diagnostics);
     }
-    let enforcer = enforcer.ok_or_else(|| vec!["UNVERIFIED_ENFORCER".into()])?;
+    enforcer.ok_or_else(|| vec!["UNVERIFIED_ENFORCER".into()])
+}
+
+fn prove(draft: &Draft, registry: &[Enforcer], suites: &[Suite]) -> Result<Value, Vec<String>> {
+    let enforcer = registered_enforcer(draft, registry)?;
     prove_candidate(draft, enforcer, suites).map_err(|code| vec![code.into()])
 }
 

@@ -1,6 +1,6 @@
 # Control Center: management API architecture
 
-**Status: PLANNED.** Design target; no service or API exists. Decision record: [ADR-0007](../decisions/ADR-0007-control-center-management-plane.md).
+**Status: PARTIAL.** M6 slice 5A delivers a [disposable typed draft API and fixture CLI](../../m6/management/README.md). The transport and other resource groups below are design targets. Decision record: [ADR-0007](../decisions/ADR-0007-control-center-management-plane.md).
 
 ## Components
 

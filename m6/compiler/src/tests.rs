@@ -227,3 +227,34 @@ fn a_failing_negative_execution_refuses_despite_current_evidence() {
     assert!(!report.accepted);
     assert_eq!(diagnostics(&report), ["UNVERIFIED_FIXTURE_FAILED"]);
 }
+
+#[test]
+fn simulation_prepares_supported_edits_without_accepting_unpinned_evidence() {
+    let edited = PERMIT.replace("M6_SYNTHETIC_PERMIT", "M6_EDITED_PERMIT");
+    let draft = prepare_simulation(edited.as_bytes()).unwrap();
+    assert_eq!(
+        draft.verify_offline_evidence(),
+        vec![Diagnostic::new("UNVERIFIED_MISSING_EVIDENCE", "")]
+    );
+    let request = json::parse(proof::SUITES[0].fixtures.as_bytes()).unwrap();
+    let request = request.as_arr().unwrap()[1].get("request").unwrap();
+    let decision = draft.decide_fixture(request).unwrap();
+    assert_eq!(
+        decision.get("reason_code"),
+        Some(&json::s("M6_EDITED_PERMIT"))
+    );
+    assert!(!evaluate(edited.as_bytes()).accepted);
+}
+
+#[test]
+fn simulation_refuses_unsupported_rules_with_value_free_json_pointers() {
+    let unsupported = PERMIT.replace(r#""effect": "permit""#, r#""effect": "private-value""#);
+    let diagnostics = prepare_simulation(unsupported.as_bytes()).err().unwrap();
+    assert_eq!(
+        diagnostics,
+        vec![Diagnostic::new(
+            "COMPANION_EFFECT_UNSUPPORTED",
+            "/companions/0/effect"
+        )]
+    );
+}

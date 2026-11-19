@@ -6,6 +6,72 @@ mod enforcer;
 mod proof;
 
 use writ_kernel::json::{self, Value};
+use writ_kernel::policy::{load_bundle, LoadedBundle};
+
+/// Stable compiler diagnostic with a location in the unsigned input.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct Diagnostic {
+    /// Machine code without statement identifiers or input values.
+    pub code: String,
+    /// JSON Pointer to the input region associated with the code.
+    pub pointer: String,
+}
+
+impl Diagnostic {
+    fn new(code: &str, pointer: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            pointer: pointer.into(),
+        }
+    }
+}
+
+/// A candidate in the compiler's supported subset for isolated simulation.
+/// It cannot produce a signed or publishable policy.
+pub struct SimulationDraft {
+    draft: compile::Draft,
+    bundle: LoadedBundle,
+    enforcer: &'static enforcer::Enforcer,
+}
+
+/// Compile and analyze the existing supported subset without requiring pinned evidence.
+/// The existing publication-facing evaluator still requires full pinned evidence.
+pub fn prepare_simulation(input: &[u8]) -> Result<SimulationDraft, Vec<Diagnostic>> {
+    let draft = compile::compile_detailed(input)?;
+    analyze(&draft).map_err(|codes| safe_diagnostics(&codes, "/companions"))?;
+    let enforcer = proof::registered_enforcer(&draft, &enforcer::REGISTRY)
+        .map_err(|codes| safe_diagnostics(&codes, "/manifests"))?;
+    let bundle =
+        load_bundle(&draft.bundle).map_err(|_| vec![Diagnostic::new("UNVERIFIED_BUNDLE", "")])?;
+    Ok(SimulationDraft {
+        draft,
+        bundle,
+        enforcer,
+    })
+}
+
+impl SimulationDraft {
+    /// Recheck the same pinned offline evidence used by the full evaluator.
+    pub fn verify_offline_evidence(&self) -> Vec<Diagnostic> {
+        let (_, _, codes) = proof::run(&self.draft, &enforcer::REGISTRY, &proof::SUITES);
+        safe_diagnostics(&codes, "")
+    }
+
+    /// Run the registered pure decision enforcer on a supplied fixture Request.
+    pub fn decide_fixture(&self, request: &Value) -> Option<Value> {
+        (self.enforcer.run)(request, &self.bundle)
+    }
+}
+
+fn safe_diagnostics(codes: &[String], pointer: &str) -> Vec<Diagnostic> {
+    let mut diagnostics: Vec<_> = codes
+        .iter()
+        .map(|code| Diagnostic::new(code.split(':').next().unwrap_or(code), pointer))
+        .collect();
+    diagnostics.sort_unstable();
+    diagnostics.dedup();
+    diagnostics
+}
 
 /// Result of offline evaluation.
 pub struct Report {
@@ -25,18 +91,22 @@ fn evaluate_with(input: &[u8], registry: &[enforcer::Enforcer], suites: &[proof:
         Ok(draft) => draft,
         Err(diagnostics) => return report(None, vec![], vec![], Value::Null, diagnostics),
     };
-    let statements: Vec<_> = draft
-        .rules
-        .iter()
-        .map(|rule| rule.statement.clone())
-        .collect();
-    let overlaps = match conflict::analyze(&statements) {
+    let overlaps = match analyze(&draft) {
         Ok(overlaps) => overlaps,
         Err(diagnostics) => return report(None, vec![], vec![], Value::Null, diagnostics),
     };
     let (evidence, proof, diagnostics) = proof::run(&draft, registry, suites);
     let bundle = diagnostics.is_empty().then_some(draft.bundle);
     report(bundle, overlaps, evidence, proof, diagnostics)
+}
+
+fn analyze(draft: &compile::Draft) -> Result<Vec<Value>, Vec<String>> {
+    let statements: Vec<_> = draft
+        .rules
+        .iter()
+        .map(|rule| rule.statement.clone())
+        .collect();
+    conflict::analyze(&statements)
 }
 
 fn report(
