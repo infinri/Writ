@@ -1,6 +1,6 @@
 # Control Center: trust boundaries and authorization rules
 
-**Status: PARTIAL.** The [disposable draft API](../../m6/management/README.md) exercises configured management-realm authentication and scoped Viewer and Policy author grants. Production identity, the broader role model and service integration remain design targets. Extends the [threat model](../security/threat-model.md) and [authorization and approvals](../architecture/authorization-and-approvals.md).
+**Status: PARTIAL.** The [disposable policy API](../../m6/management/README.md) exercises configured management-realm authentication and scoped Viewer, Policy author and Policy publisher grants. The separate D-051 publisher ceremony binds the exact managed intent, and the registry rechecks it at commit. Production identity, the broader role model and service integration remain design targets. Extends the [threat model](../security/threat-model.md) and [authorization and approvals](../architecture/authorization-and-approvals.md).
 
 ## Trust boundaries
 

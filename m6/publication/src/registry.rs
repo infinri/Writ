@@ -42,6 +42,12 @@ pub trait TrustAuthority {
     fn current(&self) -> Result<impl CurrentTrust + '_, Error>;
 }
 
+/// A trusted host-configured witness for an active management dispatch.
+pub trait ManagedIntentSource: Send + Sync {
+    /// Require the exact registered management intent under its live draft fence.
+    fn verify(&self, intent: &Intent, presentation: &[u8]) -> Result<(), Error>;
+}
+
 /// Validated authorization, acceptance and proof at one durable activation.
 pub struct Selection<'a> {
     revision: i64,
@@ -139,23 +145,81 @@ impl WaiverPolicyGuard for Selection<'_> {
 pub struct Registry<T> {
     store: Store,
     authority: T,
+    management: Option<Box<dyn ManagedIntentSource>>,
 }
 
 impl<T: TrustAuthority> Registry<T> {
     /// Create an empty registry file. Existing state is never replaced.
     pub fn create(path: &Path, scope: Scope, authority: T) -> Result<Self, Error> {
         let store = Store::create(path, scope)?;
-        Ok(Self { store, authority })
+        Ok(Self {
+            store,
+            authority,
+            management: None,
+        })
     }
 
     /// Open existing state and verify any selected publication under current trust.
     pub fn open(path: &Path, scope: Scope, authority: T) -> Result<Self, Error> {
-        let store = Store::open(path, scope)?;
-        let registry = Self { store, authority };
+        let registry = Self::open_for_administration(path, scope, authority)?;
         if !registry.store.audit()?.is_empty() {
             registry.with_selection(|_| Ok(()))?;
         }
         Ok(registry)
+    }
+
+    /// Open coherent history for inspection and rollback when the current policy is revoked.
+    /// Policy consumers still require current verification through `open` or `with_selection`.
+    pub fn open_for_administration(path: &Path, scope: Scope, authority: T) -> Result<Self, Error> {
+        let store = Store::open(path, scope)?;
+        Ok(Self {
+            store,
+            authority,
+            management: None,
+        })
+    }
+
+    /// Configure the same trusted management store handle used for coordinated dispatch.
+    pub fn with_management_source(mut self, source: impl ManagedIntentSource + 'static) -> Self {
+        self.management = Some(Box::new(source));
+        self
+    }
+
+    /// Validate a proposed publish or rollback under current trust without requesting approval.
+    pub fn preview(
+        &self,
+        expected_revision: i64,
+        publication_version: i64,
+        candidate: Option<&Publication>,
+    ) -> Result<Publication, Error> {
+        let trust = self.authority.current()?;
+        self.store.preview(
+            expected_revision,
+            publication_version,
+            candidate,
+            |publication| {
+                checked(publication, self.scope(), publication_version, &trust).map(|_| ())
+            },
+        )
+    }
+
+    /// Read the current selection after verification, or report that the registry is empty.
+    pub fn current_selection(&self) -> Result<Option<Commit>, Error> {
+        let trust = self.authority.current()?;
+        self.store
+            .with_selected(|revision, version, publication, audit| {
+                checked(publication, self.scope(), version, &trust)?;
+                let event = audit
+                    .iter()
+                    .rev()
+                    .find(|event| event.operation != Operation::Retire)
+                    .ok_or(Error::Recovery)?;
+                Ok(Commit {
+                    revision,
+                    publication_version: version,
+                    audit_sequence: event.sequence,
+                })
+            })
     }
 
     /// Reopen coherent durable history to perform an explicit rollback when the
@@ -171,7 +235,12 @@ impl<T: TrustAuthority> Registry<T> {
             return Err(Error::Authority);
         }
         let store = Store::open(path, scope)?;
-        Self { store, authority }.change(intent, None, presentation)
+        Self {
+            store,
+            authority,
+            management: None,
+        }
+        .change(intent, None, presentation)
     }
 
     /// Trusted scope configured when creating or opening this registry.
@@ -196,6 +265,39 @@ impl<T: TrustAuthority> Registry<T> {
         candidate: Option<&Publication>,
         presentation: &[u8],
     ) -> Result<Commit, Error> {
+        if intent.management().is_some() {
+            return Err(Error::Authority);
+        }
+        self.change_inner(intent, candidate, presentation, || Ok(()))
+    }
+
+    /// Submit a managed intent under the configured live draft fence and recheck the
+    /// scoped management role before both registry validations. The trusted callback
+    /// must avoid registry reentry.
+    pub fn change_managed(
+        &self,
+        intent: &Intent,
+        candidate: Option<&Publication>,
+        presentation: &[u8],
+        reauthorize: impl Fn() -> Result<(), Error>,
+    ) -> Result<Commit, Error> {
+        if intent.management().is_none() {
+            return Err(Error::Authority);
+        }
+        let witness = self.management.as_deref().ok_or(Error::Authority)?;
+        self.change_inner(intent, candidate, presentation, || {
+            witness.verify(intent, presentation)?;
+            reauthorize()
+        })
+    }
+
+    fn change_inner(
+        &self,
+        intent: &Intent,
+        candidate: Option<&Publication>,
+        presentation: &[u8],
+        before_commit: impl Fn() -> Result<(), Error>,
+    ) -> Result<Commit, Error> {
         if intent.scope() != self.store.scope() {
             return Err(Error::Scope);
         }
@@ -208,6 +310,10 @@ impl<T: TrustAuthority> Registry<T> {
                 &trust,
             )?;
             let approval = trust.approve(intent, presentation, before)?;
+            if !intent.matches_approval(&approval) {
+                return Err(Error::Authority);
+            }
+            before_commit()?;
             let now = current_signatures(publication, intent.scope(), &trust)?;
             if now < before {
                 return Err(Error::Time);
@@ -238,7 +344,8 @@ impl<T: TrustAuthority> Registry<T> {
                     scope: self.store.scope(),
                     audit,
                 })
-            })
+            })?
+            .ok_or(Error::Recovery)
     }
 
     /// Read the append-only, structurally verified audit history.

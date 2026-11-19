@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://writ.dev/contracts/management/v1/request.schema.json",
-  "title": "Writ /manage/v1 policy draft request",
+  "title": "Writ /manage/v1 policy management request",
   "$defs": {
     "label": {
       "type": "string",
@@ -75,6 +75,10 @@
       },
       "maxItems": 16,
       "minItems": 1
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
     }
   },
   "oneOf": [
@@ -339,6 +343,234 @@
         },
         "corpus": {
           "$ref": "#/$defs/corpus"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "expected_revision",
+        "publication_version",
+        "idempotency_key",
+        "acknowledge_self",
+        "draft",
+        "publication"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "preview_publish"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "publication_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999999999
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/label"
+        },
+        "acknowledge_self": {
+          "type": "boolean"
+        },
+        "draft": {
+          "$ref": "#/$defs/draft"
+        },
+        "publication": {
+          "$ref": "urn:writ:m6:publication-v1"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "expected_revision",
+        "publication_version",
+        "idempotency_key",
+        "acknowledge_self",
+        "draft",
+        "publication",
+        "intent_digest",
+        "presentation"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "publish"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "publication_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999999999
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/label"
+        },
+        "acknowledge_self": {
+          "type": "boolean"
+        },
+        "draft": {
+          "$ref": "#/$defs/draft"
+        },
+        "publication": {
+          "$ref": "urn:writ:m6:publication-v1"
+        },
+        "intent_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "presentation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "expected_revision",
+        "publication_version",
+        "idempotency_key",
+        "acknowledge_self"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "preview_rollback"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "publication_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999999999
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/label"
+        },
+        "acknowledge_self": {
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "expected_revision",
+        "publication_version",
+        "idempotency_key",
+        "acknowledge_self",
+        "intent_digest",
+        "presentation"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "rollback"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "publication_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999999999
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/label"
+        },
+        "acknowledge_self": {
+          "type": "boolean"
+        },
+        "intent_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "presentation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "after",
+        "limit"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "publication_history"
+        },
+        "after": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
         }
       }
     }

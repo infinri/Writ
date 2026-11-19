@@ -19,6 +19,7 @@ use crate::{
 };
 
 const SCHEMA: &str = include_str!("store.sql");
+const MANAGEMENT_SCHEMA: &str = include_str!("management.sql");
 const SCHEMA_VERSION: &str = "writ-policy-registry/1";
 
 /// A durable change in the disposable registry.
@@ -47,6 +48,8 @@ pub struct Audit {
     pub publication_digest: String,
     /// Digest of the exact human authorization intent.
     pub intent_digest: String,
+    /// Digest of the bound management context, when the intent came through management.
+    pub management_digest: Option<String>,
     /// Authenticated scoped publisher.
     pub human: String,
     /// Consumed single-use ceremony.
@@ -148,6 +151,7 @@ impl Event {
                 publication_version: row.get(3).map_err(read)?,
                 publication_digest: row.get(4).map_err(read)?,
                 intent_digest: row.get(5).map_err(read)?,
+                management_digest: row.get(11).map_err(read)?,
                 human: row.get(6).map_err(read)?,
                 ceremony: row.get(7).map_err(read)?,
                 at: stored_time(&row.get::<_, String>(8).map_err(read)?)?,
@@ -266,8 +270,14 @@ impl History {
             version,
             &entry.publication,
         )
-        .and_then(|intent| intent.fingerprint())
         .map_err(incoherent)?;
+        let expected_intent = match &audit.management_digest {
+            Some(digest) => expected_intent
+                .bind_management(digest, &audit.human)
+                .map_err(incoherent)?,
+            None => expected_intent,
+        };
+        let expected_intent = expected_intent.fingerprint().map_err(incoherent)?;
         if audit.sequence != self.head.next_sequence().map_err(incoherent)?
             || audit.revision
                 != self
@@ -338,8 +348,12 @@ fn verify_schema(connection: &Connection) -> Result<(), Error> {
         .query_row("PRAGMA quick_check", [], |row| row.get(0))
         .map_err(|_| Error::Recovery)?;
     let actual = table_schema(connection).map_err(|_| Error::Recovery)?;
-    let expected = table_schema(&schema).map_err(|_| Error::Storage)?;
-    if journal != "wal" || check != "ok" || actual != expected {
+    let base = table_schema(&schema).map_err(|_| Error::Storage)?;
+    schema
+        .execute_batch(MANAGEMENT_SCHEMA)
+        .map_err(|_| Error::Storage)?;
+    let extended = table_schema(&schema).map_err(|_| Error::Storage)?;
+    if journal != "wal" || check != "ok" || (actual != base && actual != extended) {
         return Err(Error::Recovery);
     }
     Ok(())
@@ -374,6 +388,16 @@ fn durable_head(connection: &Connection, scope: &Scope) -> Result<Head, Error> {
     Ok(head)
 }
 
+fn has_management_table(connection: &Connection) -> Result<bool, Error> {
+    connection
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = 'management_intents' AND type = 'table')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| Error::Recovery)
+}
+
 fn recover(connection: &Connection, scope: &Scope) -> Result<History, Error> {
     let head = durable_head(connection, scope)?;
     let read = |_| Error::Recovery;
@@ -392,16 +416,34 @@ fn recover(connection: &Connection, scope: &Scope) -> Result<History, Error> {
         }
     }
     let mut history = History::default();
-    let mut query = connection
-        .prepare(
-            "SELECT sequence, revision, operation, publication_version, publication_digest,
-                    intent_digest, human, ceremony, at, issued_at, expires_at
-             FROM publication_audit ORDER BY sequence",
-        )
-        .map_err(read)?;
+    let extended = has_management_table(connection)?;
+    let audit_query = if extended {
+        "SELECT a.sequence, revision, operation, publication_version, publication_digest,
+                intent_digest, human, ceremony, at, issued_at, expires_at, m.digest
+         FROM publication_audit a LEFT JOIN management_intents m USING (sequence)
+         ORDER BY a.sequence"
+    } else {
+        "SELECT sequence, revision, operation, publication_version, publication_digest,
+                intent_digest, human, ceremony, at, issued_at, expires_at, NULL
+         FROM publication_audit ORDER BY sequence"
+    };
+    let mut query = connection.prepare(audit_query).map_err(read)?;
     let mut rows = query.query([]).map_err(read)?;
+    let mut managed = 0;
     while let Some(row) = rows.next().map_err(read)? {
-        history.apply_stored(scope, Event::from_row(row)?, &mut pending)?;
+        let event = Event::from_row(row)?;
+        managed += i64::from(event.audit.management_digest.is_some());
+        history.apply_stored(scope, event, &mut pending)?;
+    }
+    if extended {
+        let count: i64 = connection
+            .query_row("SELECT count(*) FROM management_intents", [], |row| {
+                row.get(0)
+            })
+            .map_err(read)?;
+        if count != managed {
+            return Err(Error::Recovery);
+        }
     }
     if history.head != head || !pending.is_empty() {
         return Err(Error::Recovery);
@@ -515,18 +557,25 @@ impl Store {
             }
             None => history.historical_target(operation, version)?,
         };
-        if &Intent::new(
+        let exact = Intent::new(
             self.scope.clone(),
             operation,
             history.head.revision,
             version,
             &entry.publication,
-        )? != intent
-        {
+        )?;
+        let exact = match intent.management() {
+            Some(context) => exact.bind_management(&context.digest, &context.publisher)?,
+            None => exact,
+        };
+        if &exact != intent {
             return Err(Error::Authority);
         }
         let (approval, at) = validate(&entry.publication)?;
         approval.check(at)?;
+        if !intent.matches_approval(&approval) {
+            return Err(Error::Authority);
+        }
         if history.audit.last().is_some_and(|audit| at < audit.at) {
             return Err(Error::Time);
         }
@@ -543,6 +592,7 @@ impl Store {
                 publication_version: version,
                 publication_digest: entry.publication_digest.clone(),
                 intent_digest: intent.fingerprint()?.to_string(),
+                management_digest: intent.management().map(|context| context.digest.clone()),
                 human: approval.human.clone(),
                 ceremony: approval.ceremony.clone(),
                 at,
@@ -576,6 +626,16 @@ impl Store {
             ),
         )
         .map_err(storage)?;
+        if let Some(digest) = &event.audit.management_digest {
+            if !has_management_table(&tx)? {
+                tx.execute_batch(MANAGEMENT_SCHEMA).map_err(storage)?;
+            }
+            tx.execute(
+                "INSERT INTO management_intents VALUES (?1, ?2)",
+                (sequence, digest),
+            )
+            .map_err(storage)?;
+        }
         tx.execute(
             "UPDATE registry_head SET revision = ?1, publication_version = ?2, audit_sequence = ?3, audit_digest = ?4 WHERE singleton = 1",
             (revision, head.publication_version, sequence, &head.audit_digest),
@@ -600,13 +660,44 @@ impl Store {
         })
     }
 
+    pub(crate) fn preview(
+        &self,
+        expected_revision: i64,
+        version: i64,
+        candidate: Option<&Publication>,
+        validate: impl FnOnce(&Publication) -> Result<(), Error>,
+    ) -> Result<Publication, Error> {
+        let connection = self.connection.lock().map_err(|_| Error::Storage)?;
+        let history = recover(&connection, &self.scope)?;
+        if history.head.revision != expected_revision {
+            return Err(Error::Conflict);
+        }
+        let candidate = candidate.cloned().map(Entry::new).transpose()?;
+        let entry = match &candidate {
+            Some(entry) => {
+                history.check_publish(version, entry)?;
+                entry
+            }
+            None => history.historical_target(Operation::Rollback, version)?,
+        };
+        history.head.next_revision(if candidate.is_some() {
+            Operation::Publish
+        } else {
+            Operation::Rollback
+        })?;
+        validate(&entry.publication)?;
+        Ok(entry.publication.clone())
+    }
+
     pub(crate) fn with_selected<R>(
         &self,
         use_selection: impl FnOnce(i64, i64, &Publication, &[Audit]) -> Result<R, Error>,
-    ) -> Result<R, Error> {
+    ) -> Result<Option<R>, Error> {
         let connection = self.connection.lock().map_err(|_| Error::Storage)?;
         let history = recover(&connection, &self.scope)?;
-        let version = history.head.publication_version.ok_or(Error::Recovery)?;
+        let Some(version) = history.head.publication_version else {
+            return Ok(None);
+        };
         let entry = history.publications.get(&version).ok_or(Error::Recovery)?;
         let result = use_selection(
             history.head.revision,
@@ -615,7 +706,7 @@ impl Store {
             &history.audit,
         );
         drop(connection);
-        result
+        result.map(Some)
     }
 
     pub(crate) fn audit(&self) -> Result<Vec<Audit>, Error> {
@@ -712,6 +803,48 @@ mod tests {
                 Ok((revision, version, publication.clone()))
             })
             .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn managed_intent_commits_and_recovers_only_with_its_exact_human_context() {
+        let scratch = Scratch::new();
+        let path = scratch.database();
+        let store = Store::create(&path, scope()).unwrap();
+        let first = publication("auth-1", "accept-1", "proof-1");
+        let binding = Digest::of_bytes(b"management-context");
+        let managed = Intent::new(scope(), Operation::Publish, 0, 1, &first)
+            .unwrap()
+            .with_management(binding.clone(), &approval("c1").0.human)
+            .unwrap();
+        let wrong = managed
+            .clone()
+            .with_management(binding.clone(), "different-human")
+            .unwrap();
+        assert_eq!(
+            store.change(&wrong, Some(&first), |_| Ok(approval("c1"))),
+            Err(Error::Authority)
+        );
+        assert!(store.audit().unwrap().is_empty());
+        let commit = store
+            .change(&managed, Some(&first), |_| Ok(approval("c1")))
+            .unwrap();
+        drop(store);
+        let reopened = Store::open(&path, scope()).unwrap();
+        let audit = reopened.audit().unwrap();
+        assert_eq!(audit[0].sequence, commit.audit_sequence);
+        assert_eq!(
+            audit[0].intent_digest,
+            managed.fingerprint().unwrap().as_str()
+        );
+        assert_eq!(
+            audit[0].management_digest.as_deref(),
+            Some(binding.as_str())
+        );
+        let db = reopened.connection.lock().unwrap();
+        db.execute("DELETE FROM management_intents", []).unwrap();
+        drop(db);
+        assert!(matches!(reopened.audit(), Err(Error::Recovery)));
     }
 
     #[test]
@@ -726,10 +859,7 @@ mod tests {
         let replay_authorization = publication("auth-1", "accept-3", "proof-1");
         let third = publication("auth-3", "accept-3", "proof-3");
 
-        assert_eq!(
-            store.with_selected(|_, _, _, _| Ok(())),
-            Err(Error::Recovery)
-        );
+        assert_eq!(store.with_selected(|_, _, _, _| Ok(())), Ok(None));
         change(&store, Operation::Publish, 0, 1, &first, "c1").unwrap();
         assert_eq!(
             change(&store, Operation::Publish, 0, 2, &second, "c2"),

@@ -1,14 +1,18 @@
-//! Disposable policy draft operations at the typed /manage/v1 boundary.
+//! Disposable policy management at the typed /manage/v1 boundary.
 
+mod boundary;
 mod evaluation;
+mod publication;
 mod store;
 mod wire;
 
 #[cfg(feature = "fixtures")]
 pub mod fixture;
 
+pub use boundary::PublicationBoundary;
+pub use publication::PublicationRequest;
 pub use store::Store;
-pub use wire::{error_response, execute_v1, RequestV1, ResponseV1};
+pub use wire::{error_response, execute_v1, execute_v1_with_publication, RequestV1, ResponseV1};
 
 use writ_kernel::json::{self, Digest, Value};
 
@@ -25,6 +29,7 @@ pub struct Scope {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Realm {
     Management,
+    ManagementService,
     Agent,
     Adapter,
 }
@@ -33,6 +38,7 @@ pub enum Realm {
 pub enum Role {
     Viewer,
     PolicyAuthor,
+    Publisher,
 }
 
 pub struct Grant {
@@ -138,11 +144,30 @@ fn valid_label(label: &str) -> bool {
 pub struct Service<'a> {
     store: &'a Store,
     authority: Option<&'a dyn Authenticator>,
+    publication: Option<&'a dyn PublicationBoundary>,
+    allow_self_publication: bool,
 }
 
 impl<'a> Service<'a> {
     pub fn new(store: &'a Store, authority: Option<&'a dyn Authenticator>) -> Self {
-        Self { store, authority }
+        Self {
+            store,
+            authority,
+            publication: None,
+            allow_self_publication: false,
+        }
+    }
+
+    /// Connect to the separately configured publication registry.
+    pub fn with_publication(mut self, boundary: &'a dyn PublicationBoundary) -> Self {
+        self.publication = Some(boundary);
+        self
+    }
+
+    /// Enable explicit, audited author and publisher overlap for the local fixture.
+    pub fn allow_self_publication(mut self) -> Self {
+        self.allow_self_publication = true;
+        self
     }
 
     fn authenticate(&self, credential: &[u8]) -> Result<Principal> {
@@ -153,7 +178,11 @@ impl<'a> Service<'a> {
             .authority
             .and_then(|authority| authority.authenticate(credential))
             .ok_or(Error::Unauthorized)?;
-        if principal.realm != Realm::Management || !valid_label(&principal.subject) {
+        if !matches!(
+            principal.realm,
+            Realm::Management | Realm::ManagementService
+        ) || !valid_label(&principal.subject)
+        {
             return Err(Error::Unauthorized);
         }
         if principal.grants.len() > 128 {
@@ -178,9 +207,38 @@ impl<'a> Service<'a> {
             operation,
             binding,
         } = request;
+        if let Operation::Publication(request) = operation {
+            let write = !matches!(request, PublicationRequest::History { .. });
+            let check = |principal: &Principal| {
+                if write {
+                    publisher(principal, &scope)
+                } else {
+                    authorize(principal, &scope, false)
+                }
+            };
+            check(&principal)?;
+            let reauthorize = || {
+                let current = self.authenticate(credential)?;
+                if current.subject != principal.subject || current.realm != principal.realm {
+                    return Err(Error::Unauthorized);
+                }
+                check(&current)
+            };
+            let boundary = self.publication.ok_or(Error::Unavailable)?;
+            return Ok(ResponseV1::Publication(publication::execute(
+                self.store,
+                boundary,
+                &scope,
+                &principal.subject,
+                request,
+                self.allow_self_publication,
+                reauthorize,
+            )?));
+        }
         let write_role = !matches!(&operation, Operation::Get(_) | Operation::History { .. });
         authorize(&principal, &scope, write_role)?;
         Ok(match operation {
+            Operation::Publication(_) => return Err(Error::Unavailable),
             Operation::Mutation(mutation) => {
                 let reauthorize = || {
                     let current = self.authenticate(credential)?;
@@ -235,6 +293,20 @@ fn authorize(principal: &Principal, scope: &Scope, author: bool) -> Result<()> {
         .grants
         .iter()
         .any(|grant| grant.scope == *scope && (!author || grant.role == Role::PolicyAuthor))
+    {
+        Ok(())
+    } else {
+        Err(Error::NotFound)
+    }
+}
+
+fn publisher(principal: &Principal, scope: &Scope) -> Result<()> {
+    if principal.realm == Realm::Management
+        && writ_kernel::ids::is_id(&principal.subject)
+        && principal
+            .grants
+            .iter()
+            .any(|grant| grant.scope == *scope && grant.role == Role::Publisher)
     {
         Ok(())
     } else {

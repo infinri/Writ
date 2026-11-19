@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://writ.dev/contracts/management/v1/response.schema.json",
-  "title": "Writ /manage/v1 policy draft response",
+  "title": "Writ /manage/v1 policy management response",
   "$defs": {
     "pointer": {
       "type": "string",
@@ -286,6 +286,277 @@
           "$ref": "#/$defs/pointer"
         }
       }
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "publication_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "publisher",
+        "draft",
+        "draft_digest",
+        "draft_head_revision",
+        "proof_digest",
+        "idempotency_key_digest",
+        "self_publication_acknowledged"
+      ],
+      "properties": {
+        "version": {
+          "const": "writ-managed-publication-context/1"
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tenant",
+            "project"
+          ],
+          "properties": {
+            "tenant": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+            },
+            "project": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+            }
+          }
+        },
+        "publisher": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        },
+        "draft": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "revision"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._-]{1,64}$"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        "draft_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "draft_head_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "proof_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "idempotency_key_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "self_publication_acknowledged": {
+          "type": "boolean"
+        }
+      }
+    },
+    "publication_preview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "intent",
+        "intent_digest",
+        "context",
+        "revision",
+        "publication_version"
+      ],
+      "properties": {
+        "intent": {
+          "$ref": "urn:writ:m6:human-intent-v1"
+        },
+        "intent_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "context": {
+          "$ref": "#/$defs/publication_context"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "publication_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999999999
+        }
+      }
+    },
+    "publication_receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "publication_version",
+        "audit_id",
+        "intent_digest"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "publication_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999999999
+        },
+        "audit_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "intent_digest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "publication_history": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "events",
+        "next",
+        "selected"
+      ],
+      "properties": {
+        "events": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "revision",
+              "publication_version",
+              "audit_id",
+              "operation",
+              "publication_digest",
+              "intent_digest",
+              "human",
+              "at",
+              "context"
+            ],
+            "properties": {
+              "revision": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "publication_version": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 999999999
+              },
+              "audit_id": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "operation": {
+                "enum": [
+                  "publish",
+                  "rollback",
+                  "retire"
+                ]
+              },
+              "publication_digest": {
+                "$ref": "#/$defs/digest"
+              },
+              "intent_digest": {
+                "$ref": "#/$defs/digest"
+              },
+              "human": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+              },
+              "at": {
+                "type": "string",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+              },
+              "context": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/publication_context"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "next": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          ]
+        },
+        "selected": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "revision",
+                "publication_version",
+                "audit_id",
+                "verified"
+              ],
+              "properties": {
+                "revision": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "publication_version": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 999999999
+                },
+                "audit_id": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "verified": {
+                  "type": "boolean"
+                }
+              }
+            }
+          ]
+        }
+      }
     }
   },
   "oneOf": [
@@ -323,6 +594,15 @@
             },
             {
               "$ref": "#/$defs/comparison"
+            },
+            {
+              "$ref": "#/$defs/publication_preview"
+            },
+            {
+              "$ref": "#/$defs/publication_receipt"
+            },
+            {
+              "$ref": "#/$defs/publication_history"
             }
           ]
         }

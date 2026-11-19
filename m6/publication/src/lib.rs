@@ -52,5 +52,5 @@ pub use signature::{
 mod policy;
 mod registry;
 mod store;
-pub use registry::{CurrentTrust, Registry, Selection, TrustAuthority};
+pub use registry::{CurrentTrust, ManagedIntentSource, Registry, Selection, TrustAuthority};
 pub use store::{Audit, Commit};

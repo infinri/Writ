@@ -5,21 +5,29 @@ edition = "2021"
 rust-version = "1.99"
 license = "MIT"
 publish = false
-description = "Disposable versioned policy draft management for M6 slice 5A"
+description = "Disposable policy management for M6"
 
 [workspace]
 
 [features]
-fixtures = []
+fixtures = ["dep:ed25519-dalek", "dep:writ-broker"]
 
 [[bin]]
 name = "writ-manage-fixture"
 path = "src/main.rs"
 required-features = ["fixtures"]
 
+[[bin]]
+name = "writ-publication-authority-fixture"
+path = "src/fixture_authority.rs"
+required-features = ["fixtures"]
+
 [dependencies]
 writ-kernel = { path = "../../kernel" }
 writ-policy-compile = { path = "../compiler" }
+writ-policy-publication-lab = { path = "../publication" }
+ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["zeroize"], optional = true }
+writ-broker = { path = "../../broker", optional = true }
 rusqlite = { version = "=0.41.1", default-features = false, features = ["hooks", "limits"] }
 
 [lints.rust]

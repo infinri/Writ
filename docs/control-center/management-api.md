@@ -1,6 +1,6 @@
 # Control Center: management API architecture
 
-**Status: PARTIAL.** M6 slice 5A delivers a [disposable typed draft API and fixture CLI](../../m6/management/README.md). The transport and other resource groups below are design targets. Decision record: [ADR-0007](../decisions/ADR-0007-control-center-management-plane.md).
+**Status: PARTIAL.** M6 slices 5A and 5B deliver [disposable draft, signed publication, selection and rollback operations](../../m6/management/README.md) through a typed in-process API and a fixture CLI. The registry commits selection and audit in its own transaction. Management correlates its separately persisted intent with that receipt. The transport and remaining resource operations are design targets. Decision record: [ADR-0007](../decisions/ADR-0007-control-center-management-plane.md).
 
 ## Components
 

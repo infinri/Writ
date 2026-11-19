@@ -897,6 +897,24 @@ fn management_drafts_leave_signed_selection_grants_and_effects_unchanged() {
     let effects = SqliteEffectStore::create(&effects_path, ledger.ledger_id()).unwrap();
     let broker = LabBroker::new(&registry, ledger, effects);
     let protected = request("real-fixture-grant");
+    let decide = || {
+        use writ_kernel::{
+            contracts::StateRevision,
+            decision::{decide, Policy},
+        };
+        registry
+            .with_selection(|view| {
+                Ok(decide(
+                    protected.request(),
+                    Policy::Loaded(view.authorization()),
+                    StateRevision::new(0).unwrap(),
+                    now(),
+                )
+                .to_value())
+            })
+            .unwrap()
+    };
+    let original_decision = decide();
     assert_eq!(
         broker.execute(&protected, None).unwrap().0,
         Err(Refusal::ApprovalRequired)
@@ -1004,6 +1022,23 @@ fn management_drafts_leave_signed_selection_grants_and_effects_unchanged() {
         paired.get("after").unwrap().get("status"),
         Some(&json::s("deny"))
     );
+    let outage = Command::new(&cli)
+        .arg("v1")
+        .arg(dir.path().join("unavailable-management.sqlite"))
+        .arg(&credential)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!outage.status.success());
+    assert_eq!(
+        json::parse(&outage.stdout)
+            .unwrap()
+            .get("error")
+            .unwrap()
+            .get("code"),
+        Some(&json::s("UNAVAILABLE"))
+    );
+    assert_eq!(decide(), original_decision);
     assert_eq!(selected(&registry), (1, 1));
     assert_eq!(registry.audit().unwrap().len(), 1);
     assert_eq!(count(&ledger_path, "approval_requests"), 1);

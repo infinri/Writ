@@ -3,6 +3,8 @@ use std::{
     io::Read,
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    thread::{self, ThreadId},
     time::{Duration, Instant},
 };
 
@@ -10,6 +12,7 @@ use rusqlite::{
     limits::Limit, params, Connection, OpenFlags, OptionalExtension, Row, TransactionBehavior,
 };
 use writ_kernel::json::{self, Digest};
+use writ_policy_publication_lab::{Error as RegistryError, Intent, ManagedIntentSource};
 
 use crate::{
     Change, Draft, DraftRef, Error, History, Mutation, Receipt, Result, Scope, Version,
@@ -26,8 +29,61 @@ const QUERY_TIMEOUT: Duration = Duration::from_secs(1);
 const BUSY_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// A disposable draft database selected by the trusted application host.
+#[derive(Clone)]
 pub struct Store {
     path: PathBuf,
+    dispatch: Arc<Mutex<Option<DispatchIdentity>>>,
+}
+
+#[derive(PartialEq, Eq)]
+struct DispatchIdentity {
+    fingerprint: Digest,
+    presentation: Digest,
+    thread: ThreadId,
+}
+
+impl DispatchIdentity {
+    fn new(intent: &Intent, presentation: &[u8]) -> std::result::Result<Self, RegistryError> {
+        Ok(Self {
+            fingerprint: intent.fingerprint()?,
+            presentation: Digest::of_bytes(presentation),
+            thread: thread::current().id(),
+        })
+    }
+}
+
+struct LiveDispatch<'a>(&'a Mutex<Option<DispatchIdentity>>);
+
+impl Drop for LiveDispatch<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.0.lock() {
+            *active = None;
+        }
+    }
+}
+
+impl ManagedIntentSource for Store {
+    fn verify(
+        &self,
+        intent: &Intent,
+        presentation: &[u8],
+    ) -> std::result::Result<(), RegistryError> {
+        let identity = DispatchIdentity::new(intent, presentation)?;
+        if self
+            .dispatch
+            .lock()
+            .map_err(|_| RegistryError::Storage)?
+            .as_ref()
+            != Some(&identity)
+        {
+            return Err(RegistryError::Authority);
+        }
+        crate::publication::verify_registered_intent(self, intent).map_err(|error| match error {
+            Error::RevisionConflict => RegistryError::Conflict,
+            Error::Unauthorized | Error::NotFound => RegistryError::Authority,
+            _ => RegistryError::Storage,
+        })
+    }
 }
 
 impl Store {
@@ -49,12 +105,18 @@ impl Store {
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(unavailable)?;
         tx.commit().map_err(unavailable)?;
-        Ok(Self { path: path.into() })
+        Ok(Self {
+            path: path.into(),
+            dispatch: Arc::default(),
+        })
     }
 
     /// Reopen a previously created management database without migrating it.
     pub fn open(path: &Path) -> Result<Self> {
-        let store = Self { path: path.into() };
+        let store = Self {
+            path: path.into(),
+            dispatch: Arc::default(),
+        };
         if let Err(error) = store.connection(false) {
             if !recoverable(path)? {
                 return Err(error);
@@ -64,7 +126,24 @@ impl Store {
         Ok(store)
     }
 
-    fn connection(&self, write: bool) -> Result<Connection> {
+    pub(crate) fn with_publication_dispatch<T>(
+        &self,
+        intent: &Intent,
+        presentation: &[u8],
+        operation: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        let identity = DispatchIdentity::new(intent, presentation).map_err(unavailable)?;
+        let mut active = self.dispatch.lock().map_err(unavailable)?;
+        if active.is_some() {
+            return Err(Error::Unavailable);
+        }
+        *active = Some(identity);
+        drop(active);
+        let _dispatch = LiveDispatch(&self.dispatch);
+        operation()
+    }
+
+    pub(crate) fn connection(&self, write: bool) -> Result<Connection> {
         let flags = if write {
             OpenFlags::SQLITE_OPEN_READ_WRITE
         } else {
@@ -181,6 +260,9 @@ impl Store {
                     revision,
                     audit_id: Some(audit_id),
                 });
+            }
+            if crate::publication::key_used(&tx, scope, subject, key_digest.as_str())? {
+                return Err(Error::IdempotencyConflict);
             }
         }
 
@@ -333,7 +415,7 @@ fn connect(path: &Path, flags: OpenFlags) -> Result<Connection> {
     Ok(db)
 }
 
-fn current_revision(db: &Connection, scope: &Scope, id: &str) -> Result<i64> {
+pub(crate) fn current_revision(db: &Connection, scope: &Scope, id: &str) -> Result<i64> {
     let revision: i64 = db
         .query_row(
             "SELECT COALESCE(MAX(revision), 0) FROM draft_versions
@@ -348,7 +430,7 @@ fn current_revision(db: &Connection, scope: &Scope, id: &str) -> Result<i64> {
     Ok(revision)
 }
 
-fn load(db: &Connection, scope: &Scope, draft: &DraftRef) -> Result<Draft> {
+pub(crate) fn load(db: &Connection, scope: &Scope, draft: &DraftRef) -> Result<Draft> {
     let mut query = db
         .prepare(
             "SELECT v.draft, v.revision, v.source_draft, v.source_revision, a.content_digest, v.candidate
@@ -365,6 +447,35 @@ fn load(db: &Connection, scope: &Scope, draft: &DraftRef) -> Result<Draft> {
         ])
         .map_err(unavailable)?;
     read_draft(rows.next().map_err(unavailable)?.ok_or(Error::NotFound)?)
+}
+
+pub(crate) fn authors(db: &Connection, scope: &Scope, draft: &DraftRef) -> Result<Vec<String>> {
+    let mut query = db
+        .prepare(
+            "WITH RECURSIVE lineage(draft, revision) AS (
+             SELECT ?3, ?4
+             UNION
+             SELECT v.source_draft, v.source_revision
+             FROM lineage l JOIN draft_versions v ON v.draft = l.draft AND v.revision <= l.revision
+             WHERE v.tenant = ?1 AND v.project = ?2 AND v.source_draft IS NOT NULL
+         )
+         SELECT DISTINCT a.subject FROM lineage l JOIN draft_audit a
+           ON a.draft = l.draft AND a.revision <= l.revision
+         WHERE a.tenant = ?1 AND a.project = ?2 ORDER BY a.subject",
+        )
+        .map_err(unavailable)?;
+    let authors = query
+        .query_map(
+            params![scope.tenant, scope.project, draft.id, draft.revision],
+            |row| row.get(0),
+        )
+        .map_err(unavailable)?
+        .collect::<rusqlite::Result<Vec<String>>>()
+        .map_err(unavailable)?;
+    if authors.is_empty() || authors.iter().any(|author| !crate::valid_label(author)) {
+        return Err(Error::Unavailable);
+    }
+    Ok(authors)
 }
 
 fn read_draft(row: &Row<'_>) -> Result<Draft> {

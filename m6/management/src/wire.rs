@@ -1,13 +1,19 @@
-use writ_kernel::json::{self, Map, Value};
+use writ_kernel::{
+    ids::is_digest,
+    json::{self, Map, Value},
+};
+use writ_policy_publication_lab::Publication;
 
 use crate::{
-    valid_label, Authenticator, Change, DraftRef, Error, Mutation, Receipt, Result, Scope, Service,
-    Store, Version, MAX_CANDIDATE, MAX_REQUEST,
+    valid_label, Authenticator, Change, DraftRef, Error, Mutation, PublicationRequest, Receipt,
+    Result, Scope, Service, Store, Version, MAX_CANDIDATE, MAX_REQUEST,
 };
 
 pub const API_VERSION: &str = "/manage/v1";
 const MAX_HISTORY: i64 = 50;
 const MAX_CORPUS: usize = 16;
+const MAX_PUBLICATION_VERSION: i64 = 999_999_999;
+const MAX_PRESENTATION: usize = 512;
 
 pub struct RequestV1 {
     pub(crate) scope: Scope,
@@ -16,6 +22,7 @@ pub struct RequestV1 {
 }
 
 pub(crate) enum Operation {
+    Publication(PublicationRequest),
     Mutation(Mutation),
     Get(DraftRef),
     History {
@@ -46,6 +53,7 @@ pub enum ResponseV1 {
     Validation(Value),
     Simulation(Value),
     Comparison(Value),
+    Publication(Value),
 }
 
 #[derive(Clone, Copy)]
@@ -115,6 +123,13 @@ impl RequestV1 {
                 after: reference(&mut fields, "after", "/after")?,
                 corpus: corpus(&mut fields)?,
             },
+            "preview_publish"
+            | "preview_rollback"
+            | "publish"
+            | "rollback"
+            | "publication_history" => {
+                Operation::Publication(decode_publication(&mut fields, &operation)?)
+            }
             _ => return Err(invalid("/operation")),
         };
         empty(&fields, "")?;
@@ -174,6 +189,94 @@ fn decode_mutation(fields: &mut Map, operation: &str) -> DecodeResult<Operation>
         preview,
         change,
     }))
+}
+
+fn decode_publication(fields: &mut Map, operation: &str) -> DecodeResult<PublicationRequest> {
+    if operation == "publication_history" {
+        return Ok(PublicationRequest::History {
+            after: integer(fields, "after", "/after", 0, json::MAX_SAFE_INTEGER)?,
+            limit: integer(fields, "limit", "/limit", 1, MAX_HISTORY)? as usize,
+        });
+    }
+    let expected_revision = integer(
+        fields,
+        "expected_revision",
+        "/expected_revision",
+        0,
+        json::MAX_SAFE_INTEGER,
+    )?;
+    let publication_version = integer(
+        fields,
+        "publication_version",
+        "/publication_version",
+        1,
+        MAX_PUBLICATION_VERSION,
+    )?;
+    let Value::Bool(acknowledge_self) = take(fields, "acknowledge_self", "/acknowledge_self")?
+    else {
+        return Err(invalid("/acknowledge_self"));
+    };
+    let key = label(fields, "idempotency_key", "/idempotency_key")?;
+    if matches!(operation, "preview_publish" | "publish") {
+        let draft = reference(fields, "draft", "/draft")?;
+        let publication = take(fields, "publication", "/publication")?;
+        let candidate =
+            Publication::from_value(&publication).map_err(|_| invalid("/publication"))?;
+        if operation == "preview_publish" {
+            return Ok(PublicationRequest::PreviewPublish {
+                draft,
+                expected_revision,
+                publication_version,
+                candidate,
+                acknowledge_self,
+                key,
+            });
+        }
+        let (intent_digest, presentation) = presentation(fields)?;
+        return Ok(PublicationRequest::Publish {
+            draft,
+            expected_revision,
+            publication_version,
+            candidate,
+            acknowledge_self,
+            intent_digest,
+            key,
+            presentation,
+        });
+    }
+    if operation == "preview_rollback" {
+        return Ok(PublicationRequest::PreviewRollback {
+            expected_revision,
+            publication_version,
+            acknowledge_self,
+            key,
+        });
+    }
+    let (intent_digest, presentation) = presentation(fields)?;
+    Ok(PublicationRequest::Rollback {
+        expected_revision,
+        publication_version,
+        acknowledge_self,
+        intent_digest,
+        key,
+        presentation,
+    })
+}
+
+fn presentation(fields: &mut Map) -> DecodeResult<(String, Vec<u8>)> {
+    let Value::Str(digest) = take(fields, "intent_digest", "/intent_digest")? else {
+        return Err(invalid("/intent_digest"));
+    };
+    if !is_digest(&digest) {
+        return Err(invalid("/intent_digest"));
+    }
+    let Value::Str(presentation) = take(fields, "presentation", "/presentation")? else {
+        return Err(invalid("/presentation"));
+    };
+    if presentation.is_empty() || presentation.len() > MAX_PRESENTATION {
+        return Err(invalid("/presentation"));
+    }
+    Ok((digest, presentation.into_bytes()))
 }
 
 fn object(value: Value, pointer: &'static str) -> DecodeResult<Map> {
@@ -243,7 +346,15 @@ pub fn execute_v1(
     credential: &[u8],
     request: &[u8],
 ) -> Vec<u8> {
-    let service = Service::new(store, authority);
+    execute_v1_with_publication(&Service::new(store, authority), credential, request)
+}
+
+/// Shared byte boundary for an application service that may expose publication.
+pub fn execute_v1_with_publication(
+    service: &Service<'_>,
+    credential: &[u8],
+    request: &[u8],
+) -> Vec<u8> {
     let principal = match service.authenticate(credential) {
         Ok(principal) => principal,
         Err(error) => return error_response(error),
@@ -273,7 +384,10 @@ impl ResponseV1 {
                 ),
                 ("next", nullable_int(next)),
             ]),
-            Self::Validation(value) | Self::Simulation(value) | Self::Comparison(value) => value,
+            Self::Validation(value)
+            | Self::Simulation(value)
+            | Self::Comparison(value)
+            | Self::Publication(value) => value,
         };
         encode(json::obj([
             ("version", json::s(API_VERSION)),

@@ -123,7 +123,7 @@ Not a prerequisite for M1. Each task starts with its milestone; acceptance tests
 | CC-M3 | Management service skeleton, management authorization policy, audit query model, correlation, explanation service | P1 (M3) | CC-M2, M3 | PARTIAL (D-054 scoped draft authorization and mutation audit) | CC-A01..A04, CC-G06 service | INV-28, INV-30 | CC-SEC-01, 02, 03, 05, 08, 11, 14; CC-UX-09 | |
 | CC-M4 | Approval experience with step-up | P0 (M4) | CC-M3, M4 | NOT STARTED | CC-AP01..AP03 | INV-06, P-03 | CC-SEC-07 | |
 | CC-M5 | Adapter status, coverage labels, unmediated activity | P1 (M5) | CC-M3, M5, M5-SR06 | NOT STARTED | CC-I01, I02, I04, A05 | INV-13, INV-16 | label-evidence tests | |
-| CC-M6 | Policy, contract and pack management; enforcement labels | P1 (M6) | CC-M3, M6 | PARTIAL (D-054 headless draft workflow) | CC-R01..R05, CC-C01..C06, CC-I03, CC-G07 | INV-12, INV-20, INV-29 | CC-SEC-04, 12, 13, 16, 18 | |
+| CC-M6 | Policy, contract and pack management; enforcement labels | P1 (M6) | CC-M3, M6 | PARTIAL (D-054 drafts and D-055 disposable publication, selection and rollback) | CC-R01..R05, CC-C01..C06, CC-I03, CC-G07 | INV-12, INV-20, INV-29 | CC-SEC-04, 12, 13, 16, 18 | |
 | CC-M7 | Knowledge administration and retrieval observability | P1 (M7) | CC-M3, M7 | NOT STARTED | CC-K01..K07 | INV-10, INV-11, INV-30 | CC-SEC-03, 09, 10 | |
 | CC-M8 | Memory and graph management | P1 (M8) | CC-M3, M8 | NOT STARTED | CC-M01..M04 | INV-10, INV-30 | CC-SEC-03, 09 | |
 | CC-M9 | Unified local Control Center (minimum usable beta scope) | P0 (M9) | CC-M3..CC-M8 | NOT STARTED | All tier B requirements | P-20..P-24 | all beta CC-SEC; CC-UX-01..09 | |

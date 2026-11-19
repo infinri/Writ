@@ -242,6 +242,13 @@ pub struct Intent {
     publication_version: i64,
     publication: Digest,
     content: Value,
+    management: Option<ManagedIntent>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ManagedIntent {
+    pub(crate) digest: String,
+    pub(crate) publisher: String,
 }
 
 impl Intent {
@@ -260,7 +267,38 @@ impl Intent {
             publication_version: number(publication_version, 1)?,
             publication: publication.fingerprint()?,
             content: publication.content_digests()?,
+            management: None,
         })
+    }
+
+    /// Bind an exact management context and the expected identity of its human publisher.
+    pub fn with_management(self, fingerprint: Digest, publisher: &str) -> Result<Self, Error> {
+        self.bind_management(fingerprint.as_str(), publisher)
+    }
+
+    pub(crate) fn bind_management(mut self, digest: &str, publisher: &str) -> Result<Self, Error> {
+        if self.operation == Operation::Retire {
+            return Err(Error::Format);
+        }
+        self.management = Some(ManagedIntent {
+            digest: digest_text(digest)?.to_owned(),
+            publisher: identifier(publisher)?.to_owned(),
+        });
+        Ok(self)
+    }
+
+    /// Digest of the exact management context, if this operation came through management.
+    pub fn management_digest(&self) -> Option<&str> {
+        self.management().map(|context| context.digest.as_str())
+    }
+
+    pub(crate) fn management(&self) -> Option<&ManagedIntent> {
+        self.management.as_ref()
+    }
+
+    pub(crate) fn matches_approval(&self, approval: &Approval) -> bool {
+        self.management()
+            .is_none_or(|management| management.publisher == approval.human)
     }
 
     /// Exact scope.
@@ -285,15 +323,34 @@ impl Intent {
 
     /// Exact publisher authority request to authenticate.
     pub fn to_value(&self) -> Value {
-        json::obj([
-            ("purpose", json::s("writ-human-policy-publisher/1")),
-            ("scope", self.scope.to_value()),
-            ("operation", json::s(self.operation.as_str())),
-            ("expected_revision", Value::Int(self.expected_revision)),
-            ("publication_version", Value::Int(self.publication_version)),
-            ("publication_digest", json::s(self.publication.as_str())),
-            ("content_digests", self.content.clone()),
-        ])
+        let mut fields = Map::from([
+            ("purpose".into(), json::s("writ-human-policy-publisher/1")),
+            ("scope".into(), self.scope.to_value()),
+            ("operation".into(), json::s(self.operation.as_str())),
+            (
+                "expected_revision".into(),
+                Value::Int(self.expected_revision),
+            ),
+            (
+                "publication_version".into(),
+                Value::Int(self.publication_version),
+            ),
+            (
+                "publication_digest".into(),
+                json::s(self.publication.as_str()),
+            ),
+            ("content_digests".into(), self.content.clone()),
+        ]);
+        if let Some(context) = self.management() {
+            fields.insert(
+                "management".into(),
+                json::obj([
+                    ("digest", json::s(&context.digest)),
+                    ("publisher", json::s(&context.publisher)),
+                ]),
+            );
+        }
+        Value::Obj(fields)
     }
 
     /// Digest for the approval challenge, never a substitute for approval.

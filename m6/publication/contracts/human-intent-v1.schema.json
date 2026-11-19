@@ -78,6 +78,39 @@
           "pattern": "^sha256:[0-9a-f]{64}$"
         }
       }
+    },
+    "management": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "digest",
+        "publisher"
+      ],
+      "properties": {
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "publisher": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        }
+      }
+    }
+  },
+  "if": {
+    "required": [
+      "management"
+    ]
+  },
+  "then": {
+    "properties": {
+      "operation": {
+        "enum": [
+          "publish",
+          "rollback"
+        ]
+      }
     }
   }
 }
