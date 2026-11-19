@@ -1149,5 +1149,4 @@ fn admin_provenance(
 }
 
 #[cfg(test)]
-#[path = "evaluator_publication_tests.rs"]
 mod evaluator_publication_tests;
