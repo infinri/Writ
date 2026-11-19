@@ -1,10 +1,10 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-19 (M6 slice 1 implemented under D-050, M3 and M4 accepted for scoped development) · **Branch:** v2/architecture-rebuild · **Milestones:** M5 open, M6 in progress for slice 1 only. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md) section "Current recovery state".
+**Last updated:** 2026-11-19 (M6 slice 2 implemented for disposable development under D-051, M3 and M4 accepted for scoped development) · **Branch:** v2/architecture-rebuild · **Milestones:** M5 open, M6 in progress. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md) section "Current recovery state".
 
 ## Current
 
-- D-050 authorizes [M6 slice 1](M6-START-PLAN.md), implemented with the [offline synthetic policy compiler](../../m6/compiler/README.md). Later signing and waiver contracts require separate decisions. Independent human review remains required before any legacy rule import.
+- D-050 delivered the [offline synthetic compiler](../../m6/compiler/README.md). D-051 delivered the [disposable signed publication lab](../../m6/publication/README.md), including selection, rollback, recovery and controlled effects with test authorities. Evaluator publication, waiver semantics and management UI remain outside D-051. Legacy rule imports require independent human review.
 - P-AGENT-DESKTOP has a test-only evaluator (E-092), fixture-backed reconciliation (E-093) and a guarded guest inventory source for local accounts, agent credentials and socket ownership (E-094). Guest execution awaits the [owner provisioning and designation sequence](../../m5/reference-vm/PROVISIONING.md#first-guest-inventory). Other target classes, desktop denials, control execution and readiness-report integration remain open. See the [desktop obligation map](../../m5/reference-vm/DESKTOP-PROBE.md).
 - M5b-01/04 synthetic portability passed in E-091. Production adapter integration and live host coverage remain open.
 - M5a remains implemented in user space with its gate open. Full VM verification and isolated containment CI remain required. Local tooling/designated guest, separate CI infrastructure, later live-model credential and later real hardware are separate prerequisites.
@@ -43,10 +43,10 @@ SANDBOX PREPARED / LIVE VERIFICATION NOT EXECUTED; sandbox **torn down** 2026-11
 
 ## Last verification
 
-The starting SHA `bbb60b315298d87f2e1ef60ad22d6b3a6658d5d0` passed all six required jobs on [run 44528665621, attempt 2](https://github.com/infinri/Writ/actions/runs/44528665621/attempts/2). E-097 records the offline compiler checks and the unresolved prior CI stall. E-094 through E-096 carry the M5 guest source, preflight and development shim evidence.
+The D-051 starting SHA `7553cdc5bfb4f8ebebe362e51b7dc9433ac87fc4` passed all six required jobs on [run 44538627601](https://github.com/infinri/Writ/actions/runs/44538627601). E-098 records this batch’s local evidence. E-097 preserves the unresolved earlier CI stall. E-094 through E-096 carry the M5 guest source, preflight and development shim evidence.
 
 Earlier local evidence (2026-11-13, `b60bf33`, E-074): workspace tests 394 passed (4 ignored), kill tests 4/4 alone, closure self-tests 40, property self-tests 31, closure gate PASS and report verifies, property gate 18,430 checks 0 failed, parity 320/320, dependency gate 0 problems, docs OK. CI run 43518287362, 6/6.
 
 ## Next exact action
 
-Start a fresh chat from [SESSION-HANDOFF](SESSION-HANDOFF.md#current-recovery-state). Await a separate owner decision before starting another M6 slice. When the owner provides and designates the Ubuntu 24.04 guest, run the documented inventory and record actual evidence before extending collection. Keep the development shim closed to live effects until verified M5a foundations support real ingress and broker composition.
+Start a fresh chat from [SESSION-HANDOFF](SESSION-HANDOFF.md#current-recovery-state). A separate owner decision is required for a later M6 slice. When the owner provides and designates the Ubuntu 24.04 guest, run the documented inventory and record actual evidence before extending collection. Keep the development shim closed to live effects until verified M5a foundations support real ingress and broker composition.

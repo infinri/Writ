@@ -1,0 +1,50 @@
+{
+  "payload": {
+    "bundle_id": "m6-synthetic",
+    "contract_version": "2.0",
+    "known_capabilities": [
+      "synthetic.inspect"
+    ],
+    "publisher": "m6-offline",
+    "statements": [
+      {
+        "action_kinds": [
+          "synthetic.inspect"
+        ],
+        "effect": "permit",
+        "reason_code": "M6_SYNTHETIC_PERMIT",
+        "resource_prefixes": [
+          "synthetic:m6-lab/offline-proof/inventory"
+        ],
+        "statement_id": "m6-d19c8fc0747ed5cbc72a44d9c976826d",
+        "tenants": [
+          "m6-lab"
+        ]
+      }
+    ],
+    "trusted_principal_issuers": [
+      "m6-synthetic"
+    ],
+    "version": "1"
+  },
+  "envelope": {
+    "protected": {
+      "version": "writ-detached-policy-signature/1",
+      "algorithm": "Ed25519",
+      "purpose": "authorization",
+      "scope": {
+        "tenant": "m6-lab",
+        "project": "offline-proof"
+      },
+      "payload_digest": "sha256:414a848b492393d4ab5e2f1f2e1fefa50b7a82202eff6c1e24d4817e8a0e9dd8",
+      "publisher_key_id": "authorization-vector",
+      "payload_format": "writ-authorization-bundle/2.0",
+      "not_before": "2026-11-19T12:00:00Z",
+      "expires_at": "2026-11-19T13:00:00Z"
+    },
+    "signature": "b69b6823de1788eb21e81800c42e35239dce61c883f61be611281f4085eebd57dd548b9fb33504e23af792959c6fb5502e0bf31a85662181c7c7a59722fa1706"
+  },
+  "canonical_payload_utf8": "{\"bundle_id\":\"m6-synthetic\",\"contract_version\":\"2.0\",\"known_capabilities\":[\"synthetic.inspect\"],\"publisher\":\"m6-offline\",\"statements\":[{\"action_kinds\":[\"synthetic.inspect\"],\"effect\":\"permit\",\"reason_code\":\"M6_SYNTHETIC_PERMIT\",\"resource_prefixes\":[\"synthetic:m6-lab/offline-proof/inventory\"],\"statement_id\":\"m6-d19c8fc0747ed5cbc72a44d9c976826d\",\"tenants\":[\"m6-lab\"]}],\"trusted_principal_issuers\":[\"m6-synthetic\"],\"version\":\"1\"}",
+  "signing_bytes_hex": "777269742e706f6c6963792e64657461636865642d7369676e61747572652f31007b22616c676f726974686d223a2245643235353139222c22657870697265735f6174223a22323032362d31312d31395431333a30303a30305a222c226e6f745f6265666f7265223a22323032362d31312d31395431323a30303a30305a222c227061796c6f61645f646967657374223a227368613235363a34313461383438623439323339336434616235653266316632653166656661353062376138323230326566663663316532346434383137653861306539646438222c227061796c6f61645f666f726d6174223a22777269742d617574686f72697a6174696f6e2d62756e646c652f322e30222c227075626c69736865725f6b65795f6964223a22617574686f72697a6174696f6e2d766563746f72222c22707572706f7365223a22617574686f72697a6174696f6e222c2273636f7065223a7b2270726f6a656374223a226f66666c696e652d70726f6f66222c2274656e616e74223a226d362d6c6162227d2c2276657273696f6e223a22777269742d64657461636865642d706f6c6963792d7369676e61747572652f31227d",
+  "public_key_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+}

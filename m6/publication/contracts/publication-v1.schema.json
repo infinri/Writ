@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:writ:m6:publication-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authorization",
+    "acceptance",
+    "prerequisites"
+  ],
+  "properties": {
+    "version": {
+      "const": "writ-policy-publication/1"
+    },
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "payload",
+        "envelope"
+      ],
+      "properties": {
+        "payload": {
+          "$ref": "https://writ.dev/contracts/v2/policy-bundle.schema.json",
+          "not": {
+            "required": [
+              "publisher_signature"
+            ]
+          }
+        },
+        "envelope": {
+          "$ref": "urn:writ:m6:detached-signature-v1",
+          "properties": {
+            "protected": {
+              "properties": {
+                "purpose": {
+                  "const": "authorization"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "acceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "payload",
+        "envelope"
+      ],
+      "properties": {
+        "payload": {
+          "$ref": "urn:writ:m6:acceptance-policy-v1"
+        },
+        "envelope": {
+          "$ref": "urn:writ:m6:detached-signature-v1",
+          "properties": {
+            "protected": {
+              "properties": {
+                "purpose": {
+                  "const": "acceptance"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "prerequisites": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "draft",
+        "proof_digest"
+      ],
+      "properties": {
+        "version": {
+          "const": "writ-policy-prerequisites/1"
+        },
+        "draft": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "manifests",
+            "companions"
+          ],
+          "properties": {
+            "manifests": {
+              "type": "array",
+              "minItems": 1
+            },
+            "companions": {
+              "type": "array",
+              "minItems": 1
+            }
+          }
+        },
+        "proof_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    }
+  }
+}

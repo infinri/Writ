@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:writ:m6:acceptance-policy-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "policy_id",
+    "policy_version",
+    "criteria"
+  ],
+  "properties": {
+    "version": {
+      "const": "writ-acceptance-policy/1"
+    },
+    "policy_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+    },
+    "policy_version": {
+      "type": "string",
+      "pattern": "^[0-9]{1,9}$"
+    },
+    "criteria": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "criterion_id",
+          "required_class"
+        ],
+        "properties": {
+          "criterion_id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+          },
+          "required_class": {
+            "type": "string",
+            "enum": [
+              "mechanical",
+              "evidence",
+              "human"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

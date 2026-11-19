@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:writ:m6:detached-signature-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protected",
+    "signature"
+  ],
+  "properties": {
+    "protected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "algorithm",
+        "purpose",
+        "scope",
+        "payload_digest",
+        "publisher_key_id",
+        "payload_format",
+        "not_before",
+        "expires_at"
+      ],
+      "properties": {
+        "version": {
+          "const": "writ-detached-policy-signature/1"
+        },
+        "algorithm": {
+          "const": "Ed25519"
+        },
+        "purpose": {
+          "type": "string",
+          "enum": [
+            "authorization",
+            "acceptance"
+          ]
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tenant",
+            "project"
+          ],
+          "properties": {
+            "tenant": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+            },
+            "project": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+            }
+          }
+        },
+        "payload_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "publisher_key_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        },
+        "payload_format": {
+          "type": "string",
+          "enum": [
+            "writ-authorization-bundle/2.0",
+            "writ-acceptance-policy/1"
+          ]
+        },
+        "not_before": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "purpose": {
+                "const": "authorization"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload_format": {
+                "const": "writ-authorization-bundle/2.0"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "purpose": {
+                "const": "acceptance"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload_format": {
+                "const": "writ-acceptance-policy/1"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "signature": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{128}$"
+    }
+  }
+}

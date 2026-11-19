@@ -1,0 +1,31 @@
+[package]
+name = "writ-policy-publication-lab"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.99"
+license = "MIT"
+publish = false
+description = "Disposable policy publication lifecycle for M6 slice 2"
+
+[workspace]
+
+[dependencies]
+writ-kernel = { path = "../../kernel" }
+writ-broker = { path = "../../broker" }
+writ-policy-compile = { path = "../compiler" }
+ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["zeroize"] }
+rusqlite = { version = "=0.41.1", default-features = false }
+
+[dev-dependencies]
+writ-ledger-sqlite = { path = "../../persistence/sqlite" }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

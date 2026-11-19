@@ -18,6 +18,8 @@ jobs:
         run: python3 scripts/check-v2-docs.py
       - name: Proposed acceptance and host adapter contracts
         run: python3 -m unittest discover -s docs/contracts/proposed
+      - name: M6 detached policy and publication schemas
+        run: python3 -m unittest discover -s m6/publication/contracts
   m2-kernel:
     name: Production Rust workspace (writ-kernel, writ-broker, writ-ledger-sqlite)
     runs-on: ubuntu-latest
@@ -64,6 +66,13 @@ jobs:
           cargo fmt --manifest-path m6/compiler/Cargo.toml --all --check
           cargo clippy --manifest-path m6/compiler/Cargo.toml --all-targets --locked -- -D warnings
           cargo test --manifest-path m6/compiler/Cargo.toml --locked
+      - name: M6 disposable signed publication and verified selection
+        run: |
+          cargo fmt --manifest-path m6/publication/Cargo.toml --all --check
+          cargo clippy --manifest-path m6/publication/Cargo.toml --all-targets --locked -- -D warnings
+          m3/tools/run-with-clean-fds.sh cargo test --manifest-path m6/publication/Cargo.toml --locked
+          m3/tools/run-with-clean-fds.sh cargo run --manifest-path m6/publication/Cargo.toml --locked --example disposable
+          python3 m6/publication/check_dependencies.py
       - name: Format, lint, build and test (locked)
         run: |
           cargo fmt --all --check
