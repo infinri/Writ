@@ -1,6 +1,7 @@
 """Positive and negative fixtures for the closed /manage/v1 policy envelopes."""
 
 import json
+from copy import deepcopy
 from pathlib import Path
 import unittest
 
@@ -37,7 +38,10 @@ class DraftContracts(unittest.TestCase):
             json.loads(path.read_text()) for path in (
                 *PUBLICATION.glob("*.schema.json"),
                 HERE.parent / "policy-bundle.schema.json",
+                HERE / "pack-envelope.schema.json",
+                HERE.parent / "capability-pack.schema.json",
                 HERE.parent / "proposed/evaluator-registry-entry.schema.json",
+                HERE.parent / "proposed/pack-rubric-binding.schema.json",
                 ROOT / "m6/waivers/waiver-context-v1.schema.json",
             )
         ]
@@ -351,3 +355,158 @@ class DraftContracts(unittest.TestCase):
             present | {"result": "satisfied"},
         ):
             self.assertFalse(self.response.is_valid(response(item)), item)
+
+    @staticmethod
+    def pack_envelope():
+        binding = json.loads(
+            (HERE.parent / "proposed/examples/pack-rubric-binding.valid.json").read_text()
+        )
+        binding.update(
+            pack_id="sample-pack", pack_version="1.0.0", rubric_version="1.0.0",
+            tenant_id=SCOPE["tenant"], project_id=SCOPE["project"],
+        )
+        contract = {"id": "tenant:m6-lab:pack-report", "version": "1.0.0", "digest": DIGEST}
+        return {
+            "signature": "a" * 128,
+            "payload": {
+                "purpose": "writ-capability-pack-signature/1",
+                "scope": SCOPE.copy(),
+                "compatibility": "2.0",
+                "key_id": "fixture-pack-signature",
+                "manifest": {
+                    "contract_version": "2.0", "pack_id": "sample-pack", "version": "1.0.0",
+                    "publisher": "fixture-pack-publisher", "domain": "review",
+                    "signature_ref": "fixture-pack-signature", "task_types": ["document-review"],
+                    "supported_modes": ["external_host"], "tool_capabilities": ["fs.read"],
+                    "workflows": [{
+                        "workflow_id": "document-review", "task_type": "document-review",
+                        "steps": ["review", "request-signoff", "record"],
+                        "human_gates": ["review-signoff"],
+                    }],
+                    "artifacts": [{
+                        "artifact_type": "report", "schema_ref": f"{contract['id']}@{contract['version']}",
+                    }],
+                    "evaluators": [{
+                        "evaluator_id": binding["evaluator_id"], "kind": binding["class"],
+                        "rubric_version": binding["rubric_version"], "blocking": False,
+                    }],
+                    "memory": {"read_types": [], "write_types": [], "retention_class": "ephemeral"},
+                    "limits": {"max_tool_calls": 1, "max_duration_seconds": 60, "max_model_calls": 0},
+                },
+                "contracts": [contract],
+                "rubrics": [{"binding": binding, "entry_digest": DIGEST}],
+            },
+        }
+
+    def test_pack_requests(self):
+        target = {"pack_id": "sample-pack", "pack_version": "1.0.0"}
+        change = target | {"expected_revision": 1}
+        envelope = self.pack_envelope()
+        proof = {"intent_digest": DIGEST, "presentation": "opaque", "idempotency_key": "first"}
+        install = request("packs.install", **change, envelope=envelope, **proof)
+
+        for operation in ("install", "enable", "disable", "upgrade"):
+            fields = change | ({"envelope": envelope} if operation == "install" else {})
+            confirmation = (
+                {"confirmation": f"{operation} sample-pack@1.0.0 from 1.0.0"}
+                if operation in ("disable", "upgrade") else {}
+            )
+            with self.subTest(operation=operation):
+                self.request.validate(request("packs.preview", pack_operation=operation, **fields))
+                self.request.validate(request(f"packs.{operation}", **fields, **proof, **confirmation))
+        for item in (
+            request("packs.verify", **target),
+            request("packs.inspect", **target),
+            request("packs.history", pack_id=target["pack_id"]),
+            request("packs.recover", idempotency_key=proof["idempotency_key"]),
+        ):
+            with self.subTest(operation=item["operation"]):
+                self.request.validate(item)
+
+        for item in (
+            request("packs.preview", pack_operation="install", **change),
+            request("packs.preview", pack_operation="install", **change, envelope=envelope, **proof),
+            request("packs.preview", pack_operation="verify", **change),
+            request("packs.preview", pack_operation="enable", **change, envelope=envelope),
+            request("packs.install", **change, envelope=envelope),
+            request("packs.enable", **change, **proof, confirmation="unexpected"),
+            request("packs.disable", **change, **proof),
+            request("packs.upgrade", **change, **proof, confirmation=""),
+            request("packs.history", **target),
+            request("packs.recover", **target, idempotency_key=proof["idempotency_key"]),
+            install | {"pack_version": "01.0.0"},
+            install | {"expected_revision": 513},
+            install | {"presentation": ""},
+            install | {"role": "Publisher"},
+        ):
+            with self.subTest(operation=item["operation"], fields=item.keys()):
+                self.assertFalse(self.request.is_valid(item))
+
+    def test_pack_envelope_rejects_malformed_nested_values(self):
+        install = request(
+            "packs.preview", pack_operation="install", pack_id="sample-pack",
+            pack_version="1.0.0", expected_revision=0,
+        )
+        envelope = self.pack_envelope()
+        self.request.validate(install | {"envelope": envelope})
+
+        for path, value in (
+            (("signature",), "A" * 128),
+            (("payload", "purpose"), "writ-human-capability-pack-admin/1"),
+            (("payload", "scope", "role"), "Publisher"),
+            (("payload", "compatibility"), "3.0"),
+            (("payload", "manifest", "extra"), True),
+            (("payload", "manifest", "task_types"), []),
+            (("payload", "contracts", 0, "digest"), "unpinned"),
+            (("payload", "rubrics", 0, "entry_digest"), "unpinned"),
+            (("payload", "rubrics", 0, "binding", "registry_revision"), 0),
+            (("payload", "rubrics", 0, "binding", "class"), "unknown"),
+        ):
+            altered = deepcopy(envelope)
+            parent = altered
+            for key in path[:-1]:
+                parent = parent[key]
+            parent[path[-1]] = value
+            with self.subTest(path=path):
+                self.assertFalse(self.request.is_valid(install | {"envelope": altered}))
+
+    def test_pack_responses(self):
+        identity = {
+            "operation": "install", "scope": SCOPE, "subject": "fixture-publisher",
+            "pack_id": "sample-pack", "pack_version": "1.0.0", "envelope_digest": DIGEST,
+            "registry_identity": "a" * 32,
+        }
+        preview = {
+            "intent_digest": DIGEST,
+            "intent": identity | {
+                "purpose": "writ-human-capability-pack-admin/1", "expected_revision": 0,
+                "active_version": None, "confirmation": None, "management_identity": "b" * 32,
+            },
+        }
+        receipt = identity | {
+            "revision": 1, "previous_active_version": None, "intent_digest": DIGEST,
+            "ceremony": DIGEST, "at": "2026-11-19T12:00:00Z",
+        }
+        inspection = {"revision": 1, "active_version": None, "envelope": self.pack_envelope()}
+        verification = {"verified": True, "revision": 1, "envelope_digest": DIGEST}
+        history = {"revision": 1, "active_version": None, "history": [receipt]}
+
+        for item in (preview, receipt, inspection, verification, history):
+            with self.subTest(fields=item.keys()):
+                self.response.validate(response(item))
+        for code in ("UNAUTHORIZED", "NOT_FOUND", "INVALID_PACK", "PACK_CONFLICT", "UNSUPPORTED",
+                     "REVISION_CONFLICT", "IDEMPOTENCY_CONFLICT"):
+            with self.subTest(code=code):
+                self.response.validate({
+                    "version": "/manage/v1", "ok": False,
+                    "error": {"code": code, "message": "The pack operation was refused.", "pointer": ""},
+                })
+        for item in (
+            preview | {"intent": preview["intent"] | {"purpose": "writ-capability-pack-signature/1"}},
+            receipt | {"presentation": "opaque"},
+            inspection | {"envelope": inspection["envelope"] | {"signature": ""}},
+            verification | {"verified": False},
+            history | {"history": [receipt | {"envelope_digest": "unbound"}]},
+        ):
+            with self.subTest(fields=item.keys()):
+                self.assertFalse(self.response.is_valid(response(item)))

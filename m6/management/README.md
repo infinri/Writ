@@ -151,3 +151,29 @@ Writ's canonical JSON restricts numeric input to safe integers. Schemas and exam
 ### Compatibility profile
 
 The owner compares with the highest previously published version of the same contract, including historical deprecations and retirements. Publication versions must increase. The comparison expands the bounded catalog and ignores description and title changes. Field removal, newly required fields, narrower types, tighter bounds, newly constrained array items or open-object fields, and closing an open object are breaking. Optional additions to an already closed object and proven widenings of existing constraints are compatible. Changed `enum` and `const` assertions are outside the comparison profile and are refused regardless of the version. A known breaking change requires a higher major version. The preview and authoritative publication receipt report the comparison. Comparisons that would exceed the 16 KiB result budget are refused before preparation completes. Custom contracts do not participate in kernel Decisions, permission grants, evaluator enrollment or runtime enforcement.
+
+## Run Capability Pack administration
+
+[D-059](../../docs/implementation/DECISION-LOG.md#d-059-m6-slice-5f-headless-capability-pack-administration-owner-2026-11-19) provisions only disposable stores and test authorities. With the pinned toolchain and `WRIT_CONTRACT_PYTHON` set as above, run the scenario from the repository root.
+
+```sh
+cargo test --locked --manifest-path m6/management/Cargo.toml --features fixtures \
+  --test pack_workflow complete_pack_lifecycle -- --exact --nocapture
+```
+
+The scenario publishes a custom contract and a scoped evaluator through their owners. It signs, installs and verifies two immutable pack versions, enables version 1, upgrades to version 2, disables the pack and recovers the original receipts after reopening. The contract owner refuses retirement while either version is selected and accepts the same authorized retirement after disable. The scenario compares complete kernel Decisions across all four selection states using the golden and permit, approval and deny corpora.
+
+- `writ-manage-fixture init-packs CONTRACT_DB EVALUATOR_DB` provisions the pack-enabled D-058 store with the identity of an existing disposable D-052 evaluator ledger. Use a management store created by the current fixture so the human intent can bind its durable identity. `writ-manage-fixture v1-packs MANAGEMENT_DB CREDENTIAL_FILE CONTRACT_DB EVALUATOR_DB` invokes the same service as an embedder using `Service::with_packs`.
+- `writ-pack-authority-fixture sign SIGNER_CREDENTIAL_FILE` takes the canonical payload described by the [pack envelope](../../docs/contracts/management/pack-envelope.schema.json). It emits a pack-purpose Ed25519 signature. The fixture signer credential is the exact file content `fixture-pack-build-signer`. The trusted verifier is scoped to the configured tenant, project and permitted pack IDs.
+- `writ-pack-authority-fixture approve STEP_UP_FILE CEREMONY_ID` takes a complete successful preview response. The step-up credential is the exact file content `fixture-pack-publisher-step-up`. It emits a presentation under the distinct human pack lifecycle purpose. The fixture uses a fixed test clock and separate keys for the two purposes.
+- The manifest uses the existing CapabilityPack schema. This profile recognizes exact core compatibility `2.0`, local artifact references of the form `id@version`, external-host review workflow declarations, `fs.read` as a symbolic requirement, and ephemeral memory with empty read and write types. It refuses blocking evaluator declarations. Exact D-052 rubric bindings and authenticated evaluator and key state are checked at verification and commit. The selected metadata gives no permission, trust registration, effect, approval, signoff, evidence, waiver, tool access or memory access.
+
+| Operation | Fields in addition to the v1 envelope |
+|---|---|
+| `packs.verify`, `packs.inspect` | `pack_id`, `pack_version` |
+| `packs.history` | `pack_id` |
+| `packs.preview` | `pack_operation`, `pack_id`, `pack_version`, `expected_revision`, plus `envelope` for install |
+| `packs.install`, `packs.enable`, `packs.disable`, `packs.upgrade` | Preview fields except `pack_operation`, plus `intent_digest`, `presentation` and `idempotency_key`. Disable and upgrade also require the exact previewed `confirmation`. |
+| `packs.recover` | Original `idempotency_key` |
+
+Preview reserves neither an idempotency key nor a ceremony. The pack write path reserves the evaluator writer transaction first, then the D-058 owner transaction. Contract retirement consults active pack dependencies in the same owner transaction as its retirement audit. Disable can remove an active dependency even if the pack publisher or evaluator has since been revoked. The pack selection, immutable version and audit use one owner transaction. A separate management transaction records the attempt and consumes the presentation for dispatch. The human intent binds both stores so another management database or a direct owner call cannot replay a pending attempt. Exact replay or recover reads the original receipt. An attempt with durable management dispatch identity but no owner receipt returns `UNAVAILABLE` and is never redispatched. Before starting a fresh attempt, check history and obtain a new preview, key and human presentation. For interrupted SQLite writes, reuse the host-only `recover-contract-storage` command.

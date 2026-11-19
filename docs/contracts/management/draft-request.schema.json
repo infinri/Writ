@@ -101,6 +101,22 @@
       "maxLength": 75,
       "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+(?![\\s\\S])",
       "description": "Typed confirmation. The service enforces its UTF-8 byte limit and the exact phrase for the target."
+    },
+    "packId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$"
+    },
+    "packVersion": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]{0,9})\\.(?:0|[1-9][0-9]{0,9})\\.(?:0|[1-9][0-9]{0,9})$"
+    },
+    "packRevision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 512
+    },
+    "packEnvelope": {
+      "$ref": "https://writ.dev/contracts/management/v1/pack-envelope.schema.json"
     }
   },
   "oneOf": [
@@ -1640,6 +1656,458 @@
         },
         "operation": {
           "const": "contracts.recover"
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/label"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "pack_id",
+        "pack_version",
+        "expected_revision",
+        "envelope",
+        "intent_digest",
+        "presentation",
+        "idempotency_key"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "packs.install"
+        },
+        "pack_id": {
+          "$ref": "#/$defs/packId"
+        },
+        "pack_version": {
+          "$ref": "#/$defs/packVersion"
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/packRevision"
+        },
+        "envelope": {
+          "$ref": "#/$defs/packEnvelope"
+        },
+        "intent_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "presentation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/label"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "pack_operation",
+        "pack_id",
+        "pack_version",
+        "expected_revision",
+        "envelope"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "packs.preview"
+        },
+        "pack_operation": {
+          "const": "install"
+        },
+        "pack_id": {
+          "$ref": "#/$defs/packId"
+        },
+        "pack_version": {
+          "$ref": "#/$defs/packVersion"
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/packRevision"
+        },
+        "envelope": {
+          "$ref": "#/$defs/packEnvelope"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "pack_id",
+        "pack_version",
+        "expected_revision",
+        "intent_digest",
+        "presentation",
+        "idempotency_key"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "packs.enable"
+        },
+        "pack_id": {
+          "$ref": "#/$defs/packId"
+        },
+        "pack_version": {
+          "$ref": "#/$defs/packVersion"
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/packRevision"
+        },
+        "intent_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "presentation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/label"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "pack_operation",
+        "pack_id",
+        "pack_version",
+        "expected_revision"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "packs.preview"
+        },
+        "pack_operation": {
+          "const": "enable"
+        },
+        "pack_id": {
+          "$ref": "#/$defs/packId"
+        },
+        "pack_version": {
+          "$ref": "#/$defs/packVersion"
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/packRevision"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "pack_id",
+        "pack_version",
+        "expected_revision",
+        "intent_digest",
+        "presentation",
+        "idempotency_key",
+        "confirmation"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "packs.disable"
+        },
+        "pack_id": {
+          "$ref": "#/$defs/packId"
+        },
+        "pack_version": {
+          "$ref": "#/$defs/packVersion"
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/packRevision"
+        },
+        "intent_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "presentation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/label"
+        },
+        "confirmation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 192
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "pack_operation",
+        "pack_id",
+        "pack_version",
+        "expected_revision"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "packs.preview"
+        },
+        "pack_operation": {
+          "const": "disable"
+        },
+        "pack_id": {
+          "$ref": "#/$defs/packId"
+        },
+        "pack_version": {
+          "$ref": "#/$defs/packVersion"
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/packRevision"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "pack_id",
+        "pack_version",
+        "expected_revision",
+        "intent_digest",
+        "presentation",
+        "idempotency_key",
+        "confirmation"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "packs.upgrade"
+        },
+        "pack_id": {
+          "$ref": "#/$defs/packId"
+        },
+        "pack_version": {
+          "$ref": "#/$defs/packVersion"
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/packRevision"
+        },
+        "intent_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "presentation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/label"
+        },
+        "confirmation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 192
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "pack_operation",
+        "pack_id",
+        "pack_version",
+        "expected_revision"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "packs.preview"
+        },
+        "pack_operation": {
+          "const": "upgrade"
+        },
+        "pack_id": {
+          "$ref": "#/$defs/packId"
+        },
+        "pack_version": {
+          "$ref": "#/$defs/packVersion"
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/packRevision"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "pack_id",
+        "pack_version"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "packs.verify"
+        },
+        "pack_id": {
+          "$ref": "#/$defs/packId"
+        },
+        "pack_version": {
+          "$ref": "#/$defs/packVersion"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "pack_id",
+        "pack_version"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "packs.inspect"
+        },
+        "pack_id": {
+          "$ref": "#/$defs/packId"
+        },
+        "pack_version": {
+          "$ref": "#/$defs/packVersion"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "pack_id"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "packs.history"
+        },
+        "pack_id": {
+          "$ref": "#/$defs/packId"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "idempotency_key"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "packs.recover"
         },
         "idempotency_key": {
           "$ref": "#/$defs/label"

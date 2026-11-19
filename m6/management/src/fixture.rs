@@ -290,7 +290,7 @@ pub(crate) fn verify_fixture_ceremony<'a>(
     })
 }
 
-fn decode_signature(text: &str) -> Option<[u8; 64]> {
+pub(crate) fn decode_signature(text: &str) -> Option<[u8; 64]> {
     if text.len() != 128 {
         return None;
     }

@@ -54,6 +54,14 @@ pub fn initialize(path: &Path) -> Result<()> {
     Ok(())
 }
 
+pub fn pack_dependencies() -> EvaluatorDependencies<'static> {
+    EvaluatorDependencies {
+        implementations: &Dependencies,
+        commands: &Dependencies,
+        runner_keys: &RunnerIdentity,
+    }
+}
+
 pub fn open(path: &Path) -> Result<impl EvaluatorBoundary> {
     EvaluatorFixture::open(path)
 }
@@ -95,11 +103,7 @@ impl EvaluatorBoundary for EvaluatorFixture {
         if call.scope != &self.scope {
             return Err(Error::NotFound);
         }
-        let dependencies = EvaluatorDependencies {
-            implementations: &Dependencies,
-            commands: &Dependencies,
-            runner_keys: &RunnerIdentity,
-        };
+        let dependencies = pack_dependencies();
         if !matches!(
             operation,
             EvaluatorOperation::Publish | EvaluatorOperation::Revoke

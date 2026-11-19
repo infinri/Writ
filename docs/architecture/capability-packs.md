@@ -1,6 +1,6 @@
 # Domain-independent Capability Packs
 
-**Status:** DECIDED interface; pack activation and executable modules are not implemented.
+**Status:** DECIDED interface. [D-059](../implementation/DECISION-LOG.md#d-059-m6-slice-5f-headless-capability-pack-administration-owner-2026-11-19) implements headless administration for disposable test authorities. Governed activation and executable modules remain open.
 
 Coding is a first use case, not the platform's identity. A **Capability Pack** is a versioned, scoped and eventually signed declaration of task types, workflows, tool requirements, artifact schemas, evaluation rubrics, retrieval/evidence strategies and memory rules. Packs configure core services; they never fork the kernel or grant permissions.
 

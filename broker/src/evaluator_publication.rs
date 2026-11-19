@@ -206,6 +206,19 @@ impl EvaluatorDependencies<'_> {
         let AdminRequest::RegisterEvaluator { entry } = intent.request() else {
             return Ok(None);
         };
+        self.check_entry_value(entry).map(Some)
+    }
+
+    /// Check the current implementation, command and runner key identity for a
+    /// registered evaluator without granting any evaluator or runner authority.
+    pub fn check_entry(
+        &self,
+        entry: &crate::contracts::RegistryEntry,
+    ) -> Result<(String, MaterialDigest), Refusal> {
+        self.check_entry_value(entry.as_value())
+    }
+
+    fn check_entry_value(&self, entry: &Value) -> Result<(String, MaterialDigest), Refusal> {
         let binding = Refusal::Acceptance(AcceptanceCode::EvaluatorBindingMismatch);
         let unavailable = Refusal::Acceptance(AcceptanceCode::RegistryUnavailable);
         let scope = entry.get("scope").ok_or(Refusal::AdminRequestInvalid)?;
@@ -254,7 +267,7 @@ impl EvaluatorDependencies<'_> {
         self.runner_keys
             .runner_key_material_digest(key_id)
             .map_err(|_| Refusal::Acceptance(AcceptanceCode::AttestationKeyUnavailable))?
-            .map(|digest| Some((key_id.into(), digest)))
+            .map(|digest| (key_id.into(), digest))
             .ok_or(Refusal::Acceptance(
                 AcceptanceCode::AttestationUnauthenticated,
             ))

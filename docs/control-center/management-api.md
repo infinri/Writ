@@ -1,6 +1,6 @@
 # Control Center: management API architecture
 
-**Status: PARTIAL.** M6 slices 5A through 5E deliver [disposable policy, evaluator, waiver and custom-contract administration](../../m6/management/README.md) through a typed in-process API and a fixture CLI. Each owning service commits its mutation and audit in its own transaction. The custom-contract owner also records idempotency and recovery in that transaction. Where management persists separate dispatch intent, it correlates that intent with the authoritative receipt. The transport and remaining resource operations are design targets. Decision record: [ADR-0007](../decisions/ADR-0007-control-center-management-plane.md).
+**Status: PARTIAL.** M6 slices 5A through 5F deliver [disposable policy, evaluator, waiver, custom-contract and Capability Pack administration](../../m6/management/README.md) through a typed in-process API and a fixture CLI. Each owning service commits its mutation and audit in its own transaction. The custom-contract owner also records idempotency and recovery in that transaction. Where management persists separate dispatch intent, it correlates that intent with the authoritative receipt. The transport and remaining resource operations are design targets. Decision record: [ADR-0007](../decisions/ADR-0007-control-center-management-plane.md).
 
 ## Components
 
@@ -52,7 +52,7 @@ The management service is a separate process. The kernel has **no dependency** o
 | `contracts` | schemas, versions, validations, registrations, deprecations | M6 |
 | `evaluators` | scoped registry inspection, publication, revocation and history | M6 |
 | `waivers` | scoped criterion waiver request, approval, historical receipt and current validation | M6 |
-| `packs` | packs, verifications, enablement | M6 |
+| `packs` | immutable versions, current verification, selection, history and receipt recovery | M6 |
 | `integrations` | adapters, coverage, configurations, compatibility | M5 |
 | `knowledge` | sources, imports, documents, chunks, index health, retrieval inspections | M7 |
 | `memory` | memories, relationships, corrections, consent, retention | M8 |
@@ -68,7 +68,7 @@ These must be available through both the `writ` CLI and the API, so headless ins
 3. List, show, approve, deny and revoke approval requests (approval still requires step-up human authentication).
 4. Validate, simulate, publish, activate, deactivate, roll back and retire policy bundles.
 5. Browse and inspect core and scoped custom contracts, validate examples, and administer the custom-contract lifecycle.
-6. Install, verify, enable and disable Capability Packs; show adapter coverage.
+6. Install, verify, inspect, enable, disable and upgrade Capability Packs, and show their history. Show adapter coverage.
 7. Import, reindex, archive and delete knowledge sources; show reconciliation reports.
 8. Show, supersede, archive and delete memories.
 9. Create and archive projects; manage users and roles; rotate and revoke keys.

@@ -12,6 +12,10 @@ pub mod evaluator_fixture;
 mod lifecycle;
 pub mod managed_evaluator;
 pub mod managed_waiver;
+#[cfg(feature = "fixtures")]
+pub mod pack_fixture;
+pub mod pack_registry;
+pub mod packs;
 mod publication;
 mod store;
 #[cfg(feature = "fixtures")]
@@ -27,6 +31,7 @@ pub use lifecycle::{
     EvaluatorBoundary, EvaluatorOperation, LifecycleCall, LifecycleKind, WaiverBoundary,
     WaiverOperation,
 };
+pub use packs::{PackBoundary, PackOperation};
 pub use publication::PublicationRequest;
 pub use store::Store;
 pub use wire::{
@@ -168,6 +173,8 @@ pub enum Error {
     InvalidPolicy,
     ProtectedContract,
     InvalidContract,
+    InvalidPack,
+    PackConflict,
     IncompatibleContract,
     ActiveDependents,
     Unsupported,
@@ -189,6 +196,7 @@ pub struct Service<'a> {
     publication: Option<&'a dyn PublicationBoundary>,
     evaluator: Option<&'a dyn EvaluatorBoundary>,
     contracts: Option<&'a dyn ContractBoundary>,
+    packs: Option<&'a dyn PackBoundary>,
     waiver: Option<&'a dyn WaiverBoundary>,
     allow_self_publication: bool,
 }
@@ -201,6 +209,7 @@ impl<'a> Service<'a> {
             publication: None,
             evaluator: None,
             contracts: None,
+            packs: None,
             waiver: None,
             allow_self_publication: false,
         }
@@ -214,6 +223,11 @@ impl<'a> Service<'a> {
 
     pub fn with_evaluator(mut self, boundary: &'a dyn EvaluatorBoundary) -> Self {
         self.evaluator = Some(boundary);
+        self
+    }
+
+    pub fn with_packs(mut self, boundary: &'a dyn PackBoundary) -> Self {
+        self.packs = Some(boundary);
         self
     }
 
@@ -325,28 +339,40 @@ impl<'a> Service<'a> {
         }
         if matches!(
             &operation,
-            Operation::Evaluator(..) | Operation::Waiver(..) | Operation::Contract(..)
+            Operation::Evaluator(..)
+                | Operation::Waiver(..)
+                | Operation::Contract(..)
+                | Operation::Pack(..)
         ) {
-            let pin_required = !matches!(
-                &operation,
-                Operation::Evaluator(EvaluatorOperation::Inspect, _)
-                    | Operation::Waiver(WaiverOperation::Inspect | WaiverOperation::Validate, _)
-                    | Operation::Contract(
-                        ContractOperation::Browse
-                            | ContractOperation::Inspect
-                            | ContractOperation::ValidateSchema
-                            | ContractOperation::ValidateExample
-                            | ContractOperation::Preview
-                            | ContractOperation::Recover,
-                        _,
-                    )
-            );
+            let pin_required = !matches!(&operation, Operation::Pack(kind, _) if kind.read_only())
+                && !matches!(
+                    &operation,
+                    Operation::Evaluator(EvaluatorOperation::Inspect, _)
+                        | Operation::Waiver(
+                            WaiverOperation::Inspect | WaiverOperation::Validate,
+                            _
+                        )
+                        | Operation::Contract(
+                            ContractOperation::Browse
+                                | ContractOperation::Inspect
+                                | ContractOperation::ValidateSchema
+                                | ContractOperation::ValidateExample
+                                | ContractOperation::Preview
+                                | ContractOperation::Recover,
+                            _,
+                        )
+                );
             let check = |principal: &Principal| match &operation {
                 Operation::Evaluator(EvaluatorOperation::Inspect, _)
                 | Operation::Waiver(WaiverOperation::Inspect | WaiverOperation::Validate, _) => {
                     authorize(principal, &scope, false)
                 }
                 Operation::Evaluator(..) => publisher(principal, &scope),
+                Operation::Pack(
+                    PackOperation::Verify | PackOperation::Inspect | PackOperation::History,
+                    _,
+                ) if principal.realm == Realm::Management => authorize(principal, &scope, false),
+                Operation::Pack(..) => publisher(principal, &scope),
                 Operation::Contract(
                     ContractOperation::Browse
                     | ContractOperation::Inspect
@@ -431,6 +457,11 @@ impl<'a> Service<'a> {
                     .ok_or(Error::Unavailable)?
                     .execute(&call, *kind, fields.clone())
                     .map(ResponseV1::Evaluator),
+                Operation::Pack(kind, fields) => self
+                    .packs
+                    .ok_or(Error::Unavailable)?
+                    .execute(&call, *kind, fields.clone())
+                    .map(ResponseV1::Pack),
                 Operation::Contract(kind, fields) => self
                     .contracts
                     .ok_or(Error::Unavailable)?
@@ -459,7 +490,8 @@ impl<'a> Service<'a> {
             Operation::Publication(_)
             | Operation::Evaluator(..)
             | Operation::Waiver(..)
-            | Operation::Contract(..) => {
+            | Operation::Contract(..)
+            | Operation::Pack(..) => {
                 return Err(Error::Unavailable);
             }
             Operation::Mutation(mutation) => {

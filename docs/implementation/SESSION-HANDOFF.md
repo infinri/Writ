@@ -4,6 +4,18 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 
 ## Current recovery state
 
+[D-059](DECISION-LOG.md#d-059-m6-slice-5f-headless-capability-pack-administration-owner-2026-11-19) approves the disposable pack registry and test authorities. Read [WORK-STATE](WORK-STATE.md) and [E-106](TEST-EVIDENCE.md#e-106-d-059-disposable-capability-pack-administration-2026-11-19) in a fresh chat.
+
+- Run the [headless pack scenario](../../m6/management/README.md#run-capability-pack-administration). It installs and verifies two signed immutable versions, enables version 1, upgrades to version 2, disables, and recovers the exact receipts after reopening. A selected pack blocks retirement of its referenced custom contract through the D-058 owner. All 44 complete Decisions agree across absent, enabled, upgraded and disabled states.
+- The baseline `ebbf8f04f1ef4afe9c5f31f16e01bdd841f7ccd2` passed all six required jobs in [run 44619390302](https://github.com/infinri/Writ/actions/runs/44619390302). Verify the current remote SHA by fetching `origin v2/architecture-rebuild` in an isolated checkout, then use `gh run list --repo infinri/Writ --branch v2/architecture-rebuild --workflow v2-docs.yml --commit <remote-sha> --limit 5` and `gh run view <run-id> --repo infinri/Writ --json headSha,conclusion,jobs`. Match the exact SHA and all six jobs. Preserve E-097's unresolved earlier CI stall.
+- Preserve the original checkout at divergent `a1eee0d` and keep unrelated work and private hook-audit material separate.
+- M6 and CC-M2, CC-M3 and CC-M6 remain in progress. Optional policy removal, evaluator quorum, remaining AG-ADV-16 obligations, UI, transport, production authentication and M5-dependent integration remain open. Governed activation, live deployment and legacy imports require separate authority.
+- Prioritize the owner-designated rollback-capable Ubuntu 24.04 guest [first inventory](../../m5/reference-vm/PROVISIONING.md#first-guest-inventory), [full VM checklist](M5A-GATE-REVIEW.md#4-verify-in-vm-checklist-all-open) and separate [isolated containment CI](../../m5/containment-ci/README.md) before M7. D-048 and D-049 remain in force. D-049 expires at the start of 2026-12-18 UTC. ADR-0008 remains APPROVED IN PRINCIPLE. Release and production remain NO-GO.
+
+## Prior checkpoints
+
+### 2026-11-19 (M6 slice 5E checkpoint)
+
 [D-058](DECISION-LOG.md#d-058-m6-slice-5e-headless-custom-contract-administration-owner-2026-11-19) approves the disposable custom-contract registry and test authorities. Read [WORK-STATE](WORK-STATE.md) and [E-105](TEST-EVIDENCE.md#e-105-d-058-disposable-custom-contract-administration-2026-11-19) in a fresh chat.
 
 - Run the [custom-contract lab](../../m6/management/README.md#run-custom-contract-administration). The shared API and fixture CLI browse immutable source contracts, create and validate scoped custom versions, publish with compatibility, deprecate with a replacement and end date, refuse an active dependency, retire an eligible version and recover the registry's receipt after reopening. D-058 introduces no runtime authority.
@@ -12,7 +24,6 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 - CC-M2, CC-M3, CC-M6 and M6 remain in progress. Optional policy removal, pack administration, evaluator quorum, remaining AG-ADV-16 obligations, UI, transport, production authentication and M5-dependent integration remain open. Governed activation, live deployment and legacy imports require separate authority.
 - Prioritize M5 VM testing and isolated containment CI before M7. Await the owner-designated rollback-capable Ubuntu 24.04 guest, then run its [first inventory](../../m5/reference-vm/PROVISIONING.md#first-guest-inventory) and the [full VM checklist](M5A-GATE-REVIEW.md#4-verify-in-vm-checklist-all-open). [Isolated containment CI](../../m5/containment-ci/README.md) is a separate gate. D-048 and D-049 remain in force; D-049 expires at the start of 2026-12-18 UTC. ADR-0008 remains APPROVED IN PRINCIPLE. Release and production remain NO-GO.
 
-## Prior checkpoints
 
 ### 2026-11-19 (M6 slice 5D checkpoint)
 

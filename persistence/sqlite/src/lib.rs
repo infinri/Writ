@@ -174,8 +174,8 @@ pub use snapshots::{
     SNAPSHOTS_SCHEMA_VERSION,
 };
 pub use workflow::{
-    EvaluatorRegistryCommit, EvaluatorRegistryReader, EvaluatorRegistryRecord,
-    EvaluatorRegistrySnapshot,
+    EvaluatorPackSnapshot, EvaluatorRegistryCommit, EvaluatorRegistryReader,
+    EvaluatorRegistryRecord, EvaluatorRegistrySnapshot, PackEvaluatorEntry,
 };
 use writ_broker::store::{TxFailure, TxStage};
 

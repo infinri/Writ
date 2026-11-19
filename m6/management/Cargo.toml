@@ -37,6 +37,11 @@ name = "writ-contract-authority-fixture"
 path = "src/contract_fixture_authority.rs"
 required-features = ["fixtures"]
 
+[[bin]]
+name = "writ-pack-authority-fixture"
+path = "src/pack_fixture_authority.rs"
+required-features = ["fixtures"]
+
 [dependencies]
 writ-kernel = { path = "../../kernel" }
 writ-policy-compile = { path = "../compiler" }

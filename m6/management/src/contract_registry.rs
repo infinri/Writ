@@ -25,6 +25,7 @@ use crate::{
 
 const APPLICATION_ID: u32 = 0x5752_4331;
 const SCHEMA_VERSION: u32 = 1;
+const PACK_SCHEMA_VERSION: u32 = 2;
 const MAX_VERSIONS: i64 = 128;
 const MAX_VERSIONS_PER_CONTRACT: i64 = 12;
 const MAX_REVISION: i64 = 4 * MAX_VERSIONS;
@@ -51,6 +52,53 @@ impl<'a> ContractRegistry<'a> {
         authority: &'a dyn ContractAuthority,
         allow_self_publication: bool,
         validator: ContractValidator,
+    ) -> Result<Self> {
+        Self::create_profile(
+            path,
+            scope,
+            packs,
+            dependencies,
+            authority,
+            allow_self_publication,
+            validator,
+            None,
+        )
+    }
+
+    /// Provision the D-059 profile with the exact disposable evaluator ledger identity.
+    pub fn create_pack_owner(
+        path: &Path,
+        scope: Scope,
+        packs: &[String],
+        authority: &'a dyn ContractAuthority,
+        validator: ContractValidator,
+        evaluator_identity: &str,
+    ) -> Result<Self> {
+        if writ_ledger_sqlite::LedgerId::parse(evaluator_identity).is_none() {
+            return Err(Error::InvalidRequest);
+        }
+        Self::create_profile(
+            path,
+            scope,
+            packs,
+            Some(&[]),
+            authority,
+            true,
+            validator,
+            Some(evaluator_identity),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn create_profile(
+        path: &Path,
+        scope: Scope,
+        packs: &[String],
+        dependencies: Option<&[ContractDependency]>,
+        authority: &'a dyn ContractAuthority,
+        allow_self_publication: bool,
+        validator: ContractValidator,
+        evaluator_identity: Option<&str>,
     ) -> Result<Self> {
         if !valid_label(&scope.tenant) || !valid_label(&scope.project) {
             return Err(Error::InvalidRequest);
@@ -95,7 +143,19 @@ impl<'a> ContractRegistry<'a> {
             .map_err(unavailable)?;
         tx.pragma_update(None, "application_id", APPLICATION_ID)
             .map_err(unavailable)?;
-        tx.pragma_update(None, "user_version", SCHEMA_VERSION)
+        let version = if let Some(identity) = evaluator_identity {
+            tx.execute_batch(include_str!("pack_registry.sql"))
+                .map_err(unavailable)?;
+            tx.execute(
+                "INSERT INTO pack_owner VALUES (1, lower(hex(randomblob(16))), ?1)",
+                [identity],
+            )
+            .map_err(unavailable)?;
+            PACK_SCHEMA_VERSION
+        } else {
+            SCHEMA_VERSION
+        };
+        tx.pragma_update(None, "user_version", version)
             .map_err(unavailable)?;
         tx.execute(
             "INSERT INTO contract_owner VALUES (1, ?1, ?2, ?3)",
@@ -153,12 +213,68 @@ impl<'a> ContractRegistry<'a> {
 
     /// Recover a recognized disposable owner database after an interrupted SQLite transaction.
     pub fn recover_storage(path: &Path, scope: &Scope) -> Result<()> {
-        let must_recover = recoverable(path, APPLICATION_ID, SCHEMA_VERSION)?;
+        let must_recover = recoverable(path, APPLICATION_ID, profile(path)?)?;
         check_open(scoped_connection(path, scope, must_recover)?)
     }
 
     fn connection(&self, write: bool) -> Result<Connection> {
         scoped_connection(&self.path, &self.scope, write)
+    }
+
+    pub(crate) fn pack_scope(&self) -> &Scope {
+        &self.scope
+    }
+
+    pub(crate) fn pack_connection(&self, write: bool) -> Result<Connection> {
+        if profile(&self.path)? != PACK_SCHEMA_VERSION {
+            return Err(Error::Unavailable);
+        }
+        self.connection(write)
+    }
+
+    pub(crate) fn pack_manifest(&self, manifest: &Value) -> Result<()> {
+        let schema = core_contract("capability-pack").ok_or(Error::Unavailable)?;
+        let diagnostics = self.validator.validate_example(
+            schema.get("schema").ok_or(Error::Unavailable)?,
+            manifest,
+            true,
+        )?;
+        if diagnostics.as_arr().is_some_and(|errors| errors.is_empty()) {
+            Ok(())
+        } else {
+            Err(Error::InvalidPack)
+        }
+    }
+
+    pub(crate) fn pack_contract(
+        &self,
+        db: &Connection,
+        pack: &str,
+        id: &str,
+        version: &str,
+    ) -> Result<String> {
+        if let Some(core) = core_contract(id) {
+            if version != "1.0.0" {
+                return Err(Error::NotFound);
+            }
+            return Ok(digest(core.get("schema").ok_or(Error::Unavailable)?)?.to_string());
+        }
+        self.custom_id(db, id)?;
+        if id.starts_with("pack:") && id.split(':').nth(1) != Some(pack) {
+            return Err(Error::NotFound);
+        }
+        Version::parse(version)?;
+        let version = record(
+            db,
+            &Target {
+                id: id.into(),
+                version: version.into(),
+            },
+        )?;
+        if !matches!(version.change, Change::Publish | Change::Deprecate) {
+            return Err(Error::InvalidPack);
+        }
+        Ok(version.digest)
     }
 
     fn custom_id(&self, db: &Connection, id: &str) -> Result<()> {
@@ -956,6 +1072,35 @@ fn active_dependents(db: &Connection, target: &Target) -> Result<Option<Vec<Valu
             ),
         ]));
     }
+    if db
+        .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
+        .map_err(unavailable)?
+        == PACK_SCHEMA_VERSION
+    {
+        let scope = db
+            .query_row(
+                "SELECT tenant, project FROM contract_owner WHERE singleton = 1",
+                [],
+                |row| {
+                    Ok(Scope {
+                        tenant: row.get(0)?,
+                        project: row.get(1)?,
+                    })
+                },
+            )
+            .map_err(unavailable)?;
+        for owner in crate::pack_registry::active_contract_dependents(
+            db,
+            &scope,
+            &target.id,
+            &target.version,
+        )? {
+            dependents.push(json::obj([
+                ("kind", json::s("pack")),
+                ("owner", json::s(&owner)),
+            ]));
+        }
+    }
     Ok(Some(dependents))
 }
 
@@ -1216,10 +1361,17 @@ fn digest(value: &Value) -> Result<Digest> {
     json::digest(value).map_err(|_| Error::InvalidRequest)
 }
 
-fn scoped_connection(path: &Path, scope: &Scope, write: bool) -> Result<Connection> {
-    if !sqlite_header_matches(path, APPLICATION_ID, SCHEMA_VERSION)? {
-        return Err(Error::Unavailable);
+fn profile(path: &Path) -> Result<u32> {
+    for version in [SCHEMA_VERSION, PACK_SCHEMA_VERSION] {
+        if sqlite_header_matches(path, APPLICATION_ID, version)? {
+            return Ok(version);
+        }
     }
+    Err(Error::Unavailable)
+}
+
+fn scoped_connection(path: &Path, scope: &Scope, write: bool) -> Result<Connection> {
+    let profile = profile(path)?;
     let db = connect(path, write)?;
     let marker: u32 = db
         .pragma_query_value(None, "application_id", |row| row.get(0))
@@ -1227,7 +1379,7 @@ fn scoped_connection(path: &Path, scope: &Scope, write: bool) -> Result<Connecti
     let version: u32 = db
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(unavailable)?;
-    if marker != APPLICATION_ID || version != SCHEMA_VERSION {
+    if marker != APPLICATION_ID || version != profile {
         return Err(Error::Unavailable);
     }
     let stored = db

@@ -59,6 +59,18 @@ pub fn initialize(path: &Path) -> Result<()> {
     Ok(())
 }
 
+pub fn initialize_pack_owner(path: &Path, ledger_identity: &str) -> Result<()> {
+    ContractRegistry::create_pack_owner(
+        path,
+        scope(),
+        &["sample-pack".into(), "conflict-pack".into()],
+        &AUTHORITY,
+        ContractValidator::from_fixture_environment()?,
+        ledger_identity,
+    )?;
+    Ok(())
+}
+
 pub fn open(path: &Path) -> Result<ContractRegistry<'static>> {
     ContractRegistry::open(
         path,

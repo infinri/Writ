@@ -251,6 +251,86 @@ impl EvaluatorRegistryReader {
     }
 }
 
+/// A typed snapshot for the disposable pack owner. No evaluator mutations can
+/// commit while the immediate transaction is held, including across processes.
+pub struct EvaluatorPackSnapshot<'a>(Transaction<'a>);
+
+/// Current authenticated entry and its registered runner key identity.
+pub struct PackEvaluatorEntry {
+    /// Registry-owned metadata for this evaluator.
+    pub entry: RegistryEntry,
+    /// Registered runner-purpose key identifier.
+    pub key_id: String,
+    /// Registered runner-purpose key material digest.
+    pub key_digest: MaterialDigest,
+    /// Whether the registered key is durably revoked.
+    pub key_revoked: bool,
+}
+
+impl EvaluatorPackSnapshot<'_> {
+    /// Identity of the exact evaluator ledger behind this snapshot.
+    pub fn identity(&self) -> Result<String, StoreError> {
+        crate::meta_value(&self.0, "ledger_id")
+            .map_err(|e| unavailable("pack evaluator snapshot", code_name(&e)))?
+            .ok_or_else(|| unavailable("pack evaluator snapshot", "ledger identity"))
+    }
+
+    /// Resolve the current authenticated entry, including durable runner-key revocation.
+    pub fn entry(
+        &self,
+        tenant: &str,
+        project: &str,
+        evaluator: &str,
+    ) -> Result<Option<PackEvaluatorEntry>, StoreError> {
+        if !ids::is_id(tenant) || !ids::is_id(project) || !ids::is_name(evaluator) {
+            return Err(unavailable("pack evaluator snapshot", "scope"));
+        }
+        let lookup = || {
+            let tx = &self.0;
+            let prefix = scope_prefix(tenant, project);
+            secure_head(tx, tenant, project, &prefix)?;
+            let row = read_registry_row(tx, tenant, project, evaluator)?;
+            let Some(validated) = validate_registry_row(tx, &prefix, evaluator, row.as_ref())?
+            else {
+                return Ok(None);
+            };
+            let key_revoked = validated.key_revoked(tx)?;
+            let (key_id, key_digest) = validated.runner_key()?;
+            Ok::<_, BodyError>(Some(PackEvaluatorEntry {
+                key_id: key_id.into(),
+                key_digest: key_digest.clone(),
+                key_revoked,
+                entry: validated.entry,
+            }))
+        };
+        lookup().map_err(|_| unavailable("pack evaluator snapshot", "integrity"))
+    }
+}
+
+impl EvaluatorRegistryReader {
+    /// Open the validated fixture store, taking SQLite's writer reservation only
+    /// for pack commits. The snapshot rolls back and never edits this store.
+    pub fn for_pack<T>(
+        path: &Path,
+        commit: bool,
+        use_snapshot: impl FnOnce(&EvaluatorPackSnapshot<'_>) -> T,
+    ) -> Result<T, StoreError> {
+        use rusqlite::TransactionBehavior::{Deferred, Immediate};
+        let flags = if commit {
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+        } else {
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+        };
+        let mut db = connect(&existing_identity(path)?, flags)?;
+        let snapshot = EvaluatorPackSnapshot(
+            db.transaction_with_behavior(if commit { Immediate } else { Deferred })
+                .map_err(|e| unavailable("pack evaluator snapshot", code_name(&e)))?,
+        );
+        verify(&snapshot.0, SCHEMA, EVALUATOR_LAB_SCHEMA_VERSION)?;
+        Ok(use_snapshot(&snapshot))
+    }
+}
+
 fn registry_history(
     tx: &Transaction<'_>,
     tenant: &str,

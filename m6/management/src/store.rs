@@ -87,6 +87,19 @@ impl ManagedIntentSource for Store {
 }
 
 impl Store {
+    pub(crate) fn pack_dispatch_identity(&self) -> Result<String> {
+        let db = self.connection(false)?;
+        let identity: String = db
+            .query_row(
+                "SELECT identity FROM pack_dispatch_identity WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(unavailable)?;
+        writ_ledger_sqlite::LedgerId::parse(&identity).ok_or(Error::Unavailable)?;
+        Ok(identity)
+    }
+
     /// Create a separate management database. Existing files are refused.
     pub fn create(path: &Path) -> Result<Self> {
         OpenOptions::new()

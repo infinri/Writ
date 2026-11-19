@@ -6,8 +6,8 @@ use writ_policy_publication_lab::Publication;
 
 use crate::{
     valid_label, Authenticator, Change, ContractOperation, DraftRef, Error, EvaluatorOperation,
-    Mutation, PublicationRequest, Receipt, Result, Scope, Service, Store, Version, WaiverOperation,
-    MAX_CANDIDATE, MAX_REQUEST,
+    Mutation, PackOperation, PublicationRequest, Receipt, Result, Scope, Service, Store, Version,
+    WaiverOperation, MAX_CANDIDATE, MAX_REQUEST,
 };
 
 pub const API_VERSION: &str = "/manage/v1";
@@ -26,6 +26,7 @@ pub(crate) enum Operation {
     Publication(PublicationRequest),
     Evaluator(EvaluatorOperation, Map),
     Contract(ContractOperation, Map),
+    Pack(PackOperation, Map),
     Waiver(WaiverOperation, Map),
     Mutation(Mutation),
     Get(DraftRef),
@@ -60,6 +61,7 @@ pub enum ResponseV1 {
     Publication(Value),
     Evaluator(Value),
     Contract(Value),
+    Pack(Value),
     Waiver(Value),
 }
 
@@ -193,6 +195,15 @@ impl RequestV1 {
             "contracts.deprecate" => contract_operation(ContractOperation::Deprecate, &mut fields)?,
             "contracts.retire" => contract_operation(ContractOperation::Retire, &mut fields)?,
             "contracts.recover" => contract_operation(ContractOperation::Recover, &mut fields)?,
+            "packs.install" => pack_operation(PackOperation::Install, &mut fields)?,
+            "packs.verify" => pack_operation(PackOperation::Verify, &mut fields)?,
+            "packs.inspect" => pack_operation(PackOperation::Inspect, &mut fields)?,
+            "packs.enable" => pack_operation(PackOperation::Enable, &mut fields)?,
+            "packs.disable" => pack_operation(PackOperation::Disable, &mut fields)?,
+            "packs.upgrade" => pack_operation(PackOperation::Upgrade, &mut fields)?,
+            "packs.history" => pack_operation(PackOperation::History, &mut fields)?,
+            "packs.preview" => pack_operation(PackOperation::Preview, &mut fields)?,
+            "packs.recover" => pack_operation(PackOperation::Recover, &mut fields)?,
             _ => return Err(invalid("/operation")),
         };
         empty(&fields, "")?;
@@ -243,7 +254,10 @@ impl LifecycleField {
 
 type LifecycleFields = &'static [(&'static str, &'static str, LifecycleField)];
 
-fn check_lifecycle(fields: &Map, contract: LifecycleFields) -> DecodeResult<()> {
+fn check_lifecycle(
+    fields: &Map,
+    contract: &[(&str, &'static str, LifecycleField)],
+) -> DecodeResult<()> {
     for (name, pointer, domain) in contract {
         match fields.get(*name) {
             Some(value) if domain.accepts(value) => {}
@@ -254,6 +268,51 @@ fn check_lifecycle(fields: &Map, contract: LifecycleFields) -> DecodeResult<()> 
         return Err(invalid(""));
     }
     Ok(())
+}
+
+fn pack_operation(operation: PackOperation, fields: &mut Map) -> DecodeResult<Operation> {
+    use LifecycleField::{AnyJson, Digest, Label, Number, Presentation};
+    use PackOperation::*;
+    let mut required = Vec::new();
+    if operation != Recover {
+        required.push(("pack_id", "/pack_id", Presentation(64)));
+        if operation != History {
+            required.push(("pack_version", "/pack_version", Presentation(32)));
+        }
+    }
+    let change = if operation == Preview {
+        required.push(("operation", "/pack_operation", Presentation(8)));
+        let change = fields
+            .get("pack_operation")
+            .and_then(Value::as_str)
+            .and_then(|name| PackOperation::change(name).ok())
+            .ok_or_else(|| invalid("/pack_operation"))?;
+        let value = fields
+            .remove("pack_operation")
+            .ok_or_else(|| invalid("/pack_operation"))?;
+        fields.insert("operation".into(), value);
+        change
+    } else {
+        operation
+    };
+    if !change.read_only() {
+        required.push(("expected_revision", "/expected_revision", Number(0, 512)));
+        if change == Install {
+            required.push(("envelope", "/envelope", AnyJson));
+        }
+    }
+    if !operation.read_only() || operation == Recover {
+        required.push(("idempotency_key", "/idempotency_key", Label));
+    }
+    if !operation.read_only() {
+        required.push(("intent_digest", "/intent_digest", Digest));
+        required.push(("presentation", "/presentation", Presentation(512)));
+        if operation.destructive() {
+            required.push(("confirmation", "/confirmation", Presentation(192)));
+        }
+    }
+    check_lifecycle(fields, &required)?;
+    Ok(Operation::Pack(operation, std::mem::take(fields)))
 }
 
 fn contract_operation(operation: ContractOperation, fields: &mut Map) -> DecodeResult<Operation> {
@@ -701,6 +760,7 @@ impl ResponseV1 {
             | Self::Comparison(value)
             | Self::Publication(value)
             | Self::Contract(value)
+            | Self::Pack(value)
             | Self::Evaluator(value)
             | Self::Waiver(value) => value,
         };
@@ -769,6 +829,11 @@ fn encode_error(diagnostic: Diagnostic) -> Vec<u8> {
             "ACTIVE_DEPENDENTS",
             "The publication has active dependents.",
         ),
+        Error::InvalidPack => (
+            "INVALID_PACK",
+            "The pack violates its verification or lifecycle requirements.",
+        ),
+        Error::PackConflict => ("PACK_CONFLICT", "The pack conflicts with an active pack."),
         Error::ProtectedContract => ("PROTECTED_CONTRACT", "Core contracts are immutable."),
         Error::InvalidContract => (
             "INVALID_CONTRACT",

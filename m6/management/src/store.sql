@@ -36,3 +36,10 @@ CREATE TABLE draft_versions (
     FOREIGN KEY (tenant, project, source_draft, source_revision)
         REFERENCES draft_versions (tenant, project, draft, revision)
 ) STRICT, WITHOUT ROWID;
+
+CREATE TABLE pack_dispatch_identity (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    identity TEXT NOT NULL
+) STRICT;
+
+INSERT INTO pack_dispatch_identity VALUES (1, lower(hex(randomblob(16))));

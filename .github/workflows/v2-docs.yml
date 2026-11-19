@@ -88,13 +88,14 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/writ-contract-python"
           "$RUNNER_TEMP/writ-contract-python/bin/python3" -m pip install --disable-pip-version-check -r requirements-v2-docs.txt
-      - name: M6 disposable /manage/v1 policy, evaluator, waiver and custom-contract CLI
+      - name: M6 disposable /manage/v1 policy, evaluator, waiver, custom-contract and pack CLI
         run: |
           export WRIT_CONTRACT_PYTHON="$RUNNER_TEMP/writ-contract-python/bin/python3"
           cargo fmt --manifest-path m6/management/Cargo.toml --all --check
           cargo clippy --manifest-path m6/management/Cargo.toml --all-targets --all-features --locked -- -D warnings
           cargo test --manifest-path m6/management/Cargo.toml --no-default-features --locked
-          m3/tools/run-with-clean-fds.sh cargo test --manifest-path m6/management/Cargo.toml --features fixtures --locked
+          m3/tools/run-with-clean-fds.sh cargo test --manifest-path m6/management/Cargo.toml --features fixtures --locked -- --skip complete_pack_lifecycle
+          m3/tools/run-with-clean-fds.sh cargo test --manifest-path m6/management/Cargo.toml --features fixtures --locked --test pack_workflow complete_pack_lifecycle -- --exact --nocapture
           cargo test --locked -p writ-broker --features disposable-waiver-fixture-ingress --doc
           cargo build --manifest-path m6/management/Cargo.toml --features fixtures --locked --bins
           python3 m6/management/run-publication-lab.py

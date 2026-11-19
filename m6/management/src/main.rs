@@ -10,8 +10,8 @@ use std::{
 use writ_kernel::json;
 use writ_policy_management_lab::{
     contract_fixture, contract_registry::ContractRegistry, error_response, evaluator_fixture,
-    execute_v1_with_service, fixture, waiver_fixture::WaiverFixture, Error, Service, Store,
-    MAX_CREDENTIAL, MAX_REQUEST,
+    execute_v1_with_service, fixture, pack_fixture, pack_registry::PackRegistry,
+    waiver_fixture::WaiverFixture, Error, Service, Store, MAX_CREDENTIAL, MAX_REQUEST,
 };
 use writ_policy_publication_lab::Registry;
 
@@ -25,7 +25,7 @@ fn read_bounded(reader: impl Read, limit: usize) -> Result<Vec<u8>, Error> {
 }
 
 fn run() -> Result<Vec<u8>, Error> {
-    let args: Vec<_> = env::args_os().skip(1).take(5).collect();
+    let args: Vec<_> = env::args_os().skip(1).take(6).collect();
     match args.as_slice() {
         [command, db] if command == "init" => {
             Store::create(Path::new(db))?;
@@ -33,6 +33,10 @@ fn run() -> Result<Vec<u8>, Error> {
         }
         [command, registry] if command == "init-contracts" => {
             contract_fixture::initialize(Path::new(registry))?;
+            Ok(br#"{"ok":true,"result":{"initialized":true},"version":"/manage/v1"}"#.to_vec())
+        }
+        [command, registry, evaluator] if command == "init-packs" => {
+            pack_fixture::initialize(Path::new(registry), Path::new(evaluator))?;
             Ok(br#"{"ok":true,"result":{"initialized":true},"version":"/manage/v1"}"#.to_vec())
         }
         [command, registry] if command == "recover-contract-storage" => {
@@ -56,7 +60,8 @@ fn run() -> Result<Vec<u8>, Error> {
             if (command == "v1" && extra.len() <= 1)
                 || (command == "v1-contracts" && extra.len() == 1)
                 || (command == "v1-evaluator" && extra.len() == 1)
-                || (command == "v1-waiver" && extra.len() == 2) =>
+                || (command == "v1-waiver" && extra.len() == 2)
+                || (command == "v1-packs" && extra.len() == 2) =>
         {
             let path = Path::new(credential_file);
             if !path.metadata().is_ok_and(|metadata| metadata.is_file()) {
@@ -65,7 +70,7 @@ fn run() -> Result<Vec<u8>, Error> {
             let credential = fs::File::open(path).map_err(|_| Error::Unauthorized)?;
             let credential = read_bounded(credential, MAX_CREDENTIAL)?;
             let request = read_bounded(io::stdin().lock(), MAX_REQUEST)?;
-            let store = if command == "v1-contracts" {
+            let store = if command == "v1-contracts" || command == "v1-packs" {
                 Store::open_without_recovery(Path::new(db))?
             } else {
                 Store::open(Path::new(db))?
@@ -81,6 +86,21 @@ fn run() -> Result<Vec<u8>, Error> {
                 [ledger] if command == "v1-evaluator" => {
                     let evaluator = evaluator_fixture::open(Path::new(ledger))?;
                     let service = service.with_evaluator(&evaluator);
+                    Ok(execute_v1_with_service(&service, &credential, &request))
+                }
+                [contracts, evaluator] if command == "v1-packs" => {
+                    let contracts = contract_fixture::open(Path::new(contracts))?;
+                    let authority = pack_fixture::FixturePackAuthority::default();
+                    let packs = PackRegistry::new(
+                        &contracts,
+                        Path::new(evaluator),
+                        evaluator_fixture::pack_dependencies(),
+                        &authority,
+                    );
+                    let service = service
+                        .with_packs(&packs)
+                        .with_contracts(&contracts)
+                        .allow_self_publication();
                     Ok(execute_v1_with_service(&service, &credential, &request))
                 }
                 [ledger, policy] if command == "v1-waiver" => {

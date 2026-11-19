@@ -281,7 +281,9 @@
             "UNSUPPORTED",
             "PROTECTED_CONTRACT",
             "INVALID_CONTRACT",
-            "INCOMPATIBLE_CONTRACT"
+            "INCOMPATIBLE_CONTRACT",
+            "INVALID_PACK",
+            "PACK_CONFLICT"
           ]
         },
         "message": {
@@ -1558,6 +1560,312 @@
           }
         }
       }
+    },
+    "packReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "subject",
+        "revision",
+        "operation",
+        "pack_id",
+        "pack_version",
+        "previous_active_version",
+        "envelope_digest",
+        "intent_digest",
+        "ceremony",
+        "at",
+        "registry_identity"
+      ],
+      "properties": {
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tenant",
+            "project"
+          ],
+          "properties": {
+            "tenant": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._-]{1,64}$"
+            },
+            "project": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._-]{1,64}$"
+            }
+          }
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 512
+        },
+        "operation": {
+          "enum": [
+            "install",
+            "enable",
+            "disable",
+            "upgrade"
+          ]
+        },
+        "pack_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$"
+        },
+        "pack_version": {
+          "type": "string",
+          "pattern": "^(?:0|[1-9][0-9]{0,9})\\.(?:0|[1-9][0-9]{0,9})\\.(?:0|[1-9][0-9]{0,9})$"
+        },
+        "previous_active_version": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^(?:0|[1-9][0-9]{0,9})\\.(?:0|[1-9][0-9]{0,9})\\.(?:0|[1-9][0-9]{0,9})$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "envelope_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "intent_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "ceremony": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "registry_identity": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        }
+      }
+    },
+    "packPreview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "intent_digest",
+        "intent"
+      ],
+      "properties": {
+        "intent_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "intent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "purpose",
+            "operation",
+            "scope",
+            "subject",
+            "pack_id",
+            "pack_version",
+            "expected_revision",
+            "envelope_digest",
+            "active_version",
+            "confirmation",
+            "registry_identity",
+            "management_identity"
+          ],
+          "properties": {
+            "purpose": {
+              "const": "writ-human-capability-pack-admin/1"
+            },
+            "operation": {
+              "enum": [
+                "install",
+                "enable",
+                "disable",
+                "upgrade"
+              ]
+            },
+            "scope": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "tenant",
+                "project"
+              ],
+              "properties": {
+                "tenant": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9._-]{1,64}$"
+                },
+                "project": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9._-]{1,64}$"
+                }
+              }
+            },
+            "subject": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "pack_id": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$"
+            },
+            "pack_version": {
+              "type": "string",
+              "pattern": "^(?:0|[1-9][0-9]{0,9})\\.(?:0|[1-9][0-9]{0,9})\\.(?:0|[1-9][0-9]{0,9})$"
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 512
+            },
+            "envelope_digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "active_version": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(?:0|[1-9][0-9]{0,9})\\.(?:0|[1-9][0-9]{0,9})\\.(?:0|[1-9][0-9]{0,9})$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "confirmation": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 192
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "registry_identity": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{32}$"
+            },
+            "management_identity": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{32}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "packInspection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "active_version",
+        "envelope"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 512
+        },
+        "active_version": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^(?:0|[1-9][0-9]{0,9})\\.(?:0|[1-9][0-9]{0,9})\\.(?:0|[1-9][0-9]{0,9})$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "envelope": {
+          "$ref": "https://writ.dev/contracts/management/v1/pack-envelope.schema.json"
+        }
+      }
+    },
+    "packVerification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verified",
+        "revision",
+        "envelope_digest"
+      ],
+      "properties": {
+        "verified": {
+          "const": true
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 512
+        },
+        "envelope_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "packHistory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "active_version",
+        "history"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 512
+        },
+        "active_version": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^(?:0|[1-9][0-9]{0,9})\\.(?:0|[1-9][0-9]{0,9})\\.(?:0|[1-9][0-9]{0,9})$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "history": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/packReceipt"
+          },
+          "minItems": 0,
+          "maxItems": 512
+        }
+      }
     }
   },
   "oneOf": [
@@ -1643,6 +1951,21 @@
             },
             {
               "$ref": "#/$defs/contractReceipt"
+            },
+            {
+              "$ref": "#/$defs/packReceipt"
+            },
+            {
+              "$ref": "#/$defs/packPreview"
+            },
+            {
+              "$ref": "#/$defs/packInspection"
+            },
+            {
+              "$ref": "#/$defs/packVerification"
+            },
+            {
+              "$ref": "#/$defs/packHistory"
             }
           ]
         }
