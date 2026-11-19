@@ -14,7 +14,7 @@ use writ_kernel::{
 };
 use writ_policy_management_lab::{fixture, MAX_CANDIDATE, MAX_REQUEST};
 use writ_policy_publication_lab::{
-    sign, Error, Protected, Publication, Purpose, SignedPolicy, Signer,
+    sign, Error, Intent, Protected, Publication, Purpose, SignedPolicy, Signer,
 };
 
 struct FixtureSigner;
@@ -120,13 +120,25 @@ fn authorize(preview: &[u8], credential: &[u8], ceremony: &str) -> Result<Value,
         || intent.get("scope") != Some(&fixture::publication_scope()?.to_value())
         || !matches!(
             intent.get("operation").and_then(Value::as_str),
-            Some("publish" | "rollback")
+            Some("publish" | "rollback" | "retire")
         )
         || management.get("publisher").and_then(Value::as_str) != Some(human)
         || management.get("digest").and_then(Value::as_str) != Some(context_digest.as_str())
         || result.get("intent_digest").and_then(Value::as_str) != Some(exact.as_str())
     {
         return Err(Error::Authority);
+    }
+    if intent.get("operation").and_then(Value::as_str) == Some("retire") {
+        let version = intent
+            .get("publication_version")
+            .and_then(Value::as_int)
+            .ok_or(Error::Format)?;
+        let confirmation = json::s(&Intent::retirement_phrase(version));
+        if intent.get("confirmation") != Some(&confirmation)
+            || context.get("confirmation") != Some(&confirmation)
+        {
+            return Err(Error::Authority);
+        }
     }
     let now = fixture::fixture_time().map_err(|_| Error::Time)?;
     let claim = format!("{human}|{ceremony}|{now}|{exact}");

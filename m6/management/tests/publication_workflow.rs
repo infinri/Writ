@@ -290,6 +290,7 @@ fn commit(preview: Value, receipt: &Value, presentation: Value) -> Value {
     let operation = match preview.get("operation").and_then(Value::as_str) {
         Some("preview_publish") => "publish",
         Some("preview_rollback") => "rollback",
+        Some("preview_retire") => "retire",
         _ => panic!("expected a preview"),
     };
     let preview = changed(preview, "operation", json::s(operation));
@@ -417,6 +418,139 @@ fn headless_api_and_cli_share_the_same_workflow_and_authoritative_receipts() {
             .get("revision"),
         Some(&Value::Int(3)),
     );
+}
+
+#[test]
+fn retirement_rechecks_exact_context_and_recovers_the_same_receipt_after_reopen() {
+    let lab = Lab::new();
+    let trust = fixture::FixtureTrust::default();
+    let author = lab.credential("author", AUTHOR);
+    let publisher = lab.credential("publisher", PUBLISHER);
+    let step_up = lab.credential("step-up", b"fixture-publisher-step-up");
+    for (expected, name, policy) in [(0, "permit", PERMIT), (1, "deny", DENY)] {
+        result(&lab.cli(&author, &save("create", name, 0, name, policy)));
+        let version = expected + 1;
+        let proposal = preview(
+            expected,
+            version,
+            name,
+            Some((draft(name, 1), signed(policy, version))),
+            false,
+        );
+        let shown = lab.cli(&publisher, &proposal);
+        result(&lab.cli(
+            &publisher,
+            &commit(proposal, &shown, token(&shown, &step_up, name)),
+        ));
+    }
+
+    let before = lab.cli(&publisher, &history());
+    let proposal = changed(
+        preview(2, 1, "retire", None, false),
+        "operation",
+        json::s("preview_retire"),
+    );
+    let proposal = changed(proposal, "confirmation", json::s("retire 1"));
+    let shown = lab.cli(&publisher, &proposal);
+    assert_eq!(shown, lab.api(&trust, PUBLISHER, &proposal, false));
+    assert_eq!(result(&shown).get("revision"), Some(&Value::Int(2)));
+    assert_eq!(
+        result(&shown).get("intent").unwrap().get("confirmation"),
+        Some(&json::s("retire 1"))
+    );
+    let current = changed(proposal.clone(), "publication_version", Value::Int(2));
+    let current = changed(current, "confirmation", json::s("retire 2"));
+    refused_with(&lab.cli(&publisher, &current), "REVISION_CONFLICT");
+
+    for operation in ["preview_deactivate", "deactivate"] {
+        for (target, code) in [
+            ("review", "INVALID_POLICY"),
+            ("m6.synthetic.deny", "UNSUPPORTED"),
+        ] {
+            let deactivate = request(
+                operation,
+                [
+                    ("expected_revision", Value::Int(2)),
+                    ("publication_version", Value::Int(2)),
+                    ("policy_id", json::s(target)),
+                    ("confirmation", json::s(&format!("deactivate {target}"))),
+                ],
+            );
+            let response = lab.cli(&publisher, &deactivate);
+            refused_with(&response, code);
+            assert_eq!(response, lab.api(&trust, PUBLISHER, &deactivate, false));
+        }
+    }
+    let dispatch_db = rusqlite::Connection::open(&lab.drafts).unwrap();
+    let count_dispatches = || {
+        dispatch_db
+            .query_row("SELECT count(*) FROM publication_intents", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap()
+    };
+    assert_eq!(count_dispatches(), 2);
+
+    let retire = commit(proposal, &shown, token(&shown, &step_up, "retire"));
+    for (field, replacement, code) in [
+        ("confirmation", json::s("Retire 1"), "INVALID_REQUEST"),
+        ("expected_revision", Value::Int(1), "REVISION_CONFLICT"),
+        (
+            "idempotency_key",
+            json::s("changed-context"),
+            "REVISION_CONFLICT",
+        ),
+    ] {
+        let altered = changed(retire.clone(), field, replacement);
+        let response = lab.cli(&publisher, &altered);
+        refused_with(&response, code);
+        assert_eq!(response, lab.api(&trust, PUBLISHER, &altered, false));
+    }
+    assert_eq!(count_dispatches(), 2);
+    assert_eq!(before, lab.cli(&publisher, &history()));
+
+    let receipt = lab.api(&trust, PUBLISHER, &retire, false);
+    assert_eq!(result(&receipt).get("revision"), Some(&Value::Int(2)));
+    assert_eq!(
+        result(&receipt).get("publication_version"),
+        Some(&Value::Int(1))
+    );
+    assert_eq!(result(&receipt).get("audit_id"), Some(&Value::Int(3)));
+    assert_eq!(receipt, lab.cli(&publisher, &retire));
+    let changed_confirmation = changed(retire, "confirmation", json::s("retire 2"));
+    refused_with(
+        &lab.cli(&publisher, &changed_confirmation),
+        "IDEMPOTENCY_CONFLICT",
+    );
+    let after = lab.cli(&publisher, &history());
+    assert_eq!(
+        result(&before).get("selected"),
+        result(&after).get("selected")
+    );
+    let events = result(&after).get("events").unwrap().as_arr().unwrap();
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[2].get("operation"), Some(&json::s("retire")));
+    assert_eq!(events[2].get("context"), result(&shown).get("context"));
+    assert_eq!(
+        events[..2],
+        *result(&before).get("events").unwrap().as_arr().unwrap()
+    );
+    let reopened = lab.open_registry(&trust);
+    assert_eq!(
+        reopened
+            .current_selection()
+            .unwrap()
+            .unwrap()
+            .publication_version,
+        2
+    );
+    assert_eq!(reopened.audit().unwrap()[2].operation, Operation::Retire);
+
+    let rollback = preview(2, 1, "restore-retired", None, false);
+    assert_eq!(reopened.preview(2, 1, None), Err(RegistryError::Retired));
+    drop(reopened);
+    refused_with(&lab.cli(&publisher, &rollback), "NOT_FOUND");
+    assert_eq!(lab.cli(&publisher, &history()), after);
 }
 
 #[test]

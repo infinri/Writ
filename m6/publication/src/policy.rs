@@ -72,6 +72,54 @@ pub(crate) fn load(
     })
 }
 
+pub(crate) fn preserve_required_criteria(
+    candidate: &Policies,
+    selected: Option<(i64, &Publication)>,
+) -> Result<(), Error> {
+    let Some((version, publication)) = selected else {
+        return Ok(());
+    };
+    let (required, _) = acceptance(&publication.acceptance.payload, version)?;
+    let mut candidate = candidate.acceptance.criteria.iter();
+    if required
+        .criteria
+        .iter()
+        .all(|required| candidate.any(|criterion| criterion == required))
+    {
+        Ok(())
+    } else {
+        Err(Error::InvalidPolicy)
+    }
+}
+
+pub(crate) fn refuse_deactivation(
+    publication: &Publication,
+    acceptance: &AcceptanceRequirements,
+    policy_id: &str,
+) -> Result<(), Error> {
+    if policy_id == ACCEPTANCE_ID
+        || acceptance
+            .criteria
+            .iter()
+            .any(|criterion| criterion.criterion_id == policy_id)
+    {
+        return Err(Error::InvalidPolicy);
+    }
+    let manifests = publication
+        .prerequisites
+        .get("draft")
+        .and_then(|draft| draft.get("manifests"))
+        .and_then(Value::as_arr)
+        .ok_or(Error::InvalidPolicy)?;
+    if manifests
+        .iter()
+        .any(|manifest| manifest.get("policy_id").and_then(Value::as_str) == Some(policy_id))
+    {
+        return Err(Error::Unsupported);
+    }
+    Err(Error::InvalidPolicy)
+}
+
 fn acceptance(
     payload: &Value,
     version: i64,

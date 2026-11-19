@@ -1,6 +1,6 @@
 # Control Center: lifecycle semantics for policies, contracts, knowledge and memory
 
-**Status: PLANNED.** Semantics that the owning services must enforce; the Control Center only invokes them. Nothing here is implemented.
+**Status: PARTIAL.** The [disposable policy fixture](../../m6/management/README.md#run-signed-policy-retirement) implements part of the policy lifecycle. Owning services enforce lifecycle eligibility.
 
 ## Common rules
 
@@ -22,9 +22,9 @@ States: `draft` > `validated` > `published` > `active` > `inactive` > `retired`.
 | Compare | Structural diff and decision diff between any two versions |
 | Publish | Produces an immutable signed bundle (signing from M6); requires validation pass and publisher role; the bundle sha never changes |
 | Activate | Selects which published bundle the kernel pulls for a scope; pending approvals bound to the old policy version are invalidated or re-evaluated (existing policy lifecycle) |
-| Deactivate | Allowed only for non-mandatory policies; mandatory policies refuse (CC-R03) |
+| Deactivate | Requires explicitly optional content and a verified signed replacement approved for the exact removal. Mandatory policies refuse (CC-R03). The current disposable compiler profile does not support removal. |
 | Roll back | Activate an earlier published bundle; recorded as a new activation event, never as an edit of history |
-| Retire | Bundle can no longer be activated; kept for audit and explanation |
+| Retire | Requires an inactive publication, a complete owning dependency check with no active references, typed confirmation and fresh scoped publisher authorization. The version remains in immutable history and is permanently ineligible for selection or rollback. |
 
 Advisory guidance lives in a separate registry with the same versioning; it can never be activated into the enforced bundle without an enforcement binding and tests (INV-20).
 

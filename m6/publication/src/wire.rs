@@ -242,6 +242,7 @@ pub struct Intent {
     publication_version: i64,
     publication: Digest,
     content: Value,
+    confirmation: Option<String>,
     management: Option<ManagedIntent>,
 }
 
@@ -267,8 +268,35 @@ impl Intent {
             publication_version: number(publication_version, 1)?,
             publication: publication.fingerprint()?,
             content: publication.content_digests()?,
+            confirmation: None,
             management: None,
         })
+    }
+
+    /// Exact typed confirmation required for retirement of this immutable version.
+    pub fn retirement_phrase(publication_version: i64) -> String {
+        format!("retire {publication_version}")
+    }
+
+    /// Exact typed confirmation for a proposed policy removal.
+    pub fn deactivation_phrase(policy_id: &str) -> String {
+        format!("deactivate {policy_id}")
+    }
+
+    /// Bind the typed confirmation to the publisher's canonical retirement intent.
+    pub fn with_retirement_confirmation(mut self, confirmation: &str) -> Result<Self, Error> {
+        if self.operation != Operation::Retire
+            || confirmation != Self::retirement_phrase(self.publication_version)
+        {
+            return Err(Error::Format);
+        }
+        self.confirmation = Some(confirmation.to_owned());
+        Ok(self)
+    }
+
+    /// The exact typed confirmation bound to this retirement intent, if present.
+    pub fn retirement_confirmation(&self) -> Option<&str> {
+        self.confirmation.as_deref()
     }
 
     /// Bind an exact management context and the expected identity of its human publisher.
@@ -277,7 +305,7 @@ impl Intent {
     }
 
     pub(crate) fn bind_management(mut self, digest: &str, publisher: &str) -> Result<Self, Error> {
-        if self.operation == Operation::Retire {
+        if self.operation == Operation::Retire && self.confirmation.is_none() {
             return Err(Error::Format);
         }
         self.management = Some(ManagedIntent {
@@ -341,6 +369,9 @@ impl Intent {
             ),
             ("content_digests".into(), self.content.clone()),
         ]);
+        if let Some(confirmation) = self.retirement_confirmation() {
+            fields.insert("confirmation".into(), json::s(confirmation));
+        }
         if let Some(context) = self.management() {
             fields.insert(
                 "management".into(),

@@ -96,21 +96,29 @@
           "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
         }
       }
+    },
+    "confirmation": {
+      "type": "string",
+      "pattern": "^retire [1-9][0-9]{0,8}(?![\\s\\S])"
     }
   },
   "if": {
-    "required": [
-      "management"
-    ]
-  },
-  "then": {
     "properties": {
       "operation": {
-        "enum": [
-          "publish",
-          "rollback"
-        ]
+        "const": "retire"
       }
+    }
+  },
+  "then": {
+    "required": [
+      "confirmation"
+    ]
+  },
+  "else": {
+    "not": {
+      "required": [
+        "confirmation"
+      ]
     }
   }
 }

@@ -66,7 +66,7 @@ These must be available through both the `writ` CLI and the API, so headless ins
 1. Health and status of all components.
 2. Search and show audit events, decisions, effects and their explanations; export with integrity proof; verify an export offline.
 3. List, show, approve, deny and revoke approval requests (approval still requires step-up human authentication).
-4. Validate, simulate, publish, activate, deactivate and roll back policy bundles.
+4. Validate, simulate, publish, activate, deactivate, roll back and retire policy bundles.
 5. Validate an example against a contract.
 6. Install, verify, enable and disable Capability Packs; show adapter coverage.
 7. Import, reindex, archive and delete knowledge sources; show reconciliation reports.

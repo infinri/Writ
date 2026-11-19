@@ -210,6 +210,18 @@ struct History {
 }
 
 impl History {
+    fn selected(&self) -> Result<Option<(i64, &Publication)>, Error> {
+        self.head
+            .publication_version
+            .map(|version| {
+                self.publications
+                    .get(&version)
+                    .map(|entry| (version, &entry.publication))
+                    .ok_or(Error::Recovery)
+            })
+            .transpose()
+    }
+
     fn check_publish(&self, version: i64, entry: &Entry) -> Result<(), Error> {
         let previous = self.publications.last_key_value().map_or(0, |(v, _)| *v);
         if version != previous + 1 {
@@ -271,6 +283,17 @@ impl History {
             &entry.publication,
         )
         .map_err(incoherent)?;
+        // Earlier direct retirements were recorded without typed confirmation.
+        let legacy_retirement = audit.operation == Operation::Retire
+            && audit.management_digest.is_none()
+            && expected_intent.fingerprint().map_err(incoherent)?.as_str() == audit.intent_digest;
+        let expected_intent = if audit.operation == Operation::Retire && !legacy_retirement {
+            expected_intent
+                .with_retirement_confirmation(&Intent::retirement_phrase(version))
+                .map_err(incoherent)?
+        } else {
+            expected_intent
+        };
         let expected_intent = match &audit.management_digest {
             Some(digest) => expected_intent
                 .bind_management(digest, &audit.human)
@@ -531,7 +554,10 @@ impl Store {
         &self,
         intent: &Intent,
         candidate: Option<&Publication>,
-        validate: impl Fn(&Publication) -> Result<(Approval, Timestamp), Error>,
+        validate: impl Fn(
+            &Publication,
+            Option<(i64, &Publication)>,
+        ) -> Result<(Approval, Timestamp), Error>,
     ) -> Result<Commit, Error> {
         if intent.scope() != &self.scope {
             return Err(Error::Scope);
@@ -564,6 +590,13 @@ impl Store {
             version,
             &entry.publication,
         )?;
+        let exact = if operation == Operation::Retire {
+            exact.with_retirement_confirmation(
+                intent.retirement_confirmation().ok_or(Error::Format)?,
+            )?
+        } else {
+            exact
+        };
         let exact = match intent.management() {
             Some(context) => exact.bind_management(&context.digest, &context.publisher)?,
             None => exact,
@@ -571,7 +604,8 @@ impl Store {
         if &exact != intent {
             return Err(Error::Authority);
         }
-        let (approval, at) = validate(&entry.publication)?;
+        let selected = history.selected()?;
+        let (approval, at) = validate(&entry.publication, selected)?;
         approval.check(at)?;
         if !intent.matches_approval(&approval) {
             return Err(Error::Authority);
@@ -644,7 +678,7 @@ impl Store {
         if recover(&tx, &self.scope).map_err(|_| Error::Storage)?.head != head {
             return Err(Error::Storage);
         }
-        let (final_approval, final_time) = validate(&entry.publication)?;
+        let (final_approval, final_time) = validate(&entry.publication, selected)?;
         if final_approval != approval {
             return Err(Error::Authority);
         }
@@ -662,11 +696,15 @@ impl Store {
 
     pub(crate) fn preview(
         &self,
+        operation: Operation,
         expected_revision: i64,
         version: i64,
         candidate: Option<&Publication>,
-        validate: impl FnOnce(&Publication) -> Result<(), Error>,
+        validate: impl FnOnce(&Publication, Option<(i64, &Publication)>) -> Result<(), Error>,
     ) -> Result<Publication, Error> {
+        if (operation == Operation::Publish) != candidate.is_some() {
+            return Err(Error::Format);
+        }
         let connection = self.connection.lock().map_err(|_| Error::Storage)?;
         let history = recover(&connection, &self.scope)?;
         if history.head.revision != expected_revision {
@@ -678,14 +716,11 @@ impl Store {
                 history.check_publish(version, entry)?;
                 entry
             }
-            None => history.historical_target(Operation::Rollback, version)?,
+            None => history.historical_target(operation, version)?,
         };
-        history.head.next_revision(if candidate.is_some() {
-            Operation::Publish
-        } else {
-            Operation::Rollback
-        })?;
-        validate(&entry.publication)?;
+        history.head.next_revision(operation)?;
+        history.head.next_sequence()?;
+        validate(&entry.publication, history.selected()?)?;
         Ok(entry.publication.clone())
     }
 
@@ -695,16 +730,10 @@ impl Store {
     ) -> Result<Option<R>, Error> {
         let connection = self.connection.lock().map_err(|_| Error::Storage)?;
         let history = recover(&connection, &self.scope)?;
-        let Some(version) = history.head.publication_version else {
+        let Some((version, publication)) = history.selected()? else {
             return Ok(None);
         };
-        let entry = history.publications.get(&version).ok_or(Error::Recovery)?;
-        let result = use_selection(
-            history.head.revision,
-            version,
-            &entry.publication,
-            &history.audit,
-        );
+        let result = use_selection(history.head.revision, version, publication, &history.audit);
         drop(connection);
         result.map(Some)
     }
@@ -794,7 +823,14 @@ mod tests {
     ) -> Result<Commit, Error> {
         let intent = Intent::new(scope(), operation, revision, version, target).unwrap();
         let candidate = (operation == Operation::Publish).then_some(target);
-        store.change(&intent, candidate, |_| Ok(approval(ceremony)))
+        let intent = if operation == Operation::Retire {
+            intent
+                .with_retirement_confirmation(&Intent::retirement_phrase(version))
+                .unwrap()
+        } else {
+            intent
+        };
+        store.change(&intent, candidate, |_, _| Ok(approval(ceremony)))
     }
 
     fn selected(store: &Store) -> (i64, i64, Publication) {
@@ -822,12 +858,12 @@ mod tests {
             .with_management(binding.clone(), "different-human")
             .unwrap();
         assert_eq!(
-            store.change(&wrong, Some(&first), |_| Ok(approval("c1"))),
+            store.change(&wrong, Some(&first), |_, _| Ok(approval("c1"))),
             Err(Error::Authority)
         );
         assert!(store.audit().unwrap().is_empty());
         let commit = store
-            .change(&managed, Some(&first), |_| Ok(approval("c1")))
+            .change(&managed, Some(&first), |_, _| Ok(approval("c1")))
             .unwrap();
         drop(store);
         let reopened = Store::open(&path, scope()).unwrap();
@@ -930,6 +966,74 @@ mod tests {
     }
 
     #[test]
+    fn legacy_unmanaged_retirement_history_stays_readable() {
+        let scratch = Scratch::new();
+        let path = scratch.database();
+        let store = Store::create(&path, scope()).unwrap();
+        let first = publication("auth-1", "accept-1", "proof-1");
+        let second = publication("auth-2", "accept-2", "proof-2");
+        change(&store, Operation::Publish, 0, 1, &first, "c1").unwrap();
+        change(&store, Operation::Publish, 1, 2, &second, "c2").unwrap();
+
+        let legacy = Intent::new(scope(), Operation::Retire, 2, 1, &first).unwrap();
+        assert_eq!(
+            store.change(&legacy, None, |_, _| Ok(approval("c3"))),
+            Err(Error::Format)
+        );
+
+        let mut connection = store.connection.lock().unwrap();
+        let tx = connection.transaction().unwrap();
+        let history = recover(&tx, &scope()).unwrap();
+        let (approval, at) = approval("c3");
+        let event = Event {
+            audit: Audit {
+                sequence: 3,
+                revision: 2,
+                operation: Operation::Retire,
+                publication_version: 1,
+                publication_digest: first.fingerprint().unwrap().to_string(),
+                intent_digest: legacy.fingerprint().unwrap().to_string(),
+                management_digest: None,
+                human: approval.human,
+                ceremony: approval.ceremony,
+                at,
+            },
+            issued_at: approval.issued_at,
+            expires_at: approval.expires_at,
+        };
+        let head = history.head.after(&event).unwrap();
+        tx.execute(
+            "INSERT INTO publication_audit VALUES (3, 2, 'retire', 1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (
+                &event.audit.publication_digest,
+                &event.audit.intent_digest,
+                &event.audit.human,
+                &event.audit.ceremony,
+                event.issued_at.to_string(),
+                event.expires_at.to_string(),
+                at.to_string(),
+            ),
+        )
+        .unwrap();
+        tx.execute(
+            "UPDATE registry_head SET audit_sequence = 3, audit_digest = ?1 WHERE singleton = 1",
+            (&head.audit_digest,),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        drop(connection);
+        drop(store);
+
+        let reopened = Store::open(&path, scope()).unwrap();
+        assert_eq!(selected(&reopened), (2, 2, second));
+        assert_eq!(reopened.audit().unwrap()[2], event.audit);
+        assert_eq!(
+            change(&reopened, Operation::Rollback, 2, 1, &first, "c4"),
+            Err(Error::Retired)
+        );
+    }
+
+    #[test]
     fn staged_changes_roll_back_on_audit_storage_or_second_check_failure() {
         let scratch = Scratch::new();
         let path = scratch.database();
@@ -953,7 +1057,7 @@ mod tests {
                 ))
                 .unwrap();
             assert_eq!(
-                store.change(&intent, Some(&second), |_| Ok(approval("c2"))),
+                store.change(&intent, Some(&second), |_, _| Ok(approval("c2"))),
                 Err(Error::Storage)
             );
             store
@@ -981,7 +1085,7 @@ mod tests {
             .unwrap();
         let commit_checks = Cell::new(0);
         assert_eq!(
-            store.change(&intent, Some(&second), |_| {
+            store.change(&intent, Some(&second), |_, _| {
                 commit_checks.set(commit_checks.get() + 1);
                 Ok(approval("c2"))
             }),
@@ -996,7 +1100,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            store.change(&intent, Some(&second), |_| {
+            store.change(&intent, Some(&second), |_, _| {
                 let (mut approval, at) = approval("c2");
                 approval.issued_at = at.plus_seconds(-2);
                 Ok((approval, at.plus_seconds(-1)))
@@ -1005,7 +1109,7 @@ mod tests {
         );
         let checks = Cell::new(0);
         assert_eq!(
-            store.change(&intent, Some(&second), |_| {
+            store.change(&intent, Some(&second), |_, _| {
                 checks.set(checks.get() + 1);
                 if checks.get() == 1 {
                     Ok(approval("c2"))
@@ -1018,7 +1122,7 @@ mod tests {
         assert_eq!(checks.get(), 2);
         let checks = Cell::new(0);
         assert_eq!(
-            store.change(&intent, Some(&second), |_| {
+            store.change(&intent, Some(&second), |_, _| {
                 checks.set(checks.get() + 1);
                 let (approval, first_time) = approval("c2");
                 if checks.get() == 1 {
@@ -1077,7 +1181,7 @@ mod tests {
             let intent = Intent::new(scope(), Operation::Publish, 1, 2, &second).unwrap();
             let calls = Cell::new(0);
             store
-                .change(&intent, Some(&second), |_| {
+                .change(&intent, Some(&second), |_, _| {
                     calls.set(calls.get() + 1);
                     if before_commit && calls.get() == 2 {
                         std::process::exit(70);

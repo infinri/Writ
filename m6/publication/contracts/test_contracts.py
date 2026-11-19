@@ -153,6 +153,14 @@ class Contracts(unittest.TestCase):
         }
         validator = self.validators["human-intent-v1"]
         validator.validate(intent)
+        managed = {"digest": digest, "publisher": "fixture-publisher"}
+        retire = {**intent, "operation": "retire", "confirmation": "retire 1"}
+        validator.validate(retire)
+        validator.validate({**retire, "management": managed})
+        self.assertFalse(validator.is_valid({**intent, "operation": "retire", "management": managed}))
+        self.assertFalse(validator.is_valid({**retire, "confirmation": "retire 01"}))
+        self.assertFalse(validator.is_valid({**retire, "confirmation": "retire 1\n"}))
+        self.assertFalse(validator.is_valid({**retire, "operation": "rollback"}))
         del intent["content_digests"]["prerequisites"]
         self.assertFalse(validator.is_valid(intent))
 

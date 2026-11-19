@@ -412,6 +412,10 @@ fn downgrade_replay_rollback_and_retirement_are_ordered() {
     let initial = request("prior-permit");
     let old_permit = broker.execute(&initial, None).unwrap().1.unwrap();
     publish(&registry, &authority, &deny, 1, 2, "publish-two");
+    assert_eq!(
+        broker.present(&old_permit, initial.request()),
+        Err(Error::StalePermit)
+    );
     let older = intent(Operation::Publish, 2, 1, &allow);
     let proof = authority.authorize(&older, "downgrade");
     assert_eq!(registry.publish(&older, &allow, &proof), Err(Error::Replay));
@@ -468,6 +472,261 @@ fn downgrade_replay_rollback_and_retirement_are_ordered() {
         count(&dir.path().join("effects.sqlite"), "consumed_permits"),
         1
     );
+}
+
+#[test]
+fn retirement_checks_exact_confirmation_current_authority_and_complete_dependencies() {
+    let dir = Disposable::create().unwrap();
+    let path = dir.path().join("policy.sqlite");
+    let (authority, signer) = FixtureSigner::pair();
+    let registry = Registry::create(&path, scope(), authority.clone()).unwrap();
+    let first = signer.publication(ALLOW, 1);
+    let second = signer.publication(DENY, 2);
+    publish(&registry, &authority, &first, 0, 1, "first");
+
+    let current = intent(Operation::Retire, 1, 1, &first);
+    assert_eq!(
+        registry.preview_retire(1, 1, "retire 1"),
+        Err(Error::Replay)
+    );
+    assert_eq!(
+        registry.change(&current, None, &authority.authorize(&current, "active")),
+        Err(Error::Replay)
+    );
+    publish(&registry, &authority, &second, 1, 2, "replacement");
+    let unchanged = registry.audit().unwrap();
+    let retire = intent(Operation::Retire, 2, 1, &first);
+    let approval = authority.authorize(&retire, "retirement");
+    assert_eq!(
+        registry.preview_retire(2, 1, "retire 2"),
+        Err(Error::Format)
+    );
+    assert_eq!(
+        registry.preview_retire(1, 1, "retire 1"),
+        Err(Error::Conflict)
+    );
+    assert_eq!(
+        registry.change(&current, None, &authority.authorize(&current, "stale")),
+        Err(Error::Conflict)
+    );
+    let unconfirmed = Intent::new(scope(), Operation::Retire, 2, 1, &first).unwrap();
+    let unconfirmed_proof = authority.authorize(&unconfirmed, "no-confirmation");
+    assert_eq!(
+        registry.change(&unconfirmed, None, &unconfirmed_proof),
+        Err(Error::Format)
+    );
+    assert_eq!(
+        registry.change(&retire, None, &unconfirmed_proof),
+        Err(Error::Authority)
+    );
+
+    let first_digest = first.fingerprint().unwrap().to_string();
+    for (dependents, expected) in [
+        (Some([(1, first_digest)].into()), Error::ActiveDependents),
+        (None, Error::DependencyUnavailable),
+    ] {
+        authority.active_dependents(dependents);
+        assert_eq!(registry.preview_retire(2, 1, "retire 1"), Err(expected));
+        assert_eq!(registry.change(&retire, None, &approval), Err(expected));
+        assert_eq!(registry.audit().unwrap(), unchanged);
+        assert_eq!(selected(&registry), (2, 2));
+    }
+    authority.active_dependents(Some(Default::default()));
+    assert_eq!(registry.preview_retire(2, 1, "retire 1"), Ok(first.clone()));
+    authority.publisher_enabled(false);
+    assert_eq!(
+        registry.change(&retire, None, &approval),
+        Err(Error::Authority)
+    );
+    authority.publisher_enabled(true);
+    assert_eq!(registry.audit().unwrap(), unchanged);
+    assert_eq!(selected(&registry), (2, 2));
+
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fault BEFORE INSERT ON publication_audit
+             BEGIN SELECT RAISE(ABORT, 'retirement audit failure'); END;",
+        )
+        .unwrap();
+    assert_eq!(
+        registry.change(&retire, None, &approval),
+        Err(Error::Storage)
+    );
+    assert_eq!(registry.audit().unwrap(), unchanged);
+    assert_eq!(selected(&registry), (2, 2));
+    assert_eq!(count(&path, "publications"), 2);
+    connection.execute_batch("DROP TRIGGER fault").unwrap();
+    drop(connection);
+    drop(registry);
+
+    let registry = Registry::open(&path, scope(), authority.clone()).unwrap();
+    assert_eq!(registry.audit().unwrap(), unchanged);
+    let receipt = registry.change(&retire, None, &approval).unwrap();
+    assert_eq!(
+        (
+            receipt.revision,
+            receipt.publication_version,
+            receipt.audit_sequence
+        ),
+        (2, 1, 3)
+    );
+    drop(registry);
+
+    let registry = Registry::open(&path, scope(), authority.clone()).unwrap();
+    let history = registry.audit().unwrap();
+    assert_eq!(&history[..2], &unchanged);
+    assert_eq!(history[2].operation, Operation::Retire);
+    assert_eq!(
+        history[2].intent_digest,
+        retire.fingerprint().unwrap().as_str()
+    );
+    assert_eq!(history[2].publication_digest, history[0].publication_digest);
+    assert_eq!(selected(&registry), (2, 2));
+    assert_eq!(count(&path, "publications"), 2);
+    assert_eq!(
+        registry.change(&retire, None, &approval),
+        Err(Error::Retired)
+    );
+    let rollback = intent(Operation::Rollback, 2, 1, &first);
+    assert_eq!(
+        registry.change(&rollback, None, &authority.authorize(&rollback, "restore")),
+        Err(Error::Retired)
+    );
+    assert_eq!(registry.audit().unwrap(), history);
+}
+
+#[test]
+fn retirement_and_rollback_race_has_only_one_winner() {
+    let dir = Disposable::create().unwrap();
+    let path = dir.path().join("policy.sqlite");
+    let (authority, signer) = FixtureSigner::pair();
+    let registry = Registry::create(&path, scope(), authority.clone()).unwrap();
+    let first = signer.publication(ALLOW, 1);
+    let second = signer.publication(DENY, 2);
+    publish(&registry, &authority, &first, 0, 1, "first");
+    publish(&registry, &authority, &second, 1, 2, "replacement");
+
+    let retire = intent(Operation::Retire, 2, 1, &first);
+    let retirement_proof = authority.authorize(&retire, "retire");
+    let rollback = intent(Operation::Rollback, 2, 1, &first);
+    let rollback_proof = authority.authorize(&rollback, "rollback");
+    let start = Barrier::new(2);
+    let (retired, rolled_back) = thread::scope(|group| {
+        let retired = group.spawn(|| {
+            start.wait();
+            registry.change(&retire, None, &retirement_proof)
+        });
+        let rolled_back = group.spawn(|| {
+            start.wait();
+            registry.change(&rollback, None, &rollback_proof)
+        });
+        (retired.join().unwrap(), rolled_back.join().unwrap())
+    });
+    let (selection, operation, receipt) = match (retired, rolled_back) {
+        (Ok(receipt), Err(Error::Retired)) => ((2, 2), Operation::Retire, receipt),
+        (Err(Error::Conflict), Ok(receipt)) => ((3, 1), Operation::Rollback, receipt),
+        other => panic!("one winner required: {other:?}"),
+    };
+    drop(registry);
+    let registry = Registry::open(&path, scope(), authority).unwrap();
+    assert_eq!(selected(&registry), selection);
+    let history = registry.audit().unwrap();
+    assert_eq!(history.len(), 3);
+    assert_eq!(history[2].operation, operation);
+    assert_eq!(history[2].sequence, receipt.audit_sequence);
+    assert_eq!(history[2].revision, receipt.revision);
+}
+
+#[test]
+fn direct_policy_changes_preserve_mandatory_requirements() {
+    let dir = Disposable::create().unwrap();
+    let path = dir.path().join("policy.sqlite");
+    let (authority, signer) = FixtureSigner::pair();
+    let registry = Registry::create(&path, scope(), authority.clone()).unwrap();
+    let first = signer.publication(ALLOW, 1);
+    publish(&registry, &authority, &first, 0, 1, "first");
+    let criterion = |id, class| {
+        json::obj([
+            ("criterion_id", json::s(id)),
+            ("required_class", json::s(class)),
+        ])
+    };
+    let with_criteria = |version, criteria| {
+        let mut pair = signer.publication(ALLOW, version);
+        let payload = edit(&pair.acceptance.payload, "criteria", Value::Arr(criteria));
+        pair.acceptance = signer.sign_policy(Purpose::Acceptance, payload);
+        pair
+    };
+    let review = criterion("review", "human");
+    let evidence = criterion("evidence", "mechanical");
+    let second = with_criteria(2, vec![review.clone(), evidence.clone()]);
+    publish(&registry, &authority, &second, 1, 2, "replacement");
+    let unchanged = registry.audit().unwrap();
+
+    for id in ["m6-acceptance", "review", "evidence"] {
+        assert_eq!(
+            registry.refuse_deactivation(2, 2, id, &Intent::deactivation_phrase(id)),
+            Err(Error::InvalidPolicy)
+        );
+    }
+    assert_eq!(
+        registry.refuse_deactivation(
+            2,
+            2,
+            "m6.synthetic.permit",
+            "deactivate m6.synthetic.permit"
+        ),
+        Err(Error::Unsupported)
+    );
+    assert_eq!(
+        registry.refuse_deactivation(2, 2, "review", "deactivate evidence"),
+        Err(Error::Format)
+    );
+
+    for (index, criteria) in [
+        vec![review.clone()],
+        vec![review.clone(), criterion("evidence", "human")],
+        vec![evidence, review],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let pair = with_criteria(3, criteria);
+        assert_eq!(
+            registry.preview(2, 3, Some(&pair)),
+            Err(Error::InvalidPolicy)
+        );
+        let attempt = intent(Operation::Publish, 2, 3, &pair);
+        let proof = authority.authorize(&attempt, &format!("changed-{index}"));
+        assert_eq!(
+            registry.publish(&attempt, &pair, &proof),
+            Err(Error::InvalidPolicy)
+        );
+    }
+    let rollback = intent(Operation::Rollback, 2, 1, &first);
+    let proof = authority.authorize(&rollback, "omitting-rollback");
+    assert_eq!(registry.preview(2, 1, None), Err(Error::InvalidPolicy));
+    assert_eq!(
+        registry.change(&rollback, None, &proof),
+        Err(Error::InvalidPolicy)
+    );
+    assert_eq!(registry.audit().unwrap(), unchanged);
+    assert_eq!(selected(&registry), (2, 2));
+
+    let retire = intent(Operation::Retire, 2, 1, &first);
+    let approval = authority.authorize(&retire, "retire");
+    registry.change(&retire, None, &approval).unwrap();
+    let mut rewrap = signer.publication(ALLOW, 3);
+    rewrap.acceptance = first.acceptance;
+    let attempt = intent(Operation::Publish, 2, 3, &rewrap);
+    let proof = authority.authorize(&attempt, "rewrap");
+    assert_eq!(
+        registry.publish(&attempt, &rewrap, &proof),
+        Err(Error::Replay)
+    );
+    assert_eq!(registry.audit().unwrap().len(), 3);
+    assert_eq!(selected(&registry), (2, 2));
 }
 
 struct Paused<'a> {

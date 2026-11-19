@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, DirBuilder},
     os::unix::fs::DirBuilderExt,
     path::{Path, PathBuf},
@@ -88,6 +88,7 @@ struct TrustData {
     presentations: BTreeMap<Vec<u8>, (Digest, Approval)>,
     trust_available: bool,
     publisher_enabled: bool,
+    active_dependents: Option<BTreeSet<(i64, String)>>,
 }
 
 pub struct FixtureView<'a> {
@@ -103,6 +104,7 @@ impl FixtureAuthority {
                 presentations: BTreeMap::new(),
                 trust_available: true,
                 publisher_enabled: true,
+                active_dependents: Some(BTreeSet::new()),
             }),
             elapsed: AtomicI64::new(0),
             time_available: AtomicBool::new(true),
@@ -172,6 +174,10 @@ impl FixtureAuthority {
         self.0.data.write().unwrap().publisher_enabled = enabled;
     }
 
+    pub fn active_dependents(&self, dependents: Option<BTreeSet<(i64, String)>>) {
+        self.0.data.write().unwrap().active_dependents = dependents;
+    }
+
     pub fn advance_to(&self, elapsed: i64) {
         self.0.elapsed.fetch_max(elapsed, Ordering::SeqCst);
     }
@@ -224,6 +230,23 @@ impl CurrentTrust for FixtureView<'_> {
             return Err(Error::Authority);
         }
         Ok(approval.clone())
+    }
+
+    fn has_active_dependents(
+        &self,
+        requested_scope: &Scope,
+        version: i64,
+        digest: &str,
+    ) -> Result<bool, Error> {
+        if requested_scope != &scope() {
+            return Err(Error::Scope);
+        }
+        let dependents = self
+            .data
+            .active_dependents
+            .as_ref()
+            .ok_or(Error::DependencyUnavailable)?;
+        Ok(dependents.contains(&(version, digest.to_owned())))
     }
 
     fn waiver_publisher_subject(&self, publisher: &str) -> Result<SubjectId, Error> {
@@ -343,7 +366,14 @@ pub fn intent(
     version: i64,
     publication: &Publication,
 ) -> Intent {
-    Intent::new(scope(), operation, revision, version, publication).unwrap()
+    let intent = Intent::new(scope(), operation, revision, version, publication).unwrap();
+    if operation == Operation::Retire {
+        intent
+            .with_retirement_confirmation(&Intent::retirement_phrase(version))
+            .unwrap()
+    } else {
+        intent
+    }
 }
 
 pub fn request(id: &str) -> VerifiedRequest {

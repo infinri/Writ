@@ -11,6 +11,23 @@ pub trait PublicationBoundary {
         publication_version: i64,
         candidate: Option<&Publication>,
     ) -> Result<Publication, Error>;
+    fn preview_retire(
+        &self,
+        _expected_revision: i64,
+        _publication_version: i64,
+        _confirmation: &str,
+    ) -> Result<Publication, Error> {
+        Err(Error::DependencyUnavailable)
+    }
+    fn refuse_deactivation(
+        &self,
+        _expected_revision: i64,
+        _publication_version: i64,
+        _policy_id: &str,
+        _confirmation: &str,
+    ) -> Result<(), Error> {
+        Err(Error::Unsupported)
+    }
     fn change(
         &self,
         intent: &Intent,
@@ -34,6 +51,31 @@ impl<T: TrustAuthority> PublicationBoundary for Registry<T> {
         candidate: Option<&Publication>,
     ) -> Result<Publication, Error> {
         Registry::preview(self, expected_revision, publication_version, candidate)
+    }
+
+    fn preview_retire(
+        &self,
+        expected_revision: i64,
+        publication_version: i64,
+        confirmation: &str,
+    ) -> Result<Publication, Error> {
+        Registry::preview_retire(self, expected_revision, publication_version, confirmation)
+    }
+
+    fn refuse_deactivation(
+        &self,
+        expected_revision: i64,
+        publication_version: i64,
+        policy_id: &str,
+        confirmation: &str,
+    ) -> Result<(), Error> {
+        Registry::refuse_deactivation(
+            self,
+            expected_revision,
+            publication_version,
+            policy_id,
+            confirmation,
+        )
     }
 
     fn change(

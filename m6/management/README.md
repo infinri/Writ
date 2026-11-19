@@ -61,6 +61,22 @@ The lab creates and validates two pinned drafts, obtains a pre-signed pair for e
 - `publication_history` accepts `after` and `limit`, returning immutable selection events with the exact management context correlated to the registry's audit ID. A coherent selected record that fails current trust is marked `verified: false`. Consumers must use the registry's verified selection path.
 - The management SQLite store records an intent before dispatch. A live witness and draft write fence order changes against the registry's own transaction. A retry with the original key and exact body reads the authoritative receipt by intent identity. If there is no receipt and the outcome is uncertain, it returns `UNAVAILABLE`; fetch and verify history before starting a new preview and fresh ceremony with a new key. The registry transaction alone commits immutable publication, selection and audit. The two SQLite stores have separate transactions.
 
+## Run signed policy retirement
+
+Build the opt-in binaries and run the disposable retirement scenario from the repository root.
+
+```sh
+. m1/tools/env.sh
+cargo build --locked --manifest-path m6/management/Cargo.toml --features fixtures --bins
+python3 m6/management/run-retirement-lab.py
+```
+
+The scenario selects a verified signed replacement, retires the original inactive publication and reopens both stores. It verifies the exact retirement receipt, the unchanged replacement selection and refusal of attempts to publish or roll back to the retired publication.
+
+- `preview_retire` takes the same fields as `preview_rollback` plus the exact text `confirmation: "retire <publication_version>"`. Send the same fields to `retire` with the preview's `intent_digest` and a fresh presentation from the separate fixture authority. The preview and receipt report the expected activation revision because retirement does not advance it. `publication_history` includes the retirement and its correlated context. Retry with the exact original body and key to recover the receipt.
+- The registry checks current selection and complete owning dependency state before retiring the target. An active dependent at preflight returns `ACTIVE_DEPENDENTS`. If a dependent appears after preflight, the write and its exact retry return `REVISION_CONFLICT`. Unavailable or incomplete dependency state returns `UNAVAILABLE`. The fixture operates in its closed disposable scope.
+- `preview_deactivate` and `deactivate` take `expected_revision`, `publication_version`, `policy_id` and `confirmation` with the exact text `deactivate <policy_id>`. The owner returns `INVALID_POLICY` for mandatory acceptance content and `UNSUPPORTED` for synthetic authorization rule removal. This compiler profile issues no deactivation ceremony.
+
 ## Run evaluator and waiver management
 
 Build the opt-in binaries and run the disposable workflow. Every CLI operation opens the stores in a fresh process.

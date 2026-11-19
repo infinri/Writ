@@ -276,7 +276,9 @@
             "IDEMPOTENCY_CONFLICT",
             "LIMIT_EXCEEDED",
             "UNAVAILABLE",
-            "INVALID_POLICY"
+            "INVALID_POLICY",
+            "ACTIVE_DEPENDENTS",
+            "UNSUPPORTED"
           ]
         },
         "message": {
@@ -298,9 +300,6 @@
         "version",
         "scope",
         "publisher",
-        "draft",
-        "draft_digest",
-        "draft_head_revision",
         "proof_digest",
         "idempotency_key_digest",
         "self_publication_acknowledged"
@@ -366,6 +365,54 @@
         },
         "self_publication_acknowledged": {
           "type": "boolean"
+        },
+        "confirmation": {
+          "type": "string",
+          "pattern": "^retire [1-9][0-9]{0,8}(?![\\s\\S])"
+        }
+      },
+      "dependentRequired": {
+        "draft": [
+          "draft_digest",
+          "draft_head_revision"
+        ],
+        "draft_digest": [
+          "draft",
+          "draft_head_revision"
+        ],
+        "draft_head_revision": [
+          "draft",
+          "draft_digest"
+        ]
+      },
+      "if": {
+        "not": {
+          "required": [
+            "confirmation"
+          ]
+        }
+      },
+      "then": {
+        "required": [
+          "draft",
+          "draft_digest",
+          "draft_head_revision"
+        ]
+      },
+      "else": {
+        "if": {
+          "not": {
+            "required": [
+              "draft"
+            ]
+          }
+        },
+        "then": {
+          "properties": {
+            "self_publication_acknowledged": {
+              "const": false
+            }
+          }
         }
       }
     },
@@ -398,6 +445,37 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 999999999
+        }
+      },
+      "if": {
+        "properties": {
+          "intent": {
+            "properties": {
+              "operation": {
+                "const": "retire"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "context": {
+            "required": [
+              "confirmation"
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "context": {
+            "not": {
+              "required": [
+                "confirmation"
+              ]
+            }
+          }
         }
       }
     },

@@ -130,8 +130,12 @@ impl RequestV1 {
             },
             "preview_publish"
             | "preview_rollback"
+            | "preview_retire"
+            | "preview_deactivate"
             | "publish"
             | "rollback"
+            | "retire"
+            | "deactivate"
             | "publication_history" => {
                 Operation::Publication(decode_publication(&mut fields, &operation)?)
             }
@@ -377,6 +381,14 @@ fn decode_publication(fields: &mut Map, operation: &str) -> DecodeResult<Publica
         1,
         MAX_PUBLICATION_VERSION,
     )?;
+    if matches!(operation, "preview_deactivate" | "deactivate") {
+        return Ok(PublicationRequest::Deactivate {
+            expected_revision,
+            publication_version,
+            policy_id: label(fields, "policy_id", "/policy_id")?,
+            confirmation: confirmation(fields)?,
+        });
+    }
     let Value::Bool(acknowledge_self) = take(fields, "acknowledge_self", "/acknowledge_self")?
     else {
         return Err(invalid("/acknowledge_self"));
@@ -409,6 +421,28 @@ fn decode_publication(fields: &mut Map, operation: &str) -> DecodeResult<Publica
             presentation,
         });
     }
+    if matches!(operation, "preview_retire" | "retire") {
+        let confirmation = confirmation(fields)?;
+        if operation == "preview_retire" {
+            return Ok(PublicationRequest::PreviewRetire {
+                expected_revision,
+                publication_version,
+                acknowledge_self,
+                key,
+                confirmation,
+            });
+        }
+        let (intent_digest, presentation) = presentation(fields)?;
+        return Ok(PublicationRequest::Retire {
+            expected_revision,
+            publication_version,
+            acknowledge_self,
+            key,
+            confirmation,
+            intent_digest,
+            presentation,
+        });
+    }
     if operation == "preview_rollback" {
         return Ok(PublicationRequest::PreviewRollback {
             expected_revision,
@@ -426,6 +460,17 @@ fn decode_publication(fields: &mut Map, operation: &str) -> DecodeResult<Publica
         key,
         presentation,
     })
+}
+
+fn confirmation(fields: &mut Map) -> DecodeResult<String> {
+    match take(fields, "confirmation", "/confirmation")? {
+        Value::Str(value)
+            if !value.is_empty() && value.len() <= 75 && !value.chars().any(char::is_control) =>
+        {
+            Ok(value)
+        }
+        _ => Err(invalid("/confirmation")),
+    }
 }
 
 fn presentation(fields: &mut Map) -> DecodeResult<(String, Vec<u8>)> {
@@ -624,7 +669,15 @@ fn encode_error(diagnostic: Diagnostic) -> Vec<u8> {
         Error::Unavailable => ("UNAVAILABLE", "The operation could not be completed."),
         Error::InvalidPolicy => (
             "INVALID_POLICY",
-            "Validate the specified draft revision for diagnostics.",
+            "The specified policy violates a policy requirement.",
+        ),
+        Error::ActiveDependents => (
+            "ACTIVE_DEPENDENTS",
+            "The publication has active dependents.",
+        ),
+        Error::Unsupported => (
+            "UNSUPPORTED",
+            "The operation is unsupported by this policy profile.",
         ),
     };
     encode(json::obj([

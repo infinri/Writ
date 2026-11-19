@@ -149,11 +149,20 @@ class DraftContracts(unittest.TestCase):
         }
         publish = common | {"draft": DRAFT, "publication": pair}
         authorization = {"intent_digest": DIGEST, "presentation": "opaque"}
+        retirement = common | {"confirmation": "retire 2"}
+        deactivation = {
+            "expected_revision": 2, "publication_version": 2, "policy_id": "m6.synthetic.permit",
+            "confirmation": "deactivate m6.synthetic.permit",
+        }
         for item in (
             request("preview_publish", **publish),
             request("publish", **publish, **authorization),
             request("preview_rollback", **common),
             request("rollback", **common, **authorization),
+            request("preview_retire", **retirement),
+            request("retire", **retirement, **authorization),
+            request("preview_deactivate", **deactivation),
+            request("deactivate", **deactivation),
             request("publication_history", after=0, limit=50),
         ):
             self.request.validate(item)
@@ -166,6 +175,11 @@ class DraftContracts(unittest.TestCase):
             request("preview_rollback", **(common | {"publication_version": 1000000000})),
             request("publication_history", after=-1, limit=50),
             request("retire", **common, **authorization),
+            request("retire", **retirement),
+            request("preview_retire", **retirement, **authorization),
+            request("rollback", **retirement, **authorization),
+            request("deactivate", **deactivation, **authorization),
+            request("preview_deactivate", **(deactivation | {"policy_id": []})),
         ):
             with self.subTest(operation=item["operation"]):
                 self.assertFalse(self.request.is_valid(item))
@@ -191,16 +205,41 @@ class DraftContracts(unittest.TestCase):
             "human": "human-publisher", "at": "2026-11-19T12:00:00Z", "context": context,
         }
         history = {"events": [event], "next": None, "selected": receipt | {"verified": True}}
-        for item in (preview, receipt | {"intent_digest": DIGEST}, history):
+        retirement_context = context | {"confirmation": "retire 1"}
+        standalone_context = {
+            key: value for key, value in retirement_context.items()
+            if key not in ("draft", "draft_digest", "draft_head_revision")
+        }
+        retirement_preview = preview | {
+            "revision": 2, "intent": intent | {"operation": "retire", "confirmation": "retire 1"},
+            "context": retirement_context,
+        }
+        retirement_history = history | {
+            "events": [event | {"operation": "retire", "context": standalone_context}],
+        }
+        for item in (
+            preview, receipt | {"intent_digest": DIGEST}, history, retirement_preview,
+            retirement_preview | {"context": standalone_context}, retirement_history,
+        ):
             self.response.validate(response(item))
         for item in (
             preview | {"intent": intent | {"operation": "retire"}},
+            retirement_preview | {"context": context},
+            retirement_preview | {"context": standalone_context | {"draft": DRAFT}},
+            retirement_preview | {"context": standalone_context | {"self_publication_acknowledged": True}},
             preview | {"context": context | {"self_publication_acknowledged": "yes"}},
             preview | {"context": {key: val for key, val in context.items() if key != "proof_digest"}},
             receipt | {"intent_digest": DIGEST, "presentation": "private"},
             history | {"selected": receipt},
         ):
             self.assertFalse(self.response.is_valid(response(item)))
+
+    def test_policy_lifecycle_refusals(self):
+        for code in ("ACTIVE_DEPENDENTS", "UNSUPPORTED", "UNAVAILABLE", "INVALID_POLICY"):
+            self.response.validate({
+                "version": "/manage/v1", "ok": False,
+                "error": {"code": code, "message": "The lifecycle operation was refused.", "pointer": ""},
+            })
 
     def test_evaluator_and_waiver_contracts(self):
         entry = json.loads(

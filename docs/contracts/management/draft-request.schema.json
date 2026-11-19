@@ -94,6 +94,13 @@
       "minLength": 1,
       "maxLength": 16384,
       "description": "Opaque purpose-specific human presentation. The application also enforces its byte limit."
+    },
+    "confirmation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 75,
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+(?![\\s\\S])",
+      "description": "Typed confirmation. The service enforces its UTF-8 byte limit and the exact phrase for the target."
     }
   },
   "oneOf": [
@@ -554,6 +561,147 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 512
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "expected_revision",
+        "publication_version",
+        "idempotency_key",
+        "acknowledge_self",
+        "confirmation"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "preview_retire"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "publication_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999999999
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/label"
+        },
+        "acknowledge_self": {
+          "type": "boolean"
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "expected_revision",
+        "publication_version",
+        "idempotency_key",
+        "acknowledge_self",
+        "intent_digest",
+        "presentation",
+        "confirmation"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "retire"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "publication_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999999999
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/label"
+        },
+        "acknowledge_self": {
+          "type": "boolean"
+        },
+        "intent_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "presentation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "expected_revision",
+        "publication_version",
+        "confirmation",
+        "policy_id"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "enum": [
+            "preview_deactivate",
+            "deactivate"
+          ]
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "publication_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999999999
+        },
+        "confirmation": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "policy_id": {
+          "$ref": "#/$defs/label"
         }
       }
     },

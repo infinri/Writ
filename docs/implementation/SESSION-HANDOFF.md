@@ -4,6 +4,18 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 
 ## Current recovery state
 
+[D-057](DECISION-LOG.md#d-057-m6-slice-5d-disposable-signed-policy-deactivation-and-retirement-owner-2026-11-19) approves M6 slice 5D for disposable stores and test authorities. Read [WORK-STATE](WORK-STATE.md) and [E-104](TEST-EVIDENCE.md#e-104-d-057-disposable-signed-policy-retirement-2026-11-19) first in a fresh chat.
+
+- Run the [signed retirement lab](../../m6/management/README.md#run-signed-policy-retirement). The shared API and fixture CLI preview and retire an exact inactive publication with typed confirmation and fresh scoped publisher authorization. The registry owns dependency eligibility, immutable history and the transaction with audit. Exact management recovery correlates the existing authoritative receipt. The compiler profile keeps optional removal unsupported. Direct registry calls preserve mandatory acceptance requirements.
+- The verified baseline was `99861181cab9d5dbff5364e8a0ad420a7063968f` on [run 44606340000](https://github.com/infinri/Writ/actions/runs/44606340000), 6/6. To verify the published checkpoint, fetch `origin v2/architecture-rebuild` in an isolated checkout, find its exact SHA with `git rev-parse FETCH_HEAD`, then use `gh run list --repo infinri/Writ --branch v2/architecture-rebuild --workflow v2-docs.yml --commit <remote-sha> --limit 5` and `gh run view <run-id> --repo infinri/Writ --json headSha,conclusion,jobs`. Match the SHA and check all six jobs. E-097 preserves the unresolved earlier CI stall.
+- Preserve the original checkout with its divergent `a1eee0d` and unrelated work. Keep private hook-audit material separate.
+- CC-M2, CC-M3, CC-M6 and M6 remain in progress. Optional policy removal needs an explicitly supported signed compiler path. Contract and pack administration, evaluator quorum, remaining AG-ADV-16 obligations, UI, transport and production authentication remain open. Governed activation, live deployment and legacy imports require separate authority.
+- Finish unblocked M6 development with the next bounded owner decision, then prioritize M5 VM testing and isolated containment CI before M7. M6 host integration depends on M5. D-048 and D-049 remain in force. D-049 expires at the start of 2026-12-18 UTC. M5 requires the owner-designated rollback-capable Ubuntu 24.04 guest, its [first inventory](../../m5/reference-vm/PROVISIONING.md#first-guest-inventory), the [full VM checklist](M5A-GATE-REVIEW.md#4-verify-in-vm-checklist-all-open) and separate [isolated containment CI](../../m5/containment-ci/README.md). ADR-0008 remains APPROVED IN PRINCIPLE. Release and production remain NO-GO.
+
+## Prior checkpoints
+
+### 2026-11-19 (M6 slice 5C checkpoint)
+
 [D-056](DECISION-LOG.md#d-056-m6-slice-5c-headless-evaluator-and-waiver-management-owner-2026-11-19) approves M6 slice 5C for disposable stores and test authorities. Read [WORK-STATE](WORK-STATE.md) and [E-103](TEST-EVIDENCE.md#e-103-d-056-headless-evaluator-and-waiver-management-2026-11-19) in a fresh chat.
 
 - Run the [headless evaluator and waiver lab](../../m6/management/README.md#run-evaluator-and-waiver-management). The shared service uses the D-052 broker and registry for evaluator inspection, preview, publication and revocation. It uses the D-053 owning approval lifecycle and trusted ingress for waiver request, approval, recording and current validation. Inspect and recover return historical evidence. The separate management dispatch and owner transactions are correlated by exact receipt identity.
@@ -12,8 +24,6 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 - Next bounded development batch, subject to separate owner approval, is disposable signed policy deactivation and retirement. Define current-selection and active-dependent refusal cases first, then extend the D-051 registry and D-055 management boundary with preview, fresh publisher intent, expected revision, audit and recovery. Preserve the refusal of weakening or omitting mandatory policies.
 - CC-M2, CC-M3 and CC-M6 remain partial. Remaining policy lifecycle operations, contract and pack administration, evaluator quorum, remaining AG-ADV-16 obligations, UI, transport and production authentication remain open. Governed activation, live deployment and legacy imports require separate authority.
 - Finish unblocked M6 development, then prioritize M5 VM testing and isolated containment CI before M7. M6 host integration depends on M5. D-048 and D-049 remain in force. D-049 expires at the start of 2026-12-18 UTC. M5 requires the owner-designated rollback-capable Ubuntu 24.04 guest, its [first inventory](../../m5/reference-vm/PROVISIONING.md#first-guest-inventory), the [full VM checklist](M5A-GATE-REVIEW.md#4-verify-in-vm-checklist-all-open) and separate [isolated containment CI](../../m5/containment-ci/README.md). M5 and M6 remain in progress. ADR-0008 remains APPROVED IN PRINCIPLE. Release and production remain NO-GO.
-
-## Prior checkpoints
 
 ### 2026-11-19 (M6 slice 5B checkpoint)
 

@@ -26,6 +26,7 @@ struct Boundary {
     audit: RefCell<Vec<Audit>>,
     calls: Cell<usize>,
     commit: Cell<bool>,
+    retirement: Option<Publication>,
 }
 
 impl PublicationBoundary for Boundary {
@@ -45,6 +46,15 @@ impl PublicationBoundary for Boundary {
         candidate.cloned().ok_or(RegistryError::Format)
     }
 
+    fn preview_retire(
+        &self,
+        _: i64,
+        _: i64,
+        _: &str,
+    ) -> std::result::Result<Publication, RegistryError> {
+        self.retirement.clone().ok_or(RegistryError::Format)
+    }
+
     fn change(
         &self,
         intent: &Intent,
@@ -54,6 +64,9 @@ impl PublicationBoundary for Boundary {
     ) -> std::result::Result<Commit, RegistryError> {
         self.calls.set(self.calls.get() + 1);
         reauthorize().map_err(|_| RegistryError::Authority)?;
+        if intent.operation() == Operation::Retire {
+            return Err(RegistryError::ActiveDependents);
+        }
         if self.commit.get() {
             let value = intent.to_value();
             let binding = value.get("management").unwrap();
@@ -131,6 +144,7 @@ impl Scenario {
             audit: RefCell::default(),
             calls: Cell::default(),
             commit: Cell::new(commit),
+            retirement: None,
         };
         let signed = SignedPolicy {
             payload: Value::Null,
@@ -248,6 +262,53 @@ fn uncertain_reply_recovers_only_exact_registry_receipt_after_reopen() {
     .unwrap();
     let events = history.get("events").and_then(Value::as_arr).unwrap();
     assert_eq!(events[0].get("context"), preview.get("context"));
+}
+
+#[test]
+fn dependent_added_after_preflight_replays_definitive_conflict_without_dispatch() {
+    let mut scenario = Scenario::new(true);
+    let preview = scenario.preview("publish");
+    assert_eq!(
+        scenario.submit("publish", intent(&preview), b"human"),
+        Err(Error::Unavailable)
+    );
+    scenario.boundary.retirement = Some(scenario.candidate.clone());
+    let route = |request| {
+        execute(
+            &scenario.store(),
+            &scenario.boundary,
+            &scenario.scope,
+            "publisher",
+            request,
+            true,
+            || Ok(()),
+        )
+    };
+    let preview = route(PublicationRequest::PreviewRetire {
+        expected_revision: 2,
+        publication_version: 1,
+        acknowledge_self: true,
+        key: "retire".into(),
+        confirmation: "retire 1".into(),
+    })
+    .unwrap();
+    let before = scenario.boundary.audit().unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            route(PublicationRequest::Retire {
+                expected_revision: 2,
+                publication_version: 1,
+                acknowledge_self: true,
+                key: "retire".into(),
+                confirmation: "retire 1".into(),
+                intent_digest: intent(&preview).into(),
+                presentation: b"human".to_vec(),
+            }),
+            Err(Error::RevisionConflict)
+        );
+    }
+    assert_eq!(scenario.boundary.calls.get(), 2);
+    assert_eq!(scenario.boundary.audit().unwrap(), before);
 }
 
 #[test]

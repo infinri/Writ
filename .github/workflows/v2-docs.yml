@@ -90,6 +90,7 @@ jobs:
           cargo test --locked -p writ-broker --features disposable-waiver-fixture-ingress --doc
           cargo build --manifest-path m6/management/Cargo.toml --features fixtures --locked --bins
           python3 m6/management/run-publication-lab.py
+          python3 m6/management/run-retirement-lab.py
           python3 m6/management/run-lifecycle-lab.py
           WRIT_MANAGEMENT_FIXTURE_BIN="$PWD/m6/management/target/debug/writ-manage-fixture" \
             m3/tools/run-with-clean-fds.sh cargo test --manifest-path m6/publication/Cargo.toml --locked --test lifecycle \

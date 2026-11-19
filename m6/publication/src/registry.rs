@@ -25,6 +25,17 @@ pub trait CurrentTrust: VerificationSource + TrustedClock + Sync {
         now: Timestamp,
     ) -> Result<Approval, Error>;
 
+    /// Check the complete owning dependency view for this immutable target.
+    /// Implementations must pin that view until this trust guard drops.
+    fn has_active_dependents(
+        &self,
+        _scope: &Scope,
+        _publication_version: i64,
+        _publication_digest: &str,
+    ) -> Result<bool, Error> {
+        Err(Error::DependencyUnavailable)
+    }
+
     /// Resolve the D-051 publisher's stable audit identity to its qualified
     /// M4 subject. Deployments must explicitly configure this bridge for waivers.
     fn waiver_publisher_subject(&self, _publisher: &str) -> Result<SubjectId, Error> {
@@ -194,13 +205,72 @@ impl<T: TrustAuthority> Registry<T> {
     ) -> Result<Publication, Error> {
         let trust = self.authority.current()?;
         self.store.preview(
+            if candidate.is_some() {
+                Operation::Publish
+            } else {
+                Operation::Rollback
+            },
             expected_revision,
             publication_version,
             candidate,
-            |publication| {
-                checked(publication, self.scope(), publication_version, &trust).map(|_| ())
+            |publication, selected| {
+                let (policies, _) =
+                    checked(publication, self.scope(), publication_version, &trust)?;
+                policy::preserve_required_criteria(&policies, selected)
             },
         )
+    }
+
+    /// Check retirement eligibility without requesting approval or changing state.
+    pub fn preview_retire(
+        &self,
+        expected_revision: i64,
+        publication_version: i64,
+        confirmation: &str,
+    ) -> Result<Publication, Error> {
+        wire::number(expected_revision, 0)?;
+        wire::number(publication_version, 1)?;
+        if confirmation != Intent::retirement_phrase(publication_version) {
+            return Err(Error::Format);
+        }
+        let trust = self.authority.current()?;
+        self.store.preview(
+            Operation::Retire,
+            expected_revision,
+            publication_version,
+            None,
+            |publication, _| {
+                checked(publication, self.scope(), publication_version, &trust)?;
+                require_no_dependents(&trust, self.scope(), publication_version, publication)
+            },
+        )
+    }
+
+    /// Refuse mandatory removal and unsupported synthetic rule removal in the current profile.
+    pub fn refuse_deactivation(
+        &self,
+        expected_revision: i64,
+        publication_version: i64,
+        policy_id: &str,
+        confirmation: &str,
+    ) -> Result<(), Error> {
+        wire::number(expected_revision, 0)?;
+        wire::number(publication_version, 1)?;
+        if policy_id.len() > 64
+            || !writ_kernel::ids::is_kind(policy_id)
+            || confirmation != Intent::deactivation_phrase(policy_id)
+        {
+            return Err(Error::Format);
+        }
+        self.with_selection(|selected| {
+            if selected.revision() != expected_revision {
+                return Err(Error::Conflict);
+            }
+            if selected.publication_version() != publication_version {
+                return Err(Error::Replay);
+            }
+            policy::refuse_deactivation(selected.publication(), selected.acceptance(), policy_id)
+        })
     }
 
     /// Read the current selection after verification, or report that the registry is empty.
@@ -302,25 +372,37 @@ impl<T: TrustAuthority> Registry<T> {
             return Err(Error::Scope);
         }
         let trust = self.authority.current()?;
-        self.store.change(intent, candidate, |publication| {
-            let (_, before) = checked(
-                publication,
-                intent.scope(),
-                intent.publication_version(),
-                &trust,
-            )?;
-            let approval = trust.approve(intent, presentation, before)?;
-            if !intent.matches_approval(&approval) {
-                return Err(Error::Authority);
-            }
-            before_commit()?;
-            let now = current_signatures(publication, intent.scope(), &trust)?;
-            if now < before {
-                return Err(Error::Time);
-            }
-            approval.check(now)?;
-            Ok((approval, now))
-        })
+        self.store
+            .change(intent, candidate, |publication, selected| {
+                let (policies, before) = checked(
+                    publication,
+                    intent.scope(),
+                    intent.publication_version(),
+                    &trust,
+                )?;
+                if intent.operation() != Operation::Retire {
+                    policy::preserve_required_criteria(&policies, selected)?;
+                }
+                let approval = trust.approve(intent, presentation, before)?;
+                if !intent.matches_approval(&approval) {
+                    return Err(Error::Authority);
+                }
+                before_commit()?;
+                if intent.operation() == Operation::Retire {
+                    require_no_dependents(
+                        &trust,
+                        intent.scope(),
+                        intent.publication_version(),
+                        publication,
+                    )?;
+                }
+                let now = current_signatures(publication, intent.scope(), &trust)?;
+                if now < before {
+                    return Err(Error::Time);
+                }
+                approval.check(now)?;
+                Ok((approval, now))
+            })
     }
 
     /// Verify and use one coherent selection under the store order lock and current trust.
@@ -352,6 +434,19 @@ impl<T: TrustAuthority> Registry<T> {
     pub fn audit(&self) -> Result<Vec<Audit>, Error> {
         self.store.audit()
     }
+}
+
+fn require_no_dependents(
+    trust: &impl CurrentTrust,
+    scope: &Scope,
+    version: i64,
+    publication: &Publication,
+) -> Result<(), Error> {
+    let digest = publication.fingerprint()?;
+    if trust.has_active_dependents(scope, version, digest.as_str())? {
+        return Err(Error::ActiveDependents);
+    }
+    Ok(())
 }
 
 fn checked(

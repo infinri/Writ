@@ -198,6 +198,19 @@ impl VerificationSource for FixtureView<'_> {
 }
 
 impl CurrentTrust for FixtureView<'_> {
+    fn has_active_dependents(
+        &self,
+        scope: &PublicationScope,
+        _publication_version: i64,
+        _publication_digest: &str,
+    ) -> Result<bool, PublicationError> {
+        // This isolated fixture has no pack or integration dependency registry.
+        if scope != &publication_scope()? {
+            return Err(PublicationError::DependencyUnavailable);
+        }
+        Ok(false)
+    }
+
     fn waiver_publisher_subject(
         &self,
         publisher: &str,

@@ -160,6 +160,8 @@ pub enum Error {
     LimitExceeded,
     Unavailable,
     InvalidPolicy,
+    ActiveDependents,
+    Unsupported,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -262,13 +264,38 @@ impl<'a> Service<'a> {
                 }
             };
             check(&principal)?;
-            let reauthorize = || {
-                let current = self.authenticate(credential)?;
-                if current.subject != principal.subject || current.realm != principal.realm {
+            let pinned = if matches!(&request, PublicationRequest::Retire { .. }) {
+                Some(
+                    self.authority
+                        .and_then(|authority| authority.pin(credential))
+                        .ok_or(Error::Unauthorized)?,
+                )
+            } else {
+                None
+            };
+            let check_identity = |current: &Principal| {
+                if current.subject != principal.subject
+                    || current.realm != principal.realm
+                    || current.grants.len() > 128
+                {
                     return Err(Error::Unauthorized);
                 }
-                check(&current)
+                check(current)
             };
+            let reauthorize = || {
+                if let Some(guard) = &pinned {
+                    let current = guard
+                        .still_valid()
+                        .then(|| guard.principal())
+                        .ok_or(Error::Unauthorized)?;
+                    check_identity(current)
+                } else {
+                    check_identity(&self.authenticate(credential)?)
+                }
+            };
+            if pinned.is_some() {
+                reauthorize()?;
+            }
             let boundary = self.publication.ok_or(Error::Unavailable)?;
             return Ok(ResponseV1::Publication(publication::execute(
                 self.store,

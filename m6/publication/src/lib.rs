@@ -25,6 +25,12 @@ pub enum Error {
     Replay,
     /// The target has been retired and cannot be selected.
     Retired,
+    /// An active dependent still references the retirement target.
+    ActiveDependents,
+    /// The owning service cannot establish a complete current dependency view.
+    DependencyUnavailable,
+    /// This compiler profile has no supported removal operation for the target.
+    Unsupported,
     /// Durable state is absent or incoherent.
     Recovery,
     /// The store or audit transaction failed.

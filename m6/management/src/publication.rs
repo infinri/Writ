@@ -45,6 +45,28 @@ pub enum PublicationRequest {
         key: String,
         presentation: Vec<u8>,
     },
+    PreviewRetire {
+        expected_revision: i64,
+        publication_version: i64,
+        acknowledge_self: bool,
+        key: String,
+        confirmation: String,
+    },
+    Retire {
+        expected_revision: i64,
+        publication_version: i64,
+        acknowledge_self: bool,
+        key: String,
+        confirmation: String,
+        intent_digest: String,
+        presentation: Vec<u8>,
+    },
+    Deactivate {
+        expected_revision: i64,
+        publication_version: i64,
+        policy_id: String,
+        confirmation: String,
+    },
     History {
         after: i64,
         limit: usize,
@@ -54,6 +76,7 @@ pub enum PublicationRequest {
 enum Target {
     Publish(DraftRef, Publication),
     Rollback,
+    Retire(String),
 }
 
 impl Target {
@@ -61,13 +84,14 @@ impl Target {
         match self {
             Self::Publish(..) => Operation::Publish,
             Self::Rollback => Operation::Rollback,
+            Self::Retire(_) => Operation::Retire,
         }
     }
 
     fn candidate(&self) -> Option<&Publication> {
         match self {
             Self::Publish(_, candidate) => Some(candidate),
-            Self::Rollback => None,
+            Self::Rollback | Self::Retire(_) => None,
         }
     }
 }
@@ -88,8 +112,7 @@ struct Submission {
 struct Context {
     document: Value,
     digest: Digest,
-    draft: DraftRef,
-    draft_head: i64,
+    draft: Option<(DraftRef, i64)>,
 }
 
 struct Proposed {
@@ -114,6 +137,56 @@ pub(crate) fn execute(
     use PublicationRequest::*;
     let (target, expected_revision, version, acknowledge_self, key, submission) = match request {
         History { after, limit } => return history(store, registry, scope, after, limit),
+        Deactivate {
+            expected_revision,
+            publication_version,
+            policy_id,
+            confirmation,
+        } => {
+            reauthorize()?;
+            registry
+                .refuse_deactivation(
+                    expected_revision,
+                    publication_version,
+                    &policy_id,
+                    &confirmation,
+                )
+                .map_err(registry_error)?;
+            return Err(Error::Unsupported);
+        }
+        PreviewRetire {
+            expected_revision,
+            publication_version,
+            acknowledge_self,
+            key,
+            confirmation,
+        } => (
+            Target::Retire(confirmation),
+            expected_revision,
+            publication_version,
+            acknowledge_self,
+            key,
+            None,
+        ),
+        Retire {
+            expected_revision,
+            publication_version,
+            acknowledge_self,
+            key,
+            confirmation,
+            intent_digest,
+            presentation,
+        } => (
+            Target::Retire(confirmation),
+            expected_revision,
+            publication_version,
+            acknowledge_self,
+            key,
+            Some(Submission {
+                intent_digest,
+                presentation,
+            }),
+        ),
         PreviewPublish {
             draft,
             expected_revision,
@@ -207,7 +280,12 @@ pub(crate) fn execute(
         ("intent", proposed.intent.to_value()),
         ("intent_digest", json::s(proposed.intent_digest.as_str())),
         ("context", proposed.context.document),
-        ("revision", Value::Int(plan.expected_revision + 1)),
+        (
+            "revision",
+            Value::Int(
+                plan.expected_revision + i64::from(plan.target.operation() != Operation::Retire),
+            ),
+        ),
         ("publication_version", Value::Int(plan.version)),
     ]))
 }
@@ -222,17 +300,21 @@ struct Coordinator<'a> {
 
 impl Coordinator<'_> {
     fn propose(&self, db: &Connection, plan: &Plan) -> Result<Proposed> {
-        let target = self
-            .registry
-            .preview(
+        let target = match &plan.target {
+            Target::Retire(confirmation) => {
+                self.registry
+                    .preview_retire(plan.expected_revision, plan.version, confirmation)
+            }
+            _ => self.registry.preview(
                 plan.expected_revision,
                 plan.version,
                 plan.target.candidate(),
-            )
-            .map_err(registry_error)?;
+            ),
+        }
+        .map_err(registry_error)?;
         let draft = match &plan.target {
-            Target::Publish(draft, _) => draft.clone(),
-            Target::Rollback => {
+            Target::Publish(draft, _) => Some(draft.clone()),
+            Target::Rollback | Target::Retire(_) => {
                 let audit = self.registry.audit().map_err(registry_error)?;
                 let source = audit
                     .iter()
@@ -242,46 +324,59 @@ impl Coordinator<'_> {
                     })
                     .ok_or(Error::NotFound)?;
                 let context = event_context(db, self.scope, source)?;
-                draft_ref(&context).ok_or(Error::NotFound)?
+                if context == Value::Null && matches!(plan.target, Target::Retire(_)) {
+                    None
+                } else {
+                    Some(draft_ref(&context).ok_or(Error::NotFound)?)
+                }
             }
         };
-        let draft_head = current_revision(db, self.scope, &draft.id)?;
-        if matches!(plan.target, Target::Publish(..)) && draft_head != draft.revision {
-            return Err(Error::RevisionConflict);
-        }
-        let row = load(db, self.scope, &draft)?;
-        if target.prerequisites.get("draft") != Some(&row.candidate) {
-            return Err(Error::InvalidPolicy);
-        }
         let proof = target
             .prerequisites
             .get("proof_digest")
             .and_then(Value::as_str)
             .ok_or(Error::InvalidPolicy)?;
-        let version: Version = row.try_into()?;
-        let self_publication = authors(db, self.scope, &draft)?
-            .iter()
-            .any(|author| author == self.subject);
+        let mut document = json::Map::from([
+            ("version".into(), json::s(CONTEXT_VERSION)),
+            ("scope".into(), self.registry.scope().to_value()),
+            ("publisher".into(), json::s(self.subject)),
+            ("proof_digest".into(), json::s(proof)),
+            ("idempotency_key_digest".into(), json::s(plan.key.as_str())),
+        ]);
+        let (draft, self_publication) = if let Some(draft) = draft {
+            let draft_head = current_revision(db, self.scope, &draft.id)?;
+            if matches!(plan.target, Target::Publish(..)) && draft_head != draft.revision {
+                return Err(Error::RevisionConflict);
+            }
+            let row = load(db, self.scope, &draft)?;
+            if target.prerequisites.get("draft") != Some(&row.candidate) {
+                return Err(Error::InvalidPolicy);
+            }
+            let version: Version = row.try_into()?;
+            let self_publication = authors(db, self.scope, &draft)?
+                .iter()
+                .any(|author| author == self.subject);
+            document.insert("draft".into(), draft_value(&draft));
+            document.insert("draft_digest".into(), json::s(&version.digest));
+            document.insert("draft_head_revision".into(), Value::Int(draft_head));
+            (Some((draft, draft_head)), self_publication)
+        } else {
+            (None, false)
+        };
         if self_publication && (!plan.acknowledge_self || !self.allow_self_publication) {
             return Err(Error::Unauthorized);
         }
         if plan.acknowledge_self && !self_publication {
             return Err(Error::InvalidRequest);
         }
-        let document = json::obj([
-            ("version", json::s(CONTEXT_VERSION)),
-            ("scope", self.registry.scope().to_value()),
-            ("publisher", json::s(self.subject)),
-            ("draft", draft_value(&draft)),
-            ("draft_digest", json::s(&version.digest)),
-            ("draft_head_revision", Value::Int(draft_head)),
-            ("proof_digest", json::s(proof)),
-            ("idempotency_key_digest", json::s(plan.key.as_str())),
-            (
-                "self_publication_acknowledged",
-                Value::Bool(self_publication),
-            ),
-        ]);
+        document.insert(
+            "self_publication_acknowledged".into(),
+            Value::Bool(self_publication),
+        );
+        if let Target::Retire(confirmation) = &plan.target {
+            document.insert("confirmation".into(), json::s(confirmation));
+        }
+        let document = Value::Obj(document);
         let digest = value_digest(&document)?;
         let intent = Intent::new(
             self.registry.scope().clone(),
@@ -290,6 +385,10 @@ impl Coordinator<'_> {
             plan.version,
             &target,
         )
+        .and_then(|intent| match &plan.target {
+            Target::Retire(confirmation) => intent.with_retirement_confirmation(confirmation),
+            _ => Ok(intent),
+        })
         .and_then(|intent| intent.with_management(digest.clone(), self.subject))
         .map_err(registry_error)?;
         let intent_digest = intent.fingerprint().map_err(registry_error)?;
@@ -300,7 +399,6 @@ impl Coordinator<'_> {
                 document,
                 digest,
                 draft,
-                draft_head,
             },
         })
     }
@@ -370,9 +468,10 @@ impl Coordinator<'_> {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(unavailable)?;
         let outcome = (|| {
-            let actual = current_revision(&tx, self.scope, &proposed.context.draft.id)?;
-            if actual != proposed.context.draft_head {
-                return Err(Error::RevisionConflict);
+            if let Some((draft, expected_head)) = &proposed.context.draft {
+                if current_revision(&tx, self.scope, &draft.id)? != *expected_head {
+                    return Err(Error::RevisionConflict);
+                }
             }
             reauthorize()?;
             self.store
@@ -384,7 +483,10 @@ impl Coordinator<'_> {
                             &submission.presentation,
                             &reauthorize,
                         )
-                        .map_err(registry_error)
+                        .map_err(|error| match error {
+                            RegistryError::ActiveDependents => Error::RevisionConflict,
+                            error => registry_error(error),
+                        })
                 })
         })();
         if let Err(error) = outcome {
@@ -553,6 +655,17 @@ pub(crate) fn verify_registered_intent(store: &Store, intent: &Intent) -> Result
     let intent_digest = intent.fingerprint().map_err(registry_error)?;
     let db = store.connection(false)?;
     let context = stored_context(&db, &scope, subject, intent_digest.as_str(), digest)?;
+    if context.get("confirmation").and_then(Value::as_str) != intent.retirement_confirmation() {
+        return Err(Error::Unauthorized);
+    }
+    if intent.operation() == Operation::Retire
+        && context.get("draft").is_none()
+        && context.get("draft_head_revision").is_none()
+        && context.get("draft_digest").is_none()
+        && context.get("self_publication_acknowledged") == Some(&Value::Bool(false))
+    {
+        return Ok(());
+    }
     let draft = draft_ref(&context).ok_or(Error::Unavailable)?;
     let current = current_revision(&db, &scope, &draft.id)?;
     if context.get("draft_head_revision") != Some(&Value::Int(current))
@@ -670,7 +783,7 @@ fn receipt(commit: &Commit, intent: &str) -> Value {
 fn request_digest(plan: &Plan, submission: &Submission) -> Result<Digest> {
     let draft = match &plan.target {
         Target::Publish(draft, _) => draft_value(draft),
-        Target::Rollback => Value::Null,
+        Target::Rollback | Target::Retire(_) => Value::Null,
     };
     let candidate = plan
         .target
@@ -683,19 +796,32 @@ fn request_digest(plan: &Plan, submission: &Submission) -> Result<Digest> {
         .transpose()
         .map_err(registry_error)?
         .unwrap_or(Value::Null);
-    value_digest(&json::obj([
-        ("operation", json::s(plan.target.operation().as_str())),
-        ("draft", draft),
-        ("candidate", candidate),
-        ("expected_revision", Value::Int(plan.expected_revision)),
-        ("publication_version", Value::Int(plan.version)),
-        ("acknowledge_self", Value::Bool(plan.acknowledge_self)),
-        ("intent_digest", json::s(&submission.intent_digest)),
+    let mut document = json::Map::from([
         (
-            "presentation_digest",
+            "operation".into(),
+            json::s(plan.target.operation().as_str()),
+        ),
+        ("draft".into(), draft),
+        ("candidate".into(), candidate),
+        (
+            "expected_revision".into(),
+            Value::Int(plan.expected_revision),
+        ),
+        ("publication_version".into(), Value::Int(plan.version)),
+        (
+            "acknowledge_self".into(),
+            Value::Bool(plan.acknowledge_self),
+        ),
+        ("intent_digest".into(), json::s(&submission.intent_digest)),
+        (
+            "presentation_digest".into(),
             json::s(Digest::of_bytes(&submission.presentation).as_str()),
         ),
-    ]))
+    ]);
+    if let Target::Retire(confirmation) = &plan.target {
+        document.insert("confirmation".into(), json::s(confirmation));
+    }
+    value_digest(&Value::Obj(document))
 }
 
 fn value_digest(value: &Value) -> Result<Digest> {
@@ -727,9 +853,12 @@ fn registry_error(error: RegistryError) -> Error {
         RegistryError::Authority | RegistryError::Trust | RegistryError::Time => {
             Error::Unauthorized
         }
-        RegistryError::Recovery | RegistryError::Storage | RegistryError::StalePermit => {
-            Error::Unavailable
-        }
+        RegistryError::ActiveDependents => Error::ActiveDependents,
+        RegistryError::Unsupported => Error::Unsupported,
+        RegistryError::Recovery
+        | RegistryError::Storage
+        | RegistryError::StalePermit
+        | RegistryError::DependencyUnavailable => Error::Unavailable,
     }
 }
 
