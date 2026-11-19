@@ -179,10 +179,14 @@ fn registry_entry(evaluator: &str, revision: i64) -> Value {
     v
 }
 
-fn bundle() -> LoadedBundle {
-    let mut b = parse(include_str!(
+fn transition_fixture() -> Value {
+    parse(include_str!(
         "../../../m1/fixtures/transition/m1-transition.bundle.json"
-    ));
+    ))
+}
+
+fn bundle() -> LoadedBundle {
+    let mut b = transition_fixture();
     let mut statements = b.get("statements").unwrap().as_arr().unwrap().to_vec();
     statements.push(parse(
         r#"{"statement_id":"permit-publish","effect":"permit","action_kinds":["repository.publish"],"resource_prefixes":["repository:fixture-tenant/fixture-project/"],"reason_code":"PUBLISH_PERMITTED"}"#,
@@ -193,9 +197,7 @@ fn bundle() -> LoadedBundle {
 
 /// The same bundle compatible with another acceptance-policy bundle.
 fn bundle_other_dependency() -> LoadedBundle {
-    let mut b = parse(include_str!(
-        "../../../m1/fixtures/transition/m1-transition.bundle.json"
-    ));
+    let mut b = transition_fixture();
     b = set(
         &b,
         &["workflow_protection", "acceptance_policy_bundle_sha"],

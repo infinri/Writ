@@ -136,9 +136,7 @@ fn enroll(
 }
 
 fn authorization() -> LoadedBundle {
-    let base = parse(include_str!(
-        "../../../../m1/fixtures/transition/m1-transition.bundle.json"
-    ));
+    let base = transition_fixture();
     let mut statements = base.get("statements").unwrap().as_arr().unwrap().to_vec();
     statements.push(parse(
         r#"{"statement_id":"approve-fixture-write","effect":"require_approval","action_kinds":["file.write"],"reason_code":"FIXTURE_WRITE_REQUIRES_APPROVAL"}"#,
