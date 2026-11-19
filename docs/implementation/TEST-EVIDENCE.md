@@ -828,3 +828,5 @@ Scope: CC-M6, CC-R01 through CC-R05 and CC-R06, CC-SEC-01/02/04/08/12, INV-17 an
 - Schema fixtures passed 6 management tests and 5 publication tests. The V2 documentation check passed. Independent trust-boundary review verified managed dispatch proof, exact presentation and thread binding, final role recheck, fixture key isolation and direct registry refusal for copied presentations before and after pending-intent persistence. Standalone D-051 rollback stays available for publications without managed draft attribution.
 
 Starting baseline `d9e75fce0b63e59abfffcc168e2c58e3f12d9742` passed all six required jobs on [run 44586765124](https://github.com/infinri/Writ/actions/runs/44586765124).
+
+Published implementation SHA `8852e3c66e0fbf19b9149ba5be5009d3eeeefcbd` passed all six required jobs on [run 44592961803](https://github.com/infinri/Writ/actions/runs/44592961803).
