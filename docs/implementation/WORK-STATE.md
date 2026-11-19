@@ -45,7 +45,7 @@ SANDBOX PREPARED / LIVE VERIFICATION NOT EXECUTED; sandbox **torn down** 2026-11
 
 ## Last verification
 
-The D-053 starting SHA `42af745af8759b80b00d6154871f0f079792e156` passed all six required jobs on [run 44565962417](https://github.com/infinri/Writ/actions/runs/44565962417). [E-100](TEST-EVIDENCE.md#e-100-d-053-disposable-scoped-waiver-2026-11-19) records the integrated verification.
+D-053 code SHA `03a7accd54886d6ee2b098a35aa50a260bb7068d` passed all six required jobs on [run 44575884746](https://github.com/infinri/Writ/actions/runs/44575884746). The starting SHA `42af745af8759b80b00d6154871f0f079792e156` passed all six required jobs on [run 44565962417](https://github.com/infinri/Writ/actions/runs/44565962417). [E-100](TEST-EVIDENCE.md#e-100-d-053-disposable-scoped-waiver-2026-11-19) records the integrated verification.
 
 The D-052 starting SHA `924fa7c3586b08df5180c63359393f376cfbf5d3` passed all six required jobs on [run 44547085950](https://github.com/infinri/Writ/actions/runs/44547085950). [E-099](TEST-EVIDENCE.md#e-099-d-052-disposable-evaluator-publication-2026-11-19) records the integrated evidence.
 
