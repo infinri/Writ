@@ -63,6 +63,8 @@ pub mod authorize;
 pub mod clock;
 pub mod contracts;
 pub mod effects;
+pub mod evaluator_publication;
+pub mod evaluator_rubric;
 pub mod execute;
 pub mod grants;
 pub mod human;

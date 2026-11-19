@@ -73,6 +73,8 @@ jobs:
           m3/tools/run-with-clean-fds.sh cargo test --manifest-path m6/publication/Cargo.toml --locked
           m3/tools/run-with-clean-fds.sh cargo run --manifest-path m6/publication/Cargo.toml --locked --example disposable
           python3 m6/publication/check_dependencies.py
+      - name: M6 disposable evaluator registry, rubric and protected promotion
+        run: m3/tools/run-with-clean-fds.sh cargo test --locked -p writ-ledger-sqlite --lib evaluator_
       - name: Format, lint, build and test (locked)
         run: |
           cargo fmt --all --check

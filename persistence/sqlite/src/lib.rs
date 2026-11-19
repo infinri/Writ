@@ -172,6 +172,7 @@ pub use snapshots::{
     SnapshotRefusal, SqliteSnapshotStore, VerifiedSnapshot, SNAPSHOTS_SCHEMA,
     SNAPSHOTS_SCHEMA_VERSION,
 };
+pub use workflow::EvaluatorRegistryCommit;
 use writ_broker::store::{TxFailure, TxStage};
 
 /// The exact `writ-ledger-3` schema (the base objects of every ledger).

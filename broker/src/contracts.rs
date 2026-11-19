@@ -355,7 +355,7 @@ const EVALUATION_RECORD_SCOPE: &[Field] = &[
 ];
 
 /// `^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$`: evaluator and acceptance policy versions.
-fn is_version(s: &str) -> bool {
+pub(crate) fn is_version(s: &str) -> bool {
     match s.as_bytes().split_first() {
         Some((first, tail)) => {
             s.len() <= 64

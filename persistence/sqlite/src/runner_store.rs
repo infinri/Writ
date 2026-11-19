@@ -426,21 +426,7 @@ impl RunnerState for SqliteLedger {
         project_id: &str,
         evaluator_id: &str,
     ) -> Result<Option<StoredEntry>, SourceUnavailable> {
-        let inner = self.lock("read").map_err(|_| SourceUnavailable)?;
-        inner
-            .conn
-            .query_row(
-                "SELECT entry, status FROM evaluator_registry \
-                 WHERE tenant_id = ?1 AND project_id = ?2 AND evaluator_id = ?3",
-                (tenant_id, project_id, evaluator_id),
-                |r| {
-                    Ok(StoredEntry {
-                        entry: r.get(0)?,
-                        revoked: r.get::<_, String>(1)? != "active",
-                    })
-                },
-            )
-            .optional()
+        self.registry_entry_for_runner(tenant_id, project_id, evaluator_id)
             .map_err(|_| SourceUnavailable)
     }
 }

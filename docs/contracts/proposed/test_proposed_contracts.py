@@ -17,7 +17,7 @@ import jsonschema
 
 HERE = Path(__file__).resolve().parent
 SCHEMAS = {n: json.loads((HERE / f"{n}.schema.json").read_text())
-           for n in ("evaluator-registry-entry", "runner-attestation", "evaluation-record-scope")}
+           for n in ("evaluator-registry-entry", "runner-attestation", "evaluation-record-scope", "pack-rubric-binding")}
 VALID = {n: json.loads((HERE / "examples" / f"{n}.valid.json").read_text()) for n in SCHEMAS}
 CONTEXT = ["tenant_id", "project_id", "task_id", "workflow_id", "transition", "artifact_snapshot_id", "artifact_digest",
            "canonical_target", "acceptance_policy_id", "acceptance_policy_version", "acceptance_policy_bundle_sha",
@@ -84,6 +84,16 @@ class Contracts(unittest.TestCase):
                      ("state_revision", 2 ** 53), ("canonical_target", "workflow:T1/p1/wf-1"), ("input_digests", []),
                      ("criterion_id", "Build")):
             self.assertFalse(ok(a, mutated(a, lambda d: d.__setitem__(f, v))), f"{f}={v!r}")
+
+    def test_rubric_rejects_missing_bindings_and_authority_claims(self):
+        n = "pack-rubric-binding"
+        for field in VALID[n]:
+            self.assertFalse(ok(n, mutated(n, lambda d: d.pop(field))), field)
+        for field in ("trust", "key_id", "attestation", "implementation_digest", "mandatory"):
+            self.assertFalse(ok(n, mutated(n, lambda d: d.update({field: "claim"}))), field)
+        for field, value in (("registry_revision", 0), ("registry_revision", 2 ** 53),
+                             ("criteria", ["build", "build"]), ("class", "elevated")):
+            self.assertFalse(ok(n, mutated(n, lambda d: d.update({field: value}))), field)
 
     def test_canonical_target_dot_segments_are_rejected_structurally(self):
         for n in ("runner-attestation", "evaluation-record-scope"):

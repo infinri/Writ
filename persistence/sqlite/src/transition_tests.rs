@@ -1392,3 +1392,6 @@ fn a_ledger_revoked_attestation_key_refuses_promotion_although_the_ring_still_ho
     );
     unchanged(&w);
 }
+
+#[path = "evaluator_scenario_tests.rs"]
+mod evaluator_scenario_tests;

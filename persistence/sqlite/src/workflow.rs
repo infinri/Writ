@@ -9,15 +9,20 @@
 
 use std::collections::BTreeSet;
 
+use json::{Digest, Value};
 use rusqlite::{OptionalExtension, Transaction};
+use writ_broker::acceptance::AcceptanceCode;
+use writ_broker::clock::timestamp_from_parts;
+use writ_broker::contracts::RegistryEntry;
 use writ_broker::grants::{GrantCheck, PrerequisiteView, ReserveRequest};
+use writ_broker::keys::MaterialDigest;
 use writ_broker::refusal::Refusal;
 use writ_broker::store::{StoreError, TxFailure};
 use writ_broker::workflow::{
     AdminChange, AdminRequest, LastPromotion, PromotionIntent, PromotionOutcome, PromotionView,
     SignoffRequest, StoredEntry, StoredPolicy, StoredWorkflow, WorkflowKey, WorkflowLedger,
 };
-use writ_broker::writ_kernel::json;
+use writ_broker::writ_kernel::{ids, json};
 
 use crate::approval_store::{consume_signoffs, next_seq, signoff_use};
 use crate::{code_name, stored_grant, unavailable, BodyError, End, SqliteLedger};
@@ -147,6 +152,433 @@ pub(crate) fn check_prerequisite(
     }))
 }
 
+/// The durable outcome of an authenticated evaluator publication or revocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EvaluatorRegistryCommit {
+    /// Scoped registry revision after this mutation.
+    pub revision: i64,
+    /// The operation's position in the ledger-wide commit order.
+    pub sequence: i64,
+}
+
+impl SqliteLedger {
+    /// Read one evaluator and its scoped revision from the authenticated registry.
+    pub fn evaluator_registry_view(
+        &self,
+        tenant: &str,
+        project: &str,
+        evaluator: &str,
+    ) -> Result<(i64, Option<RegistryEntry>), StoreError> {
+        if !ids::is_id(tenant) || !ids::is_id(project) || !ids::is_name(evaluator) {
+            return Err(unavailable("evaluator registry", "scope"));
+        }
+        self.transact("evaluator registry read", |tx| {
+            let prefix = scope_prefix(tenant, project);
+            let revision = secure_head(tx, tenant, project, &prefix)?;
+            let row = read_registry_row(tx, tenant, project, evaluator)?;
+            let entry = validate_registry_row(tx, &prefix, evaluator, row.as_ref())?;
+            if let Some(validated) = entry.as_ref().filter(|entry| entry.active()) {
+                if validated.key_revoked(tx)? {
+                    return Err(BodyError::Provenance);
+                }
+            }
+            let entry = entry.map(|validated| validated.entry);
+            Ok(End::Rollback((revision, entry)))
+        })
+        .map_err(|failure| failure.error)
+    }
+
+    /// After an uncertain write, read the outcome for the exact authorized intent.
+    pub fn evaluator_publication_commit(
+        &self,
+        tenant: &str,
+        project: &str,
+        intent_sha: &str,
+    ) -> Result<Option<EvaluatorRegistryCommit>, StoreError> {
+        if !ids::is_id(tenant) || !ids::is_id(project) || !ids::is_digest(intent_sha) {
+            return Err(unavailable("evaluator registry", "intent"));
+        }
+        self.transact("evaluator registry receipt", |tx| {
+            let prefix = scope_prefix(tenant, project);
+            let head = secure_head(tx, tenant, project, &prefix)?;
+            let digest_len = i64::try_from(intent_sha.len()).map_err(|_| BodyError::Integrity)?;
+            let matching = tx
+                .query_row(
+                    "SELECT seq, reference FROM ledger_sequence WHERE kind = 'administration' \
+                     AND substr(reference, 1, length(?1)) = ?1 \
+                     AND substr(reference, -(3 * ?3 + 2), ?3) = ?2 LIMIT 1",
+                    (&prefix, intent_sha, digest_len),
+                    |r| Ok((r.get(0)?, r.get::<_, String>(1)?)),
+                )
+                .optional()?;
+            let Some((sequence, reference)) = matching else {
+                return Ok(End::Rollback(None));
+            };
+            let audit = registry_audit(tx, &prefix, sequence, &reference)?;
+            if audit.revision > head || audit.intent_sha != intent_sha {
+                return Err(BodyError::Integrity);
+            }
+            Ok(End::Rollback(Some(EvaluatorRegistryCommit {
+                revision: audit.revision,
+                sequence,
+            })))
+        })
+        .map_err(|failure| failure.error)
+    }
+
+    pub(crate) fn registry_entry_for_runner(
+        &self,
+        tenant: &str,
+        project: &str,
+        evaluator: &str,
+    ) -> Result<Option<StoredEntry>, StoreError> {
+        self.transact("runner registry read", |tx| {
+            let prefix = scope_prefix(tenant, project);
+            let row = read_registry_row(tx, tenant, project, evaluator)?;
+            if secure_scope_exists(tx, &prefix)? {
+                secure_head(tx, tenant, project, &prefix)?;
+                if let Some(validated) =
+                    validate_registry_row(tx, &prefix, evaluator, row.as_ref())?
+                        .filter(ValidatedRegistryEntry::active)
+                {
+                    if validated.key_revoked(tx)? {
+                        return Err(BodyError::Provenance);
+                    }
+                }
+            }
+            Ok(End::Rollback(row.map(RegistryRow::stored)))
+        })
+        .map_err(|failure| failure.error)
+    }
+}
+
+const PUBLICATION_PREFIX: &str = "evaluator-publication:";
+
+fn scope_prefix(tenant: &str, project: &str) -> String {
+    format!("{PUBLICATION_PREFIX}{tenant}/{project}/")
+}
+
+struct RegistryRow {
+    revision: i64,
+    entry: String,
+    status: String,
+}
+
+impl RegistryRow {
+    fn stored(self) -> StoredEntry {
+        StoredEntry {
+            entry: self.entry,
+            revoked: self.status != "active",
+        }
+    }
+}
+
+fn read_registry_row(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    project: &str,
+    evaluator: &str,
+) -> rusqlite::Result<Option<RegistryRow>> {
+    tx.query_row(
+        "SELECT registry_revision, entry, status FROM evaluator_registry \
+         WHERE tenant_id = ?1 AND project_id = ?2 AND evaluator_id = ?3",
+        (tenant, project, evaluator),
+        |r| {
+            Ok(RegistryRow {
+                revision: r.get(0)?,
+                entry: r.get(1)?,
+                status: r.get(2)?,
+            })
+        },
+    )
+    .optional()
+}
+
+struct RegistryAudit<'a> {
+    evaluator: &'a str,
+    revision: i64,
+    intent_sha: &'a str,
+    entry_sha: &'a str,
+    runner_digest: MaterialDigest,
+    status: &'static str,
+}
+
+fn registry_audit<'a>(
+    tx: &Transaction<'_>,
+    prefix: &str,
+    sequence: i64,
+    reference: &'a str,
+) -> Result<RegistryAudit<'a>, BodyError> {
+    let raw = reference.strip_prefix(prefix).ok_or(BodyError::Integrity)?;
+    let parts: Vec<_> = raw.splitn(6, '/').collect();
+    let [evaluator, revision, runner_sha, intent_sha, entry_sha, ceremony_sha] = parts.as_slice()
+    else {
+        return Err(BodyError::Integrity);
+    };
+    let revision: i64 = revision.parse().map_err(|_| BodyError::Integrity)?;
+    if !ids::is_name(evaluator)
+        || revision < 1
+        || ![intent_sha, entry_sha, ceremony_sha]
+            .into_iter()
+            .all(|sha| ids::is_digest(sha))
+    {
+        return Err(BodyError::Integrity);
+    }
+    let runner_digest = MaterialDigest::parse(runner_sha).ok_or(BodyError::Integrity)?;
+    let Some((tenant, project)) = prefix
+        .strip_prefix(PUBLICATION_PREFIX)
+        .and_then(|p| p.strip_suffix('/'))
+        .and_then(|p| p.split_once('/'))
+    else {
+        return Err(BodyError::Integrity);
+    };
+    let operation: Option<String> = tx
+        .query_row(
+            "SELECT operation FROM admin_events WHERE tenant_id = ?1 AND project_id = ?2 \
+             AND target = ?3 AND operator_id <> '' AND operator_issuer <> '' AND channel <> '' \
+             AND evidence_ref <> '' AND at <> ''",
+            (tenant, project, reference),
+            |r| r.get(0),
+        )
+        .optional()?;
+    let status = match operation.as_deref() {
+        Some("register_evaluator") => "active",
+        Some("revoke_evaluator") => "revoked",
+        _ => return Err(BodyError::Provenance),
+    };
+    if sequence < 1 {
+        return Err(BodyError::Integrity);
+    }
+    Ok(RegistryAudit {
+        evaluator,
+        revision,
+        intent_sha,
+        entry_sha,
+        runner_digest,
+        status,
+    })
+}
+
+fn secure_scope_exists(tx: &Transaction<'_>, prefix: &str) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM meta WHERE key = ?1) \
+         OR EXISTS (SELECT 1 FROM ledger_sequence WHERE kind = 'administration' \
+         AND substr(reference, 1, length(?1)) = ?1) OR EXISTS (SELECT 1 FROM admin_events \
+         WHERE substr(target, 1, length(?1)) = ?1)",
+        [prefix],
+        |r| r.get(0),
+    )
+}
+
+fn latest_registry_audit(
+    tx: &Transaction<'_>,
+    prefix: &str,
+) -> rusqlite::Result<Option<(i64, String)>> {
+    tx.query_row(
+        "SELECT seq, reference FROM ledger_sequence WHERE kind = 'administration' \
+         AND substr(reference, 1, length(?1)) = ?1 ORDER BY seq DESC LIMIT 1",
+        [prefix],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()
+}
+
+fn secure_head(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    project: &str,
+    prefix: &str,
+) -> Result<i64, BodyError> {
+    let marker: Option<String> = tx
+        .query_row("SELECT value FROM meta WHERE key = ?1", [prefix], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    let revision: Option<i64> = tx.query_row(
+        "SELECT max(registry_revision) FROM evaluator_registry \
+         WHERE tenant_id = ?1 AND project_id = ?2",
+        (tenant, project),
+        |r| r.get(0),
+    )?;
+    let admin_target: Option<String> = tx
+        .query_row(
+            "SELECT target FROM admin_events WHERE tenant_id = ?1 AND project_id = ?2 \
+             AND substr(target, 1, length(?3)) = ?3 ORDER BY seq DESC LIMIT 1",
+            (tenant, project, prefix),
+            |r| r.get(0),
+        )
+        .optional()?;
+    match (
+        marker,
+        revision,
+        admin_target,
+        latest_registry_audit(tx, prefix)?,
+    ) {
+        (None, None, None, None) => Ok(0),
+        (Some(marker), Some(revision), Some(target), Some((sequence, reference)))
+            if target == reference && marker == revision.to_string() =>
+        {
+            let audit = registry_audit(tx, prefix, sequence, &reference)?;
+            if audit.revision != revision {
+                return Err(BodyError::Integrity);
+            }
+            let row = read_registry_row(tx, tenant, project, audit.evaluator)?;
+            validate_registry_row(tx, prefix, audit.evaluator, row.as_ref())?;
+            Ok(revision)
+        }
+        _ => Err(BodyError::Integrity),
+    }
+}
+
+struct ValidatedRegistryEntry {
+    entry: RegistryEntry,
+    runner_digest: MaterialDigest,
+}
+
+impl ValidatedRegistryEntry {
+    fn active(&self) -> bool {
+        self.entry.as_value().get("status").and_then(Value::as_str) == Some("active")
+    }
+
+    fn key_revoked(&self, tx: &Transaction<'_>) -> Result<bool, BodyError> {
+        let (id, digest) = self.runner_key()?;
+        crate::keys::revoked_text_in(tx, id, digest)
+    }
+
+    fn runner_key(&self) -> Result<(&str, &MaterialDigest), BodyError> {
+        let id = self
+            .entry
+            .as_value()
+            .get("attestation")
+            .and_then(|v| v.get("key_id"))
+            .and_then(Value::as_str)
+            .ok_or(BodyError::Integrity)?;
+        Ok((id, &self.runner_digest))
+    }
+}
+
+fn validate_registry_row(
+    tx: &Transaction<'_>,
+    prefix: &str,
+    evaluator: &str,
+    row: Option<&RegistryRow>,
+) -> Result<Option<ValidatedRegistryEntry>, BodyError> {
+    let latest = latest_registry_audit(tx, &format!("{prefix}{evaluator}/"))?;
+    let (row, sequence, reference) = match (row, latest) {
+        (None, None) => return Ok(None),
+        (Some(row), Some((sequence, reference))) => (row, sequence, reference),
+        _ => return Err(BodyError::Integrity),
+    };
+    let audit = registry_audit(tx, prefix, sequence, &reference)?;
+    if audit.revision != row.revision
+        || audit.status != row.status
+        || audit.entry_sha != Digest::of_bytes(row.entry.as_bytes()).as_str()
+    {
+        return Err(BodyError::Integrity);
+    }
+    let value = json::parse(row.entry.as_bytes()).map_err(|_| BodyError::Integrity)?;
+    if value.get("registry_revision").and_then(Value::as_int) != Some(row.revision)
+        || value.get("status").and_then(Value::as_str) != Some(row.status.as_str())
+        || value.get("evaluator_id").and_then(Value::as_str) != Some(evaluator)
+    {
+        return Err(BodyError::Integrity);
+    }
+    let entry = RegistryEntry::validate(&value).map_err(|_| BodyError::Integrity)?;
+    Ok(Some(ValidatedRegistryEntry {
+        entry,
+        runner_digest: audit.runner_digest,
+    }))
+}
+
+fn mutate_evaluator(
+    tx: &Transaction<'_>,
+    change: &AdminChange<'_>,
+    tenant: &str,
+    project: &str,
+    evaluator: &str,
+    publication: Option<&Value>,
+) -> Result<End<Result<(), Refusal>>, BodyError> {
+    let authorized = change.publisher().ok_or(BodyError::Integrity)?;
+    let prefix = scope_prefix(tenant, project);
+    let head = secure_head(tx, tenant, project, &prefix)?;
+    if head != authorized.expected_revision() {
+        return Ok(End::Rollback(Err(Refusal::RegistryRevisionStale)));
+    }
+    let revision = head.checked_add(1).ok_or(BodyError::Integrity)?;
+    let ceremony_sha = Digest::of_bytes(authorized.ceremony().as_bytes());
+    let used: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM ledger_sequence WHERE kind = 'administration' \
+         AND substr(reference, 1, length(?1)) = ?1 \
+         AND substr(reference, -length(?2)) = ?2)",
+        (PUBLICATION_PREFIX, ceremony_sha.as_str()),
+        |r| r.get(0),
+    )?;
+    if used {
+        return Ok(End::Rollback(Err(Refusal::OperatorUnauthorized)));
+    }
+    let row = read_registry_row(tx, tenant, project, evaluator)?;
+    let previous = validate_registry_row(tx, &prefix, evaluator, row.as_ref())?;
+    let (value, status, runner_digest) = if let Some(entry) = publication {
+        if change.registry_revision() != Some(revision) {
+            return Ok(End::Rollback(Err(Refusal::RegistryRevisionStale)));
+        }
+        let (key, digest) = authorized.runner_key().ok_or(BodyError::Integrity)?;
+        if crate::keys::revoked_text_in(tx, key, digest)? {
+            return Ok(End::Rollback(Err(Refusal::Acceptance(
+                AcceptanceCode::AttestationUnauthenticated,
+            ))));
+        }
+        (entry.clone(), "active", digest.clone())
+    } else {
+        let Some(previous) = previous else {
+            return Ok(End::Rollback(Err(Refusal::Acceptance(
+                AcceptanceCode::EvaluatorUnregistered,
+            ))));
+        };
+        let Value::Obj(mut doc) = previous.entry.as_value().clone() else {
+            return Err(BodyError::Integrity);
+        };
+        if doc.get("status").and_then(Value::as_str) != Some("active") {
+            return Ok(End::Rollback(Err(Refusal::Acceptance(
+                AcceptanceCode::EvaluatorRevoked,
+            ))));
+        }
+        doc.insert("status".into(), json::s("revoked"));
+        doc.insert("registry_revision".into(), Value::Int(revision));
+        let revoked_at =
+            timestamp_from_parts(change.at().unix_seconds(), 0).ok_or(BodyError::Integrity)?;
+        doc.insert("revoked_at".into(), json::s(&revoked_at.to_string()));
+        let value = Value::Obj(doc);
+        RegistryEntry::validate(&value).map_err(|_| BodyError::Integrity)?;
+        (value, "revoked", previous.runner_digest)
+    };
+    let entry = json::canonical(&value).map_err(|_| BodyError::Integrity)?;
+    let entry_sha = Digest::of_bytes(entry.as_bytes());
+    let intent_sha = authorized.intent_sha();
+    let reference = format!(
+        "{prefix}{evaluator}/{revision}/{runner_digest}/{intent_sha}/{entry_sha}/{ceremony_sha}"
+    );
+    tx.execute(
+        "INSERT INTO evaluator_registry (tenant_id, project_id, evaluator_id, \
+         registry_revision, entry, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+         ON CONFLICT (tenant_id, project_id, evaluator_id) DO UPDATE SET \
+         registry_revision = excluded.registry_revision, entry = excluded.entry, \
+         status = excluded.status",
+        (tenant, project, evaluator, revision, entry, status),
+    )?;
+    tx.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, ?2) \
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        (&prefix, revision.to_string()),
+    )?;
+    admin_provenance(tx, change, tenant, project, &reference)?;
+    next_seq(tx, "administration", &reference)?;
+    if let Err(refusal) = authorized.recheck() {
+        return Ok(End::Rollback(Err(refusal)));
+    }
+    Ok(End::Commit(Ok(())))
+}
+
 impl WorkflowLedger for SqliteLedger {
     fn workflow(&self, key: &WorkflowKey) -> Result<Option<StoredWorkflow>, StoreError> {
         let inner = self.lock("read")?;
@@ -183,6 +615,16 @@ impl WorkflowLedger for SqliteLedger {
             )
             .optional()
             .map_err(|e| unavailable("read", code_name(&e)))
+    }
+
+    fn publish_evaluator(
+        &self,
+        change: &AdminChange<'_>,
+    ) -> Result<Result<(), Refusal>, TxFailure> {
+        if change.publisher().is_none() {
+            return Ok(Err(Refusal::OperatorUnauthorized));
+        }
+        self.administer(change)
     }
 
     fn administer(&self, change: &AdminChange) -> Result<Result<(), Refusal>, TxFailure> {
@@ -313,6 +755,19 @@ impl WorkflowLedger for SqliteLedger {
                     ) else {
                         return Err(BodyError::Integrity);
                     };
+                    if change.publisher().is_some() {
+                        return mutate_evaluator(
+                            tx,
+                            change,
+                            tenant,
+                            project,
+                            evaluator,
+                            Some(entry),
+                        );
+                    }
+                    if secure_scope_exists(tx, &scope_prefix(tenant, project))? {
+                        return Ok(End::Rollback(Err(Refusal::OperatorUnauthorized)));
+                    }
                     let revision = change.registry_revision().ok_or(BodyError::Integrity)?;
                     let existing: Option<i64> = tx
                         .query_row(
@@ -342,6 +797,19 @@ impl WorkflowLedger for SqliteLedger {
                     project_id,
                     evaluator_id,
                 } => {
+                    if change.publisher().is_some() {
+                        return mutate_evaluator(
+                            tx,
+                            change,
+                            tenant_id,
+                            project_id,
+                            evaluator_id,
+                            None,
+                        );
+                    }
+                    if secure_scope_exists(tx, &scope_prefix(tenant_id, project_id))? {
+                        return Ok(End::Rollback(Err(Refusal::OperatorUnauthorized)));
+                    }
                     let changed = tx.execute(
                         "UPDATE evaluator_registry SET status = 'revoked' \
                          WHERE tenant_id = ?1 AND project_id = ?2 AND evaluator_id = ?3",
@@ -396,23 +864,32 @@ impl WorkflowLedger for SqliteLedger {
             let workflow = read_workflow(tx, &key.tenant_id, &key.project_id, &key.workflow_id)?;
             let policy = read_policy(tx, &key.tenant_id, &key.project_id)?.map(|(p, _)| p);
             let mut registry = Vec::new();
-            for evaluator in intent.evaluator_ids() {
-                let row: Option<(String, String)> = tx
-                    .query_row(
-                        "SELECT entry, status FROM evaluator_registry \
-                         WHERE tenant_id = ?1 AND project_id = ?2 AND evaluator_id = ?3",
-                        (&key.tenant_id, &key.project_id, evaluator),
-                        |r| Ok((r.get(0)?, r.get(1)?)),
-                    )
-                    .optional()?;
-                if let Some((entry, status)) = row {
-                    registry.push((
-                        evaluator.to_string(),
-                        StoredEntry {
-                            entry,
-                            revoked: status == "revoked",
-                        },
-                    ));
+            let evaluator_ids = intent.evaluator_ids();
+            if !evaluator_ids.is_empty() {
+                let prefix = scope_prefix(&key.tenant_id, &key.project_id);
+                let secure = secure_scope_exists(tx, &prefix)?;
+                if secure {
+                    secure_head(tx, &key.tenant_id, &key.project_id, &prefix)?;
+                }
+                for evaluator in evaluator_ids {
+                    let row = read_registry_row(tx, &key.tenant_id, &key.project_id, evaluator)?;
+                    if secure {
+                        let validated = validate_registry_row(tx, &prefix, evaluator, row.as_ref())?;
+                        if let Some(validated) = validated.filter(ValidatedRegistryEntry::active) {
+                            if validated.key_revoked(tx)? {
+                                return Ok(End::Rollback(Err(Refusal::Acceptance(
+                                    AcceptanceCode::AttestationUnauthenticated,
+                                ))));
+                            }
+                            let (key_id, digest) = validated.runner_key()?;
+                            if let Err(refusal) = intent.check_evaluator_key(key_id, digest) {
+                                return Ok(End::Rollback(Err(refusal)));
+                            }
+                        }
+                    }
+                    if let Some(row) = row {
+                        registry.push((evaluator.to_string(), row.stored()));
+                    }
                 }
             }
             let record_consumed = match intent.record_id() {
@@ -628,6 +1105,23 @@ fn admin_event(
     project: &str,
     target: &str,
 ) -> Result<(), BodyError> {
+    let operation = admin_provenance(tx, change, tenant, project, target)?;
+    // I-8: the administrative operation's place in the ledger-wide order.
+    next_seq(
+        tx,
+        "administration",
+        &format!("{operation}:{tenant}/{project}/{target}"),
+    )?;
+    Ok(())
+}
+
+fn admin_provenance(
+    tx: &Transaction<'_>,
+    change: &AdminChange,
+    tenant: &str,
+    project: &str,
+    target: &str,
+) -> Result<&'static str, BodyError> {
     let op = change.operator();
     let operation = match change.request() {
         AdminRequest::CreateWorkflow { .. } => "create_workflow",
@@ -651,11 +1145,9 @@ fn admin_event(
             change.at().to_string()
         ],
     )?;
-    // I-8: the administrative operation's place in the ledger-wide order.
-    next_seq(
-        tx,
-        "administration",
-        &format!("{operation}:{tenant}/{project}/{target}"),
-    )?;
-    Ok(())
+    Ok(operation)
 }
+
+#[cfg(test)]
+#[path = "evaluator_publication_tests.rs"]
+mod evaluator_publication_tests;

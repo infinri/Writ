@@ -152,11 +152,14 @@ use crate::authorize::{authorize, Authorized};
 use crate::clock::ObservedTime;
 use crate::contracts::RegistryEntry;
 use crate::effects::EffectAdapter;
+use crate::evaluator_publication::{
+    EvaluatorDependencies, EvaluatorIntent, EvaluatorPublication, EvaluatorPublisher,
+};
 use crate::execute::Broker;
 use crate::grants::{GrantLabel, ReserveRequest};
 use crate::human::SubjectId;
 use crate::ingress::VerifiedRequest;
-use crate::keys::{AcceptanceKeyRing, MaterialDigest, RunnerKeyRing};
+use crate::keys::{AcceptanceKeyRing, KeyStatus, MaterialDigest, RunnerKeyRing};
 use crate::refusal::{ConflictStage, Refusal};
 use crate::store::{ExecuteLedger, LedgerStore, StoreError, TxFailure, TxStage};
 
@@ -224,7 +227,8 @@ pub struct Trust<'a> {
     pub attestations: &'a dyn AttestationSource,
     /// Acceptance-record keys.
     pub record_keys: &'a dyn AcceptanceKeyRing,
-    /// Runner attestation keys.
+    /// Runner attestation keys. In D-052 scopes, use a pinned view independent of the ledger
+    /// so the transaction can verify current key material without re-entering storage.
     pub runner_keys: &'a dyn RunnerKeyRing,
     /// Immutable snapshots.
     pub snapshots: &'a dyn SnapshotStore,
@@ -330,6 +334,7 @@ pub struct PromotionIntent<'a> {
 struct ProtectedInputs<'a> {
     record: &'a VerifiedRecord,
     attestations: &'a [VerifiedAttestation],
+    runner_keys: &'a dyn RunnerKeyRing,
 }
 
 /// What the transaction must write after a successful check.
@@ -426,6 +431,33 @@ impl<'a> PromotionIntent<'a> {
             ));
         }
         keys
+    }
+
+    /// Check that the runner-purpose key pinned at publication is still current, and
+    /// that any attestation naming it was verified with the same material. The key
+    /// source must be independent of the ledger transaction.
+    pub fn check_evaluator_key(
+        &self,
+        key_id: &str,
+        expected: &MaterialDigest,
+    ) -> Result<(), Refusal> {
+        use AcceptanceCode::{AttestationKeyUnavailable, AttestationUnauthenticated};
+        let protected = self
+            .protected
+            .as_ref()
+            .ok_or(acceptance(AttestationUnauthenticated))?;
+        let key = protected
+            .runner_keys
+            .runner_key(key_id)
+            .map_err(|_| acceptance(AttestationKeyUnavailable))?;
+        if !matches!(key, KeyStatus::Active(key) if &MaterialDigest::of(key.bytes()) == expected)
+            || protected.attestations.iter().any(|attestation| {
+                attestation.key_id() == key_id && attestation.key_digest() != expected
+            })
+        {
+            return Err(acceptance(AttestationUnauthenticated));
+        }
+        Ok(())
     }
 
     /// The promotion's requester and agent (excluded signers, O-7).
@@ -784,15 +816,21 @@ pub enum AdminRequest {
 }
 
 /// A validated administrative change: built only by the broker.
-pub struct AdminChange {
+pub struct AdminChange<'a> {
     request: AdminRequest,
     operator: AuthorizedOperator,
     at: Timestamp,
     requirements_text: Option<String>,
     registry_revision: Option<i64>,
+    publisher: Option<EvaluatorPublication<'a>>,
 }
 
-impl AdminChange {
+impl AdminChange<'_> {
+    /// Exact human authorization for D-052 evaluator registry operations.
+    pub fn publisher(&self) -> Option<&EvaluatorPublication<'_>> {
+        self.publisher.as_ref()
+    }
+
     /// The request.
     pub fn request(&self) -> &AdminRequest {
         &self.request
@@ -836,6 +874,22 @@ pub trait WorkflowLedger: Sync {
     /// Store-level refusals: `WORKFLOW_EXISTS`, `WORKFLOW_UNKNOWN`,
     /// `REGISTRY_REVISION_STALE`, `EVALUATOR_UNREGISTERED`.
     fn administer(&self, change: &AdminChange) -> Result<Result<(), Refusal>, TxFailure>;
+
+    /// Commit a D-052 change with its audit, ceremony and monotonic revision. Recheck
+    /// the pinned publisher and trust immediately before commit, with no ledger reentry.
+    fn publish_evaluator(
+        &self,
+        change: &AdminChange<'_>,
+    ) -> Result<Result<(), Refusal>, TxFailure> {
+        let _ = change;
+        Err(TxFailure::new(
+            TxStage::Begin,
+            StoreError::Unavailable {
+                category: "transaction evaluator_publication".into(),
+                code: "unsupported".into(),
+            },
+        ))
+    }
 
     /// The fenced `promote` transaction (module documentation).
     fn promote(
@@ -1014,6 +1068,7 @@ where
             protected: record.as_ref().map(|record| ProtectedInputs {
                 record,
                 attestations: &attestations,
+                runner_keys: trust.runner_keys,
             }),
             authorization_bundle_sha: authorized.policy_bundle_sha(),
             protection_policy_sha: protection.map(|p| p.acceptance_policy_bundle_sha),
@@ -1237,6 +1292,62 @@ where
         Ok((record, attestations))
     }
 
+    /// Publish or revoke in a disposable evaluator scope under exact fresh human authority.
+    /// The policy fence orders this operation with protected promotion. A transaction failure
+    /// can have an unknown outcome, which the caller must recover from durable audit.
+    pub fn publish_evaluator(
+        &self,
+        authority: &impl EvaluatorPublisher,
+        presentation: &AdminPresentation<'_>,
+        dependencies: &EvaluatorDependencies<'_>,
+        intent: &EvaluatorIntent,
+    ) -> Result<Result<(), Refusal>, TxFailure> {
+        let result = self.publish_evaluator_held(authority, presentation, dependencies, intent);
+        result.map(|result| self.grants().audited(result))
+    }
+
+    fn publish_evaluator_held(
+        &self,
+        authority: &impl EvaluatorPublisher,
+        presentation: &AdminPresentation<'_>,
+        dependencies: &EvaluatorDependencies<'_>,
+        intent: &EvaluatorIntent,
+    ) -> Result<Result<(), Refusal>, TxFailure> {
+        let _hold = self.grants().active.exclusive();
+        let prepared = (|| {
+            let current = authority.current().map_err(|refusal| match refusal {
+                AdminRefusal::Unauthenticated => Refusal::OperatorUnauthenticated,
+                AdminRefusal::Unauthorized => Refusal::OperatorUnauthorized,
+            })?;
+            Ok((current, self.grants().observe()?.at()))
+        })();
+        let (current, now) = match prepared {
+            Ok(prepared) => prepared,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let publisher = match EvaluatorPublication::authorize(
+            intent,
+            presentation,
+            &current,
+            dependencies,
+            self.grants().clock,
+            now,
+        ) {
+            Ok(publisher) => publisher,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let request = intent.request().clone();
+        let change = AdminChange {
+            registry_revision: Some(publisher.expected_revision() + 1),
+            request,
+            operator: publisher.operator().clone(),
+            at: now,
+            requirements_text: None,
+            publisher: Some(publisher),
+        };
+        self.grants().ledger.publish_evaluator(&change)
+    }
+
     /// Perform an administrative operation (module documentation): authorize,
     /// validate, then one fenced transaction under the exclusive gate.
     /// Refusals are audited.
@@ -1392,6 +1503,7 @@ where
             at: observed.at(),
             requirements_text,
             registry_revision,
+            publisher: None,
         };
         let answer = self.grants().ledger.administer(&change);
         drop(hold);

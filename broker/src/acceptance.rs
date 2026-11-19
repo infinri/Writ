@@ -691,7 +691,7 @@ fn trust_label(t: EvaluatorTrust) -> &'static str {
     }
 }
 
-fn class_label(c: CriterionClass) -> &'static str {
+pub(crate) fn class_label(c: CriterionClass) -> &'static str {
     match c {
         CriterionClass::Mechanical => "mechanical",
         CriterionClass::Evidence => "evidence",

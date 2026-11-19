@@ -1,8 +1,8 @@
 # M6 starting plan
 
-**Status:** IN PROGRESS, with slices 1 and 2 implemented for development under D-050 and D-051 and slice 3 approved for test-authority development under D-052. M5 remains open. ADR-0008 remains APPROVED IN PRINCIPLE. Release and production remain NO-GO.
+**Status:** IN PROGRESS, with slices 1 through 3 implemented for development under D-050 through D-052. M5 remains open. ADR-0008 remains APPROVED IN PRINCIPLE. Release and production remain NO-GO.
 
-D-050 approves the scope and compiler contract in decision 1. The [offline compiler](../../m6/compiler/README.md) implements the first batch with a local conflict report and executable proof for synthetic V2 fixtures. D-051 implements the second batch in the [disposable publication lab](../../m6/publication/README.md). The later slices map the carried obligations and their dependencies. Each slice needs scope approval and resolution of its applicable contract decisions before implementation.
+D-050 approves the scope and compiler contract in decision 1. The [offline compiler](../../m6/compiler/README.md) implements the first batch with a local conflict report and executable proof for synthetic V2 fixtures. D-051 implements the second batch in the [disposable publication lab](../../m6/publication/README.md). The [disposable evaluator scenario](../../m6/evaluators/README.md) implements the third batch in the existing broker and SQLite registry under D-052. The later slices map the carried obligations and their dependencies. Each slice needs scope approval and resolution of its applicable contract decisions before implementation.
 
 ## Obligations and existing authority
 

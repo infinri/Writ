@@ -1,0 +1,16 @@
+{
+  "contract_version": "pack-rubric-binding/1",
+  "pack_id": "org.writ.evaluator-fixture",
+  "pack_version": "1",
+  "rubric_id": "fixture-rubric",
+  "rubric_version": "1",
+  "tenant_id": "t1",
+  "project_id": "p1",
+  "evaluator_id": "ci-runner",
+  "evaluator_version": "1.4.0",
+  "class": "mechanical",
+  "registry_revision": 1,
+  "criteria": [
+    "build"
+  ]
+}
