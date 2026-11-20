@@ -75,6 +75,7 @@ mod mac;
 pub mod permit;
 pub mod policy;
 pub mod process;
+pub mod quorum_policy;
 pub mod refusal;
 pub mod runner;
 pub mod store;

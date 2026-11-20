@@ -406,6 +406,7 @@ fn attestations_verify_with_the_runner_key_only() {
 struct Use {
     current: CurrentState,
     requirements: AcceptanceRequirements,
+    quorums: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
     entries: Vec<RegistryEntry>,
     attestations: Vec<VerifiedAttestation>,
     consumed: BTreeSet<String>,
@@ -416,6 +417,7 @@ impl Use {
         Use {
             current: current(),
             requirements: requirements(""),
+            quorums: Default::default(),
             entries: vec![registry_entry("ci-runner"), registry_entry("doc-check")],
             attestations: vec![verify_attestation(&attestation(), &runner_keys(), now()).unwrap()],
             consumed: BTreeSet::new(),
@@ -431,7 +433,7 @@ impl Use {
                 .find(|e| e.as_value().get("evaluator_id").and_then(Value::as_str) == Some(id))
                 .cloned()
         };
-        check_use(
+        check_use_with_quorum(
             &verified,
             &UseContext {
                 current: &self.current,
@@ -442,6 +444,7 @@ impl Use {
                 signoffs: &[],
                 promotion_parties: &[],
             },
+            &self.quorums,
         )
         .map(|c| c.attestation_ids)
     }
@@ -640,4 +643,243 @@ fn the_schema_example_is_the_record_the_code_produces_and_verifies() {
     let produced = json::canonical(&good_record()).unwrap();
     assert_eq!(json::canonical(&example).unwrap(), produced, "{produced}");
     assert!(verify_record(&example, &record_keys()).is_ok());
+}
+
+#[test]
+fn quorum_uses_current_separate_authenticated_mechanical_and_evidence_contributions() {
+    let mut use_case = Use::new();
+    use_case.attestations.clear();
+    use_case.entries.clear();
+    let mut members = Vec::new();
+    let mut signed_attestations = Vec::new();
+    let mut keys = MemoryKeys::new();
+    for (index, (criterion, evaluator, evidence_id)) in [
+        ("build", "ci-runner", "att-1"),
+        ("build", "ci-secondary", "att-2"),
+        ("docs", "doc-check", "att-3"),
+        ("docs", "doc-secondary", "att-4"),
+        ("docs", "doc-third", "att-5"),
+    ]
+    .iter()
+    .copied()
+    .enumerate()
+    {
+        let group = if index % 2 == 0 {
+            "primary"
+        } else {
+            "secondary"
+        };
+        use_case
+            .quorums
+            .entry(criterion.into())
+            .or_default()
+            .insert(evaluator.into(), group.into());
+        let key_id = format!("key-{index}");
+        let key = vec![0x30 + index as u8; 32];
+        keys.register(
+            &key_id,
+            RunnerAttestationKey::from_bytes(key.clone()).unwrap(),
+        );
+        let template = if criterion == "build" {
+            "ci-runner"
+        } else {
+            "doc-check"
+        };
+        let entry = set(
+            registry_entry(template).as_value(),
+            &["evaluator_id"],
+            json::s(evaluator),
+        );
+        use_case.entries.push(
+            RegistryEntry::validate(&set(&entry, &["attestation", "key_id"], json::s(&key_id)))
+                .unwrap(),
+        );
+        let mut att = attestation();
+        for (field, value) in [
+            ("contract_version", "runner-attestation/2"),
+            ("attempt_id", "attempt-1"),
+            ("verdict", if index == 4 { "abstain" } else { "pass" }),
+            ("criterion_id", criterion),
+            ("evaluator_id", evaluator),
+            ("attestation_id", evidence_id),
+        ] {
+            att = set(&att, &[field], json::s(value));
+        }
+        if criterion == "docs" {
+            att = att.without("command_id").without("command_digest");
+        }
+        let att = sign(&set(&att, &["auth", "key_id"], json::s(&key_id)), &key);
+        use_case
+            .attestations
+            .push(verify_attestation(&att, &keys, now()).unwrap());
+        signed_attestations.push((att, key));
+        members.push(json::obj([
+            ("criterion_id", json::s(criterion)),
+            ("evaluator_id", json::s(evaluator)),
+            ("attestation_id", json::s(evidence_id)),
+        ]));
+    }
+    let mut record = set(
+        &good_record(),
+        &["contract_version"],
+        json::s(RECORD_CONTRACT_V3),
+    );
+    let evaluations = record
+        .get("evaluations")
+        .unwrap()
+        .as_arr()
+        .unwrap()
+        .iter()
+        .map(|e| set(e, &["signoff_id"], Value::Null))
+        .collect();
+    record = set(&record, &["evaluations"], Value::Arr(evaluations));
+    record = set(&record, &["attempt_id"], json::s("attempt-1"));
+    let record = sign(
+        &set(&record, &["contributions"], Value::Arr(members)),
+        &RECORD_KEY,
+    );
+    assert_eq!(
+        use_case.run(&record).unwrap(),
+        ["att-1", "att-2", "att-3", "att-4"]
+    );
+    use AcceptanceCode::*;
+    let incomplete = Kernel(AcceptanceRefusal::Incomplete);
+    assert_eq!(use_case.run(&good_record()), Err(incomplete));
+    let (att, key) = &signed_attestations[3];
+    for (field, value, expected) in [
+        (
+            "attempt_id",
+            json::s("other-attempt"),
+            AttestationBindingMismatch,
+        ),
+        ("verdict", json::s("fail"), incomplete),
+        ("verdict", json::s("abstain"), incomplete),
+        ("task_id", json::s("other-task"), AttestationBindingMismatch),
+        (
+            "artifact_digest",
+            json::s(&sha('e')),
+            AttestationBindingMismatch,
+        ),
+        (
+            "acceptance_policy_version",
+            json::s("4"),
+            AttestationBindingMismatch,
+        ),
+        (
+            "acceptance_policy_bundle_sha",
+            json::s(&sha('d')),
+            AttestationBindingMismatch,
+        ),
+        ("state_revision", Value::Int(8), AttestationBindingMismatch),
+        (
+            "registry_revision",
+            Value::Int(13),
+            AttestationBindingMismatch,
+        ),
+        (
+            "evaluator_version",
+            json::s("9.0.0"),
+            AttestationBindingMismatch,
+        ),
+    ] {
+        let altered = sign(&set(att, &[field], value), key);
+        use_case.attestations[3] = verify_attestation(&altered, &keys, now()).unwrap();
+        assert_eq!(use_case.run(&record), Err(expected), "{field}");
+    }
+    use_case.attestations[3] = verify_attestation(att, &keys, now()).unwrap();
+    let (third, third_key) = &signed_attestations[4];
+    let failure = sign(&set(third, &["verdict"], json::s("fail")), third_key);
+    use_case.attestations[4] = verify_attestation(&failure, &keys, now()).unwrap();
+    assert_eq!(use_case.run(&record), Err(incomplete));
+    use_case.attestations[4] = verify_attestation(third, &keys, now()).unwrap();
+
+    let entry = use_case.entries[3].clone();
+    for (class, trust) in [("human", "H"), ("model_assisted", "MA")] {
+        let changed = set(
+            &set(entry.as_value(), &["class"], json::s(class)),
+            &["trust"],
+            json::s(trust),
+        );
+        use_case.entries[3] = RegistryEntry::validate(&changed).unwrap();
+        assert_eq!(use_case.run(&record), Err(EvaluatorBindingMismatch));
+    }
+    use_case.entries[3] = entry;
+    let original_groups = use_case.quorums["docs"].clone();
+    use_case
+        .quorums
+        .get_mut("docs")
+        .unwrap()
+        .insert("doc-secondary".into(), "primary".into());
+    assert_eq!(use_case.run(&record), Err(incomplete));
+    use_case.quorums.insert("docs".into(), original_groups);
+    let mut alias_keys = MemoryKeys::new();
+    let alias = &signed_attestations[2].1;
+    alias_keys.register(
+        "key-3",
+        RunnerAttestationKey::from_bytes(alias.clone()).unwrap(),
+    );
+    use_case.attestations[3] = verify_attestation(&sign(att, alias), &alias_keys, now()).unwrap();
+    assert_eq!(use_case.run(&record), Err(incomplete));
+    use_case.attestations[3] = verify_attestation(att, &keys, now()).unwrap();
+
+    let members = record.get("contributions").unwrap().as_arr().unwrap();
+    for duplicate in [
+        members[3].clone(),
+        set(&members[3], &["attestation_id"], json::s("different-id")),
+    ] {
+        let mut conflicting = members.to_vec();
+        conflicting.insert(4, duplicate);
+        let altered = sign(
+            &set(&record, &["contributions"], Value::Arr(conflicting)),
+            &RECORD_KEY,
+        );
+        assert_eq!(use_case.run(&altered), Err(RecordMalformed));
+    }
+    let mut reused = members.to_vec();
+    reused[3] = set(&reused[3], &["attestation_id"], json::s("att-3"));
+    let altered = sign(
+        &set(&record, &["contributions"], Value::Arr(reused)),
+        &RECORD_KEY,
+    );
+    assert_eq!(use_case.run(&altered), Err(RecordMalformed));
+    let conflict = sign(&set(att, &["verdict"], json::s("fail")), key);
+    use_case
+        .attestations
+        .push(verify_attestation(&conflict, &keys, now()).unwrap());
+    assert_eq!(use_case.run(&record), Err(AttestationBindingMismatch));
+    use_case.attestations.pop();
+    use_case
+        .current
+        .revoked_evaluator_ids
+        .push("doc-secondary".into());
+    assert_eq!(use_case.run(&record), Err(EvaluatorBindingMismatch));
+    use_case.current.revoked_evaluator_ids.clear();
+
+    // The ordinary mechanical projection in a mixed record requires its legacy attestation.
+    use_case.quorums.remove("build");
+    let mixed = sign(
+        &set(
+            &record,
+            &["contributions"],
+            Value::Arr(members[2..].to_vec()),
+        ),
+        &RECORD_KEY,
+    );
+    let (mechanical, mechanical_key) = &signed_attestations[0];
+    for verdict in ["fail", "abstain", "pass"] {
+        let wrong = sign(
+            &set(mechanical, &["verdict"], json::s(verdict)),
+            mechanical_key,
+        );
+        use_case.attestations[0] = verify_attestation(&wrong, &keys, now()).unwrap();
+        assert_eq!(use_case.run(&mixed), Err(AttestationBindingMismatch));
+    }
+    let legacy = set(
+        &mechanical.without("attempt_id").without("verdict"),
+        &["contract_version"],
+        json::s("runner-attestation/1"),
+    );
+    use_case.attestations[0] =
+        verify_attestation(&sign(&legacy, mechanical_key), &keys, now()).unwrap();
+    assert_eq!(use_case.run(&mixed).unwrap(), ["att-1", "att-3", "att-4"]);
 }

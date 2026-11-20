@@ -906,6 +906,10 @@ fn mutate_evaluator(
 }
 
 impl WorkflowLedger for SqliteLedger {
+    fn allows_quorum(&self) -> bool {
+        self.quorum_lab_enabled()
+    }
+
     fn workflow(&self, key: &WorkflowKey) -> Result<Option<StoredWorkflow>, StoreError> {
         let inner = self.lock("read")?;
         read_workflow(
@@ -1189,11 +1193,24 @@ impl WorkflowLedger for SqliteLedger {
             }
             let workflow = read_workflow(tx, &key.tenant_id, &key.project_id, &key.workflow_id)?;
             let policy = read_policy(tx, &key.tenant_id, &key.project_id)?.map(|(p, _)| p);
+            let quorum_lab = self.quorum_lab_enabled();
+            let quorum_attempt = intent.quorum_attempt();
+            if quorum_attempt.is_some() && !quorum_lab {
+                return Ok(End::Rollback(Err(Refusal::AcceptancePolicyUnavailable)));
+            }
+            if quorum_lab {
+                if let Err(refusal) = intent.check_signed_policy(policy.as_ref()) {
+                    return Ok(End::Rollback(Err(refusal)));
+                }
+            }
             let mut registry = Vec::new();
             let evaluator_ids = intent.evaluator_ids();
             if !evaluator_ids.is_empty() {
                 let prefix = scope_prefix(&key.tenant_id, &key.project_id);
                 let secure = secure_scope_exists(tx, &prefix)?;
+                if quorum_attempt.is_some() && !secure {
+                    return Ok(End::Rollback(Err(Refusal::Acceptance(AcceptanceCode::RegistryUnavailable))));
+                }
                 if secure {
                     secure_head(tx, &key.tenant_id, &key.project_id, &prefix)?;
                 }
@@ -1208,7 +1225,7 @@ impl WorkflowLedger for SqliteLedger {
                                 ))));
                             }
                             let (key_id, digest) = validated.runner_key()?;
-                            if let Err(refusal) = intent.check_evaluator_key(key_id, digest) {
+                            if let Err(refusal) = intent.check_evaluator_key(key_id, digest).and_then(|()| intent.check_contribution_key(evaluator, key_id, digest)) {
                                 return Ok(End::Rollback(Err(refusal)));
                             }
                         }
@@ -1321,6 +1338,19 @@ impl WorkflowLedger for SqliteLedger {
                     )?;
                 }
             }
+            if let Some((attempt, members)) = quorum_attempt {
+                let last = write.last_promotion.as_ref().ok_or(BodyError::Integrity)?;
+                let ids = Value::Arr(members.into_iter().map(|id| Value::Str(id.into())).collect());
+                let ids = json::canonical(&ids).map_err(|_| BodyError::Integrity)?;
+                let (record_sha, member_digests) = intent.quorum_manifest().ok_or(BodyError::Integrity)?;
+                let digests = Value::Obj(member_digests.iter().map(|(id,digest)| (id.clone(),json::s(digest.as_str()))).collect());
+                let digests = json::canonical(&digests).map_err(|_| BodyError::Integrity)?;
+                tx.execute(
+                    "INSERT INTO quorum_promotions (tenant_id, project_id, workflow_id, idempotency_key, record_id, attempt_id, member_ids, policy_sha, record_sha, member_digests) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    (&key.tenant_id, &key.project_id, &key.workflow_id, request.idempotency_key(),
+                     &last.record_id, attempt, ids, &last.acceptance_policy_bundle_sha, record_sha.as_str(), digests),
+                )?;
+            }
             consume_signoffs(
                 tx,
                 &write.signoff_ids,
@@ -1353,6 +1383,15 @@ impl WorkflowLedger for SqliteLedger {
             )?;
             // I-8: the promotion's place in the ledger-wide order.
             next_seq(tx, "promotion", &write.receipt_id)?;
+            if quorum_lab && intent.record_id().is_some() {
+                let (secs, nanos): (i64,u32) = tx.query_row("SELECT floor_s,floor_ns FROM time_floor WHERE id=1", [], |r| Ok((r.get(0)?,r.get(1)?)))?;
+                let floor = timestamp_from_parts(secs,nanos).ok_or(BodyError::Integrity)?;
+                let now = match intent.final_quorum_check(&view,&write,floor) {
+                    Ok(now) => now,
+                    Err(refusal) => return Ok(End::Rollback(Err(refusal))),
+                };
+                tx.execute("UPDATE time_floor SET floor_s=?1,floor_ns=?2 WHERE id=1",(now.unix_seconds(),now.subsec_nanos()))?;
+            }
             Ok(End::Commit(Ok(PromotionOutcome::Committed {
                 revision: write.revision,
                 receipt_id: write.receipt_id,

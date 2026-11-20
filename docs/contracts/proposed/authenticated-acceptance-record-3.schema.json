@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://writ.dev/contracts/proposed/authenticated-acceptance-record-3.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "auth",
+    "contract_version",
+    "evaluations",
+    "issuer",
+    "mode",
+    "purpose",
+    "record",
+    "attempt_id",
+    "contributions"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "authenticated-acceptance-record/3"
+    },
+    "purpose": {
+      "$ref": "https://writ.dev/contracts/proposed/authenticated-acceptance-record-2.schema.json#/properties/purpose"
+    },
+    "issuer": {
+      "$ref": "https://writ.dev/contracts/proposed/authenticated-acceptance-record-2.schema.json#/properties/issuer"
+    },
+    "mode": {
+      "$ref": "https://writ.dev/contracts/proposed/authenticated-acceptance-record-2.schema.json#/properties/mode"
+    },
+    "record": {
+      "$ref": "https://writ.dev/contracts/proposed/authenticated-acceptance-record-2.schema.json#/properties/record",
+      "properties": {
+        "criteria": {
+          "maxItems": 64
+        }
+      }
+    },
+    "evaluations": {
+      "$ref": "https://writ.dev/contracts/proposed/authenticated-acceptance-record-2.schema.json#/properties/evaluations",
+      "maxItems": 64,
+      "items": {
+        "properties": {
+          "evidence_digests": {
+            "maxItems": 64
+          }
+        }
+      }
+    },
+    "auth": {
+      "$ref": "https://writ.dev/contracts/proposed/authenticated-acceptance-record-2.schema.json#/properties/auth"
+    },
+    "attempt_id": {
+      "$ref": "https://writ.dev/contracts/proposed/authenticated-acceptance-record-2.schema.json#/$defs/id"
+    },
+    "contributions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "criterion_id",
+          "evaluator_id",
+          "attestation_id"
+        ],
+        "properties": {
+          "criterion_id": {
+            "$ref": "https://writ.dev/contracts/proposed/authenticated-acceptance-record-2.schema.json#/$defs/name"
+          },
+          "evaluator_id": {
+            "$ref": "https://writ.dev/contracts/proposed/authenticated-acceptance-record-2.schema.json#/$defs/name"
+          },
+          "attestation_id": {
+            "$ref": "https://writ.dev/contracts/proposed/authenticated-acceptance-record-2.schema.json#/$defs/id"
+          }
+        }
+      }
+    }
+  }
+}

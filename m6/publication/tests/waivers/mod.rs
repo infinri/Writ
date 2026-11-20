@@ -41,7 +41,7 @@ fn waiver_publication(signer: &FixtureSigner, version: i64, rules: Vec<Value>) -
     publication
 }
 
-struct Operator;
+pub(super) struct Operator;
 
 impl WorkflowAuthority for Operator {
     fn authorize(
@@ -67,7 +67,7 @@ impl WorkflowAuthority for Operator {
     }
 }
 
-struct Snapshot(Vec<u8>);
+pub(super) struct Snapshot(pub(super) Vec<u8>);
 
 impl SnapshotStore for Snapshot {
     fn check(
@@ -90,7 +90,7 @@ impl SnapshotStore for Snapshot {
     }
 }
 
-fn transition_policy(acceptance_digest: &str) -> ActivePolicy {
+pub(super) fn transition_policy(acceptance_digest: &str) -> ActivePolicy {
     let bundle = json::parse(
         include_str!("../../../../m1/fixtures/transition/m1-transition.bundle.json")
             .replace("fixture-tenant/fixture-project/", "m6-lab/offline-proof/")
@@ -112,7 +112,7 @@ fn transition_policy(acceptance_digest: &str) -> ActivePolicy {
     ))
 }
 
-fn transition(digest: &str) -> writ_broker::ingress::VerifiedRequest {
+pub(super) fn transition(digest: &str) -> writ_broker::ingress::VerifiedRequest {
     seal_request(&json::parse(format!(
         r#"{{"contract_version":"2.0","request_id":"req-waiver","trace_id":"trace-waiver",
         "tenant_id":"m6-lab","project_id":"offline-proof",

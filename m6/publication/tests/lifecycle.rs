@@ -1603,3 +1603,107 @@ fn optional_removal_refuses_source_expiry_inside_second_approval() {
     assert_eq!(selected(&reopened), (1, 1));
     assert_eq!(reopened.audit().unwrap(), before);
 }
+
+mod quorum;
+
+#[test]
+fn signed_quorum_cannot_be_downgraded_by_publish_or_historical_rollback() {
+    let dir = Disposable::create().unwrap();
+    let (authority, signer) = FixtureSigner::pair();
+    let registry = Registry::create(
+        &dir.path().join("policy.sqlite"),
+        scope(),
+        authority.clone(),
+    )
+    .unwrap();
+    let criterion = |id, class| {
+        json::obj([
+            ("criterion_id", json::s(id)),
+            ("required_class", json::s(class)),
+        ])
+    };
+    let pair = |version, quorum: Option<Value>| {
+        let mut p = signer.publication(ALLOW, version);
+        let mut review = criterion("review", "human");
+        let mut build = criterion("build", "mechanical");
+        let mut acceptance = p.acceptance.payload;
+        if let Some(quorum) = quorum {
+            for c in [&mut review, &mut build] {
+                *c = edit(
+                    &edit(c, "origin", json::s("invariant")),
+                    "max_waiver_seconds",
+                    Value::Int(0),
+                );
+            }
+            review = edit(&review, "quorum", Value::Null);
+            build = edit(&build, "quorum", quorum);
+            acceptance = edit(&acceptance, "version", json::s("writ-acceptance-policy/3"));
+        }
+        p.acceptance = signer.sign_policy(
+            Purpose::Acceptance,
+            edit(&acceptance, "criteria", Value::Arr(vec![review, build])),
+        );
+        p
+    };
+    let member = |id, group| {
+        json::obj([
+            ("evaluator_id", json::s(id)),
+            ("independence_group", json::s(group)),
+        ])
+    };
+    let eligible = |members| json::obj([("eligible", Value::Arr(members))]);
+    let legacy = pair(1, None);
+    publish(&registry, &authority, &legacy, 0, 1, "pre-quorum");
+    let v3 = pair(
+        2,
+        Some(eligible(vec![member("first", "a"), member("second", "b")])),
+    );
+    publish(&registry, &authority, &v3, 1, 2, "quorum-enabled");
+    registry
+        .with_selection(|selection| {
+            assert_eq!(
+                writ_broker::quorum_policy::QuorumPolicyGuard::current(
+                    &selection,
+                    scope().tenant(),
+                    scope().project(),
+                    now()
+                )
+                .unwrap()
+                .quorums["build"]["second"],
+                "b"
+            );
+            Ok(())
+        })
+        .unwrap();
+    let before = registry.audit().unwrap();
+    for (n, target) in [
+        pair(3, None),
+        pair(3, Some(Value::Null)),
+        pair(
+            3,
+            Some(eligible(vec![member("first", "a"), member("first", "b")])),
+        ),
+        pair(
+            3,
+            Some(eligible(vec![member("first", "a"), member("second", "a")])),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let change = intent(Operation::Publish, 2, 3, &target);
+        let approved = authority.authorize(&change, &format!("downgrade-{n}"));
+        assert_eq!(
+            registry.publish(&change, &target, &approved),
+            Err(Error::InvalidPolicy)
+        );
+    }
+    let rollback = intent(Operation::Rollback, 2, 1, &legacy);
+    let approved = authority.authorize(&rollback, "historical-quorum-downgrade");
+    assert_eq!(
+        registry.change(&rollback, None, &approved),
+        Err(Error::InvalidPolicy)
+    );
+    assert_eq!(selected(&registry), (2, 2));
+    assert_eq!(registry.audit().unwrap(), before);
+}

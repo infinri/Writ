@@ -6,16 +6,19 @@ use writ_kernel::{
     policy::{self, LoadedBundle},
 };
 
-use writ_broker::waiver::WAIVER_MAX_SECONDS;
+use writ_broker::{quorum_policy::QuorumRequirements, waiver::WAIVER_MAX_SECONDS};
 
-use crate::{signature::ACCEPTANCE_V2, wire, Error, Operation, Publication, Scope};
+use crate::{
+    signature::{ACCEPTANCE_V2, ACCEPTANCE_V3},
+    wire, Error, Operation, Publication, Scope,
+};
 
 const ACCEPTANCE_ID: &str = "m6-acceptance";
 const ACTION: &str = "synthetic.inspect";
 
 pub(crate) struct Policies {
     pub(crate) authorization: LoadedBundle,
-    pub(crate) acceptance: AcceptanceRequirements,
+    pub(crate) acceptance: QuorumRequirements,
     pub(crate) waivers: BTreeMap<String, u32>,
 }
 
@@ -91,8 +94,16 @@ pub(crate) fn preserve_required_criteria(
         return Ok(());
     };
     let (required, _) = acceptance(&publication.acceptance.payload, version)?;
-    let mut candidate = candidate.acceptance.criteria.iter();
     if required
+        .quorums
+        .iter()
+        .any(|(id, eligible)| candidate.acceptance.quorums.get(id) != Some(eligible))
+    {
+        return Err(Error::InvalidPolicy);
+    }
+    let mut candidate = candidate.acceptance.acceptance.criteria.iter();
+    if required
+        .acceptance
         .criteria
         .iter()
         .all(|required| candidate.any(|criterion| criterion == required))
@@ -194,7 +205,7 @@ pub(crate) fn refuse_deactivation(
 fn acceptance(
     payload: &Value,
     version: i64,
-) -> Result<(AcceptanceRequirements, BTreeMap<String, u32>), Error> {
+) -> Result<(QuorumRequirements, BTreeMap<String, u32>), Error> {
     let map = wire::exact(
         payload,
         &["version", "policy_id", "policy_version", "criteria"],
@@ -205,8 +216,66 @@ fn acceptance(
         return Err(Error::InvalidPolicy);
     }
     let mut waivers = BTreeMap::new();
+    let mut quorums = BTreeMap::new();
     let criteria = match wire::text(map, "version")? {
         "writ-acceptance-policy/1" => map["criteria"].clone(),
+        ACCEPTANCE_V3 => {
+            let declared = map["criteria"]
+                .as_arr()
+                .filter(|c| !c.is_empty() && c.len() <= 64)
+                .ok_or(Error::InvalidPolicy)?;
+            let mut projected = Vec::new();
+            for criterion in declared {
+                let rule = criterion.get("quorum").ok_or(Error::InvalidPolicy)?;
+                projected.push(project_criterion(
+                    &criterion.without("quorum"),
+                    &mut waivers,
+                )?);
+                if rule == &Value::Null {
+                    continue;
+                }
+                if !matches!(
+                    criterion.get("required_class").and_then(Value::as_str),
+                    Some("mechanical" | "evidence")
+                ) || criterion.get("max_waiver_seconds").and_then(Value::as_int) != Some(0)
+                {
+                    return Err(Error::InvalidPolicy);
+                }
+                let members = wire::exact(rule, &["eligible"])?["eligible"]
+                    .as_arr()
+                    .filter(|m| (2..=16).contains(&m.len()))
+                    .ok_or(Error::InvalidPolicy)?;
+                let mut eligible = BTreeMap::new();
+                for member in members {
+                    let fields = wire::exact(member, &["evaluator_id", "independence_group"])?;
+                    let id = wire::text(fields, "evaluator_id")?;
+                    let group = wire::text(fields, "independence_group")?;
+                    if !writ_kernel::ids::is_name(id)
+                        || !writ_kernel::ids::is_name(group)
+                        || eligible.insert(id.to_owned(), group.to_owned()).is_some()
+                    {
+                        return Err(Error::InvalidPolicy);
+                    }
+                }
+                if eligible
+                    .values()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    < 2
+                {
+                    return Err(Error::InvalidPolicy);
+                }
+                let id = criterion
+                    .get("criterion_id")
+                    .and_then(Value::as_str)
+                    .ok_or(Error::InvalidPolicy)?;
+                quorums.insert(id.to_owned(), eligible);
+            }
+            if quorums.len() > 16 {
+                return Err(Error::InvalidPolicy);
+            }
+            Value::Arr(projected)
+        }
         ACCEPTANCE_V2 => {
             let declared = map["criteria"].as_arr().ok_or(Error::InvalidPolicy)?;
             let projected = declared
@@ -230,7 +299,13 @@ fn acceptance(
     }) {
         return Err(Error::InvalidPolicy);
     }
-    Ok((requirements, waivers))
+    Ok((
+        QuorumRequirements {
+            acceptance: requirements,
+            quorums,
+        },
+        waivers,
+    ))
 }
 
 fn project_criterion(

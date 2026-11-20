@@ -67,7 +67,8 @@
           "enum": [
             "writ-authorization-bundle/2.0",
             "writ-acceptance-policy/1",
-            "writ-acceptance-policy/2"
+            "writ-acceptance-policy/2",
+            "writ-acceptance-policy/3"
           ]
         },
         "not_before": {
@@ -111,7 +112,8 @@
               "payload_format": {
                 "enum": [
                   "writ-acceptance-policy/1",
-                  "writ-acceptance-policy/2"
+                  "writ-acceptance-policy/2",
+                  "writ-acceptance-policy/3"
                 ]
               }
             }

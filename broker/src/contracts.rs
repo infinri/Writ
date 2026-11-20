@@ -55,6 +55,8 @@ pub enum Contract {
     RegistryEntry,
     /// `runner-attestation/1`.
     RunnerAttestation,
+    /// Attempt-bound evaluator evidence.
+    QuorumAttestation,
     /// `evaluation-record-scope/1`.
     EvaluationRecordScope,
 }
@@ -65,6 +67,7 @@ impl Contract {
         match self {
             Contract::RegistryEntry => "evaluator-registry-entry/1",
             Contract::RunnerAttestation => "runner-attestation/1",
+            Contract::QuorumAttestation => "runner-attestation/2",
             Contract::EvaluationRecordScope => "evaluation-record-scope/1",
         }
     }
@@ -671,7 +674,57 @@ impl RunnerAttestation {
         let c = Checker {
             contract: Contract::RunnerAttestation,
         };
-        let m = c.object(value, "", RUNNER_ATTESTATION)?;
+        Self::validate_fields(value, now, &c, RUNNER_ATTESTATION)
+    }
+
+    /// Validate the attempt-bound contribution, with a command pair only when
+    /// supplied by its evaluator registration. The broker checks that binding.
+    pub fn validate_quorum(
+        value: &Value,
+        now: Timestamp,
+    ) -> Result<RunnerAttestation, ContractError> {
+        let c = Checker {
+            contract: Contract::QuorumAttestation,
+        };
+        let mut fields = RUNNER_ATTESTATION.to_vec();
+        for field in &mut fields {
+            match field.name {
+                "contract_version" => field.kind = Kind::Const("runner-attestation/2"),
+                "command_id" | "command_digest" => field.required = false,
+                _ => (),
+            }
+        }
+        fields.extend([
+            req("attempt_id", Kind::Id),
+            req("verdict", Kind::Enum(&["pass", "fail", "abstain"])),
+        ]);
+        if value.get("command_id").is_some() != value.get("command_digest").is_some() {
+            return Err(c.fail("command_id", Rule::MissingMember));
+        }
+        if value.get("verdict").and_then(Value::as_str) == Some("pass")
+            && value.get("exit_status").and_then(Value::as_int) != Some(0)
+        {
+            return Err(c.fail("exit_status", Rule::OutOfRange));
+        }
+        for field in ["input_digests", "evidence_digests"] {
+            if value
+                .get(field)
+                .and_then(Value::as_arr)
+                .is_some_and(|a| a.len() > 64)
+            {
+                return Err(c.fail(field, Rule::OutOfRange));
+            }
+        }
+        Self::validate_fields(value, now, &c, &fields)
+    }
+
+    fn validate_fields(
+        value: &Value,
+        now: Timestamp,
+        c: &Checker,
+        fields: &[Field],
+    ) -> Result<RunnerAttestation, ContractError> {
+        let m = c.object(value, "", fields)?;
         c.target_binding(m)?;
         c.not_after(m, "started_at", "finished_at", Rule::StartedAfterFinished)?;
         c.not_after(

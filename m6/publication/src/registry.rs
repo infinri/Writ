@@ -96,7 +96,7 @@ impl Selection<'_> {
 
     /// The requirements derived from the verified acceptance payload.
     pub fn acceptance(&self) -> &AcceptanceRequirements {
-        &self.policies.acceptance
+        &self.policies.acceptance.acceptance
     }
 
     /// Recheck the selected signatures and validity at the current trusted time.
@@ -107,6 +107,28 @@ impl Selection<'_> {
     /// Trusted time sampled at selection load.
     pub fn checked_at(&self) -> Timestamp {
         self.checked_at
+    }
+}
+
+impl writ_broker::quorum_policy::QuorumPolicyGuard for Selection<'_> {
+    fn current(
+        &self,
+        tenant: &str,
+        project: &str,
+        at: Timestamp,
+    ) -> Result<&writ_broker::quorum_policy::QuorumRequirements, Refusal> {
+        if (tenant, project) != (self.scope.tenant(), self.scope.project()) {
+            return Err(Refusal::AcceptancePolicyUnavailable);
+        }
+        let (now, expires) = signed_window(self.publication, self.scope, self.trust)
+            .map_err(|_| Refusal::AcceptancePolicyUnavailable)?;
+        if now < self.checked_at || at < self.checked_at {
+            return Err(Refusal::TimeUnavailable);
+        }
+        if at >= expires {
+            return Err(Refusal::AcceptancePolicyUnavailable);
+        }
+        Ok(&self.policies.acceptance)
     }
 }
 
@@ -137,8 +159,7 @@ impl WaiverPolicyGuard for Selection<'_> {
                 project_id: self.scope.project().to_owned(),
                 authorization_digest: self.policies.authorization.sha.to_string(),
                 acceptance_digest: self
-                    .policies
-                    .acceptance
+                    .acceptance()
                     .policy
                     .acceptance_policy_bundle_sha
                     .clone(),
@@ -149,7 +170,7 @@ impl WaiverPolicyGuard for Selection<'_> {
             publishers,
             checked_at,
             expires_at,
-            self.policies.acceptance.clone(),
+            self.acceptance().clone(),
         )
     }
 }

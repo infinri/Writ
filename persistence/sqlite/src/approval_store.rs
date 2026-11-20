@@ -3183,6 +3183,13 @@ impl BootstrapSession {
         Self::from_owned_ledger(SqliteLedger::open_waiver_lab(path)?)
     }
 
+    /// Open a disposable quorum ledger for its separately mandatory human enrollment.
+    pub fn open_quorum_lab(
+        path: &std::path::Path,
+    ) -> Result<Result<BootstrapSession, Refusal>, StoreError> {
+        Self::from_owned_ledger(SqliteLedger::open_quorum_lab(path)?)
+    }
+
     fn from_owned_ledger(ledger: SqliteLedger) -> Result<Result<Self, Refusal>, StoreError> {
         let used = {
             let inner = ledger.lock("read")?;

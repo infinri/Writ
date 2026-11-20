@@ -206,6 +206,14 @@ pub const SCHEMA: &str = concat!(
 /// The schema version this crate writes and accepts.
 pub const SCHEMA_VERSION: &str = "writ-ledger-6";
 const EVALUATOR_LAB_SCHEMA_VERSION: &str = "writ-ledger-6-evaluator-lab";
+const QUORUM_SCHEMA_VERSION: &str = "writ-ledger-quorum-lab/1";
+const QUORUM_SCHEMA: &str = concat!(
+    include_str!("schema.sql"),
+    include_str!("schema_v4.sql"),
+    include_str!("schema_v5.sql"),
+    include_str!("schema_v6.sql"),
+    include_str!("schema_quorum.sql")
+);
 const WAIVER_SCHEMA_VERSION: &str = "writ-ledger-waiver-lab/1";
 
 fn waiver_schema() -> Result<String, StoreError> {
@@ -280,6 +288,7 @@ pub struct SqliteLedger {
     epoch: u64,
     id: LedgerId,
     waiver_lab: bool,
+    quorum_lab: bool,
     /// The approval channel configured once for approval service (M1); none: every
     /// ceremony and registration is refused.
     channel: std::sync::OnceLock<writ_broker::human::ApprovalChannel>,
@@ -581,7 +590,7 @@ fn bump_epoch(conn: &mut Connection) -> Result<u64, StoreError> {
 fn finish(
     mut conn: Connection,
     lock: OwnerLock,
-    waiver_lab: bool,
+    version: &str,
 ) -> Result<SqliteLedger, StoreError> {
     conn.execute_batch("PRAGMA synchronous = FULL;")
         .map_err(|e| unavailable("initialize", code_name(&e)))?;
@@ -599,7 +608,8 @@ fn finish(
         }),
         epoch,
         id,
-        waiver_lab,
+        waiver_lab: version == WAIVER_SCHEMA_VERSION,
+        quorum_lab: version == QUORUM_SCHEMA_VERSION,
         channel: std::sync::OnceLock::new(),
         _lock: Some(lock),
     })
@@ -693,17 +703,31 @@ impl SqliteLedger {
     /// `-shm` file this call created are removed (S-2); the `.owner` lock file may
     /// remain (empty, harmless).
     pub fn create(path: &Path) -> Result<SqliteLedger, StoreError> {
-        Self::create_with_schema(path, SCHEMA, SCHEMA_VERSION, false)
+        Self::create_with_schema(path, SCHEMA, SCHEMA_VERSION)
     }
 
     /// Create an evaluator fixture ledger that ordinary ownership entry points refuse.
     pub fn create_evaluator_lab(path: &Path) -> Result<SqliteLedger, StoreError> {
-        Self::create_with_schema(path, SCHEMA, EVALUATOR_LAB_SCHEMA_VERSION, false)
+        Self::create_with_schema(path, SCHEMA, EVALUATOR_LAB_SCHEMA_VERSION)
     }
 
     /// Create a new disposable D-053 waiver ledger using its distinct schema.
     pub fn create_waiver_lab(path: &Path) -> Result<SqliteLedger, StoreError> {
-        Self::create_with_schema(path, &waiver_schema()?, WAIVER_SCHEMA_VERSION, true)
+        Self::create_with_schema(path, &waiver_schema()?, WAIVER_SCHEMA_VERSION)
+    }
+
+    /// Create a disposable quorum ledger. Production and older lab profiles retain their schemas.
+    pub fn create_quorum_lab(path: &Path) -> Result<Self, StoreError> {
+        Self::create_with_schema(path, QUORUM_SCHEMA, QUORUM_SCHEMA_VERSION)
+    }
+
+    /// Reopen the exact quorum profile after verifying its schema and identity.
+    pub fn open_quorum_lab(path: &Path) -> Result<Self, StoreError> {
+        Self::open_with_schema(path, QUORUM_SCHEMA, QUORUM_SCHEMA_VERSION)
+    }
+
+    pub(crate) fn quorum_lab_enabled(&self) -> bool {
+        self.quorum_lab
     }
 
     pub(crate) fn waiver_lab_enabled(&self) -> bool {
@@ -714,7 +738,6 @@ impl SqliteLedger {
         path: &Path,
         schema: &str,
         version: &str,
-        waiver_lab: bool,
     ) -> Result<SqliteLedger, StoreError> {
         let canonical = new_identity(path)?;
         let lock = take_ownership(&canonical)?;
@@ -762,7 +785,7 @@ impl SqliteLedger {
             }
             Ok(conn)
         })();
-        match result.and_then(|conn| finish(conn, lock, waiver_lab)) {
+        match result.and_then(|conn| finish(conn, lock, version)) {
             Ok(ledger) => Ok(ledger),
             Err(e) => {
                 let _ = fs::remove_file(&canonical);
@@ -784,30 +807,29 @@ impl SqliteLedger {
     /// the epoch increment cannot occur in this implementation; epochs are monotonic and
     /// gaps from failed starts are harmless.
     pub fn open(path: &Path) -> Result<SqliteLedger, StoreError> {
-        Self::open_with_schema(path, SCHEMA, SCHEMA_VERSION, false)
+        Self::open_with_schema(path, SCHEMA, SCHEMA_VERSION)
     }
 
     /// Open an explicitly provisioned evaluator fixture ledger.
     pub fn open_evaluator_lab(path: &Path) -> Result<SqliteLedger, StoreError> {
-        Self::open_with_schema(path, SCHEMA, EVALUATOR_LAB_SCHEMA_VERSION, false)
+        Self::open_with_schema(path, SCHEMA, EVALUATOR_LAB_SCHEMA_VERSION)
     }
 
     /// Reopen an explicitly provisioned D-053 disposable ledger.
     pub fn open_waiver_lab(path: &Path) -> Result<SqliteLedger, StoreError> {
-        Self::open_with_schema(path, &waiver_schema()?, WAIVER_SCHEMA_VERSION, true)
+        Self::open_with_schema(path, &waiver_schema()?, WAIVER_SCHEMA_VERSION)
     }
 
     fn open_with_schema(
         path: &Path,
         schema: &str,
         version: &str,
-        waiver_lab: bool,
     ) -> Result<SqliteLedger, StoreError> {
         let canonical = existing_identity(path)?;
         let lock = take_ownership(&canonical)?;
         let conn = connect(&canonical, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         verify(&conn, schema, version)?;
-        finish(conn, lock, waiver_lab)
+        finish(conn, lock, version)
     }
 
     /// Configure the approval channel this owned ledger serves (verifier, RP id, origin
@@ -896,7 +918,7 @@ impl SqliteLedger {
         .map_err(sql)?;
         tx.commit().map_err(sql)?;
         verify(&conn, SCHEMA, SCHEMA_VERSION)?;
-        finish(conn, lock, false)
+        finish(conn, lock, SCHEMA_VERSION)
     }
 
     /// This ledger's identity (bind its effect store to it).

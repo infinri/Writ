@@ -112,6 +112,8 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
+mod quorum;
+use quorum::{quorum_passes, QuorumVote};
 use writ_kernel::acceptance::{check, AcceptanceRefusal};
 use writ_kernel::contracts::{
     AcceptanceRecord, AcceptanceRequirements, CriterionClass, CurrentState, EvaluatorTrust,
@@ -135,6 +137,8 @@ use crate::mac;
 pub const RECORD_CONTRACT: &str = "authenticated-acceptance-record/1";
 /// `contract_version` of the amended record with signoff references (M4).
 pub const RECORD_CONTRACT_V2: &str = "authenticated-acceptance-record/2";
+/// Complete, attempt-bound evaluator contributions.
+pub const RECORD_CONTRACT_V3: &str = "authenticated-acceptance-record/3";
 /// `purpose` of an authenticated acceptance record (domain separation; the
 /// same for `/1` and `/2`, whose contract version is authenticated).
 pub const RECORD_PURPOSE: &str = "writ.acceptance-record.v1";
@@ -307,6 +311,8 @@ pub enum RecordVersion {
     V1,
     /// `authenticated-acceptance-record/2`: `signoff_id` exactly for trust `H`.
     V2,
+    /// Authenticated complete attempt and constituent evidence identities.
+    V3,
 }
 
 /// A record whose envelope, MAC, projection and bindings verified. Only
@@ -316,9 +322,19 @@ pub struct VerifiedRecord {
     record: AcceptanceRecord,
     evaluations: Vec<EvaluationBinding>,
     version: RecordVersion,
+    envelope_digest: Option<json::Digest>,
+    attempt: Option<String>,
+    contributions: Vec<Contribution>,
     issuer: String,
     key_id: String,
     key_digest: MaterialDigest,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Contribution {
+    criterion: String,
+    evaluator: String,
+    attestation: String,
 }
 
 impl VerifiedRecord {
@@ -351,6 +367,31 @@ impl VerifiedRecord {
             .collect()
     }
 
+    /// Digest of the full authenticated quorum envelope.
+    pub fn envelope_digest(&self) -> Option<&json::Digest> {
+        self.envelope_digest.as_ref()
+    }
+
+    /// The attempt whose exact evidence set the trusted source must attest.
+    pub fn attempt_id(&self) -> Option<&str> {
+        self.attempt.as_deref()
+    }
+
+    /// Complete set of contribution identities named in the authenticated attempt.
+    pub fn contribution_ids(&self) -> Vec<&str> {
+        self.contributions
+            .iter()
+            .map(|c| c.attestation.as_str())
+            .collect()
+    }
+
+    /// Contributors whose published signing keys must remain current.
+    pub fn contribution_bindings(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.contributions
+            .iter()
+            .map(|c| (c.evaluator.as_str(), c.attestation.as_str()))
+    }
+
     /// The authenticated issuer.
     pub fn issuer(&self) -> &str {
         &self.issuer
@@ -372,6 +413,8 @@ impl VerifiedRecord {
         self.evaluations
             .iter()
             .filter_map(|e| e.attestation_id.as_deref())
+            .filter(|id| !self.contributions.iter().any(|c| c.attestation == *id))
+            .chain(self.contribution_ids())
             .collect()
     }
 }
@@ -411,12 +454,65 @@ pub fn verify_record(
     keys: &dyn AcceptanceKeyRing,
 ) -> Result<VerifiedRecord, AcceptanceCode> {
     use AcceptanceCode::*;
-    let m = closed(doc, &ENVELOPE).ok_or(RecordMalformed)?;
+    let is_v3 = doc.get("contract_version").and_then(Value::as_str) == Some(RECORD_CONTRACT_V3);
+    if is_v3 && !within_quorum_budget(doc, &mut (256 * 1024), 0) {
+        return Err(RecordMalformed);
+    }
+    let m = if is_v3 {
+        let keys: Vec<_> = ENVELOPE
+            .into_iter()
+            .chain(["attempt_id", "contributions"])
+            .collect();
+        closed(doc, &keys)
+    } else {
+        closed(doc, &ENVELOPE)
+    }
+    .ok_or(RecordMalformed)?;
     let constant = |k: &str, want: &str| m.get(k).and_then(Value::as_str) == Some(want);
     let version = match m.get("contract_version").and_then(Value::as_str) {
         Some(RECORD_CONTRACT) => RecordVersion::V1,
         Some(RECORD_CONTRACT_V2) => RecordVersion::V2,
+        Some(RECORD_CONTRACT_V3) => RecordVersion::V3,
         _ => return Err(RecordMalformed),
+    };
+    let (attempt, contributions) = if is_v3 {
+        let attempt = text(m, "attempt_id", is_id).ok_or(RecordMalformed)?;
+        let items = m["contributions"]
+            .as_arr()
+            .filter(|c| (1..=256).contains(&c.len()))
+            .ok_or(RecordMalformed)?;
+        if m["evaluations"].as_arr().is_none_or(|c| c.len() > 64)
+            || m["record"]
+                .get("criteria")
+                .and_then(Value::as_arr)
+                .is_none_or(|c| c.len() > 64)
+        {
+            return Err(RecordMalformed);
+        }
+        let mut ids = BTreeSet::new();
+        let mut previous = None;
+        let mut contributions = Vec::new();
+        for item in items {
+            let fields = closed(item, &["criterion_id", "evaluator_id", "attestation_id"])
+                .ok_or(RecordMalformed)?;
+            let criterion = text(fields, "criterion_id", is_name).ok_or(RecordMalformed)?;
+            let evaluator = text(fields, "evaluator_id", is_name).ok_or(RecordMalformed)?;
+            let attestation = text(fields, "attestation_id", is_id).ok_or(RecordMalformed)?;
+            if previous.is_some_and(|last| last >= (criterion, evaluator))
+                || !ids.insert(attestation)
+            {
+                return Err(RecordMalformed);
+            }
+            previous = Some((criterion, evaluator));
+            contributions.push(Contribution {
+                criterion: criterion.into(),
+                evaluator: evaluator.into(),
+                attestation: attestation.into(),
+            });
+        }
+        (Some(attempt.into()), contributions)
+    } else {
+        (None, Vec::new())
     };
     if !constant("purpose", RECORD_PURPOSE) {
         return Err(RecordMalformed);
@@ -458,6 +554,12 @@ pub fn verify_record(
         record,
         evaluations,
         version,
+        envelope_digest: is_v3
+            .then(|| json::digest(doc))
+            .transpose()
+            .map_err(|_| RecordMalformed)?,
+        attempt,
+        contributions,
         issuer: issuer.to_string(),
         key_id: key_id.to_string(),
         key_digest,
@@ -480,7 +582,7 @@ fn evaluations(
     for item in items {
         let e = match version {
             RecordVersion::V1 => closed(item, &EVALUATION)?,
-            RecordVersion::V2 => closed(item, &EVALUATION_V2)?,
+            RecordVersion::V2 | RecordVersion::V3 => closed(item, &EVALUATION_V2)?,
         };
         let criterion_id = text(e, "criterion_id", is_name)?;
         let criterion = record
@@ -503,13 +605,19 @@ fn evaluations(
             return None;
         }
         let signoff_id = match (version, e.get("signoff_id")) {
-            (RecordVersion::V1, None) | (RecordVersion::V2, Some(Value::Null)) => None,
-            (RecordVersion::V2, Some(Value::Str(s))) if is_id(s) => Some(s.clone()),
+            (RecordVersion::V1, None)
+            | (RecordVersion::V2 | RecordVersion::V3, Some(Value::Null)) => None,
+            (RecordVersion::V2 | RecordVersion::V3, Some(Value::Str(s))) if is_id(s) => {
+                Some(s.clone())
+            }
             _ => return None,
         };
-        if version == RecordVersion::V2
+        if version != RecordVersion::V1
             && signoff_id.is_some() != (criterion.evaluator_trust == EvaluatorTrust::Human)
         {
+            return None;
+        }
+        if version == RecordVersion::V3 && e.get("evidence_digests")?.as_arr()?.len() > 64 {
             return None;
         }
         let evidence_digests = e
@@ -573,6 +681,39 @@ impl VerifiedAttestation {
     }
 }
 
+/// Bound decoded work before copying, canonicalizing, or authenticating new contracts.
+fn within_quorum_budget(value: &Value, budget: &mut usize, depth: usize) -> bool {
+    if depth > 12 {
+        return false;
+    }
+    let cost = match value {
+        Value::Str(s) => s.len().saturating_add(1),
+        _ => 1,
+    };
+    let Some(left) = budget.checked_sub(cost) else {
+        return false;
+    };
+    *budget = left;
+    match value {
+        Value::Obj(m) => m.iter().all(|(key, value)| {
+            let Some(left) = budget.checked_sub(key.len()) else {
+                return false;
+            };
+            *budget = left;
+            within_quorum_budget(value, budget, depth + 1)
+        }),
+        Value::Arr(items) => items
+            .iter()
+            .all(|value| within_quorum_budget(value, budget, depth + 1)),
+        _ => true,
+    }
+}
+
+/// Bound work before verifying any attestation referenced by a quorum record.
+pub(crate) fn bounded_quorum_attestation(doc: &Value) -> bool {
+    within_quorum_budget(doc, &mut (32 * 1024), 0)
+}
+
 /// Verify a runner attestation: semantic validation at trusted time `now`,
 /// key lookup, MAC over the canonical document without `auth.mac`.
 pub fn verify_attestation(
@@ -581,7 +722,14 @@ pub fn verify_attestation(
     now: Timestamp,
 ) -> Result<VerifiedAttestation, AcceptanceCode> {
     use AcceptanceCode::*;
-    RunnerAttestation::validate(doc, now).map_err(|_| AttestationMalformed)?;
+    if doc.get("contract_version").and_then(Value::as_str) == Some("runner-attestation/2") {
+        if !bounded_quorum_attestation(doc) {
+            return Err(AttestationMalformed);
+        }
+        RunnerAttestation::validate_quorum(doc, now).map_err(|_| AttestationMalformed)?;
+    } else {
+        RunnerAttestation::validate(doc, now).map_err(|_| AttestationMalformed)?;
+    }
     let auth = doc
         .get("auth")
         .and_then(Value::as_obj)
@@ -709,8 +857,25 @@ pub fn check_use(
     verified: &VerifiedRecord,
     ctx: &UseContext<'_>,
 ) -> Result<Consumption, AcceptanceCode> {
+    check_use_with_quorum(verified, ctx, &std::collections::BTreeMap::new())
+}
+
+/// Verify a protected record against the quorum rules held by the active signed selection.
+pub fn check_use_with_quorum(
+    verified: &VerifiedRecord,
+    ctx: &UseContext<'_>,
+    quorums: &std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+) -> Result<Consumption, AcceptanceCode> {
     use AcceptanceCode::*;
     let record = &verified.record;
+    if (verified.version == RecordVersion::V3) == quorums.is_empty()
+        || verified
+            .contributions
+            .iter()
+            .any(|c| !quorums.contains_key(&c.criterion))
+    {
+        return Err(Kernel(AcceptanceRefusal::Incomplete));
+    }
     check(record, ctx.current, ctx.requirements).map_err(Kernel)?;
     if verified.version == RecordVersion::V1
         && ctx
@@ -765,6 +930,17 @@ pub fn check_use(
         if !matches {
             return Err(EvaluatorBindingMismatch);
         }
+        if let Some(eligible) = quorums.get(&required.criterion_id) {
+            check_contributors(
+                verified,
+                ctx,
+                binding,
+                required.required_class,
+                eligible,
+                &mut consume,
+            )?;
+            continue;
+        }
         if required.required_class == CriterionClass::Human {
             let id = binding.signoff_id.as_deref().ok_or(HumanUnavailable)?;
             check_signoff(id, verified, &required.criterion_id, ctx, &signoffs).map_err(Signoff)?;
@@ -780,52 +956,11 @@ pub fn check_use(
             .iter()
             .find(|a| a.attestation_id() == id)
             .ok_or(AttestationUnknown)?;
-        let target = format!(
-            "workflow:{}/{}/{}",
-            record.tenant_id, record.project_id, record.workflow_id
-        );
-        let transition = att.as_value().get("transition");
+        if att.str("contract_version") != Some("runner-attestation/1") {
+            return Err(AttestationBindingMismatch);
+        }
+        let bound = attestation_bound(record, att, binding, &entry);
         let s = |k: &str| att.str(k);
-        let bound = s("tenant_id") == Some(&record.tenant_id)
-            && s("project_id") == Some(&record.project_id)
-            && s("task_id") == Some(&record.task_id)
-            && s("workflow_id") == Some(&record.workflow_id)
-            && transition
-                .and_then(|t| t.get("from_state"))
-                .and_then(Value::as_str)
-                == Some(&record.transition.from_state)
-            && transition
-                .and_then(|t| t.get("to_state"))
-                .and_then(Value::as_str)
-                == Some(&record.transition.to_state)
-            && s("artifact_snapshot_id") == Some(&record.artifact_snapshot_id)
-            && s("artifact_digest") == Some(&record.artifact_digest)
-            && s("canonical_target") == Some(&target)
-            && s("acceptance_policy_id") == Some(&record.policy.acceptance_policy_id)
-            && s("acceptance_policy_version") == Some(&record.policy.acceptance_policy_version)
-            && s("acceptance_policy_bundle_sha")
-                == Some(&record.policy.acceptance_policy_bundle_sha)
-            && att.as_value().get("state_revision").and_then(Value::as_int)
-                == Some(record.state_revision.get())
-            && s("acceptance_record_id") == Some(&record.acceptance_record_id)
-            && s("criterion_id") == Some(&required.criterion_id)
-            && s("evaluator_id") == Some(&binding.evaluator_id)
-            && s("evaluator_version") == Some(&binding.evaluator_version)
-            && s("implementation_digest") == Some(&binding.implementation_digest)
-            && s("environment_digest") == Some(&binding.environment_digest)
-            && att
-                .as_value()
-                .get("registry_revision")
-                .and_then(Value::as_int)
-                == Some(binding.registry_revision)
-            && s("command_id") == entry_str(&entry, &["command", "command_id"])
-            && s("command_digest") == entry_str(&entry, &["command", "command_digest"])
-            && att
-                .as_value()
-                .get("auth")
-                .and_then(|a| a.get("key_id"))
-                .and_then(Value::as_str)
-                == entry_str(&entry, &["attestation", "key_id"]);
         if !bound {
             return Err(AttestationBindingMismatch);
         }
@@ -845,6 +980,182 @@ pub fn check_use(
         attestation_ids: consume,
         signoff_ids: signoffs,
     })
+}
+
+fn check_contributors(
+    verified: &VerifiedRecord,
+    ctx: &UseContext<'_>,
+    representative: &EvaluationBinding,
+    class: CriterionClass,
+    eligible: &std::collections::BTreeMap<String, String>,
+    consumed: &mut Vec<String>,
+) -> Result<(), AcceptanceCode> {
+    use AcceptanceCode::*;
+    if !matches!(class, CriterionClass::Mechanical | CriterionClass::Evidence) {
+        return Err(EvaluatorBindingMismatch);
+    }
+    let mut votes = Vec::new();
+    let mut representative_passed = false;
+    for contribution in verified
+        .contributions
+        .iter()
+        .filter(|c| c.criterion == representative.criterion_id)
+    {
+        let id = &contribution.attestation;
+        let evaluator = &contribution.evaluator;
+        if !eligible.contains_key(evaluator)
+            || ctx.current.revoked_evaluator_ids.contains(evaluator)
+        {
+            return Err(EvaluatorBindingMismatch);
+        }
+        let entry = (ctx.registry)(evaluator).ok_or(EvaluatorUnregistered)?;
+        if entry_str(&entry, &["status"]) != Some("active") {
+            return Err(EvaluatorRevoked);
+        }
+        if entry_str(&entry, &["evaluator_id"]) != Some(evaluator)
+            || entry_str(&entry, &["class"]) != Some(class_label(class))
+            || entry_str(&entry, &["trust"]) != class.required_trust().map(trust_label)
+            || entry_str(&entry, &["scope", "tenant_id"]) != Some(&verified.record.tenant_id)
+            || entry_str(&entry, &["scope", "project_id"]) != Some(&verified.record.project_id)
+            || !entry
+                .as_value()
+                .get("criteria")
+                .and_then(Value::as_arr)
+                .is_some_and(|criteria| {
+                    criteria
+                        .iter()
+                        .any(|c| c.as_str() == Some(&contribution.criterion))
+                })
+        {
+            return Err(EvaluatorBindingMismatch);
+        }
+        let mut matching = ctx.attestations.iter().filter(|a| a.attestation_id() == id);
+        let att = matching.next().ok_or(AttestationUnknown)?;
+        if matching.next().is_some()
+            || att.str("contract_version") != Some("runner-attestation/2")
+            || att.str("attempt_id") != verified.attempt_id()
+        {
+            return Err(AttestationBindingMismatch);
+        }
+        let binding = EvaluationBinding {
+            criterion_id: contribution.criterion.clone(),
+            evaluation_id: id.clone(),
+            evaluator_id: evaluator.clone(),
+            evaluator_version: entry_str(&entry, &["evaluator_version"])
+                .ok_or(EvaluatorBindingMismatch)?
+                .into(),
+            implementation_digest: entry_str(&entry, &["implementation_digest"])
+                .ok_or(EvaluatorBindingMismatch)?
+                .into(),
+            environment_digest: entry_str(&entry, &["environment_digest"])
+                .ok_or(EvaluatorBindingMismatch)?
+                .into(),
+            registry_revision: entry
+                .as_value()
+                .get("registry_revision")
+                .and_then(Value::as_int)
+                .ok_or(EvaluatorBindingMismatch)?,
+            attestation_id: Some(id.clone()),
+            evidence_digests: Vec::new(),
+            signoff_id: None,
+        };
+        if !attestation_bound(&verified.record, att, &binding, &entry) {
+            return Err(AttestationBindingMismatch);
+        }
+        if !att
+            .str("fresh_until")
+            .and_then(Timestamp::parse_strict)
+            .is_some_and(|f| ctx.current.now < f)
+        {
+            return Err(AttestationStale);
+        }
+        if ctx.consumed_attestations.contains(id) || consumed.contains(id) {
+            return Err(AttestationReplayed);
+        }
+        let verdict = att.str("verdict").ok_or(AttestationMalformed)?;
+        if evaluator == &representative.evaluator_id {
+            if class == CriterionClass::Mechanical
+                && representative.attestation_id.as_ref() != Some(id)
+                || att.as_value().get("evidence_digests")
+                    != Some(&Value::Arr(
+                        representative
+                            .evidence_digests
+                            .iter()
+                            .map(|d| json::s(d))
+                            .collect(),
+                    ))
+            {
+                return Err(AttestationBindingMismatch);
+            }
+            representative_passed = verdict == "pass";
+        }
+        votes.push(QuorumVote {
+            evaluator,
+            key: att.key_id(),
+            material: att.key_digest().as_str(),
+            verdict,
+        });
+        if verdict == "pass" {
+            consumed.push(id.clone());
+        }
+    }
+    if !representative_passed || !quorum_passes(eligible, &votes) {
+        return Err(Kernel(AcceptanceRefusal::Incomplete));
+    }
+    Ok(())
+}
+
+fn attestation_bound(
+    record: &AcceptanceRecord,
+    att: &VerifiedAttestation,
+    binding: &EvaluationBinding,
+    entry: &RegistryEntry,
+) -> bool {
+    let target = format!(
+        "workflow:{}/{}/{}",
+        record.tenant_id, record.project_id, record.workflow_id
+    );
+    let transition = att.as_value().get("transition");
+    let s = |k: &str| att.str(k);
+    s("tenant_id") == Some(&record.tenant_id)
+        && s("project_id") == Some(&record.project_id)
+        && s("task_id") == Some(&record.task_id)
+        && s("workflow_id") == Some(&record.workflow_id)
+        && transition
+            .and_then(|t| t.get("from_state"))
+            .and_then(Value::as_str)
+            == Some(&record.transition.from_state)
+        && transition
+            .and_then(|t| t.get("to_state"))
+            .and_then(Value::as_str)
+            == Some(&record.transition.to_state)
+        && s("artifact_snapshot_id") == Some(&record.artifact_snapshot_id)
+        && s("artifact_digest") == Some(&record.artifact_digest)
+        && s("canonical_target") == Some(&target)
+        && s("acceptance_policy_id") == Some(&record.policy.acceptance_policy_id)
+        && s("acceptance_policy_version") == Some(&record.policy.acceptance_policy_version)
+        && s("acceptance_policy_bundle_sha") == Some(&record.policy.acceptance_policy_bundle_sha)
+        && att.as_value().get("state_revision").and_then(Value::as_int)
+            == Some(record.state_revision.get())
+        && s("acceptance_record_id") == Some(&record.acceptance_record_id)
+        && s("criterion_id") == Some(&binding.criterion_id)
+        && s("evaluator_id") == Some(&binding.evaluator_id)
+        && s("evaluator_version") == Some(&binding.evaluator_version)
+        && s("implementation_digest") == Some(&binding.implementation_digest)
+        && s("environment_digest") == Some(&binding.environment_digest)
+        && att
+            .as_value()
+            .get("registry_revision")
+            .and_then(Value::as_int)
+            == Some(binding.registry_revision)
+        && s("command_id") == entry_str(entry, &["command", "command_id"])
+        && s("command_digest") == entry_str(entry, &["command", "command_digest"])
+        && att
+            .as_value()
+            .get("auth")
+            .and_then(|a| a.get("key_id"))
+            .and_then(Value::as_str)
+            == entry_str(entry, &["attestation", "key_id"])
 }
 
 /// The I-5 use-time checks of one signoff (module documentation, in order).

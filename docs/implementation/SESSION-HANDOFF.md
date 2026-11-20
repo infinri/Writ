@@ -4,6 +4,18 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 
 ## Current recovery state
 
+Read [WORK-STATE](WORK-STATE.md), [D-061](DECISION-LOG.md#d-061-high-stakes-evaluator-quorum-owner-2026-11-19), [E-108](TEST-EVIDENCE.md#e-108-d-061-disposable-evaluator-quorum) and the [M6 closure checklist](M6-CLOSURE-CHECKLIST.md). The [scenario commands](../../m6/evaluators/README.md#signed-high-stakes-quorum-under-d-061) exercise the signed acceptance selection, human signoff, evaluator publication, complete evidence, protected promotion and restart recovery.
+
+Verify the current remote branch and its exact required CI run in an isolated checkout. Use `gh run list --repo infinri/Writ --workflow v2-docs.yml --branch v2/architecture-rebuild --commit <sha>` followed by `gh run view <run-id> --repo infinri/Writ --json headSha,conclusion,jobs`. The previous checkpoint `7f3f2c00a7e6ca15fa9378038f01fe74e2eab8b9` passed all six required jobs in [run 44643223150](https://github.com/infinri/Writ/actions/runs/44643223150). Preserve the original divergent checkout at `a1eee0d40e2e331046640d98497c2fbc1b3e0d0f`, unrelated work and private material.
+
+Fresh-chat batch: implement the CC-G07 enforcement-label path and its policy lifecycle view with common isolation tests from the [existing checklist](M6-CLOSURE-CHECKLIST.md#next-unblocked-development-batch). M6, CC-M2, CC-M3 and CC-M6 remain open. The inherited authenticated management service, lifecycle UI and governed enforcement still gate their assigned milestones. Real independence review, deployed trust and M5 foundations remain outstanding.
+
+After unblocked M6 work, execute the [first guest inventory](../../m5/reference-vm/PROVISIONING.md#first-guest-inventory) on the owner-designated rollback-capable Ubuntu 24.04 VM, [full VM verification](M5A-GATE-REVIEW.md#4-verify-in-vm-checklist-all-open) and [isolated containment CI](../../m5/containment-ci/README.md) before M7. D-048 and D-049 retain their exact scopes. D-049 expires at the start of 2026-12-18 UTC. E-097's earlier stall and the independent human reviews remain open. ADR-0008 remains APPROVED IN PRINCIPLE. Release and production remain NO-GO.
+
+## Prior checkpoints
+
+### D-060 recovery checkpoint
+
 Read [WORK-STATE](WORK-STATE.md), [E-107](TEST-EVIDENCE.md#e-107-d-060-optional-policy-removal-and-ag-adv-16-2026-11-20), the [M6 closure checklist](M6-CLOSURE-CHECKLIST.md), and [D-060](DECISION-LOG.md#d-060-supported-synthetic-optional-policy-removal-owner-2026-11-19).
 
 - D-060 implementation `39fbd3fdc33d0b99c49802f016dd6295b937300d` is published on `v2/architecture-rebuild` with [required run 44642143521](https://github.com/infinri/Writ/actions/runs/44642143521). Fetch the branch in an isolated checkout. Verify the fetched checkpoint SHA with `gh run list --repo infinri/Writ --branch v2/architecture-rebuild --workflow v2-docs.yml --commit <sha> --limit 5`, then `gh run view <run-id> --repo infinri/Writ --json headSha,conclusion,jobs`. Require the exact SHA and all six successful jobs.
@@ -13,7 +25,6 @@ Read [WORK-STATE](WORK-STATE.md), [E-107](TEST-EVIDENCE.md#e-107-d-060-optional-
 - Fresh-chat action after the exact-SHA check: record the quorum decision if available, then prioritize the rollback-capable owner-designated Ubuntu 24.04 guest [first inventory](../../m5/reference-vm/PROVISIONING.md#first-guest-inventory), [full VM verification](M5A-GATE-REVIEW.md#4-verify-in-vm-checklist-all-open), and [isolated containment CI](../../m5/containment-ci/README.md) before M7. M6 governed integration depends on M5.
 - Preserve the unresolved E-097 CI stall and all M5 obligations. D-048 and D-049 keep their exact scopes. D-049 expires at the start of 2026-12-18 UTC. ADR-0008 remains APPROVED IN PRINCIPLE. Release and production remain NO-GO.
 
-## Prior checkpoints
 
 ### 2026-11-19 (M6 slice 5F checkpoint)
 

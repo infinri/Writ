@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://writ.dev/contracts/proposed/runner-attestation-2.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "acceptance_policy_bundle_sha",
+    "acceptance_policy_id",
+    "acceptance_policy_version",
+    "acceptance_record_id",
+    "artifact_digest",
+    "artifact_snapshot_id",
+    "attestation_id",
+    "auth",
+    "canonical_target",
+    "contract_version",
+    "criterion_id",
+    "environment_digest",
+    "evaluator_id",
+    "evaluator_version",
+    "evidence_digests",
+    "exit_status",
+    "finished_at",
+    "fresh_until",
+    "implementation_digest",
+    "input_digests",
+    "output_digest",
+    "project_id",
+    "purpose",
+    "registry_revision",
+    "started_at",
+    "state_revision",
+    "task_id",
+    "tenant_id",
+    "transition",
+    "workflow_id",
+    "attempt_id",
+    "verdict"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "runner-attestation/2"
+    },
+    "purpose": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/purpose"
+    },
+    "attestation_id": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/attestation_id"
+    },
+    "tenant_id": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/tenant_id"
+    },
+    "project_id": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/project_id"
+    },
+    "task_id": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/task_id"
+    },
+    "workflow_id": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/workflow_id"
+    },
+    "transition": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/transition"
+    },
+    "artifact_snapshot_id": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/artifact_snapshot_id"
+    },
+    "artifact_digest": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/artifact_digest"
+    },
+    "canonical_target": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/canonical_target"
+    },
+    "acceptance_policy_id": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/acceptance_policy_id"
+    },
+    "acceptance_policy_version": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/acceptance_policy_version"
+    },
+    "acceptance_policy_bundle_sha": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/acceptance_policy_bundle_sha"
+    },
+    "state_revision": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/state_revision"
+    },
+    "acceptance_record_id": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/acceptance_record_id"
+    },
+    "criterion_id": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/criterion_id"
+    },
+    "evaluator_id": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/evaluator_id"
+    },
+    "evaluator_version": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/evaluator_version"
+    },
+    "implementation_digest": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/implementation_digest"
+    },
+    "environment_digest": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/environment_digest"
+    },
+    "registry_revision": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/registry_revision"
+    },
+    "command_id": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/command_id"
+    },
+    "command_digest": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/command_digest"
+    },
+    "input_digests": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/input_digests",
+      "maxItems": 64
+    },
+    "evidence_digests": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/evidence_digests",
+      "maxItems": 64
+    },
+    "exit_status": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/exit_status"
+    },
+    "output_digest": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/output_digest"
+    },
+    "started_at": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/started_at"
+    },
+    "finished_at": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/finished_at"
+    },
+    "fresh_until": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/fresh_until"
+    },
+    "auth": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/auth"
+    },
+    "attempt_id": {
+      "$ref": "https://writ.dev/contracts/proposed/runner-attestation.schema.json#/properties/attestation_id"
+    },
+    "verdict": {
+      "enum": [
+        "pass",
+        "fail",
+        "abstain"
+      ]
+    }
+  },
+  "dependentRequired": {
+    "command_id": [
+      "command_digest"
+    ],
+    "command_digest": [
+      "command_id"
+    ]
+  },
+  "if": {
+    "properties": {
+      "verdict": {
+        "const": "pass"
+      }
+    }
+  },
+  "then": {
+    "properties": {
+      "exit_status": {
+        "const": 0
+      }
+    }
+  }
+}

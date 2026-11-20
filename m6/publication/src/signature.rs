@@ -11,6 +11,7 @@ use crate::{wire, Error, Scope, SignedPolicy};
 const ENVELOPE_VERSION: &str = "writ-detached-policy-signature/1";
 pub(crate) const ACCEPTANCE_V2: &str = "writ-acceptance-policy/2";
 const ALGORITHM: &str = "Ed25519";
+pub(crate) const ACCEPTANCE_V3: &str = "writ-acceptance-policy/3";
 const SIGNING_DOMAIN: &[u8] = b"writ.policy.detached-signature/1\0";
 
 /// The policy class to which a signature and verification key are bound.
@@ -57,6 +58,7 @@ impl Purpose {
             }
             Self::Acceptance => match payload.get("version").and_then(Value::as_str) {
                 Some(ACCEPTANCE_V2) => Ok(ACCEPTANCE_V2),
+                Some(ACCEPTANCE_V3) => Ok(ACCEPTANCE_V3),
                 Some(version) if version == self.payload_format() => Ok(self.payload_format()),
                 _ => Err(Error::Format),
             },
@@ -147,6 +149,7 @@ impl Protected {
         }
         let payload_format = match wire::text(map, "payload_format")? {
             ACCEPTANCE_V2 if purpose == Purpose::Acceptance => ACCEPTANCE_V2,
+            ACCEPTANCE_V3 if purpose == Purpose::Acceptance => ACCEPTANCE_V3,
             format if format == purpose.payload_format() => purpose.payload_format(),
             _ => return Err(Error::Format),
         };

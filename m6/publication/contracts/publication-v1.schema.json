@@ -58,6 +58,9 @@
             },
             {
               "$ref": "urn:writ:m6:acceptance-policy-v2"
+            },
+            {
+              "$ref": "urn:writ:m6:acceptance-policy-v3"
             }
           ]
         },
@@ -74,47 +77,92 @@
           }
         }
       },
-      "if": {
-        "properties": {
-          "payload": {
+      "allOf": [
+        {
+          "if": {
             "properties": {
-              "version": {
-                "const": "writ-acceptance-policy/2"
-              }
-            }
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "envelope": {
-            "properties": {
-              "protected": {
+              "payload": {
                 "properties": {
-                  "payload_format": {
-                    "const": "writ-acceptance-policy/2"
-                  }
-                }
-              }
-            }
-          }
-        }
-      },
-      "else": {
-        "properties": {
-          "envelope": {
-            "properties": {
-              "protected": {
-                "properties": {
-                  "payload_format": {
+                  "version": {
                     "const": "writ-acceptance-policy/1"
                   }
                 }
               }
             }
+          },
+          "then": {
+            "properties": {
+              "envelope": {
+                "properties": {
+                  "protected": {
+                    "properties": {
+                      "payload_format": {
+                        "const": "writ-acceptance-policy/1"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "payload": {
+                "properties": {
+                  "version": {
+                    "const": "writ-acceptance-policy/2"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "envelope": {
+                "properties": {
+                  "protected": {
+                    "properties": {
+                      "payload_format": {
+                        "const": "writ-acceptance-policy/2"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "payload": {
+                "properties": {
+                  "version": {
+                    "const": "writ-acceptance-policy/3"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "envelope": {
+                "properties": {
+                  "protected": {
+                    "properties": {
+                      "payload_format": {
+                        "const": "writ-acceptance-policy/3"
+                      }
+                    }
+                  }
+                }
+              }
+            }
           }
         }
-      }
+      ]
     },
     "prerequisites": {
       "oneOf": [

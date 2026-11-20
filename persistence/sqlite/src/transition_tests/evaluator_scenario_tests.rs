@@ -109,20 +109,28 @@ impl EvaluatorImplementations for FixtureDependencies {
         version: &str,
     ) -> Result<Option<EvaluatorImplementation>, SourceUnavailable> {
         Ok(((tenant, project, version) == (T, P, "1.4.0")
-            && matches!(evaluator, "ci-runner" | "doc-check" | "model-review"))
+            && matches!(
+                evaluator,
+                "ci-runner" | "ci-second" | "doc-check" | "model-review"
+            ))
         .then(|| EvaluatorImplementation {
             class: match evaluator {
-                "ci-runner" => CriterionClass::Mechanical,
+                "ci-runner" | "ci-second" => CriterionClass::Mechanical,
                 "doc-check" => CriterionClass::Evidence,
                 _ => CriterionClass::ModelAssisted,
             },
-            command: (evaluator == "ci-runner").then(|| {
+            command: matches!(evaluator, "ci-runner" | "ci-second").then(|| {
                 let command = command();
                 (command.command_id.clone(), command.digest().unwrap())
             }),
             implementation_digest: sha('1'),
             environment_digest: sha('2'),
-            attestation_key_id: "runner-key-1".into(),
+            attestation_key_id: if evaluator == "ci-second" {
+                "runner-key-2"
+            } else {
+                "runner-key-1"
+            }
+            .into(),
         }))
     }
 }
@@ -182,7 +190,11 @@ fn submit_managed(
 fn entry(id: &str, expected: i64) -> Value {
     let mut entry = registry_entry(id, expected + 1);
     entry = set(&entry, &["published_at"], json::s(&now().to_string()));
-    if id == "ci-runner" {
+    if matches!(id, "ci-runner" | "ci-second") {
+        if id == "ci-second" {
+            entry = set(&entry, &["evaluator_id"], json::s(id));
+            entry = set(&entry, &["attestation", "key_id"], json::s("runner-key-2"));
+        }
         entry = set(
             &entry,
             &["command", "command_digest"],
@@ -1081,3 +1093,5 @@ fn evaluator_managed_mutations_at_the_same_revision_commit_at_most_once() {
     assert_eq!(history.records.len(), 1);
     unchanged(&w);
 }
+
+mod quorum_tests;

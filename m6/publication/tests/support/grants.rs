@@ -118,7 +118,7 @@ fn human(name: &str) -> SubjectId {
     SubjectId::new("lab-grant-realm", name)
 }
 
-fn ceremony(
+pub(super) fn ceremony(
     mut ledger: &SqliteLedger,
     actor: &SubjectId,
     operation: &CeremonyOp,
@@ -158,13 +158,18 @@ pub fn waiver_ledger(path: &Path) -> (SqliteLedger, SubjectId) {
     enroll_fixture(path, Permission::WaiverAuthority)
 }
 
+pub fn quorum_ledger(path: &Path) -> (SqliteLedger, SubjectId) {
+    drop(SqliteLedger::create_quorum_lab(path).unwrap());
+    enroll_fixture(path, Permission::SignoffAuthority)
+}
+
 fn enroll_fixture(path: &Path, permission: Permission) -> (SqliteLedger, SubjectId) {
     let operator = human("fixture-operator");
     let ApproverRegistration {
         approver,
         credential,
         ledger,
-    } = enrollable_approver(path, &operator, permission == Permission::WaiverAuthority);
+    } = enrollable_approver(path, &operator, permission);
     let scope = scope();
     let enrolled = ceremony(
         &ledger,
@@ -203,12 +208,12 @@ struct ApproverRegistration {
 fn enrollable_approver(
     path: &Path,
     operator: &SubjectId,
-    waiver_lab: bool,
+    permission: Permission,
 ) -> ApproverRegistration {
-    let bootstrap = if waiver_lab {
-        BootstrapSession::open_waiver_lab(path)
-    } else {
-        BootstrapSession::open(path)
+    let bootstrap = match permission {
+        Permission::WaiverAuthority => BootstrapSession::open_waiver_lab(path),
+        Permission::SignoffAuthority => BootstrapSession::open_quorum_lab(path),
+        _ => BootstrapSession::open(path),
     }
     .unwrap()
     .unwrap()
@@ -237,10 +242,10 @@ fn enrollable_approver(
         .unwrap()
         .unwrap();
 
-    let ledger = if waiver_lab {
-        SqliteLedger::open_waiver_lab(path)
-    } else {
-        SqliteLedger::open(path)
+    let ledger = match permission {
+        Permission::WaiverAuthority => SqliteLedger::open_waiver_lab(path),
+        Permission::SignoffAuthority => SqliteLedger::open_quorum_lab(path),
+        _ => SqliteLedger::open(path),
     }
     .unwrap()
     .with_approval_channel(channel())

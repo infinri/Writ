@@ -75,9 +75,11 @@ jobs:
         run: |
           cargo fmt --manifest-path m6/publication/Cargo.toml --all --check
           cargo clippy --manifest-path m6/publication/Cargo.toml --all-targets --locked -- -D warnings
-          m3/tools/run-with-clean-fds.sh cargo test --manifest-path m6/publication/Cargo.toml --locked
+          m3/tools/run-with-clean-fds.sh cargo test --manifest-path m6/publication/Cargo.toml --locked -- --skip quorum::signed_quorum_promotion_and_recovery
           m3/tools/run-with-clean-fds.sh cargo run --manifest-path m6/publication/Cargo.toml --locked --example disposable
           python3 m6/publication/check_dependencies.py
+      - name: D-061 signed quorum, disagreement, omission, revocation and restart
+        run: m3/tools/run-with-clean-fds.sh cargo test --manifest-path m6/publication/Cargo.toml --locked --test lifecycle quorum::signed_quorum_promotion_and_recovery -- --exact
       - name: M6 disposable evaluator registry, rubric and protected promotion
         run: m3/tools/run-with-clean-fds.sh cargo test --locked -p writ-ledger-sqlite --lib evaluator_
       - name: M6 disposable scoped waiver, signed policy and protected promotion

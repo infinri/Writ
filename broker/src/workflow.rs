@@ -136,7 +136,7 @@
 //! sc-44; D-036 item 3); `activate_policy`, `activate_authorization_bundle`,
 //! `update_artifact` and `revoke_evaluator` are operator operations.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use writ_kernel::contracts::{AcceptanceRequirements, ActionRequest, CurrentState, StateRevision};
 use writ_kernel::decision::Policy;
@@ -145,8 +145,8 @@ use writ_kernel::time::Timestamp;
 use writ_kernel::transition::{check_transition, workflow_id};
 
 use crate::acceptance::{
-    check_use, verify_attestation, verify_record, AcceptanceCode, RecordVersion, SignoffUse,
-    UseContext, VerifiedAttestation, VerifiedRecord,
+    check_use_with_quorum, verify_attestation, verify_record, AcceptanceCode, RecordVersion,
+    SignoffUse, UseContext, VerifiedAttestation, VerifiedRecord,
 };
 use crate::approval_store::{CeremonyBegin, CeremonyFinish, CeremonyOp, CeremonyOutcome};
 use crate::authorize::{authorize, Authorized};
@@ -173,6 +173,40 @@ pub const TRANSITION_KIND: &str = "workflow.transition";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SourceUnavailable;
 
+/// Authoritative context used to select the current evaluation attempt. Record and
+/// attempt identifiers supplied by the request are deliberately absent.
+pub struct AttemptScope<'a> {
+    /// Tenant, project and workflow.
+    pub workflow: &'a WorkflowKey,
+    /// Workflow's current task.
+    pub task_id: &'a str,
+    /// Current workflow revision.
+    pub revision: i64,
+    /// Immutable artifact identity.
+    pub artifact_snapshot_id: &'a str,
+    /// Immutable artifact digest.
+    pub artifact_digest: &'a str,
+    /// Transition source.
+    pub from_state: &'a str,
+    /// Transition target.
+    pub to_state: &'a str,
+    /// Verified protection policy's acceptance dependency.
+    pub policy_sha: &'a str,
+}
+
+/// A final, complete attempt. Its source must pin the current selection and
+/// immutable membership until the guard is dropped after the transaction.
+pub trait CurrentAttempt {
+    /// Selected acceptance record.
+    fn record_id(&self) -> &str;
+    /// Digest of the complete signed record envelope.
+    fn record_digest(&self) -> &Digest;
+    /// Selected evaluation attempt.
+    fn attempt_id(&self) -> &str;
+    /// Every contribution in the finalized attempt, including adverse outcomes.
+    fn members(&self) -> &BTreeMap<String, Digest>;
+}
+
 /// Authenticated acceptance records issued by the acceptance service, by id
 /// (D-036 item 1). No production implementation (M4/M6).
 pub trait AcceptanceRecordSource: Sync {
@@ -184,6 +218,15 @@ pub trait AcceptanceRecordSource: Sync {
         project_id: &str,
         record_id: &str,
     ) -> Result<Option<Value>, SourceUnavailable>;
+
+    /// Pin the authoritative attempt for a context. A legacy source cannot
+    /// supply quorum evidence. Implementations must not re-enter the ledger.
+    fn current_attempt(
+        &self,
+        _scope: &AttemptScope<'_>,
+    ) -> Result<Option<Box<dyn CurrentAttempt + '_>>, SourceUnavailable> {
+        Err(SourceUnavailable)
+    }
 }
 
 /// Runner attestations by id (D-033 item 4; the runner is M3-07).
@@ -466,6 +509,11 @@ pub struct PromotionIntent<'a> {
 }
 
 struct ProtectedInputs<'a> {
+    member_digests: Option<&'a BTreeMap<String, Digest>>,
+    clock: &'a dyn EffectiveClock,
+    deadline: Option<Timestamp>,
+    record_keys: &'a dyn AcceptanceKeyRing,
+    policy_guard: Option<&'a dyn crate::quorum_policy::QuorumPolicyGuard>,
     record: &'a VerifiedRecord,
     attestations: &'a [VerifiedAttestation],
     runner_keys: &'a dyn RunnerKeyRing,
@@ -523,8 +571,107 @@ impl<'a> PromotionIntent<'a> {
                 .evaluations()
                 .iter()
                 .map(|e| e.evaluator_id.as_str())
+                .chain(p.record.contribution_bindings().map(|(id, _)| id))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
                 .collect()
         })
+    }
+
+    /// Finalized quorum attempt and exact evidence identities, in envelope order.
+    pub fn quorum_attempt(&self) -> Option<(&str, Vec<&str>)> {
+        let record = self.protected.as_ref()?.record;
+        Some((record.attempt_id()?, record.contribution_ids()))
+    }
+
+    /// Exact authenticated bytes selected by the pinned source for durable audit.
+    pub fn quorum_manifest(&self) -> Option<(&Digest, &BTreeMap<String, Digest>)> {
+        let protected = self.protected.as_ref()?;
+        Some((
+            protected.record.envelope_digest()?,
+            protected.member_digests?,
+        ))
+    }
+
+    /// Revalidate the signing material, signed selection and evidence lifetimes
+    /// at the final use point under the transaction's durable revocation fence.
+    pub fn final_quorum_check(
+        &self,
+        view: &PromotionView,
+        expected: &PromotionWrite,
+        floor: Timestamp,
+    ) -> Result<Timestamp, Refusal> {
+        let protected = self
+            .protected
+            .as_ref()
+            .ok_or(Refusal::AcceptancePolicyUnavailable)?;
+        let record = protected.record;
+        let key = protected
+            .record_keys
+            .record_key(record.key_id())
+            .map_err(|_| acceptance(AcceptanceCode::KeyUnavailable))?;
+        if !matches!(key, KeyStatus::Active(key) if &MaterialDigest::of(key.bytes()) == record.key_digest())
+        {
+            return Err(acceptance(AcceptanceCode::RecordUnauthenticated));
+        }
+        for member in protected.attestations {
+            self.check_evaluator_key(member.key_id(), member.key_digest())?;
+        }
+        let now = protected
+            .clock
+            .read()
+            .map_err(|err| err.refusal())?
+            .effective;
+        if now < self.now || now < floor || protected.deadline.is_some_and(|d| now >= d) {
+            return Err(Refusal::TimeUnavailable);
+        }
+        if &self.check_at(view, now)? != expected {
+            return Err(Refusal::PolicyDependencyMismatch);
+        }
+        Ok(now)
+    }
+
+    /// Every contribution from this evaluator must use its published key.
+    pub fn check_contribution_key(
+        &self,
+        evaluator: &str,
+        key: &str,
+        digest: &MaterialDigest,
+    ) -> Result<(), Refusal> {
+        if let Some(p) = &self.protected {
+            for (_, id) in p
+                .record
+                .contribution_bindings()
+                .filter(|(e, _)| *e == evaluator)
+            {
+                if !p.attestations.iter().any(|a| {
+                    a.attestation_id() == id && a.key_id() == key && a.key_digest() == digest
+                }) {
+                    return Err(acceptance(AcceptanceCode::AttestationUnauthenticated));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate the current signed selection against all stored requirements.
+    pub fn check_signed_policy(&self, policy: Option<&StoredPolicy>) -> Result<(), Refusal> {
+        let Some(protected) = &self.protected else {
+            return Ok(());
+        };
+        let policy = policy.ok_or(Refusal::AcceptancePolicyUnavailable)?;
+        let value = json::parse(policy.requirements.as_bytes())
+            .map_err(|_| Refusal::AcceptancePolicyUnavailable)?;
+        let stored = AcceptanceRequirements::from_value(&value)
+            .map_err(|_| Refusal::AcceptancePolicyUnavailable)?;
+        let guard = protected
+            .policy_guard
+            .ok_or(Refusal::AcceptancePolicyUnavailable)?;
+        let current = guard.current(&self.key.tenant_id, &self.key.project_id, self.now)?;
+        if current.acceptance != stored {
+            return Err(Refusal::PolicyDependencyMismatch);
+        }
+        Ok(())
     }
 
     /// The attestation ids the record requires.
@@ -601,8 +748,12 @@ impl<'a> PromotionIntent<'a> {
 
     /// The checks on the stored state (module documentation), in order:
     /// workflow, compare-and-set, then for a protected transition the policy
-    /// and its dependency, then [`check_use`]. Returns what to write.
+    /// and its dependency, then [`crate::acceptance::check_use`]. Returns what to write.
     pub fn check(&self, view: &PromotionView) -> Result<PromotionWrite, Refusal> {
+        self.check_at(view, self.now)
+    }
+
+    fn check_at(&self, view: &PromotionView, now: Timestamp) -> Result<PromotionWrite, Refusal> {
         let workflow = view.workflow.as_ref().ok_or(Refusal::WorkflowUnknown)?;
         if self.expected_revision != Some(workflow.revision) || workflow.state != self.from_state {
             return Err(Refusal::RevisionConflict(ConflictStage::Transaction));
@@ -630,6 +781,16 @@ impl<'a> PromotionIntent<'a> {
             .ok()
             .and_then(|v| AcceptanceRequirements::from_value(&v).ok())
             .ok_or(Refusal::AcceptancePolicyUnavailable)?;
+        let empty = BTreeMap::new();
+        let quorums = if let Some(guard) = protected.policy_guard {
+            let current = guard.current(&self.key.tenant_id, &self.key.project_id, now)?;
+            if current.acceptance != requirements {
+                return Err(Refusal::PolicyDependencyMismatch);
+            }
+            &current.quorums
+        } else {
+            &empty
+        };
         if self.protection_policy_sha.as_deref()
             != Some(requirements.policy.acceptance_policy_bundle_sha.as_str())
         {
@@ -650,7 +811,7 @@ impl<'a> PromotionIntent<'a> {
             policy: requirements.policy.clone(),
             state_revision: StateRevision::new(workflow.revision)
                 .ok_or(Refusal::RevisionConflict(ConflictStage::StoredRevision))?,
-            now: self.now,
+            now,
             consumed_record_ids: if view.record_consumed {
                 vec![record.acceptance_record_id.clone()]
             } else {
@@ -677,7 +838,7 @@ impl<'a> PromotionIntent<'a> {
                 .find(|(e, _)| e == id)
                 .map(|(_, entry)| entry.clone())
         };
-        let consumption = check_use(
+        let consumption = check_use_with_quorum(
             protected.record,
             &UseContext {
                 current: &current,
@@ -688,6 +849,7 @@ impl<'a> PromotionIntent<'a> {
                 signoffs: &view.signoffs,
                 promotion_parties: &self.parties,
             },
+            quorums,
         )
         .map_err(|code| match code {
             AcceptanceCode::Signoff(c) => Refusal::Approval(c),
@@ -700,7 +862,10 @@ impl<'a> PromotionIntent<'a> {
                 record_id: record.acceptance_record_id.clone(),
                 artifact_snapshot_id: record.artifact_snapshot_id.clone(),
                 artifact_digest: record.artifact_digest.clone(),
-                acceptance_policy_bundle_sha: requirements.policy.acceptance_policy_bundle_sha,
+                acceptance_policy_bundle_sha: requirements
+                    .policy
+                    .acceptance_policy_bundle_sha
+                    .clone(),
                 authorization_bundle_sha: self.authorization_bundle_sha.to_string(),
             }),
             receipt_id,
@@ -993,6 +1158,11 @@ impl AdminChange<'_> {
 
 /// The workflow operations of a ledger (M3-05).
 pub trait WorkflowLedger: Sync {
+    /// Whether this store has the disposable quorum audit and consumption fence.
+    fn allows_quorum(&self) -> bool {
+        false
+    }
+
     /// The stored workflow (read; `None`: unknown).
     fn workflow(&self, key: &WorkflowKey) -> Result<Option<StoredWorkflow>, StoreError>;
 
@@ -1438,6 +1608,51 @@ where
                 (Some(record), attestations)
             }
         };
+        let (_attempt_guard, member_digests) =
+            if let Some(record) = record.as_ref().filter(|r| r.attempt_id().is_some()) {
+                let scope = AttemptScope {
+                    workflow: &key,
+                    task_id: &stored.task_id,
+                    revision: stored.revision,
+                    artifact_snapshot_id: &stored.artifact_snapshot_id,
+                    artifact_digest: &stored.artifact_digest,
+                    from_state: &transition.from_state,
+                    to_state: &transition.to_state,
+                    policy_sha: &protection
+                        .as_ref()
+                        .ok_or(Refusal::AcceptancePolicyUnavailable)?
+                        .acceptance_policy_bundle_sha,
+                };
+                let attempt = trust
+                    .records
+                    .current_attempt(&scope)
+                    .map_err(|_| acceptance(AcceptanceCode::SourceUnavailable))?
+                    .ok_or(acceptance(AcceptanceCode::RecordUnknown))?;
+                let members = record.contribution_ids();
+                let selected = attempt.members();
+                if Some(attempt.attempt_id()) != record.attempt_id()
+                    || attempt.record_id() != record.record().acceptance_record_id
+                    || Some(attempt.record_digest()) != record.envelope_digest()
+                    || selected.len() != members.len()
+                {
+                    return Err(acceptance(AcceptanceCode::BindingMismatch));
+                }
+                for id in members {
+                    let member = attestations
+                        .iter()
+                        .find(|a| a.attestation_id() == id)
+                        .ok_or(acceptance(AcceptanceCode::AttestationBindingMismatch))?;
+                    let digest = json::digest(member.as_value())
+                        .map_err(|_| acceptance(AcceptanceCode::AttestationMalformed))?;
+                    if selected.get(id) != Some(&digest) {
+                        return Err(acceptance(AcceptanceCode::AttestationBindingMismatch));
+                    }
+                }
+                let member_digests = selected.clone();
+                (Some(attempt), Some(member_digests))
+            } else {
+                (None, None)
+            };
         let intent = PromotionIntent {
             request: &reserve,
             key: key.clone(),
@@ -1451,6 +1666,11 @@ where
                 record,
                 attestations: &attestations,
                 runner_keys: trust.runner_keys,
+                policy_guard: self.quorum_policy,
+                record_keys: trust.record_keys,
+                clock: self.grants().clock,
+                deadline: authorized.request().deadline_at,
+                member_digests: member_digests.as_ref(),
             }),
             authorization_bundle_sha: authorized.policy_bundle_sha(),
             protection_policy_sha: protection.map(|p| p.acceptance_policy_bundle_sha),
@@ -1531,6 +1751,12 @@ where
             .record(tenant, project, record_id)
             .map_err(|_| acceptance(SourceUnavailable))?
             .ok_or(acceptance(RecordUnknown))?;
+        if doc.get("contract_version").and_then(Value::as_str)
+            == Some(crate::acceptance::RECORD_CONTRACT_V3)
+            && !self.grants().ledger.allows_quorum()
+        {
+            return Err(Refusal::AcceptancePolicyUnavailable);
+        }
         let record = verify_record(&doc, trust.record_keys).map_err(acceptance)?;
         let r = record.record();
         let same = r.acceptance_record_id == record_id
@@ -1593,7 +1819,7 @@ where
             .iter()
             .filter_map(|e| Some((e.criterion_id.as_str(), e.signoff_id.as_deref()?)))
             .collect();
-        if record.version() != RecordVersion::V2 || named.is_empty() {
+        if record.version() == RecordVersion::V1 || named.is_empty() {
             return Err(acceptance(HumanUnavailable));
         }
         let requests: Vec<SignoffRequest> = named
@@ -1646,12 +1872,28 @@ where
         }
         let now = authorized.decision().decided_at;
         let mut attestations = Vec::new();
+        let contributions = record
+            .contribution_ids()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
         for id in record.attestation_ids() {
             let doc = trust
                 .attestations
                 .attestation(&key.tenant_id, &key.project_id, id)
                 .map_err(|_| acceptance(AttestationSourceUnavailable))?
                 .ok_or(acceptance(AttestationUnknown))?;
+            if record.version() == RecordVersion::V3 {
+                let version = if contributions.contains(id) {
+                    "runner-attestation/2"
+                } else {
+                    "runner-attestation/1"
+                };
+                if doc.get("contract_version").and_then(Value::as_str) != Some(version)
+                    || !crate::acceptance::bounded_quorum_attestation(&doc)
+                {
+                    return Err(acceptance(AttestationMalformed));
+                }
+            }
             attestations
                 .push(verify_attestation(&doc, trust.runner_keys, now).map_err(acceptance)?);
         }

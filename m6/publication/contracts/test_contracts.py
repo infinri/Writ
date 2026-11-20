@@ -12,7 +12,7 @@ from referencing import Registry, Resource
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 NAMES = ("detached-signature-v1", "authorization", "acceptance-policy-v1",
-         "acceptance-policy-v2", "human-intent-v1", "publication-v1", "waiver-context-v1")
+         "acceptance-policy-v2", "acceptance-policy-v3", "human-intent-v1", "publication-v1", "waiver-context-v1")
 
 
 def load(path):
@@ -139,6 +139,23 @@ class Contracts(unittest.TestCase):
             altered = context.copy()
             del altered[key]
             self.assertFalse(validator.is_valid(altered), key)
+
+    def test_quorum_version_and_eligibility(self):
+        publication = self.publication
+        acceptance = publication["acceptance"]
+        eligible = [dict(evaluator_id=name, independence_group=name) for name in ("first", "second")]
+        rule = dict(criterion_id="tests", required_class="mechanical", origin="invariant",
+                    max_waiver_seconds=0, quorum={"eligible": eligible})
+        acceptance["payload"].update(version="writ-acceptance-policy/3", criteria=[rule])
+        header = acceptance["envelope"]["protected"]
+        validator = self.validators["publication-v1"]
+        self.assertFalse(validator.is_valid(publication))
+        header["payload_format"] = "writ-acceptance-policy/3"
+        validator.validate(publication)
+        for change in ({"required_class": "human"}, {"quorum": {"eligible": eligible[:1]}},
+                       {"quorum": {"eligible": eligible * 9}}, {"max_waiver_seconds": 1}):
+            acceptance["payload"]["criteria"] = [{**rule, **change}]
+            self.assertFalse(validator.is_valid(publication), change)
 
     def test_exact_human_approval_intent(self):
         digest = "sha256:" + "0" * 64

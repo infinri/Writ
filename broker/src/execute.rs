@@ -771,6 +771,7 @@ pub struct Broker<'a, L: ?Sized, A: ?Sized> {
     /// to commit (effect prerequisites, D-036). Taken after the gate and
     /// before the per-key lock.
     pub(crate) workflow_locks: KeyLocks,
+    pub(crate) quorum_policy: Option<&'a dyn crate::quorum_policy::QuorumPolicyGuard>,
     waiver_authority: Option<(
         &'a dyn crate::waiver::WaiverPolicyGuard,
         &'a dyn crate::workflow::SnapshotStore,
@@ -817,8 +818,18 @@ where
             fs_roots: Vec::new(),
             permit_keys,
             workflow_locks: KeyLocks::new(),
+            quorum_policy: None,
             waiver_authority: None,
         }
+    }
+
+    /// Bind the current signed acceptance selection for a disposable quorum ledger.
+    pub fn with_quorum_policy(
+        mut self,
+        policy: &'a dyn crate::quorum_policy::QuorumPolicyGuard,
+    ) -> Self {
+        self.quorum_policy = Some(policy);
+        self
     }
 
     /// Opt this broker into the disposable waiver profile with a pinned signed
