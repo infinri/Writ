@@ -145,7 +145,7 @@ pub fn initialize_workflow(ledger_path: &Path, policy_registry_path: &Path) -> R
                     .get("criteria")
                     .and_then(Value::as_arr)
                     .ok_or(Error::Unavailable)?;
-                let requirements = selected.acceptance();
+                let requirements = selected.acceptance().map_err(|_| Error::Unavailable)?;
                 let requirements = json::obj([
                     (
                         "acceptance_policy_id",
@@ -225,7 +225,13 @@ fn local_policy(selected: &Selection<'_>) -> Result<ActivePolicy> {
     };
     protection.insert(
         "acceptance_policy_bundle_sha".into(),
-        json::s(&selected.acceptance().policy.acceptance_policy_bundle_sha),
+        json::s(
+            &selected
+                .acceptance()
+                .map_err(|_| Error::Unavailable)?
+                .policy
+                .acceptance_policy_bundle_sha,
+        ),
     );
     protection.insert("protected_transitions".into(), Value::Arr(vec![]));
     let loaded = load_bundle(&Value::Obj(bundle)).map_err(|_| Error::Unavailable)?;

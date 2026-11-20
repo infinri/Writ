@@ -383,7 +383,7 @@ fn headless_api_and_cli_share_the_same_workflow_and_authoritative_receipts() {
                 (3, 1)
             );
             assert_eq!(selection.publication().to_value(), signed(PERMIT, 1));
-            assert!(selection.acceptance().criteria.iter().any(|criterion| {
+            assert!(selection.acceptance()?.criteria.iter().any(|criterion| {
                 criterion.criterion_id == "review"
                     && criterion.required_class == CriterionClass::Human
             }));

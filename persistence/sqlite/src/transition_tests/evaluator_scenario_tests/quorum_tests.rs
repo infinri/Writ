@@ -100,18 +100,18 @@ fn setup(name: &str) -> (W, Policy, Attempt) {
     })
     .unwrap();
     let req = requirements("3");
-    let mut signed = QuorumRequirements {
-        acceptance: AcceptanceRequirements::from_value(&req).unwrap(),
-        quorums: BTreeMap::new(),
-    };
-    signed.quorums.insert(
+    let mut quorums = BTreeMap::new();
+    quorums.insert(
         "build".into(),
         BTreeMap::from([
             ("ci-runner".into(), "team-a".into()),
             ("ci-second".into(), "team-b".into()),
         ]),
     );
-    let policy = Policy(signed);
+    let policy = Policy(QuorumRequirements::new(
+        AcceptanceRequirements::from_value(&req).unwrap(),
+        quorums,
+    ));
     w.admin(AdminRequest::ActivateAcceptancePolicy {
         tenant_id: T.into(),
         project_id: P.into(),

@@ -253,6 +253,16 @@ fn exercise(case: Case) {
         .with_selection(|selection| {
             let broker = Broker::new(&active, &clock, &ledger, &effects, &permit)
                 .with_quorum_policy(&selection);
+            if case != Case::Legacy {
+                assert_eq!(selection.acceptance(), Err(Error::Unsupported));
+                assert!(matches!(
+                    writ_broker::waiver::WaiverPolicyGuard::current(
+                        &selection,
+                        broker.grants().observe().unwrap()
+                    ),
+                    Err(Refusal::AcceptancePolicyUnavailable)
+                ));
+            }
             let criteria = rules(true)
                 .iter()
                 .map(|c| {

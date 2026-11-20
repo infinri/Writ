@@ -95,16 +95,15 @@ pub(crate) fn preserve_required_criteria(
     };
     let (required, _) = acceptance(&publication.acceptance.payload, version)?;
     if required
-        .quorums
+        .quorums()
         .iter()
-        .any(|(id, eligible)| candidate.acceptance.quorums.get(id) != Some(eligible))
+        .any(|(id, eligible)| candidate.acceptance.quorums().get(id) != Some(eligible))
     {
         return Err(Error::InvalidPolicy);
     }
-    let mut candidate = candidate.acceptance.acceptance.criteria.iter();
+    let mut candidate = candidate.acceptance.criteria().iter();
     if required
-        .acceptance
-        .criteria
+        .criteria()
         .iter()
         .all(|required| candidate.any(|criterion| criterion == required))
     {
@@ -176,12 +175,12 @@ pub(crate) fn check_selection(
 
 pub(crate) fn refuse_deactivation(
     publication: &Publication,
-    acceptance: &AcceptanceRequirements,
+    acceptance: &QuorumRequirements,
     policy_id: &str,
 ) -> Result<(), Error> {
     if policy_id == ACCEPTANCE_ID
         || acceptance
-            .criteria
+            .criteria()
             .iter()
             .any(|criterion| criterion.criterion_id == policy_id)
     {
@@ -299,13 +298,7 @@ fn acceptance(
     }) {
         return Err(Error::InvalidPolicy);
     }
-    Ok((
-        QuorumRequirements {
-            acceptance: requirements,
-            quorums,
-        },
-        waivers,
-    ))
+    Ok((QuorumRequirements::new(requirements, quorums), waivers))
 }
 
 fn project_criterion(

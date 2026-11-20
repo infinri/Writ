@@ -94,9 +94,12 @@ impl Selection<'_> {
         &self.policies.authorization
     }
 
-    /// The requirements derived from the verified acceptance payload.
-    pub fn acceptance(&self) -> &AcceptanceRequirements {
-        &self.policies.acceptance.acceptance
+    /// Return ordinary kernel requirements only when they express the complete signed policy.
+    pub fn acceptance(&self) -> Result<&AcceptanceRequirements, Error> {
+        self.policies
+            .acceptance
+            .ordinary_requirements()
+            .ok_or(Error::Unsupported)
     }
 
     /// Recheck the selected signatures and validity at the current trusted time.
@@ -135,6 +138,7 @@ impl writ_broker::quorum_policy::QuorumPolicyGuard for Selection<'_> {
 impl WaiverPolicyGuard for Selection<'_> {
     fn current(&self, now: ObservedTime) -> Result<WaiverPolicyView, Refusal> {
         let unavailable = |_| Refusal::AcceptancePolicyUnavailable;
+        let requirements = self.acceptance().map_err(unavailable)?;
         let checked_at = now.at();
         if checked_at < self.checked_at {
             return Err(Refusal::TimeUnavailable);
@@ -158,11 +162,7 @@ impl WaiverPolicyGuard for Selection<'_> {
                 tenant_id: self.scope.tenant().to_owned(),
                 project_id: self.scope.project().to_owned(),
                 authorization_digest: self.policies.authorization.sha.to_string(),
-                acceptance_digest: self
-                    .acceptance()
-                    .policy
-                    .acceptance_policy_bundle_sha
-                    .clone(),
+                acceptance_digest: requirements.policy.acceptance_policy_bundle_sha.clone(),
                 activation_revision: self.revision,
                 publication_digest: digest.to_string(),
             },
@@ -170,7 +170,7 @@ impl WaiverPolicyGuard for Selection<'_> {
             publishers,
             checked_at,
             expires_at,
-            self.acceptance().clone(),
+            requirements.clone(),
         )
     }
 }
@@ -324,7 +324,11 @@ impl<T: TrustAuthority> Registry<T> {
             if selected.publication_version() != publication_version {
                 return Err(Error::Replay);
             }
-            policy::refuse_deactivation(selected.publication(), selected.acceptance(), policy_id)
+            policy::refuse_deactivation(
+                selected.publication(),
+                &selected.policies.acceptance,
+                policy_id,
+            )
         })
     }
 

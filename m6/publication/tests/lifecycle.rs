@@ -91,10 +91,10 @@ fn verified_restart_loads_the_exact_pair_and_replays_effect_once() {
             assert_eq!(view.publication(), &allow);
             assert_eq!((view.revision(), view.publication_version()), (1, 1));
             assert_eq!(
-                view.acceptance().policy.acceptance_policy_bundle_sha,
+                view.acceptance()?.policy.acceptance_policy_bundle_sha,
                 json::digest(&allow.acceptance.payload).unwrap().as_str()
             );
-            assert_eq!(view.acceptance().criteria[0].criterion_id, "review");
+            assert_eq!(view.acceptance()?.criteria[0].criterion_id, "review");
             Ok(())
         })
         .unwrap();
@@ -985,7 +985,7 @@ fn acceptance_records_remain_bound_to_the_exact_selected_policy() {
     old_record = edit(&old_record, "criteria", Value::Arr(vec![criterion]));
     registry
         .with_selection(|view| {
-            let policy = &view.acceptance().policy;
+            let policy = &view.acceptance()?.policy;
             for value in [&mut old_record, &mut current] {
                 *value = edit(
                     value,
@@ -1009,7 +1009,7 @@ fn acceptance_records_remain_bound_to_the_exact_selected_policy() {
                 check(
                     &AcceptanceRecord::from_value(&old_record).unwrap(),
                     &CurrentState::from_value(&current).unwrap(),
-                    view.acceptance(),
+                    view.acceptance()?,
                 ),
                 Ok(())
             );
@@ -1021,9 +1021,9 @@ fn acceptance_records_remain_bound_to_the_exact_selected_policy() {
         .with_selection(|view| {
             let old = AcceptanceRecord::from_value(&old_record).unwrap();
             let mut current = CurrentState::from_value(&current).unwrap();
-            current.policy = view.acceptance().policy.clone();
+            current.policy = view.acceptance()?.policy.clone();
             assert_eq!(
-                check(&old, &current, view.acceptance()),
+                check(&old, &current, view.acceptance()?),
                 Err(AcceptanceRefusal::PolicyMismatch)
             );
             Ok(())
@@ -1661,6 +1661,7 @@ fn signed_quorum_cannot_be_downgraded_by_publish_or_historical_rollback() {
     publish(&registry, &authority, &v3, 1, 2, "quorum-enabled");
     registry
         .with_selection(|selection| {
+            assert_eq!(selection.acceptance(), Err(Error::Unsupported));
             assert_eq!(
                 writ_broker::quorum_policy::QuorumPolicyGuard::current(
                     &selection,
@@ -1669,7 +1670,7 @@ fn signed_quorum_cannot_be_downgraded_by_publish_or_historical_rollback() {
                     now()
                 )
                 .unwrap()
-                .quorums["build"]["second"],
+                .quorums()["build"]["second"],
                 "b"
             );
             Ok(())
