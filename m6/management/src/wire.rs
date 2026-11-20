@@ -81,6 +81,20 @@ fn invalid(pointer: &'static str) -> Diagnostic {
 }
 
 impl RequestV1 {
+    pub fn reads_policy_lifecycle(&self) -> bool {
+        matches!(
+            self.operation,
+            Operation::Publication(PublicationRequest::Lifecycle { .. })
+        )
+    }
+
+    pub fn reads_draft_metadata(&self) -> bool {
+        matches!(
+            self.operation,
+            Operation::Get(_) | Operation::History { .. }
+        )
+    }
+
     /// Decode the strict versioned envelope and operation fields.
     pub fn parse(input: &[u8]) -> Result<Self> {
         Self::decode(input).map_err(|diagnostic| diagnostic.code)
@@ -140,6 +154,7 @@ impl RequestV1 {
             | "rollback"
             | "retire"
             | "deactivate"
+            | "policy.lifecycle.inspect"
             | "publication_history" => {
                 Operation::Publication(decode_publication(&mut fields, &operation)?)
             }
@@ -513,6 +528,12 @@ fn decode_mutation(fields: &mut Map, operation: &str) -> DecodeResult<Operation>
 }
 
 fn decode_publication(fields: &mut Map, operation: &str) -> DecodeResult<PublicationRequest> {
+    if operation == "policy.lifecycle.inspect" {
+        return Ok(PublicationRequest::Lifecycle {
+            after: integer(fields, "after", "/after", 0, json::MAX_SAFE_INTEGER)?,
+            limit: integer(fields, "limit", "/limit", 1, MAX_HISTORY)? as usize,
+        });
+    }
     if operation == "publication_history" {
         return Ok(PublicationRequest::History {
             after: integer(fields, "after", "/after", 0, json::MAX_SAFE_INTEGER)?,
@@ -725,6 +746,29 @@ fn corpus(fields: &mut Map) -> DecodeResult<Value> {
         }),
         _ => Err(invalid("/corpus")),
     }
+}
+
+/// Authenticate, decode and check resource access before a fixture host opens any owner.
+pub fn preflight_v1(
+    authority: &dyn Authenticator,
+    credential: &[u8],
+    request: &[u8],
+    allow_self_publication: bool,
+    policy_inspection_only: bool,
+) -> std::result::Result<RequestV1, Vec<u8>> {
+    let principal = crate::authenticate(Some(authority), credential).map_err(error_response)?;
+    let request = RequestV1::decode(request).map_err(encode_error)?;
+    if policy_inspection_only && !request.reads_policy_lifecycle() {
+        return Err(error_response(Error::InvalidRequest));
+    }
+    crate::authorize_resource(
+        &principal,
+        &request.scope,
+        &request.operation,
+        allow_self_publication,
+    )
+    .map_err(error_response)?;
+    Ok(request)
 }
 
 /// Shared byte boundary for the headless fixture and embedding API.

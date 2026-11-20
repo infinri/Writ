@@ -1078,6 +1078,10 @@ impl<T: CurrentTrust> VerificationSource for View<'_, T> {
 }
 
 impl<T: CurrentTrust> CurrentTrust for View<'_, T> {
+    fn enforcement_evidence(&self) -> Option<writ_policy_publication_lab::FixtureEvidence> {
+        self.trust.enforcement_evidence()
+    }
+
     fn approve(
         &self,
         intent: &Intent,

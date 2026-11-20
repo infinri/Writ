@@ -10,7 +10,7 @@ use std::{
 use writ_kernel::json;
 use writ_policy_management_lab::{
     contract_fixture, contract_registry::ContractRegistry, error_response, evaluator_fixture,
-    execute_v1_with_service, fixture, pack_fixture, pack_registry::PackRegistry,
+    fixture, pack_fixture, pack_registry::PackRegistry, preflight_v1,
     waiver_fixture::WaiverFixture, Error, Service, Store, MAX_CREDENTIAL, MAX_REQUEST,
 };
 use writ_policy_publication_lab::Registry;
@@ -65,7 +65,8 @@ fn run() -> Result<Vec<u8>, Error> {
                 || (command == "v1-contracts" && extra.len() == 1)
                 || (command == "v1-evaluator" && extra.len() == 1)
                 || (command == "v1-waiver" && extra.len() == 2)
-                || (command == "v1-packs" && extra.len() == 2) =>
+                || (command == "v1-packs" && extra.len() == 2)
+                || (command == "v1-policy" && extra.len() == 2) =>
         {
             let path = Path::new(credential_file);
             if !path.metadata().is_ok_and(|metadata| metadata.is_file()) {
@@ -74,23 +75,53 @@ fn run() -> Result<Vec<u8>, Error> {
             let credential = fs::File::open(path).map_err(|_| Error::Unauthorized)?;
             let credential = read_bounded(credential, MAX_CREDENTIAL)?;
             let request = read_bounded(io::stdin().lock(), MAX_REQUEST)?;
-            let store = if command == "v1-contracts" || command == "v1-packs" {
+            let authority = fixture::authority();
+            let allow_self_publication = command == "v1-contracts"
+                || command == "v1-packs"
+                || (command == "v1" && !extra.is_empty());
+            let request = match preflight_v1(
+                &authority,
+                &credential,
+                &request,
+                allow_self_publication,
+                command == "v1-policy",
+            ) {
+                Ok(request) => request,
+                Err(response) => return Ok(response),
+            };
+            let read_lifecycle = request.reads_policy_lifecycle();
+            let read_draft = command == "v1" && request.reads_draft_metadata();
+            let execute = |service: &Service<'_>| {
+                service
+                    .execute(&credential, request)
+                    .map(|response| response.encode())
+                    .unwrap_or_else(error_response)
+            };
+            let store = if read_draft
+                || read_lifecycle
+                || command == "v1-contracts"
+                || command == "v1-packs"
+            {
                 Store::open_without_recovery(Path::new(db))?
             } else {
                 Store::open(Path::new(db))?
             };
-            let authority = fixture::authority();
             let service = Service::new(&store, Some(&authority));
+            let service = if allow_self_publication {
+                service.allow_self_publication()
+            } else {
+                service
+            };
             match extra {
                 [registry] if command == "v1-contracts" => {
                     let registry = contract_fixture::open(Path::new(registry))?;
-                    let service = service.with_contracts(&registry).allow_self_publication();
-                    Ok(execute_v1_with_service(&service, &credential, &request))
+                    let service = service.with_contracts(&registry);
+                    Ok(execute(&service))
                 }
                 [ledger] if command == "v1-evaluator" => {
                     let evaluator = evaluator_fixture::open(Path::new(ledger))?;
                     let service = service.with_evaluator(&evaluator);
-                    Ok(execute_v1_with_service(&service, &credential, &request))
+                    Ok(execute(&service))
                 }
                 [contracts, evaluator] if command == "v1-packs" => {
                     let contracts = contract_fixture::open(Path::new(contracts))?;
@@ -101,29 +132,45 @@ fn run() -> Result<Vec<u8>, Error> {
                         evaluator_fixture::pack_dependencies(),
                         &authority,
                     );
-                    let service = service
-                        .with_packs(&packs)
-                        .with_contracts(&contracts)
-                        .allow_self_publication();
-                    Ok(execute_v1_with_service(&service, &credential, &request))
+                    let service = service.with_packs(&packs).with_contracts(&contracts);
+                    Ok(execute(&service))
                 }
                 [ledger, policy] if command == "v1-waiver" => {
                     let waiver = WaiverFixture::open(Path::new(ledger), Path::new(policy))?;
                     let service = service.with_waiver(&waiver);
-                    Ok(execute_v1_with_service(&service, &credential, &request))
+                    Ok(execute(&service))
+                }
+                [registry, scenario] if command == "v1-policy" => {
+                    let trust = fixture::FixtureTrust::default();
+                    trust
+                        .set_enforcement_scenario(scenario.to_str().ok_or(Error::InvalidRequest)?)
+                        .map_err(|_| Error::InvalidRequest)?;
+                    let registry = Registry::open_for_inspection(
+                        Path::new(registry),
+                        fixture::publication_scope().map_err(|_| Error::Unavailable)?,
+                        trust,
+                    )
+                    .map_err(|_| Error::Unavailable)?;
+                    let service = service.with_publication(&registry);
+                    Ok(execute(&service))
                 }
                 [registry] => {
-                    let registry = Registry::open_for_administration(
+                    let open = if read_lifecycle {
+                        Registry::open_for_inspection
+                    } else {
+                        Registry::open_for_administration
+                    };
+                    let registry = open(
                         Path::new(registry),
                         fixture::publication_scope().map_err(|_| Error::Unavailable)?,
                         fixture::FixtureTrust::default(),
                     )
                     .map_err(|_| Error::Unavailable)?
                     .with_management_source(store.clone());
-                    let service = service.with_publication(&registry).allow_self_publication();
-                    Ok(execute_v1_with_service(&service, &credential, &request))
+                    let service = service.with_publication(&registry);
+                    Ok(execute(&service))
                 }
-                _ => Ok(execute_v1_with_service(&service, &credential, &request)),
+                _ => Ok(execute(&service)),
             }
         }
         _ => Err(Error::InvalidRequest),

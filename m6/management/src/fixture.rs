@@ -119,6 +119,7 @@ pub struct FixtureTrust(Arc<RwLock<TrustState>>);
 
 #[derive(Default)]
 struct TrustState {
+    enforcement_scenario: Option<Option<writ_policy_publication_lab::FixtureEvidence>>,
     fixed_now: Option<Timestamp>,
     authorization_revoked: bool,
     acceptance_revoked: bool,
@@ -128,6 +129,15 @@ struct TrustState {
 pub struct FixtureView<'a>(RwLockReadGuard<'a, TrustState>);
 
 impl FixtureTrust {
+    pub fn set_enforcement_scenario(&self, scenario: &str) -> Result<(), PublicationError> {
+        let evidence = writ_policy_publication_lab::FixtureEvidence::scenario(scenario)?;
+        self.0
+            .write()
+            .map_err(|_| PublicationError::Trust)?
+            .enforcement_scenario = Some(evidence);
+        Ok(())
+    }
+
     pub fn set_time(&self, now: Timestamp) -> Result<(), PublicationError> {
         self.0
             .write()
@@ -198,6 +208,13 @@ impl VerificationSource for FixtureView<'_> {
 }
 
 impl CurrentTrust for FixtureView<'_> {
+    fn enforcement_evidence(&self) -> Option<writ_policy_publication_lab::FixtureEvidence> {
+        self.0
+            .enforcement_scenario
+            .clone()
+            .unwrap_or_else(|| Some(writ_policy_publication_lab::FixtureEvidence::registered()))
+    }
+
     fn has_active_dependents(
         &self,
         scope: &PublicationScope,

@@ -35,8 +35,8 @@ pub use packs::{PackBoundary, PackOperation};
 pub use publication::PublicationRequest;
 pub use store::Store;
 pub use wire::{
-    error_response, execute_v1, execute_v1_with_publication, execute_v1_with_service, RequestV1,
-    ResponseV1,
+    error_response, execute_v1, execute_v1_with_publication, execute_v1_with_service, preflight_v1,
+    RequestV1, ResponseV1,
 };
 
 use writ_kernel::json::{self, Digest, Value};
@@ -248,24 +248,7 @@ impl<'a> Service<'a> {
     }
 
     fn authenticate(&self, credential: &[u8]) -> Result<Principal> {
-        if credential.is_empty() || credential.len() > MAX_CREDENTIAL {
-            return Err(Error::Unauthorized);
-        }
-        let principal = self
-            .authority
-            .and_then(|authority| authority.authenticate(credential))
-            .ok_or(Error::Unauthorized)?;
-        if !matches!(
-            principal.realm,
-            Realm::Management | Realm::ManagementService
-        ) || !valid_label(&principal.subject)
-        {
-            return Err(Error::Unauthorized);
-        }
-        if principal.grants.len() > 128 {
-            return Err(Error::Unauthorized);
-        }
-        Ok(principal)
+        authenticate(self.authority, credential)
     }
 
     pub fn execute(&self, credential: &[u8], request: RequestV1) -> Result<ResponseV1> {
@@ -284,16 +267,9 @@ impl<'a> Service<'a> {
             operation,
             binding,
         } = request;
+        authorize_resource(&principal, &scope, &operation, self.allow_self_publication)?;
         if let Operation::Publication(request) = operation {
-            let write = !matches!(request, PublicationRequest::History { .. });
-            let check = |principal: &Principal| {
-                if write {
-                    publisher(principal, &scope)
-                } else {
-                    authorize(principal, &scope, false)
-                }
-            };
-            check(&principal)?;
+            let check = publication_reader_or_publisher(&request);
             let pinned = if matches!(
                 &request,
                 PublicationRequest::Retire { .. }
@@ -317,7 +293,7 @@ impl<'a> Service<'a> {
                 {
                     return Err(Error::Unauthorized);
                 }
-                check(current)
+                check(current, &scope)
             };
             let reauthorize = || {
                 if let Some(guard) = &pinned {
@@ -369,57 +345,6 @@ impl<'a> Service<'a> {
                             _,
                         )
                 );
-            let check = |principal: &Principal| match &operation {
-                Operation::Evaluator(EvaluatorOperation::Inspect, _)
-                | Operation::Waiver(WaiverOperation::Inspect | WaiverOperation::Validate, _) => {
-                    authorize(principal, &scope, false)
-                }
-                Operation::Evaluator(..) => publisher(principal, &scope),
-                Operation::Pack(
-                    PackOperation::Verify | PackOperation::Inspect | PackOperation::History,
-                    _,
-                ) if principal.realm == Realm::Management => authorize(principal, &scope, false),
-                Operation::Pack(..) => publisher(principal, &scope),
-                Operation::Contract(
-                    ContractOperation::Browse
-                    | ContractOperation::Inspect
-                    | ContractOperation::ValidateSchema
-                    | ContractOperation::ValidateExample,
-                    _,
-                ) => authorize(principal, &scope, false),
-                Operation::Contract(ContractOperation::Create, _) => {
-                    contract_author(principal, &scope)
-                }
-                Operation::Contract(ContractOperation::Recover, _) => {
-                    contract_author(principal, &scope).or_else(|_| publisher(principal, &scope))
-                }
-                Operation::Contract(_, fields) => {
-                    publisher(principal, &scope)?;
-                    if fields
-                        .get("acknowledge_self_publication")
-                        .and_then(Value::as_bool)
-                        == Some(true)
-                        && !self.allow_self_publication
-                    {
-                        return Err(Error::Unauthorized);
-                    }
-                    Ok(())
-                }
-                Operation::Waiver(..) => {
-                    if principal.realm == Realm::Management
-                        && principal
-                            .grants
-                            .iter()
-                            .any(|grant| grant.scope == scope && grant.role == Role::WaiverOperator)
-                    {
-                        Ok(())
-                    } else {
-                        Err(Error::NotFound)
-                    }
-                }
-                _ => Err(Error::InvalidRequest),
-            };
-            check(&principal)?;
             let pinned = if pin_required {
                 Some(
                     self.authority
@@ -436,7 +361,7 @@ impl<'a> Service<'a> {
                 {
                     return Err(Error::Unauthorized);
                 }
-                check(current)
+                authorize_resource(current, &scope, &operation, self.allow_self_publication)
             };
             let reauthorize = || {
                 if let Some(guard) = &pinned {
@@ -491,8 +416,6 @@ impl<'a> Service<'a> {
                 _ => Err(Error::InvalidRequest),
             };
         }
-        let write_role = !matches!(&operation, Operation::Get(_) | Operation::History { .. });
-        authorize(&principal, &scope, write_role)?;
         Ok(match operation {
             Operation::Publication(_)
             | Operation::Evaluator(..)
@@ -547,6 +470,116 @@ impl<'a> Service<'a> {
                 &corpus,
             )?),
         })
+    }
+}
+
+fn authenticate(authority: Option<&dyn Authenticator>, credential: &[u8]) -> Result<Principal> {
+    if credential.is_empty() || credential.len() > MAX_CREDENTIAL {
+        return Err(Error::Unauthorized);
+    }
+    let principal = authority
+        .and_then(|authority| authority.authenticate(credential))
+        .ok_or(Error::Unauthorized)?;
+    if !matches!(
+        principal.realm,
+        Realm::Management | Realm::ManagementService
+    ) || !valid_label(&principal.subject)
+    {
+        return Err(Error::Unauthorized);
+    }
+    if principal.grants.len() > 128 {
+        return Err(Error::Unauthorized);
+    }
+    Ok(principal)
+}
+
+fn policy_reader(principal: &Principal, scope: &Scope) -> Result<()> {
+    if principal.realm == Realm::Management
+        && principal.grants.iter().any(|grant| {
+            grant.scope == *scope
+                && matches!(
+                    grant.role,
+                    Role::Viewer | Role::PolicyAuthor | Role::Publisher
+                )
+        })
+    {
+        Ok(())
+    } else {
+        Err(Error::NotFound)
+    }
+}
+
+fn publication_reader_or_publisher(
+    request: &PublicationRequest,
+) -> fn(&Principal, &Scope) -> Result<()> {
+    match request {
+        PublicationRequest::Lifecycle { .. } => policy_reader,
+        PublicationRequest::History { .. } => |principal, scope| authorize(principal, scope, false),
+        _ => publisher,
+    }
+}
+
+fn authorize_resource(
+    principal: &Principal,
+    scope: &Scope,
+    operation: &wire::Operation,
+    allow_self_publication: bool,
+) -> Result<()> {
+    use wire::Operation;
+    match operation {
+        Operation::Publication(request) => {
+            publication_reader_or_publisher(request)(principal, scope)
+        }
+        Operation::Evaluator(EvaluatorOperation::Inspect, _)
+        | Operation::Waiver(WaiverOperation::Inspect | WaiverOperation::Validate, _) => {
+            authorize(principal, scope, false)
+        }
+        Operation::Evaluator(..) => publisher(principal, scope),
+        Operation::Pack(
+            PackOperation::Verify | PackOperation::Inspect | PackOperation::History,
+            _,
+        ) if principal.realm == Realm::Management => authorize(principal, scope, false),
+        Operation::Pack(..) => publisher(principal, scope),
+        Operation::Contract(
+            ContractOperation::Browse
+            | ContractOperation::Inspect
+            | ContractOperation::ValidateSchema
+            | ContractOperation::ValidateExample,
+            _,
+        ) => authorize(principal, scope, false),
+        Operation::Contract(ContractOperation::Create, _) => contract_author(principal, scope),
+        Operation::Contract(ContractOperation::Recover, _) => {
+            contract_author(principal, scope).or_else(|_| publisher(principal, scope))
+        }
+        Operation::Contract(_, fields) => {
+            publisher(principal, scope)?;
+            if fields
+                .get("acknowledge_self_publication")
+                .and_then(Value::as_bool)
+                == Some(true)
+                && !allow_self_publication
+            {
+                return Err(Error::Unauthorized);
+            }
+            Ok(())
+        }
+        Operation::Waiver(..) => {
+            if principal.realm == Realm::Management
+                && principal
+                    .grants
+                    .iter()
+                    .any(|grant| grant.scope == *scope && grant.role == Role::WaiverOperator)
+            {
+                Ok(())
+            } else {
+                Err(Error::NotFound)
+            }
+        }
+        Operation::Get(_) | Operation::History { .. } => authorize(principal, scope, false),
+        Operation::Mutation(_)
+        | Operation::Validate(_)
+        | Operation::Simulate { .. }
+        | Operation::Compare { .. } => authorize(principal, scope, true),
     }
 }
 

@@ -1,0 +1,11 @@
+{
+  "version": "writ-fixture-test-result/1",
+  "profile": "fixture-host/fixture-1.0/schema-fixture",
+  "implementation_digest": "sha256:d31ad84f3db05be4cdbcb7c0540d3c283321f22dcb942600832786b3333f1a4b",
+  "passed": [
+    "both_advisory_paths_project_paired_fixture_inputs",
+    "embedded_advisory_claims_do_not_change_projection",
+    "test_drafts_and_examples",
+    "test_coverage_for_no_interceptor_cannot_claim_observation_or_prevention"
+  ]
+}

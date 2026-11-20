@@ -190,3 +190,38 @@ The scenario publishes a custom contract and a scoped evaluator through their ow
 | `packs.recover` | Original `idempotency_key` |
 
 Preview reserves neither an idempotency key nor a ceremony. The pack write path reserves the evaluator writer transaction first, then the D-058 owner transaction. Contract retirement consults active pack dependencies in the same owner transaction as its retirement audit. Disable can remove an active dependency even if the pack publisher or evaluator has since been revoked. The pack selection, immutable version and audit use one owner transaction. A separate management transaction records the attempt and consumes the presentation for dispatch. The human intent binds both stores so another management database or a direct owner call cannot replay a pending attempt. Exact replay or recover reads the original receipt. An attempt with durable management dispatch identity but no owner receipt returns `UNAVAILABLE` and is never redispatched. Before starting a fresh attempt, check history and obtain a new preview, key and human presentation. After process interruption, the owner can run the host-only `recover-management-storage MANAGEMENT_DB` and `recover-contract-storage CONTRACT_DB` commands before inspecting or recovering the attempt. The normal preview and recovery queries do not repair journals.
+
+## Inspect policy lifecycle and enforcement labels
+
+The offline view renders a single authorized `policy.lifecycle.inspect` response from the shared management service. It shows the selected publication, the recorded enforcement label and provenance of each subject in the disposable profile, and a page of publication audit events. Expand an event to inspect its immutable publication digest and intent digest. The HTML file contains the evidence available to the caller at export time. Keep it inside the caller's private disposable directory and regenerate it after selection, trust or evidence changes.
+
+With the fixture binaries built as above, use the following example from the repository root. The first command creates a disposable directory. The Python setup publishes two fixture versions and rolls back to the first.
+
+```sh
+lab=$(mktemp -d)
+python3 - "$lab" <<'PY'
+import runpy, sys
+from pathlib import Path
+runpy.run_path("m6/management/run-publication-lab.py")["run"](Path(sys.argv[1]))
+PY
+printf '%s' fixture-viewer > "$lab/viewer"
+python3 m6/management/policy-lifecycle-view.py \
+  "$lab/drafts.sqlite" "$lab/viewer" "$lab/registry.sqlite" \
+  --limit 1 > "$lab/lifecycle.html"
+```
+
+Open `lifecycle.html` locally in the browser. The page lists the distinct immutable publication versions referenced by the displayed events. If more events are available, the page shows the `--after` value for the next export. Add `--draft-id permit` to include that draft's immutable revisions, content digests and clone sources from the shared `history` service. Use `--draft-limit` and the displayed `--draft-after` cursor independently of the publication page. Both reads use the same scope and pinned fixture credential. Each reads its own store snapshot. A failure of either read discards both results. A refused read emits an error page and exits with status 1. The page has no scripts, subresource requests, credentials, or mutation controls.
+
+For the JSON response, call `writ-manage-fixture v1-policy MANAGEMENT_DB CREDENTIAL_FILE PUBLICATION_DB current` with the following request on stdin. The final CLI argument selects the trusted disposable evidence scenario. The view accepts the same scenario with `--scenario`, including `removed`, `stale`, `mismatched`, and `unavailable`. Scenarios are fixture inputs outside the management request. The credential and exact scope are checked before either owner database opens. With valid read access, a missing management store or publication registry yields an `UNAVAILABLE` page. An unavailable evidence source in an otherwise readable registry yields subject rows carrying `UNVERIFIED` and the recorded reason.
+
+The fixture opens the management store without journal recovery. Lifecycle inspection opens the publication owner read-only. Before schema verification and audit replay, the owner checks a 32 MiB logical database budget and a maximum of 256 rows each in the publication, audit and managed-intent tables. Over-budget storage yields `UNAVAILABLE`. The page limit independently bounds the returned events. Use an initialized fixture directory on a private local filesystem and refresh the export for a new inspection.
+
+```json
+{"version":"/manage/v1","operation":"policy.lifecycle.inspect","scope":{"tenant":"m6-lab","project":"offline-proof"},"after":0,"limit":50}
+```
+
+The browser regression seeds the signed publication workflow in a fresh directory, reads the service under each fixture condition and checks the rendered labels, their evidence, history pagination, scope refusals, principal isolation and literal rendering of markup. Run it with the same Node 22 and Chrome tooling as the approval browser suite. Set `CHROME` for a nondefault executable or `WRIT_MANAGEMENT_BIN_DIR` for a separate fixture build directory.
+
+```sh
+node m6/management/tests/policy-lifecycle-browser.mjs
+```

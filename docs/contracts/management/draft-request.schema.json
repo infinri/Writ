@@ -897,7 +897,7 @@
           "$ref": "#/$defs/scope"
         },
         "operation": {
-          "const": "publication_history"
+          "enum": ["publication_history", "policy.lifecycle.inspect"]
         },
         "after": {
           "type": "integer",

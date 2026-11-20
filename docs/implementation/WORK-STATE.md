@@ -1,10 +1,12 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-20 (D-061 disposable high-stakes quorum) · **Branch:** v2/architecture-rebuild · **Milestones:** M5 and M6 in progress. The M5 reference guest and isolated containment CI gates are open. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md#current-recovery-state).
+**Last updated:** 2026-11-19 (D-062 disposable enforcement labels) · **Branch:** v2/architecture-rebuild · **Milestones:** M5 and M6 in progress. The M5 reference guest and isolated containment CI gates are open. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md#current-recovery-state).
 
 ## Current
 
-- D-061 adds the [signed high-stakes evaluator quorum](../../m6/evaluators/README.md#signed-high-stakes-quorum-under-d-061) to the existing broker and SQLite promotion transaction on a disposable profile. Signed membership, separately authenticated contributions, current trust and separate human signoff gate consumption. Fixture group declarations and in-process source completeness remain bounded development evidence. Next batch: CC-G07 enforcement labels and policy lifecycle view with scope-isolation tests under the [existing closure checklist](M6-CLOSURE-CHECKLIST.md).
+- D-062 delivers shared scoped enforcement evidence, a fixture CLI and read-only policy lifecycle export. Commit-time owner verification, real Chrome and five-family isolation checks are recorded in [E-109](TEST-EVIDENCE.md#e-109-disposable-enforcement-labels-and-policy-inspection). The [finite M6 checklist](M6-CLOSURE-CHECKLIST.md) identifies the remaining lifecycle mutations, comparison and management-service work.
+
+- D-061 adds the [signed high-stakes evaluator quorum](../../m6/evaluators/README.md#signed-high-stakes-quorum-under-d-061) to the existing broker and SQLite promotion transaction on a disposable profile. Signed membership, separately authenticated contributions, current trust and separate human signoff gate consumption. Fixture group declarations and in-process source completeness remain bounded development evidence.
 
 - D-060 adds [signed optional removal](../../m6/management/README.md#run-signed-optional-policy-removal) for the one pinned synthetic rule in disposable stores. The fixture CLI and in-process API preview both complete Decisions for each proof case. The owning registry verifies both signed pairs and fresh scoped human authority before selecting the exact replacement with an audit event. Retry reconciles the exact owner receipt after reopening, including after a later authorized rollback.
 - [E-107](TEST-EVIDENCE.md#e-107-d-060-optional-policy-removal-and-ag-adv-16-2026-11-20) records the additional evaluator version, use-time trust outage and durable revocation-order evidence. The [quorum packet](M6-QUORUM-DECISION.md) was approved under D-061. The [M6 closure checklist](M6-CLOSURE-CHECKLIST.md) records the remaining base milestone, Control Center and governed integration gates.
@@ -57,6 +59,8 @@ SANDBOX PREPARED / LIVE VERIFICATION NOT EXECUTED; sandbox **torn down** 2026-11
 
 ## Last verification
 
+D-062 builds on checkpoint `48bd7930afab096f674f497485d64ad77a308171` and [its six successful jobs](https://github.com/infinri/Writ/actions/runs/44649136581). Use [SESSION-HANDOFF](SESSION-HANDOFF.md#current-recovery-state) for the D-062 exact-SHA lookup.
+
 D-060 implementation `39fbd3fdc33d0b99c49802f016dd6295b937300d` has [exact-SHA run 44642143521](https://github.com/infinri/Writ/actions/runs/44642143521). E-107 records the verified M6 steps, local commands and review dispositions. Verify this checkpoint on its own exact SHA using the recovery instructions.
 
 D-059 started from `ebbf8f04f1ef4afe9c5f31f16e01bdd841f7ccd2`, verified on [required run 44619390302](https://github.com/infinri/Writ/actions/runs/44619390302). [E-106](TEST-EVIDENCE.md#e-106-d-059-disposable-capability-pack-administration-2026-11-19) records the evidence and the [checkpoint](SESSION-HANDOFF.md#current-recovery-state) gives the exact-SHA CI check.
@@ -80,4 +84,4 @@ Earlier local evidence (2026-11-13, `b60bf33`, E-074): workspace tests 394 passe
 
 ## Next exact action
 
-In a fresh chat, verify the checkpoint SHA and all six required jobs, then consult the [finite M6 checklist](M6-CLOSURE-CHECKLIST.md). Request the owner decision on [quorum](M6-QUORUM-DECISION.md). Prioritize the owner-designated Ubuntu 24.04 guest first inventory, full VM checklist and isolated containment CI before M7. The M6 governed integration path depends on verified M5 foundations and approved deployment trust and identity.
+Verify the D-062 checkpoint SHA and its six required jobs. Use the [finite checklist](M6-CLOSURE-CHECKLIST.md#next-unblocked-development-batch) for remaining M6 work. D-061 resolved the disposable quorum decision. Governed deployment identity and trust, human review, the designated Ubuntu guest and isolated containment CI remain open.

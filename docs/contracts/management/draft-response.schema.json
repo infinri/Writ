@@ -1950,6 +1950,187 @@
           "maxItems": 512
         }
       }
+    },
+    "policyLifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "history",
+        "selection_revision",
+        "publication_version",
+        "enforcement_labels"
+      ],
+      "properties": {
+        "history": {
+          "$ref": "#/$defs/publication_history"
+        },
+        "selection_revision": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "publication_version": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "enforcement_labels": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "label",
+              "subject",
+              "kind",
+              "profile",
+              "scope",
+              "policy",
+              "implementation",
+              "enforcement_point",
+              "positive_tests",
+              "negative_tests",
+              "freshness",
+              "compatibility",
+              "reasons"
+            ],
+            "properties": {
+              "label": {
+                "enum": [
+                  "ENFORCED",
+                  "APPROVAL REQUIRED",
+                  "HOOK-INTEGRATED (ADVISORY)",
+                  "ADVISORY",
+                  "UNMEDIATED",
+                  "UNVERIFIED"
+                ]
+              },
+              "subject": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "kind": {
+                "enum": [
+                  "rule",
+                  "capability",
+                  "integration_path",
+                  "effect"
+                ]
+              },
+              "profile": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "scope": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "tenant",
+                  "project"
+                ],
+                "properties": {
+                  "tenant": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  },
+                  "project": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  }
+                }
+              },
+              "policy": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "implementation": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "enforcement_point": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "positive_tests": {
+                "type": "array",
+                "maxItems": 128,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                }
+              },
+              "negative_tests": {
+                "type": "array",
+                "maxItems": 128,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                }
+              },
+              "freshness": {
+                "enum": [
+                  "current",
+                  "stale",
+                  "unknown"
+                ]
+              },
+              "compatibility": {
+                "enum": [
+                  "compatible",
+                  "incompatible",
+                  "unknown"
+                ]
+              },
+              "reasons": {
+                "type": "array",
+                "maxItems": 128,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "oneOf": [
@@ -1996,6 +2177,9 @@
             },
             {
               "$ref": "#/$defs/publication_history"
+            },
+            {
+              "$ref": "#/$defs/policyLifecycle"
             },
             {
               "$ref": "#/$defs/evaluatorReceipt"

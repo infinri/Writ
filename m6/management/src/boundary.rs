@@ -5,6 +5,14 @@ use writ_policy_publication_lab::{
 /// Host-configured access to the registry. The management service receives neither keys nor a signer.
 pub trait PublicationBoundary {
     fn scope(&self) -> &Scope;
+    fn enforcement_labels(
+        &self,
+        _scope: &Scope,
+        _after: i64,
+        _limit: usize,
+    ) -> Result<writ_kernel::json::Value, Error> {
+        Err(Error::DependencyUnavailable)
+    }
     fn preview(
         &self,
         expected_revision: i64,
@@ -50,6 +58,15 @@ pub trait PublicationBoundary {
 impl<T: TrustAuthority> PublicationBoundary for Registry<T> {
     fn scope(&self) -> &Scope {
         Registry::scope(self)
+    }
+
+    fn enforcement_labels(
+        &self,
+        scope: &Scope,
+        after: i64,
+        limit: usize,
+    ) -> Result<writ_kernel::json::Value, Error> {
+        Registry::enforcement_labels(self, scope, after, limit)
     }
 
     fn preview(

@@ -103,6 +103,7 @@ jobs:
           python3 m6/management/run-publication-lab.py
           python3 m6/management/run-retirement-lab.py
           python3 m6/management/run-lifecycle-lab.py
+          python3 m6/management/run-isolation-lab.py
           "$WRIT_CONTRACT_PYTHON" m6/management/run-contract-lab.py
           WRIT_MANAGEMENT_FIXTURE_BIN="$PWD/m6/management/target/debug/writ-manage-fixture" \
             m3/tools/run-with-clean-fds.sh cargo test --manifest-path m6/publication/Cargo.toml --locked --test lifecycle \
@@ -159,6 +160,8 @@ jobs:
           command -v google-chrome
           google-chrome --version
           { echo "NODE=$(command -v node)"; echo "CHROME=$(command -v google-chrome)"; } >> "$GITHUB_ENV"
+      - name: Disposable policy lifecycle view in Chrome
+        run: node m6/management/tests/policy-lifecycle-browser.mjs
       - name: Browser suite sanitizer self-test (known secret shapes are redacted)
         run: node approval/browser-tests/sanitize-selftest.mjs
       - name: Approval browser suite, complete (real server binary, HTTP routes and WebAuthn verifier; CDP virtual authenticator, user verification SIMULATED)

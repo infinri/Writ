@@ -236,6 +236,22 @@ class DraftContracts(unittest.TestCase):
             with self.subTest(operation=item["operation"]):
                 self.assertFalse(self.request.is_valid(item))
 
+    def test_policy_inspection(self):
+        inspect = request("policy.lifecycle.inspect", after=0, limit=1)
+        self.request.validate(inspect)
+        for change in ({"limit": 51}, {"after": -1}, {"label": "ENFORCED"}, {"scenario": "current"}):
+            self.assertFalse(self.request.is_valid(inspect | change))
+        row = dict(label="UNVERIFIED", subject="live-host", kind="integration_path",
+                   profile="live-host", scope=SCOPE, policy=None, implementation=None,
+                   enforcement_point=None, positive_tests=[], negative_tests=[],
+                   freshness="unknown", compatibility="unknown", reasons=["LIVE_EVIDENCE_UNAVAILABLE"])
+        report = dict(history={"events": [], "next": None, "selected": None},
+                      selection_revision=None, publication_version=None, enforcement_labels=[row])
+        self.response.validate(response(report))
+        for bad in (row | {"label": "VERIFIED"}, row | {"credential": "secret"},
+                    {k: v for k, v in row.items() if k != "profile"}):
+            self.assertFalse(self.response.is_valid(response(report | {"enforcement_labels": [bad]})))
+
     def test_publication_responses(self):
         context = {
             "version": "writ-managed-publication-context/1", "scope": SCOPE,

@@ -19,6 +19,11 @@ use crate::{
 
 /// The trusted, pinned view used for one ordered registry operation.
 pub trait CurrentTrust: VerificationSource + TrustedClock + Sync {
+    /// Resolve the current disposable broker registration under this same trust guard.
+    fn enforcement_evidence(&self) -> Option<crate::FixtureEvidence> {
+        None
+    }
+
     /// Authenticate a fresh, explicitly scoped human publisher for this exact intent.
     fn approve(
         &self,
@@ -208,6 +213,15 @@ impl<T: TrustAuthority> Registry<T> {
         let store = Store::open(path, scope)?;
         Ok(Self {
             store,
+            authority,
+            management: None,
+        })
+    }
+
+    /// Open a read-only inspection handle with a bounded integrity check and history replay.
+    pub fn open_for_inspection(path: &Path, scope: Scope, authority: T) -> Result<Self, Error> {
+        Ok(Self {
+            store: Store::open_for_inspection(path, scope)?,
             authority,
             management: None,
         })
@@ -473,6 +487,7 @@ impl<T: TrustAuthority> Registry<T> {
                 if let Some(source) = source {
                     signed_window_at(source, intent.scope(), &trust, now)?;
                 }
+                require_enforcement(&trust, intent.scope(), now)?;
                 approval.check(now)?;
                 Ok((approval, now))
             })
@@ -503,6 +518,87 @@ impl<T: TrustAuthority> Registry<T> {
             .ok_or(Error::Recovery)
     }
 
+    /// Read one bounded lifecycle page and derive evidence for its exact selected publication.
+    pub fn enforcement_labels(
+        &self,
+        scope: &Scope,
+        after: i64,
+        limit: usize,
+    ) -> Result<Value, Error> {
+        if scope != self.scope() {
+            return Err(Error::Scope);
+        }
+        let trust = self.authority.current();
+        self.store
+            .lifecycle_page(after, limit, |selection, events, next| {
+                let mut rows = Vec::new();
+                let mut selected = None;
+                if let Some((event, publication)) = selection {
+                    let evidence = trust
+                        .as_ref()
+                        .ok()
+                        .and_then(|guard| guard.enforcement_evidence());
+                    let status =
+                        trust
+                            .as_ref()
+                            .map_err(|_| "TRUST_UNAVAILABLE")
+                            .and_then(|guard| {
+                                let now = guard.now().map_err(|_| "CLOCK_UNAVAILABLE")?;
+                                policy::load(publication, scope, event.publication_version)
+                                    .map_err(|_| "POLICY_MISMATCH")?;
+                                signed_window_at(publication, scope, guard, now).map_err(
+                                    |error| match error {
+                                        Error::Time => "POLICY_EXPIRED",
+                                        Error::Trust
+                                            if [
+                                                &publication.authorization,
+                                                &publication.acceptance,
+                                            ]
+                                            .iter()
+                                            .any(|policy| {
+                                                policy
+                                                    .envelope
+                                                    .get("protected")
+                                                    .and_then(|header| {
+                                                        header.get("publisher_key_id")
+                                                    })
+                                                    .and_then(Value::as_str)
+                                                    .and_then(|id| guard.resolve(id).ok())
+                                                    .is_some_and(|key| key.revoked)
+                                            }) =>
+                                        {
+                                            "POLICY_KEY_REVOKED"
+                                        }
+                                        Error::Trust => "POLICY_KEY_UNTRUSTED",
+                                        _ => "POLICY_MISMATCH",
+                                    },
+                                )?;
+                                evidence
+                                    .as_ref()
+                                    .ok_or("EVIDENCE_UNAVAILABLE")?
+                                    .check(scope, now)
+                            });
+                    selected = Some((event, status.is_ok()));
+                    rows =
+                        crate::evidence::rows(scope, publication, evidence.as_ref(), status.err())?;
+                }
+                Ok(writ_kernel::json::obj([
+                    (
+                        "selection_revision",
+                        selected.map_or(Value::Null, |(event, _)| Value::Int(event.revision)),
+                    ),
+                    (
+                        "publication_version",
+                        selected.map_or(Value::Null, |(event, _)| {
+                            Value::Int(event.publication_version)
+                        }),
+                    ),
+                    ("history", crate::evidence::history(&events, next, selected)),
+                    ("enforcement_labels", Value::Arr(rows)),
+                ]))
+            })
+    }
+
     /// Read the append-only, structurally verified audit history.
     pub fn audit(&self) -> Result<Vec<Audit>, Error> {
         self.store.audit()
@@ -522,6 +618,18 @@ fn require_no_dependents(
     Ok(())
 }
 
+fn require_enforcement(
+    trust: &impl CurrentTrust,
+    scope: &Scope,
+    now: Timestamp,
+) -> Result<(), Error> {
+    trust
+        .enforcement_evidence()
+        .ok_or(Error::DependencyUnavailable)?
+        .check(scope, now)
+        .map_err(|_| Error::InvalidPolicy)
+}
+
 fn checked(
     publication: &Publication,
     scope: &Scope,
@@ -530,6 +638,7 @@ fn checked(
 ) -> Result<(Policies, Timestamp), Error> {
     let policies = policy::load(publication, scope, version)?;
     let now = current_signatures(publication, scope, trust)?;
+    require_enforcement(trust, scope, now)?;
     Ok((policies, now))
 }
 

@@ -1,0 +1,11 @@
+../../docs/contracts/proposed/examples/host-coverage.valid.json
+../../docs/contracts/proposed/host-coverage.schema.json
+../../docs/contracts/proposed/test_host_adapter_contract.py
+../../m5/host-contracts/README.md
+../../m5/host-contracts/claude.rs
+../../m5/host-contracts/cli.rs
+../../m5/host-contracts/kernel_boundary.rs
+../../m5/host-contracts/kernel_cases.rs
+../../m5/host-contracts/lib.rs
+../../m5/host-contracts/portability.json
+../../m5/host-contracts/tests.rs

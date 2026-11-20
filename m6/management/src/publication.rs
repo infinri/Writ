@@ -78,6 +78,10 @@ pub enum PublicationRequest {
         policy_id: String,
         confirmation: String,
     },
+    Lifecycle {
+        after: i64,
+        limit: usize,
+    },
     History {
         after: i64,
         limit: usize,
@@ -148,6 +152,12 @@ pub(crate) fn execute(
 
     use PublicationRequest::*;
     let (target, expected_revision, version, acknowledge_self, key, submission) = match request {
+        Lifecycle { after, limit } => {
+            reauthorize()?;
+            return registry
+                .enforcement_labels(registry.scope(), after, limit)
+                .map_err(registry_error);
+        }
         History { after, limit } => return history(store, registry, scope, after, limit),
         Deactivate {
             expected_revision,

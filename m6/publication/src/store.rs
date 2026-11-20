@@ -61,6 +61,8 @@ pub struct Audit {
 pub(crate) struct Store {
     scope: Scope,
     connection: Mutex<Connection>,
+    data_version: i64,
+    selection_event: Mutex<Option<Audit>>,
     _owner: OwnerLock,
 }
 
@@ -337,10 +339,11 @@ fn suffix(path: &Path, value: &str) -> PathBuf {
 }
 
 fn connect(path: &Path) -> rusqlite::Result<Connection> {
-    let connection = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )?;
+    connection_with_mode(path, OpenFlags::SQLITE_OPEN_READ_WRITE)
+}
+
+fn connection_with_mode(path: &Path, mode: OpenFlags) -> rusqlite::Result<Connection> {
+    let connection = Connection::open_with_flags(path, mode | OpenFlags::SQLITE_OPEN_NOFOLLOW)?;
     connection.execute_batch(
         "PRAGMA foreign_keys = ON; PRAGMA trusted_schema = OFF; PRAGMA synchronous = FULL;",
     )?;
@@ -359,6 +362,39 @@ fn table_schema(connection: &Connection) -> rusqlite::Result<Ddl> {
         })?
         .collect();
     tables
+}
+
+fn inspection_budget(connection: &Connection, max_rows: i64) -> Result<(), Error> {
+    let pages: i64 = connection
+        .query_row("PRAGMA page_count", [], |row| row.get(0))
+        .map_err(|_| Error::Recovery)?;
+    let size: i64 = connection
+        .query_row("PRAGMA page_size", [], |row| row.get(0))
+        .map_err(|_| Error::Recovery)?;
+    if !pages
+        .checked_mul(size)
+        .is_some_and(|bytes| (0..=32 * 1024 * 1024).contains(&bytes))
+    {
+        return Err(Error::DependencyUnavailable);
+    }
+    for (table, key) in [
+        ("publications", "version"),
+        ("publication_audit", "sequence"),
+        ("management_intents", "sequence"),
+    ] {
+        if table == "management_intents" && !has_management_table(connection)? {
+            continue;
+        }
+        let query =
+            format!("SELECT EXISTS(SELECT 1 FROM {table} ORDER BY {key} LIMIT 1 OFFSET ?1)");
+        let exceeds: bool = connection
+            .query_row(&query, [max_rows], |row| row.get(0))
+            .map_err(|_| Error::Recovery)?;
+        if exceeds {
+            return Err(Error::DependencyUnavailable);
+        }
+    }
+    Ok(())
 }
 
 fn verify_schema(connection: &Connection) -> Result<(), Error> {
@@ -474,6 +510,12 @@ fn recover(connection: &Connection, scope: &Scope) -> Result<History, Error> {
     Ok(history)
 }
 
+fn data_version(connection: &Connection) -> Result<i64, Error> {
+    connection
+        .query_row("PRAGMA data_version", [], |row| row.get(0))
+        .map_err(|_| Error::Recovery)
+}
+
 impl Store {
     pub(crate) fn create(path: &Path, scope: Scope) -> Result<Self, Error> {
         let name = path.file_name().ok_or(Error::Storage)?;
@@ -516,6 +558,8 @@ impl Store {
         match initialize() {
             Ok(connection) => Ok(Self {
                 scope,
+                data_version: data_version(&connection)?,
+                selection_event: Mutex::new(None),
                 connection: Mutex::new(connection),
                 _owner: owner,
             }),
@@ -530,18 +574,43 @@ impl Store {
     }
 
     pub(crate) fn open(path: &Path, scope: Scope) -> Result<Self, Error> {
+        Self::open_with_budget(path, scope, None)
+    }
+
+    pub(crate) fn open_for_inspection(path: &Path, scope: Scope) -> Result<Self, Error> {
+        Self::open_with_budget(path, scope, Some(256))
+    }
+
+    fn open_with_budget(path: &Path, scope: Scope, max_rows: Option<i64>) -> Result<Self, Error> {
         let path = fs::canonicalize(path).map_err(|_| Error::Recovery)?;
         let metadata = fs::metadata(&path).map_err(|_| Error::Recovery)?;
         if !metadata.is_file() || metadata.nlink() != 1 {
             return Err(Error::Recovery);
         }
         let owner = OwnerLock::acquire(&suffix(&path, ".owner")).map_err(|_| Error::Storage)?;
-        let connection = connect(&path).map_err(|_| Error::Recovery)?;
-        verify_schema(&connection)?;
-        recover(&connection, &scope)?;
+        let mode = if max_rows.is_some() {
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+        } else {
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+        };
+        let mut connection = connection_with_mode(&path, mode).map_err(|_| Error::Recovery)?;
+        let snapshot = connection.transaction().map_err(|_| Error::Recovery)?;
+        let data_version = data_version(&snapshot)?;
+        if let Some(limit) = max_rows {
+            inspection_budget(&snapshot, limit)?;
+        }
+        verify_schema(&snapshot)?;
+        let selection_event = recover(&snapshot, &scope)?
+            .audit
+            .into_iter()
+            .rev()
+            .find(|event| event.operation != Operation::Retire);
+        snapshot.commit().map_err(|_| Error::Recovery)?;
         Ok(Self {
             scope,
             connection: Mutex::new(connection),
+            data_version,
+            selection_event: Mutex::new(selection_event),
             _owner: owner,
         })
     }
@@ -686,7 +755,11 @@ impl Store {
             return Err(Error::Time);
         }
         final_approval.check(final_time)?;
+        let mut selection_event = self.selection_event.lock().map_err(|_| Error::Storage)?;
         tx.commit().map_err(storage)?;
+        if operation != Operation::Retire {
+            *selection_event = Some(event.audit);
+        }
         Ok(Commit {
             revision,
             publication_version: version,
@@ -736,6 +809,71 @@ impl Store {
         let result = use_selection(history.head.revision, version, publication, &history.audit);
         drop(connection);
         result.map(Some)
+    }
+
+    /// The owner verified the chain at open and before each commit. Reject any writes by
+    /// another connection and read the selected document and keyset page in one snapshot.
+    pub(crate) fn lifecycle_page<R>(
+        &self,
+        after: i64,
+        limit: usize,
+        project: impl FnOnce(
+            Option<(&Audit, &Publication)>,
+            Vec<Audit>,
+            Option<i64>,
+        ) -> Result<R, Error>,
+    ) -> Result<R, Error> {
+        number(after, 0)?;
+        if !(1..=50).contains(&limit) {
+            return Err(Error::Format);
+        }
+        let mut db = self.connection.lock().map_err(|_| Error::Storage)?;
+        let tx = db.transaction().map_err(|_| Error::Storage)?;
+        let head = durable_head(&tx, &self.scope)?;
+        if data_version(&tx)? != self.data_version {
+            return Err(Error::Recovery);
+        }
+        let activation = self.selection_event.lock().map_err(|_| Error::Recovery)?;
+        let publication = if let Some(audit) = activation.as_ref() {
+            if head.publication_version != Some(audit.publication_version)
+                || head.revision != audit.revision
+            {
+                return Err(Error::Recovery);
+            }
+            let document: String = tx
+                .query_row(
+                    "SELECT document FROM publications WHERE version=?1",
+                    [audit.publication_version],
+                    |row| row.get(0),
+                )
+                .map_err(|_| Error::Recovery)?;
+            Some(Entry::from_storage(&document, &audit.publication_digest)?.publication)
+        } else if head == Head::default() {
+            None
+        } else {
+            return Err(Error::Recovery);
+        };
+        let mut query = tx
+            .prepare(
+                "SELECT sequence, revision, operation, publication_version, publication_digest,
+            intent_digest, human, ceremony, at, issued_at, expires_at, NULL
+            FROM publication_audit WHERE sequence > ?1 ORDER BY sequence LIMIT ?2",
+            )
+            .map_err(|_| Error::Storage)?;
+        let mut rows = query
+            .query((after, limit as i64 + 1))
+            .map_err(|_| Error::Storage)?;
+        let mut events = Vec::new();
+        while let Some(row) = rows.next().map_err(|_| Error::Storage)? {
+            events.push(Event::from_row(row)?.audit);
+        }
+        let next = if events.len() > limit {
+            events.truncate(limit);
+            events.last().map(|event| event.sequence)
+        } else {
+            None
+        };
+        project(activation.as_ref().zip(publication.as_ref()), events, next)
     }
 
     pub(crate) fn audit(&self) -> Result<Vec<Audit>, Error> {
@@ -840,6 +978,36 @@ mod tests {
             })
             .unwrap()
             .unwrap()
+    }
+
+    #[test]
+    fn inspection_budget_bounds_recovery_without_limiting_publication() {
+        let scratch = Scratch::new();
+        let path = scratch.database();
+        let store = Store::create(&path, scope()).unwrap();
+        let first = publication("auth-1", "accept-1", "proof-1");
+        let second = publication("auth-2", "accept-2", "proof-2");
+        change(&store, Operation::Publish, 0, 1, &first, "first").unwrap();
+        change(&store, Operation::Publish, 1, 2, &second, "second").unwrap();
+        drop(store);
+        assert!(matches!(
+            Store::open_with_budget(&path, scope(), Some(1)),
+            Err(Error::DependencyUnavailable)
+        ));
+        let bounded = Store::open_with_budget(&path, scope(), Some(2)).unwrap();
+        assert_eq!(bounded.audit().unwrap().len(), 2);
+        drop(bounded);
+        let ordinary = Store::open(&path, scope()).unwrap();
+        change(&ordinary, Operation::Rollback, 2, 1, &first, "third").unwrap();
+        drop(ordinary);
+        assert!(matches!(
+            Store::open_with_budget(&path, scope(), Some(2)),
+            Err(Error::DependencyUnavailable)
+        ));
+        assert_eq!(
+            Store::open(&path, scope()).unwrap().audit().unwrap().len(),
+            3
+        );
     }
 
     #[test]

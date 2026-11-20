@@ -542,6 +542,27 @@ fn decisions() -> Vec<Value> {
 }
 
 #[test]
+fn management_outage_preserves_complete_core_decisions() {
+    let baseline = decisions();
+    let lab = Lab::new();
+    let store = Store::open_without_recovery(&lab.store).unwrap();
+    let wire = json::canonical(&request(
+        "policy.lifecycle.inspect",
+        &json::obj([("after", Value::Int(0)), ("limit", Value::Int(1))]),
+    ))
+    .unwrap();
+    let authority = fixture::authority();
+    for (service, expected) in [
+        (Service::new(&store, None), "UNAUTHORIZED"),
+        (Service::new(&store, Some(&authority)), "UNAVAILABLE"),
+    ] {
+        let response = execute_v1_with_service(&service, VIEWER.as_bytes(), wire.as_bytes());
+        assert_eq!(code(&json::parse(&response).unwrap()), Some(expected));
+        assert_eq!(decisions(), baseline);
+    }
+}
+
+#[test]
 fn complete_pack_lifecycle() {
     let baseline = decisions();
     let lab = Lab::new();

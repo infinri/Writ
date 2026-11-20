@@ -212,6 +212,10 @@ impl TrustedClock for FixtureView<'_> {
 }
 
 impl CurrentTrust for FixtureView<'_> {
+    fn enforcement_evidence(&self) -> Option<writ_policy_publication_lab::FixtureEvidence> {
+        Some(writ_policy_publication_lab::FixtureEvidence::registered())
+    }
+
     fn approve(
         &self,
         intent: &Intent,
