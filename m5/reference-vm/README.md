@@ -101,6 +101,8 @@ Power off and roll back or destroy the guest as described in [local provisioning
 | `trial.sh` | starts a probe fixture as `writ` (`LimitCORE=0`, holding `/run/writ/admin.sock` 0600) to exercise denial checks and the synthetic canary control. It exports the fixture journal; prepares a `writ`-owned hard-link source in `/var/tmp` and a bind mount inside a test root; runs `writ-probe agent-deny` as the agent user; runs `writ-probe` as `writ` in its own delegated unit (`systemd-run -p Delegate=yes`, `--cgroup-delegated`, `--xdev-root`); runs separate sandbox probes as the job UID, then the VM-only negative controls below; every change is restored by an exit trap. |
 | `teardown.sh` | stops leftover units; unloads the AppArmor profile; removes, newest first, exactly what the state file lists (purges `bubblewrap` only if setup installed it); verifies nothing is left. |
 
+The compiled P-AGENT-USERNS control description at the sealed checkpoint still says “in group writ”. For this reference profile the private executable belongs to the configured job group. Use the observed group, UID, executable mode, allowed private-copy attempt and exact probe result from `trial.sh` for the control record.
+
 VM-only negative controls in `trial.sh` (each probe's runtime control runs inside every `writ-probe` report):
 
 | Control | Change | Expected |
