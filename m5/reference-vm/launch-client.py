@@ -34,6 +34,8 @@ def read_frame(sock, deadline):
         sock.settimeout(max(0.01, deadline - time.monotonic()))
         chunk = sock.recv(5 - len(buf))
         if not chunk:
+            if buf:
+                raise ValueError("truncated frame header")
             return None
         buf += chunk
     length, kind = struct.unpack(">IB", buf)
@@ -42,7 +44,7 @@ def read_frame(sock, deadline):
         sock.settimeout(max(0.01, deadline - time.monotonic()))
         chunk = sock.recv(length - len(payload))
         if not chunk:
-            return None
+            raise ValueError("truncated frame payload")
         payload += chunk
     return kind, payload
 
@@ -59,6 +61,7 @@ def main():
     out = {"connected": "0", "hello": "0", "started": "0", "outcome": "closed"}
     deadline = time.monotonic() + a.deadline
     stdout = bytearray()
+    rc = 0
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.connect(a.socket)
@@ -69,11 +72,13 @@ def main():
         if a.mode == "before-hello":
             s.sendall(frame(CONTROL, canonical(request)))
         f = read_frame(s, deadline)
-        if f is None or f[0] != CONTROL:
+        if f is None:
             raise EOFError
+        if f[0] != CONTROL:
+            raise ValueError("expected launcher hello frame")
         hello = json.loads(f[1])
         if hello.get("contract") != "writ-launch-hello/1":
-            raise EOFError
+            raise ValueError("unexpected launcher hello contract")
         out["hello"] = "1"
         out["instance"] = hello.get("instance", "")
         if a.mode == "no-request":
@@ -117,13 +122,18 @@ def main():
                 out["result_populated_zero"] = "true" if msg["kill"]["populated_zero"] else "false"
                 out["result_request_digest"] = msg["request_digest"]
                 break
-    except (EOFError, OSError, ValueError, KeyError):
+    except EOFError:
         pass
+    except (OSError, ValueError, KeyError) as error:
+        print(f"launcher observation unavailable: {error}", file=sys.stderr)
+        out["outcome"] = "unavailable"
+        rc = 3
     if a.stdout_file:
         open(a.stdout_file, "wb").write(bytes(stdout))
     for k, v in out.items():
         print(f"{k}={v}")
+    return rc
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

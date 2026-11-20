@@ -18,7 +18,9 @@ reports="$share/launcher-reports"
 install -d -m 0755 "$reports"
 sock=/run/writ-launcher/launch.sock
 runroot=/var/lib/writ/run
-client="$here/launch-client.py"
+# shellcheck source=trial-launch-client.sh
+. "$here/trial-launch-client.sh"
+stage_launch_client
 job_uid=$(id -u "$job_user")
 launcher_cfg=/etc/writ-launcher/launcher.json
 launcher_backup="$share/launcher.json.orig"
@@ -76,21 +78,6 @@ for o in over:
         req[k] = v
 json.dump(req, open(out, "w"))
 PY
-}
-
-# launch AS ID MODE: run the client as AS; output in $share/launch-ID.txt and its stdout bytes
-# in $share/launch-ID.out.
-launch() {
-  local as="$1" id="$2" mode="${3:-normal}"
-  local req="$share/req-$id.json"
-  [ -f "$req" ] || req="$share/req-default.json"
-  chmod 0644 "$req"
-  if [ "$as" = root ]; then
-    python3 "$client" --socket "$sock" --request "$req" --mode "$mode" --stdout-file "$share/launch-$id.out" > "$share/launch-$id.txt" 2>&1 || true
-  else
-    runuser -u "$as" -- python3 "$client" --socket "$sock" --request "$req" --mode "$mode" --stdout-file "$share/launch-$id.out" > "$share/launch-$id.txt" 2>&1 || true
-  fi
-  cp "$share/launch-$id.txt" "$ev/launch-$id.txt"
 }
 
 lget() { awk -F= -v k="$2" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' "$share/launch-$1.txt"; }
@@ -253,7 +240,8 @@ useradd --create-home --shell /bin/bash "$desktop"
     if [ "$(lget "peer-$name" hello)" = 1 ]; then echo "peer_$name=hello"; else echo "peer_$name=closed_before_read"; fi
   done
   # A peer in a user namespace without mappings (root's own namespace view stays 0 outside).
-  unshare -U python3 "$client" --socket "$sock" --request "$share/req-default.json" > "$share/launch-peer-overflow.txt" 2>&1 || true
+  record_launch_client peer-overflow unshare -U python3 "$client" \
+    --socket "$sock" --request "$share/req-default.json"
   if [ "$(lget peer-overflow hello)" = 1 ]; then echo peer_overflow=hello; else echo peer_overflow=closed_before_read; fi
   launch writ peer-writ no-request
   if [ "$(lget peer-writ hello)" = 1 ]; then echo peer_writ=hello; else echo peer_writ=closed; fi
@@ -412,7 +400,7 @@ sleep 1
 request default
 launch writ second
 if [ "$(lget second hello)" = 1 ]; then echo second_connection=served; else echo second_connection=refused; fi > "$r"
-wait "$long" || true
+wait "$long"
 sleep 1
 {
   echo "after_job_procs=$(ps -u "$job_user" -o pid= 2>/dev/null | wc -l)"
