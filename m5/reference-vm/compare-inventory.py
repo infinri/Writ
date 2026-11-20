@@ -7,6 +7,7 @@ from pathlib import Path
 import pwd
 import re
 import socket
+import stat
 import subprocess
 import sys
 
@@ -117,6 +118,11 @@ def observation():
                         raise
                     match = re.fullmatch(r"socket:\[(\d+)\]", str(target))
                     if match and match[1] in expected_inodes:
+                        socket_file = fd.stat()
+                        require(stat.S_ISSOCK(socket_file.st_mode)
+                                and socket_file.st_ino == int(match[1])
+                                and socket_file.st_uid == accounts["desktop"].pw_uid,
+                                "fixture socket inode or owner mismatch")
                         holders.add((proc.name, match[1]))
         require(holders == {(desktop.name, inode) for inode in expected_inodes},
                 "missing or additional fixture endpoint holder")

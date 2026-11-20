@@ -370,7 +370,7 @@ if test "$rc" -eq 0; then
 fi
 ```
 
-In the same guest root shell, compare the fixture processes, four endpoints and their holders while the fixtures are still live. Preserve comparison failure alongside the inventory, including cases where a task changed during the independent sweep. The comparison checks the socket cookie encoding and reserved values. It does not independently obtain the socket cookie.
+In the same guest root shell, compare the fixture processes, four endpoints and their holders while the fixtures are still live. Preserve comparison failure alongside the inventory, including cases where a task changed during the independent sweep. For each of the four fixtures, both independent holder sweeps check the socket inode and owner UID through the live descriptor. The comparison checks the socket cookie encoding and reserved values. It does not independently obtain the socket cookie.
 
 ```bash
 sha256sum --check --strict TOOL-SHA256SUMS

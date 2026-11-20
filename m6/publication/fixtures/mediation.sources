@@ -58,10 +58,12 @@
 ../../hostsys/src/desktop_collect/guest/process.rs
 ../../hostsys/src/desktop_collect/guest/process/tests.rs
 ../../hostsys/src/desktop_collect/guest/sockets.rs
+../../hostsys/src/desktop_collect/guest/sockets/sample_tests.rs
 ../../hostsys/src/desktop_collect/guest/sockets/tests.rs
 ../../hostsys/src/desktop_collect/identity.rs
 ../../hostsys/src/desktop_collect/identity/tests.rs
 ../../hostsys/src/desktop_collect/inventory.rs
+../../hostsys/src/desktop_collect/inventory/attribution_tests.rs
 ../../hostsys/src/desktop_collect/inventory/guest.rs
 ../../hostsys/src/desktop_collect/mod.rs
 ../../hostsys/src/desktop_collect/tests.rs
