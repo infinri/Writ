@@ -1195,6 +1195,65 @@ fn management_drafts_leave_signed_selection_grants_and_effects_unchanged() {
             .unwrap();
     let grant = grants::approve(&broker.ledger, &approval_request);
 
+    let original_selection = selected(&registry);
+    let original_audit = registry.audit().unwrap();
+    assert_eq!(original_selection, (1, 1));
+    assert_eq!(original_audit.len(), 1);
+
+    let assert_effect_counts = |expected| {
+        assert_eq!(count(&ledger_path, "approval_requests"), 1);
+        assert_eq!(count(&ledger_path, "grant_uses"), expected);
+        assert_eq!(count(&ledger_path, "receipts"), expected);
+        assert_eq!(count(&effects_path, "effects"), expected);
+        assert_eq!(count(&effects_path, "consumed_permits"), expected);
+    };
+    let assert_policy_unchanged = || {
+        assert_eq!(decide(), original_decision);
+        assert_eq!(selected(&registry), original_selection);
+        assert_eq!(registry.audit().unwrap(), original_audit);
+    };
+    let assert_isolated = || {
+        assert_policy_unchanged();
+        assert_effect_counts(0);
+    };
+    assert_isolated();
+
+    let invoke_cli = |database: &Path, input: Option<&[u8]>| {
+        let mut child = Command::new(&cli)
+            .arg("v1")
+            .arg(database)
+            .arg(&credential)
+            .stdin(if input.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        if let Some(input) = input {
+            child.stdin.take().unwrap().write_all(input).unwrap();
+        }
+        let output = child.wait_with_output().unwrap();
+        let response = json::parse(&output.stdout).unwrap();
+        assert_eq!(response.get("version"), Some(&json::s("/manage/v1")));
+        assert_eq!(
+            response.get("ok").and_then(Value::as_bool),
+            Some(output.status.success()),
+            "{response:?}",
+        );
+        (output.status.success(), response)
+    };
+    let assert_refused = |database: &Path, input: Option<&[u8]>, code: &str| {
+        let (ok, response) = invoke_cli(database, input);
+        assert!(!ok, "{response:?}");
+        assert_eq!(
+            response.get("error").and_then(|error| error.get("code")),
+            Some(&json::s(code)),
+            "{response:?}",
+        );
+        assert_isolated();
+    };
     let invoke = |operation, fields: &[(&str, Value)]| {
         let mut query = json::obj([
             ("version", json::s("/manage/v1")),
@@ -1215,28 +1274,10 @@ fn management_drafts_leave_signed_selection_grants_and_effects_unchanged() {
                 .iter()
                 .map(|(key, value)| ((*key).to_string(), value.clone())),
         );
-        let mut child = Command::new(&cli)
-            .arg("v1")
-            .arg(&drafts)
-            .arg(&credential)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
         let input = json::canonical(&Value::Obj(query)).unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(input.as_bytes())
-            .unwrap();
-        let output = child.wait_with_output().unwrap();
-        assert!(output.status.success(), "{:?}", json::parse(&output.stdout));
-        json::parse(&output.stdout)
-            .unwrap()
-            .get("result")
-            .unwrap()
-            .clone()
+        let (ok, response) = invoke_cli(&drafts, Some(input.as_bytes()));
+        assert!(ok, "{response:?}");
+        response.get("result").unwrap().clone()
     };
     for (operation, policy, revision) in [("create", APPROVAL, 0), ("edit", DENY, 1)] {
         let fields = [
@@ -1293,56 +1334,46 @@ fn management_drafts_leave_signed_selection_grants_and_effects_unchanged() {
         br#"{"version":"/manage/v1","operation":"evaluator_inspect","scope":{"tenant":"m6-lab","project":"offline-proof"},"evaluator_id":"doc-check","after":0,"limit":1}"#.as_slice(),
         br#"{"version":"/manage/v1","operation":"waiver_inspect","scope":{"tenant":"m6-lab","project":"offline-proof"},"waiver_id":"sha256:1111111111111111111111111111111111111111111111111111111111111111"}"#.as_slice(),
     ] {
-        let mut child = Command::new(&cli)
-            .arg("v1")
-            .arg(&drafts)
-            .arg(&credential)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child.stdin.take().unwrap().write_all(query).unwrap();
-        let output = child.wait_with_output().unwrap();
-        assert!(!output.status.success());
-        assert_eq!(
-            json::parse(&output.stdout)
-                .unwrap()
-                .get("error")
-                .and_then(|error| error.get("code")),
-            Some(&json::s("UNAVAILABLE"))
-        );
-        assert_eq!(decide(), original_decision);
+        assert_refused(&drafts, Some(query), "UNAVAILABLE");
     }
-    let outage = Command::new(&cli)
-        .arg("v1")
-        .arg(dir.path().join("unavailable-management.sqlite"))
-        .arg(&credential)
-        .stdin(Stdio::null())
-        .output()
-        .unwrap();
-    assert!(!outage.status.success());
+
+    let unavailable_drafts = dir.path().join("unavailable-management.sqlite");
+    assert!(!unavailable_drafts.exists());
+    assert_refused(&unavailable_drafts, None, "INVALID_REQUEST");
+    assert!(!unavailable_drafts.exists());
+
+    // Use the same request and credential with both paths to isolate the store failure.
+    let read = br#"{"version":"/manage/v1","operation":"get","scope":{"tenant":"m6-lab","project":"offline-proof"},"draft":{"id":"draft","revision":2}}"#;
+    let (ok, response) = invoke_cli(&drafts, Some(read));
+    assert!(ok, "{response:?}");
+    let version = response.get("result").unwrap();
+    assert_eq!(version.get("id"), Some(&json::s("draft")));
+    assert_eq!(version.get("revision"), Some(&Value::Int(2)));
+    assert_isolated();
+
+    assert_refused(&unavailable_drafts, Some(read), "UNAVAILABLE");
+    assert!(!unavailable_drafts.exists());
+
+    let (result, permit) = broker.execute(&protected, Some(&grant)).unwrap();
+    assert_eq!(result, Ok(Executed::EffectCompleted));
+    assert!(permit.is_some());
+    assert_effect_counts(1);
+    let (result, permit) = broker.execute(&protected, Some(&grant)).unwrap();
     assert_eq!(
-        json::parse(&outage.stdout)
-            .unwrap()
-            .get("error")
-            .unwrap()
-            .get("code"),
-        Some(&json::s("UNAVAILABLE"))
+        result,
+        Ok(Executed::Replayed(
+            writ_broker::grants::Replay::EffectCompleted
+        ))
     );
-    assert_eq!(decide(), original_decision);
-    assert_eq!(selected(&registry), (1, 1));
-    assert_eq!(registry.audit().unwrap().len(), 1);
-    assert_eq!(count(&ledger_path, "approval_requests"), 1);
-    assert_eq!(count(&ledger_path, "grant_uses"), 0);
-    assert_eq!(count(&ledger_path, "receipts"), 0);
-    assert_eq!(count(&effects_path, "effects"), 0);
-    assert_eq!(count(&effects_path, "consumed_permits"), 0);
-    assert_eq!(
-        broker.execute(&protected, Some(&grant)).unwrap().0,
-        Ok(Executed::EffectCompleted)
-    );
-    assert_eq!(count(&ledger_path, "grant_uses"), 1);
-    assert_eq!(count(&effects_path, "effects"), 1);
+    assert!(permit.is_none());
+    assert_effect_counts(1);
+
+    let fresh = request("attempt-to-reuse-fixture-grant");
+    let (result, permit) = broker.execute(&fresh, Some(&grant)).unwrap();
+    assert_eq!(result, Err(Refusal::GrantExhausted));
+    assert!(permit.is_none());
+    assert_effect_counts(1);
+    assert_policy_unchanged();
 }
 
 #[test]

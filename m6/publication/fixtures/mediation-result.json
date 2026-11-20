@@ -1,7 +1,7 @@
 {
   "version": "writ-fixture-test-result/1",
   "profile": "synthetic-publication-lab/1",
-  "implementation_digest": "sha256:37135c277d4f00bea5749082706eb70e4e25de30dcc1180261c26726ef7d6a38",
+  "implementation_digest": "sha256:3942bcf26bb6cfd2e54729f839b09f118324bfdde9709e92f343d2d69b4d730f",
   "passed": [
     "every_registered_rule_runs_through_the_selected_permit_consuming_effect",
     "verified_restart_loads_the_exact_pair_and_replays_effect_once",
