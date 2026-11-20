@@ -6,16 +6,20 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 
 D-062 is the disposable enforcement-label and policy lifecycle checkpoint. Read [WORK-STATE](WORK-STATE.md), [D-062](DECISION-LOG.md#d-062-evidence-derived-enforcement-labels-and-disposable-lifecycle-view-owner-2026-11-19), [E-109](TEST-EVIDENCE.md#e-109-disposable-enforcement-labels-and-policy-inspection) and the [finite M6 checklist](M6-CLOSURE-CHECKLIST.md). The [fixture commands](../../m6/management/README.md) reproduce the scoped read-only export. The publication owner checks current evidence again inside the final change transaction. A fixture label conveys no deployed host guarantee.
 
-Recover in an isolated checkout of `infinri/Writ` on `v2/architecture-rebuild`. Preserve the divergent original at `a1eee0d40e2e331046640d98497c2fbc1b3e0d0f`, unrelated local work and the private audit directory. The D-062 checkpoint directly follows `48bd7930afab096f674f497485d64ad77a308171` ([six successful jobs](https://github.com/infinri/Writ/actions/runs/44649136581)). Its parent implementation `862c40dce812bd6716d8161026e2f301117cf614` also [passed six jobs](https://github.com/infinri/Writ/actions/runs/44648932564). Resolve the checkpoint by commit subject `M6: resolve scoped enforcement evidence and inspect policy lifecycle` on the remote branch. Compare the full SHA with the exact workflow head before counting jobs.
+Recover in an isolated checkout of `infinri/Writ` on `v2/architecture-rebuild`. Preserve the divergent original at `a1eee0d40e2e331046640d98497c2fbc1b3e0d0f`, unrelated local work and private audit material.
+
+The D-062 test correction was reconstructed from published baseline `20710ea4f8f8308ce8ec96f0ebbe27082fd4f477`. The baseline passed five of six required jobs and failed the management isolation regression. New correction `9b4bac4c73f607ef9b9840322458b60217d3799d` passed all six required jobs on its exact SHA. The regression now distinguishes malformed stdin from an authorized read with unavailable storage, verifies the full Decision and durable state, and proves that the grant permits one effect. [Baseline CI](https://github.com/infinri/Writ/actions/runs/44654094968) · [Correction CI](https://github.com/infinri/Writ/actions/runs/44664550566) · [Correction evidence](TEST-EVIDENCE.md#reconstructed-d-062-isolation-regression-correction)
+
+The handoff has its own required run. Verify the current published SHA and all six required jobs in an isolated checkout.
 
 ```sh
 git fetch origin v2/architecture-rebuild
-sha=$(git log -1 --format=%H --fixed-strings --grep='M6: resolve scoped enforcement evidence and inspect policy lifecycle' FETCH_HEAD)
+sha=$(git rev-parse FETCH_HEAD)
 gh run list --repo infinri/Writ --branch v2/architecture-rebuild --workflow v2-docs.yml --commit "$sha"
 gh run view <run-id> --repo infinri/Writ --json headSha,conclusion,jobs
 ```
 
-Next, complete the remaining unblocked policy and acceptance operations, comparisons, lifecycle mutation UI and inherited authenticated service identified in the checklist. The fixture export delivers inspection only. Human-review obligations and the trusted-source completeness limitation remain. Separate decisions govern deployment trust, reviewed independence groups and legacy imports. After unblocked M6 work, prioritize the [designated guest inventory](../../m5/reference-vm/PROVISIONING.md#first-guest-inventory), [full Ubuntu VM verification](M5A-GATE-REVIEW.md#4-verify-in-vm-checklist-all-open) and [isolated containment CI](../../m5/containment-ci/README.md) before M7.
+Finish evidence-derived enforcement labels and common isolation coverage. Then complete the remaining unblocked policy and acceptance lifecycle operations, recorded-transition and active-bundle comparisons, lifecycle mutation UI and inherited authenticated management service from the [finite checklist](M6-CLOSURE-CHECKLIST.md). Extend the common matrix with each new operation. Use shared interfaces, disjoint file ownership and one integration lead. Human review and trusted-source completeness remain open. Separate decisions govern deployment trust, reviewed independence groups and legacy imports. Next run the [designated guest inventory](../../m5/reference-vm/PROVISIONING.md#first-guest-inventory), [full Ubuntu VM verification](M5A-GATE-REVIEW.md#4-verify-in-vm-checklist-all-open) and [isolated containment CI](../../m5/containment-ci/README.md) before M7. Then return to M6 integration and final gate review.
 
 M5, M6 and CC-M2/M3/M6 remain open. Preserve D-048, D-049 including its 2026-12-18 UTC expiry, and the unresolved E-097 CI stall. ADR-0008 remains APPROVED IN PRINCIPLE. Release and production remain NO-GO.
 

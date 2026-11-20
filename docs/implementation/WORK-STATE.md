@@ -1,6 +1,6 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-19 (D-062 disposable enforcement labels) · **Branch:** v2/architecture-rebuild · **Milestones:** M5 and M6 in progress. The M5 reference guest and isolated containment CI gates are open. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md#current-recovery-state).
+**Last updated:** 2026-11-20 (D-062 isolation regression correction) · **Branch:** v2/architecture-rebuild · **Milestones:** M5 and M6 in progress. The M5 reference guest and isolated containment CI gates are open. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md#current-recovery-state).
 
 ## Current
 
@@ -59,7 +59,7 @@ SANDBOX PREPARED / LIVE VERIFICATION NOT EXECUTED; sandbox **torn down** 2026-11
 
 ## Last verification
 
-D-062 builds on checkpoint `48bd7930afab096f674f497485d64ad77a308171` and [its six successful jobs](https://github.com/infinri/Writ/actions/runs/44649136581). Use [SESSION-HANDOFF](SESSION-HANDOFF.md#current-recovery-state) for the D-062 exact-SHA lookup.
+D-062 correction `9b4bac4c73f607ef9b9840322458b60217d3799d` passed all six required jobs. It was reconstructed from the published baseline and restores the isolation regression without changing production semantics. Use [SESSION-HANDOFF](SESSION-HANDOFF.md#current-recovery-state) to verify the current remote SHA. [Correction CI](https://github.com/infinri/Writ/actions/runs/44664550566)
 
 D-060 implementation `39fbd3fdc33d0b99c49802f016dd6295b937300d` has [exact-SHA run 44642143521](https://github.com/infinri/Writ/actions/runs/44642143521). E-107 records the verified M6 steps, local commands and review dispositions. Verify this checkpoint on its own exact SHA using the recovery instructions.
 
