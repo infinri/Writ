@@ -362,6 +362,7 @@ version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
  "rusqlite",
+ "rustix",
  "writ-broker",
  "writ-kernel",
  "writ-ledger-sqlite",

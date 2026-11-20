@@ -1,10 +1,12 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-20 (D-062 isolation regression correction) · **Branch:** v2/architecture-rebuild · **Milestones:** M5 and M6 in progress. The M5 reference guest and isolated containment CI gates are open. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md#current-recovery-state).
+**Last updated:** 2026-11-20 (post-D-062 management batch) · **Branch:** v2/architecture-rebuild · **Milestones:** M5 and M6 in progress. The M5 reference guest and isolated containment CI gates are open. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md#current-recovery-state).
 
 ## Current
 
-- D-062 delivers shared scoped enforcement evidence, a fixture CLI and read-only policy lifecycle export. Commit-time owner verification, real Chrome and five-family isolation checks are recorded in [E-109](TEST-EVIDENCE.md#e-109-disposable-enforcement-labels-and-policy-inspection). The [finite M6 checklist](M6-CLOSURE-CHECKLIST.md) identifies the remaining lifecycle mutations, comparison and management-service work.
+- [E-110](TEST-EVIDENCE.md#e-110-authenticated-management-and-lifecycle-ui) extends the D-062 baseline through the authenticated lifecycle, comparison and audit paths. The next work is owner designation, first reference guest inventory, VM verification and separate isolated containment CI. See the [current handoff](SESSION-HANDOFF.md#current-recovery-state).
+
+- D-062 delivers shared scoped enforcement evidence, a fixture CLI and read-only policy lifecycle export. Commit-time owner verification, real Chrome and five-family isolation checks are recorded in [E-109](TEST-EVIDENCE.md#e-109-disposable-enforcement-labels-and-policy-inspection). The [finite M6 checklist](M6-CLOSURE-CHECKLIST.md) tracks the subsequent E-110 coverage and governed dependencies.
 
 - D-061 adds the [signed high-stakes evaluator quorum](../../m6/evaluators/README.md#signed-high-stakes-quorum-under-d-061) to the existing broker and SQLite promotion transaction on a disposable profile. Signed membership, separately authenticated contributions, current trust and separate human signoff gate consumption. Fixture group declarations and in-process source completeness remain bounded development evidence.
 

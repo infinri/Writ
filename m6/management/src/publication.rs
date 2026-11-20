@@ -417,7 +417,7 @@ impl Coordinator<'_> {
                 return Err(Error::RevisionConflict);
             }
             let row = load(db, self.scope, &draft)?;
-            if target.prerequisites.get("draft") != Some(&row.candidate) {
+            if !crate::comparison::draft_matches(&row.candidate, &target) {
                 return Err(Error::InvalidPolicy);
             }
             let version: Version = row.try_into()?;

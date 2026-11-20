@@ -43,6 +43,7 @@ path = "src/pack_fixture_authority.rs"
 required-features = ["fixtures"]
 
 [dependencies]
+rustix = { version = "=1.1.6", features = ["fs"] }
 writ-kernel = { path = "../../kernel" }
 writ-policy-compile = { path = "../compiler" }
 writ-policy-publication-lab = { path = "../publication" }

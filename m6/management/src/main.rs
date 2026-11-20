@@ -25,8 +25,19 @@ fn read_bounded(reader: impl Read, limit: usize) -> Result<Vec<u8>, Error> {
 }
 
 fn run() -> Result<Vec<u8>, Error> {
-    let args: Vec<_> = env::args_os().skip(1).take(6).collect();
-    match args.as_slice() {
+    let args: Vec<_> = env::args_os().skip(1).take(8).collect();
+    let authenticated = args.first().is_some_and(|value| value == "authenticated");
+    let args = if authenticated { &args[1..] } else { &args[..] };
+    if authenticated
+        && !args.first().is_some_and(|value| {
+            value
+                .to_str()
+                .is_some_and(|s| s == "v1" || s.starts_with("v1-"))
+        })
+    {
+        return Err(Error::InvalidRequest);
+    }
+    match args {
         [command, db] if command == "init" => {
             Store::create(Path::new(db))?;
             Ok(br#"{"ok":true,"result":{"initialized":true},"version":"/manage/v1"}"#.to_vec())
@@ -75,12 +86,19 @@ fn run() -> Result<Vec<u8>, Error> {
             let credential = fs::File::open(path).map_err(|_| Error::Unauthorized)?;
             let credential = read_bounded(credential, MAX_CREDENTIAL)?;
             let request = read_bounded(io::stdin().lock(), MAX_REQUEST)?;
-            let authority = fixture::authority();
+            let fixture_identity = fixture::authority();
+            let catalog = env::var_os("WRIT_MANAGEMENT_IDENTITY_DB")
+                .map(|path| writ_policy_management_lab::identity::CatalogAuthority(path.into()));
+            let authority: &dyn writ_policy_management_lab::Authenticator = match &catalog {
+                Some(catalog) => catalog,
+                None if authenticated => return Err(Error::Unauthorized),
+                None => &fixture_identity,
+            };
             let allow_self_publication = command == "v1-contracts"
                 || command == "v1-packs"
                 || (command == "v1" && !extra.is_empty());
             let request = match preflight_v1(
-                &authority,
+                authority,
                 &credential,
                 &request,
                 allow_self_publication,
@@ -89,7 +107,17 @@ fn run() -> Result<Vec<u8>, Error> {
                 Ok(request) => request,
                 Err(response) => return Ok(response),
             };
-            let read_lifecycle = request.reads_policy_lifecycle();
+            let read_lifecycle = request.reads_policy_lifecycle() || request.compares_publication();
+            let records = if request.compares_recorded() {
+                let path = env::var_os("WRIT_MANAGEMENT_TRANSITIONS").ok_or(Error::Unavailable)?;
+                Some(
+                    writ_policy_management_lab::comparison::RecordedTransitions::open(Path::new(
+                        &path,
+                    ))?,
+                )
+            } else {
+                None
+            };
             let read_draft = command == "v1" && request.reads_draft_metadata();
             let execute = |service: &Service<'_>| {
                 service
@@ -106,7 +134,26 @@ fn run() -> Result<Vec<u8>, Error> {
             } else {
                 Store::open(Path::new(db))?
             };
-            let service = Service::new(&store, Some(&authority));
+            let audit = match (
+                env::var_os("WRIT_MANAGEMENT_AUDIT_SOURCE"),
+                env::var_os("WRIT_MANAGEMENT_AUDIT_DB"),
+            ) {
+                (None, None) => None,
+                (None, Some(path)) => Some(writ_policy_management_lab::audit::AuditReader::new(
+                    Path::new(&path),
+                )),
+                (Some(mode), None) if mode == "draft-owner" => Some(
+                    writ_policy_management_lab::audit::AuditReader::draft_owner(&store),
+                ),
+                _ => return Err(Error::Unavailable),
+            };
+            let mut service = Service::new(&store, Some(authority));
+            if let Some(source) = &records {
+                service = service.with_recorded_transitions(source);
+            }
+            if let Some(reader) = &audit {
+                service = service.with_audit(reader);
+            }
             let service = if allow_self_publication {
                 service.allow_self_publication()
             } else {

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Policy, contract and pack administration | Writ</title>
+<style>
+:root{color-scheme:light dark;font:100%/1.5 system-ui,sans-serif}
+main{max-width:55rem;margin:auto;padding:1rem}label{display:block;margin:.75rem 0}
+input:not([type=checkbox]),select,textarea{display:block;box-sizing:border-box;width:100%;padding:.45rem;font:inherit}
+textarea,pre{font-family:monospace}button{padding:.5rem 1rem;margin:.5rem .5rem .5rem 0}
+pre{white-space:pre-wrap;overflow-wrap:anywhere}
+</style></head><body><main>
+<h1>Policy, contract and pack administration</h1>
+<p>Disposable management profile. Publishing selects the signed policy and acceptance bundle together.</p>
+<form autocomplete="off">
+<label>Tenant<input name="tenant" value="m6-lab" required></label>
+<label>Project<input name="project" value="offline-proof" required></label>
+<label>Management credential for this request<input name="credential" type="password" required></label>
+<label>Operation<select name="operation"></select></label>
+<p id="guidance"></p><div id="fields"></div>
+<div id="authority" hidden>
+<p>Preview the exact change. Supply the returned intent digest and a fresh presentation issued for it by the separate human approval authority.</p>
+<label>Intent digest from preview<input name="intent_digest"></label>
+<label>Scoped human authorization from the approval authority<input name="presentation" type="password"></label>
+</div>
+<button id="preview" type="submit" formnovalidate>Preview</button><button id="apply" type="submit">Apply</button>
+</form><h2>Service response</h2><pre role="status"></pre>
+</main><script src="/lifecycle-ui.js"></script></body></html>

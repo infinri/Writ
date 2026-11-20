@@ -1157,3 +1157,146 @@ fn optional_removal_api_cli_and_authoritative_reopen() {
         result(&receipt).get("intent_digest")
     );
 }
+
+#[test]
+fn compare_active_decisions_and_recorded_transition_criteria_without_authority() {
+    let lab = Lab::new();
+    let author = lab.credential("author", AUTHOR);
+    let publisher = lab.credential("publisher", PUBLISHER);
+    let step_up = lab.credential("step-up", b"fixture-publisher-step-up");
+    result(&lab.cli(&author, &save("create", "permit", 0, "permit", PERMIT)));
+    let pair = signed(PERMIT, 1);
+    let proposal = preview(
+        0,
+        1,
+        "first",
+        Some((draft("permit", 1), pair.clone())),
+        false,
+    );
+    let shown = lab.cli(&publisher, &proposal);
+    result(&shown);
+    result(&lab.cli(
+        &publisher,
+        &commit(proposal, &shown, token(&shown, &step_up, "first")),
+    ));
+    let unchanged_history = lab.cli(&publisher, &history());
+    let acceptance = pair.get("acceptance").unwrap().get("payload").unwrap();
+    let mut criteria = acceptance
+        .get("criteria")
+        .unwrap()
+        .as_arr()
+        .unwrap()
+        .to_vec();
+    criteria.push(json::obj([
+        ("criterion_id", json::s("build")),
+        ("required_class", json::s("mechanical")),
+    ]));
+    let candidate = json::obj([
+        ("authorization", json::parse(DENY).unwrap()),
+        (
+            "acceptance",
+            changed(
+                changed(acceptance.clone(), "policy_version", json::s("2")),
+                "criteria",
+                Value::Arr(criteria),
+            ),
+        ),
+    ]);
+    result(&lab.cli(
+        &author,
+        &save(
+            "create",
+            "pair",
+            0,
+            "pair",
+            canonical(&candidate).as_bytes(),
+        ),
+    ));
+    let active = request(
+        "compare_active",
+        [
+            ("draft", draft("pair", 1)),
+            (
+                "corpus",
+                Value::Arr(vec![json::obj([
+                    ("kind", json::s("synthetic.inspect")),
+                    (
+                        "resource",
+                        json::s("synthetic:m6-lab/offline-proof/inventory/item"),
+                    ),
+                ])]),
+            ),
+        ],
+    );
+    let comparison = lab.cli(&author, &active);
+    let compared = result(&comparison);
+    assert_eq!(compared.get("publication_version"), Some(&Value::Int(1)));
+    let cases = compared.get("cases").unwrap().as_arr().unwrap();
+    assert_ne!(cases[0].get("before"), cases[0].get("after"));
+    let query = request(
+        "compare_recorded",
+        [
+            ("draft", draft("pair", 1)),
+            (
+                "record_ids",
+                Value::Arr(vec![json::s("fixture-transition")]),
+            ),
+        ],
+    );
+    let store = Store::open(&lab.drafts).unwrap();
+    let trust = fixture::FixtureTrust::default();
+    let registry = lab.open_registry(&trust);
+    let authority = fixture::authority();
+    let records = writ_policy_management_lab::comparison::RecordedTransitions::parse(
+        include_bytes!("../fixtures/recorded-transitions.json"),
+    )
+    .unwrap();
+    let service = Service::new(&store, Some(&authority))
+        .with_publication(&registry)
+        .with_recorded_transitions(&records);
+    let read = |credential: &[u8], query: &Value| {
+        json::parse(&execute_v1_with_publication(
+            &service,
+            credential,
+            canonical(query).as_bytes(),
+        ))
+        .unwrap()
+    };
+    let response = read(AUTHOR, &query);
+    let result_data = result(&response);
+    let case = &result_data.get("cases").unwrap().as_arr().unwrap()[0];
+    assert_eq!(case.get("criteria_before"), Some(&json::s("SATISFIED")));
+    assert_eq!(
+        case.get("criteria_after"),
+        Some(&json::s("ACCEPTANCE_CRITERIA_MISSING"))
+    );
+    assert_eq!(case.get("acceptance_changed"), Some(&Value::Bool(true)));
+    assert_eq!(
+        result_data.get("runtime_authority"),
+        Some(&Value::Bool(false))
+    );
+    refused(&read(PUBLISHER, &query));
+    refused(&read(
+        AUTHOR,
+        &changed(query, "record_ids", Value::Arr(vec![json::s("absent")])),
+    ));
+    drop(registry);
+    let substituted = preview(
+        1,
+        2,
+        "paired-preview",
+        Some((draft("pair", 1), signed(DENY, 2))),
+        false,
+    );
+    refused_with(&lab.cli(&publisher, &substituted), "INVALID_POLICY");
+    let exact = signed(canonical(&candidate).as_bytes(), 2);
+    let paired = preview(
+        1,
+        2,
+        "paired-preview",
+        Some((draft("pair", 1), exact)),
+        false,
+    );
+    result(&lab.cli(&publisher, &paired));
+    assert_eq!(unchanged_history, lab.cli(&publisher, &history()));
+}

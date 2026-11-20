@@ -897,7 +897,10 @@
           "$ref": "#/$defs/scope"
         },
         "operation": {
-          "enum": ["publication_history", "policy.lifecycle.inspect"]
+          "enum": [
+            "publication_history",
+            "policy.lifecycle.inspect"
+          ]
         },
         "after": {
           "type": "integer",
@@ -2269,6 +2272,230 @@
         },
         "idempotency_key": {
           "$ref": "#/$defs/label"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "identity.credential"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "draft",
+        "corpus"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "compare_active"
+        },
+        "draft": {
+          "$ref": "#/$defs/draft"
+        },
+        "corpus": {
+          "$ref": "#/$defs/corpus"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "draft",
+        "record_ids"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "compare_recorded"
+        },
+        "draft": {
+          "$ref": "#/$defs/draft"
+        },
+        "record_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "audit.search"
+        },
+        "event_type": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9._:-]{1,128}$"
+        },
+        "trace_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9._:-]{1,128}$"
+        },
+        "request_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9._:-]{1,128}$"
+        },
+        "principal_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9._:-]{1,128}$"
+        },
+        "action_kind": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9._:-]{1,128}$"
+        },
+        "status": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9._:-]{1,128}$"
+        },
+        "policy_version": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9._:-]{1,128}$"
+        },
+        "after": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500
+        },
+        "since": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "until": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "audit.timeline"
+        },
+        "trace_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9._:-]{1,128}$"
+        },
+        "request_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9._:-]{1,128}$"
+        },
+        "after": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "trace_id"
+          ]
+        },
+        {
+          "required": [
+            "request_id"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "operation",
+        "event_id"
+      ],
+      "properties": {
+        "version": {
+          "const": "/manage/v1"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "operation": {
+          "const": "audit.explain"
+        },
+        "event_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9._:-]{1,128}$"
         }
       }
     }

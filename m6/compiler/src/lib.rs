@@ -100,6 +100,22 @@ impl SimulationDraft {
         safe_diagnostics(&codes, "")
     }
 
+    /// Replay a recorded request at its observed revision and time without dispatch.
+    pub fn decide_recorded(
+        &self,
+        request: &Value,
+        revision: writ_kernel::contracts::StateRevision,
+        at: writ_kernel::time::Timestamp,
+    ) -> Value {
+        writ_kernel::decision::decide(
+            request,
+            writ_kernel::decision::Policy::Loaded(&self.bundle),
+            revision,
+            at,
+        )
+        .to_value()
+    }
+
     /// Run the registered pure decision enforcer on a supplied fixture Request.
     pub fn decide_fixture(&self, request: &Value) -> Option<Value> {
         (self.enforcer.run)(request, &self.bundle)

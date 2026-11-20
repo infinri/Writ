@@ -104,10 +104,25 @@ pub(crate) fn compare(
     ]))
 }
 
-fn prepare(
+pub(crate) fn prepare(
     scope: &Scope,
     candidate: &Value,
 ) -> Result<std::result::Result<SimulationDraft, Vec<Diagnostic>>> {
+    let candidate = if let Some(authorization) = candidate.get("authorization") {
+        let valid = candidate.as_obj().is_some_and(|fields| fields.len() == 2)
+            && candidate.get("acceptance").is_some_and(|acceptance| {
+                writ_policy_publication_lab::simulation_requirements(acceptance).is_ok()
+            });
+        if !valid {
+            return Ok(Err(vec![Diagnostic {
+                code: "INVALID_ACCEPTANCE_POLICY".into(),
+                pointer: "/acceptance".into(),
+            }]));
+        }
+        authorization
+    } else {
+        candidate
+    };
     for group in ["manifests", "companions"] {
         if candidate
             .get(group)
@@ -242,7 +257,7 @@ fn check_budget(started: Instant) -> Result<()> {
     Ok(())
 }
 
-fn difference(before: &Value, after: &Value) -> Value {
+pub(crate) fn difference(before: &Value, after: &Value) -> Value {
     let mut changed = Vec::new();
     collect_difference("", Some(before), Some(after), &mut changed);
     Value::Arr(changed)

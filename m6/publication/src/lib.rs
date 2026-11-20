@@ -56,6 +56,7 @@ pub use signature::{
 };
 
 mod policy;
+pub use policy::simulation_requirements;
 mod registry;
 mod store;
 pub use registry::{CurrentTrust, ManagedIntentSource, Registry, Selection, TrustAuthority};

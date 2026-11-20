@@ -1,6 +1,8 @@
 //! Disposable policy management at the typed /manage/v1 boundary.
 
+pub mod audit;
 mod boundary;
+pub mod comparison;
 #[cfg(feature = "fixtures")]
 pub mod contract_fixture;
 pub mod contract_registry;
@@ -9,6 +11,7 @@ pub mod contracts;
 mod evaluation;
 #[cfg(feature = "fixtures")]
 pub mod evaluator_fixture;
+pub mod identity;
 mod lifecycle;
 pub mod managed_evaluator;
 pub mod managed_waiver;
@@ -65,14 +68,17 @@ pub enum Role {
     PolicyAuthor,
     Publisher,
     WaiverOperator,
+    SecurityAuditor,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Grant {
     pub scope: Scope,
     pub role: Role,
 }
 
 /// Only the configured authenticator can supply this data to the application service.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Principal {
     pub realm: Realm,
     pub subject: String,
@@ -81,6 +87,14 @@ pub struct Principal {
 
 /// Trusted host-side boundary for current identity and grants. No wire fields supply either.
 pub trait Authenticator {
+    fn pin_requests(&self) -> bool {
+        false
+    }
+
+    fn credential_metadata(&self, _credential: &[u8]) -> Option<Value> {
+        None
+    }
+
     fn authenticate(&self, credential: &[u8]) -> Option<Principal>;
 
     /// Pin current credential, identity and grant state until the returned guard is dropped.
@@ -194,6 +208,8 @@ pub struct Service<'a> {
     store: &'a Store,
     authority: Option<&'a dyn Authenticator>,
     publication: Option<&'a dyn PublicationBoundary>,
+    records: Option<&'a comparison::RecordedTransitions>,
+    audit: Option<&'a audit::AuditReader>,
     evaluator: Option<&'a dyn EvaluatorBoundary>,
     contracts: Option<&'a dyn ContractBoundary>,
     packs: Option<&'a dyn PackBoundary>,
@@ -207,6 +223,8 @@ impl<'a> Service<'a> {
             store,
             authority,
             publication: None,
+            records: None,
+            audit: None,
             evaluator: None,
             contracts: None,
             packs: None,
@@ -218,6 +236,19 @@ impl<'a> Service<'a> {
     /// Connect to the separately configured publication registry.
     pub fn with_publication(mut self, boundary: &'a dyn PublicationBoundary) -> Self {
         self.publication = Some(boundary);
+        self
+    }
+
+    pub fn with_recorded_transitions(
+        mut self,
+        records: &'a comparison::RecordedTransitions,
+    ) -> Self {
+        self.records = Some(records);
+        self
+    }
+
+    pub fn with_audit(mut self, reader: &'a audit::AuditReader) -> Self {
+        self.audit = Some(reader);
         self
     }
 
@@ -256,6 +287,32 @@ impl<'a> Service<'a> {
     }
 
     fn dispatch(
+        &self,
+        credential: &[u8],
+        principal: Principal,
+        request: RequestV1,
+    ) -> Result<ResponseV1> {
+        let identity_guard = if self.authority.is_some_and(|owner| owner.pin_requests()) {
+            let guard = self
+                .authority
+                .and_then(|owner| owner.pin(credential))
+                .ok_or(Error::Unauthorized)?;
+            if !guard.still_valid() || guard.principal() != &principal {
+                return Err(Error::Unauthorized);
+            }
+            Some(guard)
+        } else {
+            None
+        };
+        let read_only = request.is_observation();
+        let response = self.dispatch_pinned(credential, principal, request)?;
+        if read_only && identity_guard.is_some_and(|guard| !guard.still_valid()) {
+            return Err(Error::Unauthorized);
+        }
+        Ok(response)
+    }
+
+    fn dispatch_pinned(
         &self,
         credential: &[u8],
         principal: Principal,
@@ -424,13 +481,39 @@ impl<'a> Service<'a> {
             | Operation::Pack(..) => {
                 return Err(Error::Unavailable);
             }
+            Operation::CredentialMetadata => {
+                let owner = self.authority.ok_or(Error::Unavailable)?;
+                ResponseV1::Metadata(
+                    owner
+                        .credential_metadata(credential)
+                        .ok_or(Error::Unavailable)?,
+                )
+            }
+            Operation::Audit(kind, fields) => {
+                let guard = self
+                    .authority
+                    .and_then(|authority| authority.pin(credential))
+                    .ok_or(Error::Unauthorized)?;
+                authorize_audit(guard.principal(), &scope)?;
+                if guard.principal().subject != principal.subject || !guard.still_valid() {
+                    return Err(Error::Unauthorized);
+                }
+                let value = self
+                    .audit
+                    .ok_or(Error::Unavailable)?
+                    .query(&scope, kind, fields)?;
+                if !guard.still_valid() {
+                    return Err(Error::Unauthorized);
+                }
+                ResponseV1::Audit(value)
+            }
             Operation::Mutation(mutation) => {
                 let reauthorize = || {
                     let current = self.authenticate(credential)?;
-                    if current.subject != principal.subject {
+                    if current.subject != principal.subject || current.realm != principal.realm {
                         return Err(Error::Unauthorized);
                     }
-                    authorize(&current, &scope, true)
+                    contract_author(&current, &scope)
                 };
                 ResponseV1::Mutation(self.store.mutate(
                     &scope,
@@ -458,6 +541,19 @@ impl<'a> Service<'a> {
                 &scope,
                 &self.store.get(&scope, &draft)?.candidate,
                 &corpus,
+            )?),
+            Operation::CompareActive(draft, corpus) => ResponseV1::Comparison(comparison::active(
+                &scope,
+                self.publication.ok_or(Error::Unavailable)?,
+                &self.store.get(&scope, &draft)?.candidate,
+                &corpus,
+            )?),
+            Operation::CompareRecorded(draft, ids) => ResponseV1::Comparison(comparison::recorded(
+                &scope,
+                self.publication.ok_or(Error::Unavailable)?,
+                self.records.ok_or(Error::Unavailable)?,
+                &self.store.get(&scope, &draft)?.candidate,
+                &ids,
             )?),
             Operation::Compare {
                 before,
@@ -575,11 +671,15 @@ fn authorize_resource(
                 Err(Error::NotFound)
             }
         }
+        Operation::CredentialMetadata => policy_reader(principal, scope),
+        Operation::Audit(..) => authorize_audit(principal, scope),
         Operation::Get(_) | Operation::History { .. } => authorize(principal, scope, false),
         Operation::Mutation(_)
         | Operation::Validate(_)
         | Operation::Simulate { .. }
-        | Operation::Compare { .. } => authorize(principal, scope, true),
+        | Operation::CompareActive(..)
+        | Operation::CompareRecorded(..)
+        | Operation::Compare { .. } => contract_author(principal, scope),
     }
 }
 
@@ -588,6 +688,19 @@ fn authorize(principal: &Principal, scope: &Scope, author: bool) -> Result<()> {
         .grants
         .iter()
         .any(|grant| grant.scope == *scope && (!author || grant.role == Role::PolicyAuthor))
+    {
+        Ok(())
+    } else {
+        Err(Error::NotFound)
+    }
+}
+
+fn authorize_audit(principal: &Principal, scope: &Scope) -> Result<()> {
+    if principal.realm == Realm::Management
+        && principal
+            .grants
+            .iter()
+            .any(|g| g.scope == *scope && matches!(g.role, Role::SecurityAuditor | Role::Viewer))
     {
         Ok(())
     } else {

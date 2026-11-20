@@ -26,6 +26,8 @@ pub(crate) enum Operation {
     Publication(PublicationRequest),
     Evaluator(EvaluatorOperation, Map),
     Contract(ContractOperation, Map),
+    CredentialMetadata,
+    Audit(crate::audit::AuditOperation, Map),
     Pack(PackOperation, Map),
     Waiver(WaiverOperation, Map),
     Mutation(Mutation),
@@ -40,6 +42,8 @@ pub(crate) enum Operation {
         draft: DraftRef,
         corpus: Value,
     },
+    CompareActive(DraftRef, Value),
+    CompareRecorded(DraftRef, Value),
     Compare {
         before: DraftRef,
         after: DraftRef,
@@ -61,6 +65,8 @@ pub enum ResponseV1 {
     Publication(Value),
     Evaluator(Value),
     Contract(Value),
+    Metadata(Value),
+    Audit(Value),
     Pack(Value),
     Waiver(Value),
 }
@@ -88,10 +94,56 @@ impl RequestV1 {
         )
     }
 
+    pub(crate) fn is_observation(&self) -> bool {
+        match &self.operation {
+            Operation::Mutation(change) => change.preview,
+            Operation::Publication(op) => !matches!(
+                op,
+                PublicationRequest::Publish { .. }
+                    | PublicationRequest::Rollback { .. }
+                    | PublicationRequest::Retire { .. }
+                    | PublicationRequest::OptionalRemoval {
+                        approval: Some(_),
+                        ..
+                    }
+            ),
+            Operation::Evaluator(op, _) => {
+                !matches!(op, EvaluatorOperation::Publish | EvaluatorOperation::Revoke)
+            }
+            Operation::Waiver(op, _) => matches!(
+                op,
+                WaiverOperation::Inspect | WaiverOperation::Validate | WaiverOperation::Recover
+            ),
+            Operation::Contract(op, _) => !matches!(
+                op,
+                ContractOperation::Create
+                    | ContractOperation::Publish
+                    | ContractOperation::Deprecate
+                    | ContractOperation::Retire
+            ),
+            Operation::Pack(op, _) => op.read_only(),
+            _ => true,
+        }
+    }
+
+    pub fn compares_recorded(&self) -> bool {
+        matches!(self.operation, Operation::CompareRecorded(..))
+    }
+
+    pub fn compares_publication(&self) -> bool {
+        matches!(
+            self.operation,
+            Operation::CompareActive(..) | Operation::CompareRecorded(..)
+        )
+    }
+
     pub fn reads_draft_metadata(&self) -> bool {
         matches!(
             self.operation,
-            Operation::Get(_) | Operation::History { .. }
+            Operation::CredentialMetadata
+                | Operation::Audit(..)
+                | Operation::Get(_)
+                | Operation::History { .. }
         )
     }
 
@@ -141,6 +193,14 @@ impl RequestV1 {
                 draft: reference(&mut fields, "draft", "/draft")?,
                 corpus: corpus(&mut fields)?,
             },
+            "compare_active" => Operation::CompareActive(
+                reference(&mut fields, "draft", "/draft")?,
+                corpus(&mut fields)?,
+            ),
+            "compare_recorded" => Operation::CompareRecorded(
+                reference(&mut fields, "draft", "/draft")?,
+                take(&mut fields, "record_ids", "/record_ids")?,
+            ),
             "compare" => Operation::Compare {
                 before: reference(&mut fields, "before", "/before")?,
                 after: reference(&mut fields, "after", "/after")?,
@@ -212,6 +272,19 @@ impl RequestV1 {
             "contracts.recover" => contract_operation(ContractOperation::Recover, &mut fields)?,
             "packs.install" => pack_operation(PackOperation::Install, &mut fields)?,
             "packs.verify" => pack_operation(PackOperation::Verify, &mut fields)?,
+            "identity.credential" => Operation::CredentialMetadata,
+            "audit.search" => Operation::Audit(
+                crate::audit::AuditOperation::Search,
+                std::mem::take(&mut fields),
+            ),
+            "audit.timeline" => Operation::Audit(
+                crate::audit::AuditOperation::Timeline,
+                std::mem::take(&mut fields),
+            ),
+            "audit.explain" => Operation::Audit(
+                crate::audit::AuditOperation::Explain,
+                std::mem::take(&mut fields),
+            ),
             "packs.inspect" => pack_operation(PackOperation::Inspect, &mut fields)?,
             "packs.enable" => pack_operation(PackOperation::Enable, &mut fields)?,
             "packs.disable" => pack_operation(PackOperation::Disable, &mut fields)?,
@@ -830,6 +903,8 @@ impl ResponseV1 {
             | Self::Comparison(value)
             | Self::Publication(value)
             | Self::Contract(value)
+            | Self::Metadata(value)
+            | Self::Audit(value)
             | Self::Pack(value)
             | Self::Evaluator(value)
             | Self::Waiver(value) => value,

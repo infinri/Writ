@@ -47,6 +47,18 @@ fn sign_policy(purpose: Purpose, key_id: &str, payload: Value) -> Result<SignedP
 }
 
 fn sign_publication(draft: &[u8], version: i64) -> Result<Value, Error> {
+    let value = json::parse(draft).map_err(|_| Error::Format)?;
+    if let Some(authorization) = value.get("authorization") {
+        let payload = value.get("acceptance").ok_or(Error::Format)?;
+        if value.as_obj().map(std::collections::BTreeMap::len) != Some(2)
+            || payload.get("policy_version").and_then(Value::as_str) != Some(&version.to_string())
+        {
+            return Err(Error::InvalidPolicy);
+        }
+        writ_policy_publication_lab::simulation_requirements(payload)?;
+        let auth = json::canonical(authorization).map_err(|_| Error::Format)?;
+        return sign_draft(auth.as_bytes(), payload.clone());
+    }
     let acceptance = json::obj([
         ("version", json::s("writ-acceptance-policy/1")),
         ("policy_id", json::s("m6-acceptance")),

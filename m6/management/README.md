@@ -225,3 +225,16 @@ The browser regression seeds the signed publication workflow in a fresh director
 ```sh
 node m6/management/tests/policy-lifecycle-browser.mjs
 ```
+
+## Authenticated management and lifecycle UI
+
+Build the existing fixture binaries with the pinned toolchain. For a disposable identity owner, provision a private rollback-journal SQLite catalog with `src/identity.sql`. The host issues high-entropy random credentials, stores their SHA-256 fingerprints, and assigns principals and scoped grants. Rotation revokes the previous fingerprint and inserts the replacement in one owner transaction. Management opens this catalog read-only and pins it across owner operations. Credential issuance, revocation, principal status and grants have transactional owner audit. The disposable catalog uses host wall time. Governed use requires the M5 effective clock, reviewed identity provisioning and deployment trust.
+
+Set `WRIT_MANAGEMENT_IDENTITY_DB` to the private catalog path. Pass the credential in a private file to the authenticated CLI or enter it for one UI request. Choose datasets on the service host. Set `WRIT_MANAGEMENT_TRANSITIONS` to the bounded transition capture for recorded comparisons. Select `WRIT_MANAGEMENT_AUDIT_SOURCE=draft-owner` to read the draft owner's committed receipts or `WRIT_MANAGEMENT_AUDIT_DB` for a scoped multi-component replica conforming to `src/audit_replica.sql`.
+
+```sh
+writ-manage-fixture authenticated v1 MANAGEMENT_DB CREDENTIAL_FILE PUBLICATION_DB < request.json
+python3 m6/management/lifecycle-ui.py MANAGEMENT_DB PUBLICATION_DB --contract-db CONTRACT_DB --evaluator-db EVALUATOR_DB
+```
+
+The UI prints its ephemeral loopback address. Use an unsigned policy candidate or an object containing both `authorization` and `acceptance` for an immutable draft revision. Validate the draft, compare it against the verified selection or named recorded transitions, and preview the exact signed pair. Obtain the human presentation from the separate authorization owner and submit the displayed intent digest with it. Contract inspection shows active dependents and pack inspection includes exact contract and rubric dependencies. Governed deployment, enterprise accounts and legacy imports retain their separate gates.

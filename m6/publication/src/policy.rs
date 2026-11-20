@@ -201,6 +201,16 @@ pub(crate) fn refuse_deactivation(
     Err(Error::InvalidPolicy)
 }
 
+/// Parse the unsigned acceptance draft for offline simulation using the owner contract.
+pub fn simulation_requirements(payload: &Value) -> Result<QuorumRequirements, Error> {
+    let version = payload
+        .get("policy_version")
+        .and_then(Value::as_str)
+        .and_then(|version| version.parse::<i64>().ok())
+        .ok_or(Error::InvalidPolicy)?;
+    Ok(acceptance(payload, version)?.0)
+}
+
 fn acceptance(
     payload: &Value,
     version: i64,

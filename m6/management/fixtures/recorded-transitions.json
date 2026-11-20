@@ -1,0 +1,99 @@
+{
+  "version": "writ-transition-capture/1",
+  "records": [
+    {
+      "id": "fixture-transition",
+      "request": {
+        "contract_version": "2.0",
+        "request_id": "req-waiver",
+        "trace_id": "trace-waiver",
+        "tenant_id": "m6-lab",
+        "project_id": "offline-proof",
+        "principal": {
+          "id": "fixture-waiver-requester",
+          "verified_by": "m6-synthetic",
+          "authn_method": "os_peer_credential",
+          "roles": [
+            "agent"
+          ]
+        },
+        "session_id": "waiver-session",
+        "agent_id": null,
+        "parent_session_id": null,
+        "idempotency_key": "waiver",
+        "expected_state_revision": 0,
+        "policy_bundle_sha": null,
+        "action": {
+          "kind": "workflow.transition",
+          "resource": {
+            "uri": "writ-workflow://workflow",
+            "canonical_resource_id": "workflow:m6-lab/offline-proof/workflow"
+          },
+          "action_digest": "sha256:763ffbeaa25089a046c304880d8a38d9fe6261151286abb5af6bb91264b67cea",
+          "attributes": {
+            "from_state": "verifying",
+            "to_state": "accepted",
+            "acceptance_record_id": "future-record",
+            "artifact_snapshot_id": "snapshot",
+            "artifact_digest": "sha256:763ffbeaa25089a046c304880d8a38d9fe6261151286abb5af6bb91264b67cea"
+          },
+          "requested_capabilities": []
+        }
+      },
+      "revision": 0,
+      "at": "2026-11-07T11:00:00Z",
+      "acceptance_record": {
+        "contract_version": "m1-draft-3",
+        "acceptance_record_id": "future-record",
+        "tenant_id": "m6-lab",
+        "project_id": "offline-proof",
+        "task_id": "task-1",
+        "workflow_id": "workflow",
+        "transition": {
+          "from_state": "verifying",
+          "to_state": "accepted"
+        },
+        "artifact_snapshot_id": "snapshot",
+        "artifact_digest": "sha256:763ffbeaa25089a046c304880d8a38d9fe6261151286abb5af6bb91264b67cea",
+        "acceptance_policy_id": "m6-acceptance",
+        "acceptance_policy_version": "1",
+        "acceptance_policy_bundle_sha": "sha256:2f3dcb54d5bf9d6023ce7932407673954d474ca680a075c634a474916559b8f2",
+        "state_revision": 0,
+        "status": "accepted",
+        "issued_at": "2026-11-07T10:00:00Z",
+        "expires_at": "2026-11-07T12:00:00Z",
+        "criteria": [
+          {
+            "criterion_id": "review",
+            "mandatory": true,
+            "required_class": "human",
+            "status": "pass",
+            "evaluator_id": "approval-service",
+            "evaluator_trust": "H",
+            "fresh_until": "2026-11-07T11:30:00Z"
+          }
+        ],
+        "record_digest": "sha256:60d0dd36900f37381c71a3a2753a0dc9073e40639a0e8d0067337efd120b3434"
+      },
+      "current_state": {
+        "tenant_id": "m6-lab",
+        "project_id": "offline-proof",
+        "task_id": "task-1",
+        "workflow_id": "workflow",
+        "transition": {
+          "from_state": "verifying",
+          "to_state": "accepted"
+        },
+        "artifact_snapshot_id": "snapshot",
+        "artifact_digest": "sha256:763ffbeaa25089a046c304880d8a38d9fe6261151286abb5af6bb91264b67cea",
+        "acceptance_policy_id": "m6-acceptance",
+        "acceptance_policy_version": "1",
+        "acceptance_policy_bundle_sha": "sha256:2f3dcb54d5bf9d6023ce7932407673954d474ca680a075c634a474916559b8f2",
+        "state_revision": 0,
+        "now": "2026-11-07T11:00:00Z",
+        "consumed_record_ids": [],
+        "revoked_evaluator_ids": []
+      }
+    }
+  ]
+}

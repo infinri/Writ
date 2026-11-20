@@ -1,4 +1,5 @@
 // Exercise the offline lifecycle view using real fixture CLI reads and the reviewed CDP client.
+import { checkMutationForm } from "./policy-lifecycle-mutations.mjs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -216,6 +217,7 @@ try {
   assert.ok((await page.evaluate("document.body.innerText")).includes(marker));
   assert.equal(await page.evaluate('document.querySelectorAll("img, script, iframe, a, form").length'), 0);
   assert.ok(requests.every(url => url === pathToFileURL(snapshot).href), "page requested a subresource");
+  await checkMutationForm({page, management, drafts, registry, signer, run, lab, manage, cli});
   console.log("Policy lifecycle browser passed label, provenance, pagination, isolation and text-safety checks.");
 } finally {
   if (cdp) {

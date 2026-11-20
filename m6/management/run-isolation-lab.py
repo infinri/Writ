@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import secrets
 import subprocess
 import tempfile
 
@@ -121,7 +122,33 @@ def snapshot(databases, waiver):
     return results
 
 
-def run(lab):
+def run(lab, authenticated=False):
+    credentials = {}
+    if authenticated:
+        catalog = lab / "identity.sqlite"
+        with sqlite3.connect(catalog) as db:
+            db.executescript((HERE / "src/identity.sql").read_text())
+            for who, realm, roles in [
+                    ("viewer", "management", ["viewer"]), ("author", "management", ["policy-author"]),
+                    ("publisher", "management", ["publisher"]),
+                    ("author-publisher", "management", ["policy-author", "publisher"]),
+                    ("service", "management-service", ["publisher"]),
+                    ("agent", "agent", ["publisher"]), ("adapter", "adapter", ["publisher"])]:
+                subject = "fixture-" + who
+                credentials[who] = secrets.token_hex(32)
+                digest = "sha256:" + hashlib.sha256(credentials[who].encode()).hexdigest()
+                db.execute("INSERT INTO principals VALUES(?,?,1)", (subject, realm))
+                db.execute("INSERT INTO credentials VALUES(?,?,unixepoch()-1,unixepoch()+1800,0)", (digest, subject))
+                db.executemany("INSERT INTO scoped_grants VALUES(?,?,?,?)",
+                               [(subject, SCOPE["tenant"], SCOPE["project"], role) for role in roles])
+        os.environ["WRIT_MANAGEMENT_IDENTITY_DB"] = str(catalog)
+    replica = lab / "audit.sqlite"
+    with sqlite3.connect(replica) as db:
+        db.executescript((HERE / "src/audit_replica.sql").read_text())
+        db.execute("INSERT INTO audit_events VALUES(?,?,1,'evt-1','decision','2026-11-05T12:00:00Z','trace-1','req-1',null,null,'deny',null,?)",
+                   (SCOPE["tenant"], SCOPE["project"], json.dumps({"reason_code":"POLICY_DENIED"})))
+    os.environ["WRIT_MANAGEMENT_AUDIT_DB"] = str(replica)
+    os.environ["WRIT_MANAGEMENT_TRANSITIONS"] = str(HERE / "fixtures/recorded-transitions.json")
     management, publication, contracts, evaluator, waiver, waiver_policy = [
         lab / (name + ".sqlite") for name in ("management", "publication", "contracts", "evaluator", "waiver", "policy")]
     for args in [("init", management), ("init-publication", publication), ("init-evaluator", evaluator),
@@ -133,13 +160,19 @@ def run(lab):
     owners = {"v1": [publication], "v1-evaluator": [evaluator], "v1-waiver": [waiver, waiver_policy],
               "v1-contracts": [contracts], "v1-packs": [contracts, evaluator]}
     cases = requests()
+    cases["v1"].update({"audit.search": {}, "audit.timeline": {"trace_id":"trace-1"},
+                        "audit.explain":{"event_id":"evt-1"},
+                        "compare_active":{"draft":{"id":"existing","revision":1}, "corpus":cases["v1"]["simulate"]["corpus"]},
+                        "compare_recorded":{"draft":{"id":"existing","revision":1}, "record_ids":["sample"]}})
+    if authenticated:
+        cases["v1"]["identity.credential"] = {}
 
     def call(mode, who, operation, fields, scope=SCOPE, offline=False):
         credential = lab / who
-        credential.write_text("fixture-" + who)
+        credential.write_text(credentials.get(who, "fixture-" + who))
         links = [lab / "missing-owner"] * len(owners[mode]) if offline else owners[mode]
         store = lab / "missing-management" if offline else management
-        return command(MANAGE, [mode, store, credential, *links],
+        return command(MANAGE, [*(["authenticated"] if authenticated else []), mode, store, credential, *links],
                        {"version": "/manage/v1", "scope": scope, "operation": operation} | fields)
 
     assert call("v1", "author", "create", cases["v1"]["create"])["ok"]
@@ -162,7 +195,7 @@ def run(lab):
     assert snapshot(databases, waiver) == before
     expected_epoch = epoch(waiver)
     missing = {"waiver_inspect", "waiver_validate", "contracts.validate-example", "packs.inspect", "packs.verify"}
-    reads = {"get", "history", "publication_history", "policy.lifecycle.inspect", "evaluator_inspect",
+    reads = {"audit.search","audit.timeline","audit.explain","identity.credential","get", "history", "publication_history", "policy.lifecycle.inspect", "evaluator_inspect",
              "waiver_inspect", "waiver_validate", "contracts.browse", "contracts.inspect",
              "contracts.validate-schema", "contracts.validate-example", "packs.history", "packs.inspect", "packs.verify"}
     for mode, operations in cases.items():
@@ -202,9 +235,19 @@ def run(lab):
     published = call("v1", "publisher", "publish", commit)
     assert published["ok"] and published["result"]["audit_id"] == 1
     assert call("v1", "publisher", "publish", commit) == published
+    if authenticated:
+        assert call("v1", "viewer", "identity.credential", {})["result"]["subject"] == "fixture-viewer"
+        with sqlite3.connect(catalog) as db:
+            db.execute("UPDATE credentials SET revoked=1 WHERE subject='fixture-viewer'")
+        assert call("v1", "viewer", "audit.search", {}) == unauthorized
+        os.environ["WRIT_MANAGEMENT_IDENTITY_DB"] = str(lab / "missing-auth")
+        assert call("v1", "publisher", "publish", commit) == unauthorized
     print(sum(map(len, cases.values())), "operation forms passed across five disposable resource families")
 
 
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="writ-isolation-") as directory:
-        run(Path(directory))
+        for profile in ("fixture", "authenticated"):
+            lab = Path(directory) / profile
+            lab.mkdir()
+            run(lab, authenticated=profile == "authenticated")
