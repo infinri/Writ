@@ -44,6 +44,7 @@ fn unix_row(inode: u32, name: &[u8]) -> Vec<u8> {
     body.extend_from_slice(&9_u32.to_ne_bytes());
     body.extend(attribute(UNIX_DIAG_NAME, name));
     body.extend(attribute(UNIX_DIAG_SHUTDOWN, &[0]));
+    body.extend(attribute(UNIX_DIAG_UID, &1042_u32.to_ne_bytes()));
     body
 }
 
@@ -66,6 +67,27 @@ fn diagnostic_keeps_bytes_that_unix_proc_displays_identically() {
     assert_eq!(view.unix[&15].name, b"\0a@@\xff");
     assert_eq!(view.unix[&16].name, b"@a@@\xff\0");
     assert_eq!(view.unix[&14].cookie, [17, 9]);
+    assert_eq!(view.unix[&14].uid, 1042);
+}
+
+#[test]
+fn unix_diagnostic_requests_and_requires_one_exact_uid() {
+    let request = request(Family::Unix, SEQUENCE, PORT_ID);
+    assert_eq!(&request[28..32], &0x41_u32.to_ne_bytes());
+    let mut row = unix_row(8, b"\0a");
+    let mut view = Diagnostic::default();
+    row.extend(attribute(UNIX_DIAG_UID, &1042_u32.to_ne_bytes()));
+    assert_eq!(read_unix(&row, &mut view), Err(Problem::Duplicate));
+    row.truncate(row.len() - 16);
+    assert_eq!(read_unix(&row, &mut view), Err(Problem::Incomplete));
+    let mut invalid = row.clone();
+    invalid.extend(attribute(UNIX_DIAG_UID, &u32::MAX.to_ne_bytes()));
+    assert_eq!(read_unix(&invalid, &mut view), Err(Problem::Incomplete));
+    for width in [0, 2, 5, 8] {
+        let mut malformed = row.clone();
+        malformed.extend(attribute(UNIX_DIAG_UID, &vec![0; width]));
+        assert_eq!(read_unix(&malformed, &mut view), Err(Problem::Malformed));
+    }
 }
 
 #[test]
@@ -287,7 +309,14 @@ fn holders_collapse_only_consistent_thread_credentials() {
     assert_eq!(owners.first().unwrap().pid, 21);
     assert_eq!(owners.first().unwrap().start_ticks, 92);
     assert_eq!(owners.first().unwrap().uid, 1001);
-    assert_eq!(view.holders(&scan, 11), Err(Problem::Ambiguous));
+    assert_eq!(
+        view.holders(&scan, 11)
+            .unwrap()
+            .iter()
+            .map(|h| h.uid)
+            .collect::<BTreeSet<_>>(),
+        [1001, 1002].into()
+    );
     assert_eq!(view.holders(&scan, 12), Err(Problem::Incomplete));
 
     scan.tasks.get_mut(&22).unwrap().credentials.uids[2] = 1042;

@@ -151,13 +151,21 @@ fn collect(
     };
     let (before, diag, descriptors) = sample()?;
     let (after, diag_after, descriptors_after) = sample()?;
-    if diag != diag_after || descriptors != descriptors_after {
-        return Err(Problem::Changed);
-    }
+    verify_socket_samples((&diag, &descriptors), (&diag_after, &descriptors_after))?;
     let observed = reconcile(&expected, before, after)?;
     let output = render(&request.name, &scope, &expected, &observed)?;
     check_deadline(deadline)?;
     Ok(output)
+}
+
+fn verify_socket_samples(
+    before: (&sockets::Diagnostic, &sockets::DescriptorView),
+    after: (&sockets::Diagnostic, &sockets::DescriptorView),
+) -> Result<(), Problem> {
+    if before != after {
+        return Err(Problem::Changed);
+    }
+    Ok(())
 }
 
 fn render(

@@ -40,11 +40,8 @@ impl DescriptorView {
                 uid,
             });
         }
-        if holders
-            .first()
-            .is_none_or(|first| holders.iter().any(|holder| holder.uid != first.uid))
-        {
-            return Err(Problem::Ambiguous);
+        if holders.is_empty() {
+            return Err(Problem::Incomplete);
         }
         Ok(holders)
     }
@@ -165,7 +162,9 @@ const IPPROTO_TCP: u8 = 6;
 const INET_DIAG_SKV6ONLY: u16 = 11;
 const UNIX_DIAG_NAME: u16 = 0;
 const UNIX_DIAG_SHUTDOWN: u16 = 6;
+const UNIX_DIAG_UID: u16 = 7;
 const UDIAG_SHOW_NAME: u32 = 1;
+const UDIAG_SHOW_UID: u32 = 0x40;
 const DIAG_ROWS: usize = 16_384;
 const DIAG_BYTES: usize = 4 * 1024 * 1024;
 const DIAG_DATAGRAMS: usize = 4096;
@@ -197,6 +196,7 @@ pub(in crate::desktop_collect) struct Tcp {
 
 #[derive(Debug, Eq, PartialEq)]
 pub(in crate::desktop_collect) struct Unix {
+    pub(in crate::desktop_collect) uid: u32,
     pub(in crate::desktop_collect) socket_type: u16,
     pub(in crate::desktop_collect) state: u8,
     pub(in crate::desktop_collect) shutdown: u8,
@@ -278,7 +278,7 @@ fn request(family: Family, sequence: u32, port_id: u32) -> Vec<u8> {
     request[16] = family as u8;
     if family == Family::Unix {
         request[20..24].copy_from_slice(&u32::MAX.to_ne_bytes());
-        request[28..32].copy_from_slice(&UDIAG_SHOW_NAME.to_ne_bytes());
+        request[28..32].copy_from_slice(&(UDIAG_SHOW_NAME | UDIAG_SHOW_UID).to_ne_bytes());
         request[32..40].fill(0xff);
     } else {
         request[17] = IPPROTO_TCP;
@@ -484,6 +484,7 @@ fn read_unix(body: &[u8], view: &mut Diagnostic) -> Result<u64, Problem> {
     let cookie = cookie(body, 8)?;
     let mut name = None;
     let mut shutdown = None;
+    let mut uid = None;
     attributes(attrs, |kind, value| {
         match kind {
             UNIX_DIAG_NAME => {
@@ -496,6 +497,12 @@ fn read_unix(body: &[u8], view: &mut Diagnostic) -> Result<u64, Problem> {
                     _ => return Err(Problem::Malformed),
                 }
                 name = Some(value.to_vec());
+            }
+            UNIX_DIAG_UID => {
+                let bytes = value.try_into().map_err(|_| Problem::Malformed)?;
+                if uid.replace(u32::from_ne_bytes(bytes)).is_some() {
+                    return Err(Problem::Duplicate);
+                }
             }
             UNIX_DIAG_SHUTDOWN => {
                 if shutdown.is_some() {
@@ -511,12 +518,16 @@ fn read_unix(body: &[u8], view: &mut Diagnostic) -> Result<u64, Problem> {
         Ok(())
     })?;
     let shutdown = shutdown.ok_or(Problem::Incomplete)?;
+    let uid = uid
+        .filter(|&uid| uid != u32::MAX)
+        .ok_or(Problem::Incomplete)?;
     if let Some(name) = name {
         if view
             .unix
             .insert(
                 inode,
                 Unix {
+                    uid,
                     socket_type,
                     name,
                     cookie,
@@ -534,3 +545,6 @@ fn read_unix(body: &[u8], view: &mut Diagnostic) -> Result<u64, Problem> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod sample_tests;

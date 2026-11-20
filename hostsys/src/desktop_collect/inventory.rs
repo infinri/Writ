@@ -80,7 +80,7 @@ pub(super) struct Holder {
 
 pub(super) struct Socket {
     inode: u64,
-    tcp_uid: Option<u32>,
+    kernel_uid: Option<u32>,
     kind: Kind,
     endpoint: Endpoint,
 }
@@ -127,13 +127,28 @@ pub(super) fn collect_targets(
     let mut inventory = Inventory::new();
     for socket in sockets {
         let holders = owners(socket.inode)?;
-        let uid = holders.first().ok_or(Problem::Incomplete)?.uid;
-        if holders.iter().any(|holder| holder.uid != uid) {
+        if holders.is_empty() {
+            return Err(Problem::Incomplete);
+        }
+        let holder_uids: BTreeSet<_> = holders.iter().map(|holder| holder.uid).collect();
+        if socket
+            .kernel_uid
+            .is_some_and(|uid| !desktops.contains(&uid))
+            && desktops.is_disjoint(&holder_uids)
+        {
+            continue;
+        }
+        if holder_uids.len() != 1 {
             return Err(Problem::Ambiguous);
         }
-        if socket.tcp_uid.is_some_and(|tcp_uid| tcp_uid != uid) {
-            return Err(Problem::Mismatch);
-        }
+        let holder_uid = *holder_uids.first().ok_or(Problem::Incomplete)?;
+        let uid = match socket.kernel_uid {
+            Some(uid) if uid == holder_uid => uid,
+            Some(_) => return Err(Problem::Mismatch),
+            #[cfg(test)]
+            None if matches!(socket.endpoint, Endpoint::Unix { .. }) => holder_uid,
+            None => return Err(Problem::Incomplete),
+        };
         if desktops.contains(&uid) {
             #[cfg(test)]
             if socket.kind == Kind::Unix
@@ -203,7 +218,7 @@ fn parse_unix(
         };
         sockets.push(Socket {
             inode,
-            tcp_uid: None,
+            kernel_uid: None,
             kind,
             endpoint: Endpoint::Unix {
                 socket_type,
@@ -272,7 +287,7 @@ fn parse_tcp(
             }
             sockets.push(Socket {
                 inode,
-                tcp_uid: Some(uid),
+                kernel_uid: Some(uid),
                 kind: Kind::Tcp,
                 endpoint: Endpoint::Tcp {
                     family,
@@ -396,6 +411,9 @@ fn hex_pair(
     let (first, second) = value.split_once(':').ok_or(Problem::Malformed)?;
     Ok((hex(first, a_min, a_max)?, hex(second, b_min, b_max)?))
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod attribution_tests;
 
 #[cfg(test)]
 mod tests {

@@ -42,6 +42,12 @@ The first inventory binary was built from upstream tree `3989187ee7a7dd0d694226b
 | Missing inventory arguments | Refusal | Exit 3 in builder. Reference inventory and positive comparison still pending. |
 | M5a-12 development tests | Reject missing runner, cancellation, partial provisioning, invalid evidence or failed destruction | Eight offline unittest methods passed, including failure subcases, interruption recovery, wrapper teardown and validation. Private runner registration, status fencing and destruction have no live evidence. |
 
+### Shared-socket attribution review
+
+The owner recorded exit 3, collection Ambiguous and empty stdout with the original binary above. Later observations of root and service holders on two addressed Unix sockets satisfy the old refusal rule. They establish neither the first failing inode nor its kernel owner UID. The owner verified the private refusal archive and restored the unmarked snapshot. Positive inventory and independent guest comparison remain open.
+
+The [collector contract](../../m5/reference-vm/DESKTOP-PROBE.md#guest-inventory) retains every desktop-associated candidate or refuses collection. Independent TCP and Unix reviews found that D-Bus, rsyslog, PID 1 and pathnames supply no exclusion criterion. Linux reports Unix socket ownership through a requested diagnostic attribute. Both families can therefore prove non-membership after all holder identities are validated. The unit fixtures cover the root/service pattern, bidirectional descriptor transfers, mixed thread credentials, process replacement and changes in excluded samples. No guest action supplied evidence for this engineering review. Require six successful jobs on the same published commit before the replacement binary is built.
+
 ### Earlier evidence
 
 - Required CI on the published recovery SHA `482129d7a6b05a89451d576f94da31d4fe23f857`: [run 43951124726](https://github.com/infinri/Writ/actions/runs/43951124726), 6/6. This run supplies user-space evidence.

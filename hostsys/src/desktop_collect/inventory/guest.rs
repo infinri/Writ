@@ -52,7 +52,7 @@ pub(in crate::desktop_collect) fn verify_endpoints(
                 IpAddr::V6(Ipv6Addr::from(bytes))
             }
         };
-        if address != diag.address || port != diag.port || socket.tcp_uid != Some(diag.uid) {
+        if address != diag.address || port != diag.port || socket.kernel_uid != Some(diag.uid) {
             return Err(Problem::Mismatch);
         }
         socket.endpoint = Endpoint::TcpObserved {
@@ -137,7 +137,7 @@ fn verify_unix(
             rest = &rest[displayed.len()..];
             sockets.push(Socket {
                 inode,
-                tcp_uid: None,
+                kernel_uid: Some(diag.uid),
                 kind,
                 endpoint: Endpoint::UnixObserved {
                     socket_type,
@@ -261,6 +261,23 @@ mod tests {
     }
 
     #[test]
+    fn unix_diagnostic_owner_survives_a_complete_descriptor_transfer() -> Result<(), Problem> {
+        let (tcp4, tcp6, unix, mut diagnostic) = fixture();
+        diagnostic.unix.get_mut(&51).ok_or(Problem::Missing)?.uid = 104;
+        let sockets = verify_endpoints(tcp4.as_bytes(), tcp6.as_bytes(), &unix, &diagnostic)?;
+        let observed = collect_targets(sockets, &[1000].into(), |_| {
+            Ok([Holder {
+                pid: 40,
+                start_ticks: 10,
+                uid: 1000,
+            }]
+            .into())
+        });
+        assert_eq!(observed, Err(Problem::Mismatch));
+        Ok(())
+    }
+
+    #[test]
     fn missing_changed_and_extra_rows_are_unavailable() {
         let (tcp4, tcp6, mut unix, mut diagnostic) = fixture();
         diagnostic.unix.remove(&51);
@@ -353,6 +370,7 @@ mod tests {
             (
                 inode,
                 Unix {
+                    uid: 1000,
                     socket_type: 1,
                     name,
                     cookie,

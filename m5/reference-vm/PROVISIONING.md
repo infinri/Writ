@@ -211,7 +211,7 @@ test "$(stat -c '%u:%g %a %F' /etc/writ-disposable-vm)" = '0:0 600 regular file'
 
 ## First guest inventory
 
-Exit the guest SSH session after designation and leave that guest running. Build only the inventory executable at the reviewed exact SHA from a clean checkout on an amd64 Ubuntu 24.04 build system with the pinned repository toolchain available. Bring the private stage directory to the workstation if the build system is separate. The first inventory tests checkpoint `71593d9f9247ca7b52881b177e97b76a5f1a3f4c`. All six ordinary jobs passed in [run 44769052020](https://github.com/infinri/Writ/actions/runs/44769052020). Stage the independent comparison tool separately with its own source identity and digest. Use a fresh clean build checkout of the checkpoint. On that Ubuntu build machine use the reviewed repository installer `bash m1/tools/install-toolchains.sh` if the pinned tools are absent.
+Exit the guest SSH session after designation and leave that guest running. Build only the inventory executable at the reviewed exact SHA from a clean checkout on an amd64 Ubuntu 24.04 build system with the pinned repository toolchain available. Bring the private stage directory to the workstation if the build system is separate. The original refused inventory tested checkpoint `71593d9f9247ca7b52881b177e97b76a5f1a3f4c`. All six ordinary jobs passed in [run 44769052020](https://github.com/infinri/Writ/actions/runs/44769052020). For a replacement, use the full commit and binary digest from the reviewed six-job build handoff. Keep the earlier package and evidence separately. Stage the independent comparison tool separately with its own source identity and digest. Use a fresh clean build checkout of the checkpoint. On that Ubuntu build machine use the reviewed repository installer `bash m1/tools/install-toolchains.sh` if the pinned tools are absent.
 
 ```bash
 set -euo pipefail
@@ -222,7 +222,9 @@ test "$ID:$VERSION_ID:$(dpkg --print-architecture)" = ubuntu:24.04:amd64
 source m1/tools/env.sh
 test "$(rustc --version | cut -d' ' -f2)" = 1.99.1
 test "$(cargo --version | cut -d' ' -f2)" = 1.99.1
-test "$(git rev-parse HEAD)" = 71593d9f9247ca7b52881b177e97b76a5f1a3f4c
+read -rp 'Reviewed six-job build commit: ' inventory_sha
+[[ "$inventory_sha" =~ ^[0-9a-f]{40}$ ]]
+test "$(git rev-parse HEAD)" = "$inventory_sha"
 cargo build --locked -p writ-hostsys --bin writ-desktop-inventory
 stage=$(mktemp -d)
 install -m 0700 target/debug/writ-desktop-inventory "$stage/"
@@ -260,7 +262,11 @@ set -euo pipefail
 export LC_ALL=C
 cd /root/writ-inventory
 sha256sum --check --strict SHA256SUMS
-test "$(cat commit.txt)" = 71593d9f9247ca7b52881b177e97b76a5f1a3f4c
+read -rp 'Reviewed inventory commit from build handoff: ' inventory_sha
+read -rp 'Reviewed binary SHA-256 from build handoff: ' binary_sha
+[[ "$inventory_sha" =~ ^[0-9a-f]{40}$ && "$binary_sha" =~ ^[0-9a-f]{64}$ ]]
+test "$(cat commit.txt)" = "$inventory_sha"
+printf '%s  writ-desktop-inventory\n' "$binary_sha" | sha256sum --check --strict
 install -d -m 0700 /root/writ-evidence
 umask 077
 evidence=$(mktemp -d /root/writ-evidence/inventory.XXXXXXXX)
