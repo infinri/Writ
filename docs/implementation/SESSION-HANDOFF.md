@@ -12,6 +12,10 @@ Verify the six jobs for the exact published SHA in the v2-docs workflow. Keep th
 
 M6 remains open for governed integration and independent human review. Deployment identity, trust sources and reviewed evaluator independence assignments require their owners. Legacy import requires separate authorization and review of the 288 rows. D-048, D-049 and its 2026-12-18 UTC expiry, and the unresolved earlier E-097 CI stall retain their recorded status. ADR-0008 remains APPROVED IN PRINCIPLE. Release and production remain NO-GO.
 
+## M5 verification in progress
+
+Use `71593d9f9247ca7b52881b177e97b76a5f1a3f4c` for the first inventory build. The [verification record](M5A-GATE-REVIEW.md#2026-11-20-inventory-preparation) includes the six job IDs, Canonical signature and image digest, Ubuntu build and inventory digest. Resume on the owner laptop with the [provisioning and rollback commands](../../m5/reference-vm/PROVISIONING.md). No designated guest inventory or broader trial has run. Use a separately reviewed six-job SHA containing the group correction for broader trials. The isolated containment control path remains inactive. M5b integration, delegation, SR-06 and real-device acceptance retain their prerequisites.
+
 ## Prior checkpoints
 
 ### D-062 verified recovery

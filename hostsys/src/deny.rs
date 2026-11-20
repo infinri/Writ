@@ -482,7 +482,7 @@ pub fn probe_agent_deny(cfg: &Config) -> ProbeResult {
 /// P-AGENT-USERNS: the agent uid could not obtain a usable user namespace by any route.
 pub fn probe_agent_userns(cfg: &Config) -> ProbeResult {
     let control = Control::vm_trial(
-        "VM trial: the same attempts as a test uid that may execute the private copy (in group writ) must succeed, so the probe reports missing",
+        "VM trial: the same attempts as a test uid that may execute the private copy (in the job group) must succeed, so the probe reports missing",
     );
     let obs = vec![o(
         "kernel.apparmor_restrict_unprivileged_userns",

@@ -24,11 +24,25 @@ Status: **PREPARED; NOT READY FOR A GATE DECISION.** Every M5a component is impl
 | M5a-09 fs.write adapter | IMPLEMENTED (user space); service composition with M5b-03 | E-084 |
 | M5a-10 CO-PROP-01 for fs.write | IMPLEMENTED (single worker) | E-086 |
 | M5a-11 graceful shutdown | IMPLEMENTED (user space); CO-M4X-05 closed for user space | E-085 |
-| M5a-12 containment CI runner | BLOCKED (external) | |
+| M5a-12 containment CI runner | OPEN. Offline draft tested. Live matrix, host adapters, infrastructure and dedicated status pending. | [Host controller](../../m5/containment-ci/HOST-CONTROL.md) |
 | M5a-13 independent security review | DONE: no CRITICAL; H1, M1..M7 and lows fixed or dispositioned | E-087 |
 | M5a-14 this package | PREPARED | |
 
 ## 3. Verification
+
+### 2026-11-20 inventory preparation
+
+The first inventory binary was built from upstream tree `3989187ee7a7dd0d694226b2c3ee32af3d9ce348`, commit `71593d9f9247ca7b52881b177e97b76a5f1a3f4c`. The required push run completed successfully on that SHA. Its six successful job IDs were 136401451920 (workspace), 136401452479 (Rust parity), 136401452505 (docs), 136401452547 (Go parity), 136401452728 (M0), and 136401452759 (properties). [Required run](https://github.com/infinri/Writ/actions/runs/44769052020)
+
+| Preparation check | Expected | Observed |
+|---|---|---|
+| Dated Noble amd64 image | Valid signature from `D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81` and matching pinned image | gpgv exit 0, UEC Image Automatic Signing Key. SHA-256 of manifest `0449a33b78dddb301a3ce2b80398984bc3e1f7880e27b86a31e58bdcbd3d3816`, detached signature `68aae716a548e466e58afddd8b767c54c791f40f1d20d1d12e27c471edb535e5`. Full streamed image matched `04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94`. Repeat for the laptop copy before creating its overlay. |
+| Offline inventory build | Reviewed SHA, clean source, pinned compiler, compatible userspace | Clean git archive. Unprivileged build on Ubuntu 24.04 amd64 in a temporary network-disconnected builder from `ubuntu@sha256:9c7f200c07e3d4a03e7249d2c16bf66a51120fb876aa2242cf31451412543289`. Rust and Cargo 1.99.1, Ubuntu GCC 13.3.0. Frozen Cargo build exit 0. Binary SHA-256 `65465a9b95526658eb244ec8827e410769c171c4d2cc9e0c190307ca0ea3fa04`. |
+| Artifact recovery | Check archive and archived binary bytes | Re-read binary and commit file independently, both matched. Private gzip archive SHA-256 `78340a09e5a0d2a9fd5ba291a08ccf9b943b6b0b0c2a26f7ad045610c6855a23`. Builder stopped and removed after export. |
+| Missing inventory arguments | Refusal | Exit 3 in builder. Reference inventory and positive comparison still pending. |
+| M5a-12 development tests | Reject missing runner, cancellation, partial provisioning, invalid evidence or failed destruction | Eight offline unittest methods passed, including failure subcases, interruption recovery, wrapper teardown and validation. Private runner registration, status fencing and destruction have no live evidence. |
+
+### Earlier evidence
 
 - Required CI on the published recovery SHA `482129d7a6b05a89451d576f94da31d4fe23f857`: [run 43951124726](https://github.com/infinri/Writ/actions/runs/43951124726), 6/6. This run supplies user-space evidence.
 - Required CI on `4f4f92f`: run 43948789763, 6/6 (production workspace incl. browser suite, kill tests, fs.write SIGKILL property, closure and property gates, dependency gate with OSV and source rules).

@@ -27,8 +27,17 @@ In a reviewed checkout of the exact trial SHA on an amd64 Ubuntu 24.04 build mac
 
 ```bash
 set -euo pipefail
-test -z "$(git status --porcelain --untracked-files=no)" || exit 1
+umask 077
+read -rp 'Reviewed trial SHA (all six jobs passed, includes control correction): ' trial_sha
+[[ "$trial_sha" =~ ^[0-9a-f]{40}$ ]]
+test "$(git rev-parse HEAD)" = "$trial_sha"
+test -z "$(git status --porcelain)"
+. /etc/os-release
+test "$ID:$VERSION_ID:$(dpkg --print-architecture)" = ubuntu:24.04:amd64
 source m1/tools/env.sh
+test "$(rustc --version | cut -d' ' -f2)" = 1.99.1
+test "$(cargo --version | cut -d' ' -f2)" = 1.99.1
+test -f "$SQLITE3_LIB_DIR/libsqlite3.a"
 cargo build --release --locked -p writ-hostsys -p writ-service
 cargo build --locked --profile launcher -p writ-containment
 CARGO_TARGET_DIR=target/faults cargo build --locked --profile launcher -p writ-containment --features test-faults
@@ -54,7 +63,9 @@ Inside the designated guest, enter `sudo -i`, verify the staged checksums and co
 set -euo pipefail
 cd /root/writ
 sha256sum --check --strict SHA256SUMS
-cat commit.txt
+read -rp 'Independently reviewed trial SHA: ' trial_sha
+[[ "$trial_sha" =~ ^[0-9a-f]{40}$ ]]
+test "$(cat commit.txt)" = "$trial_sha"
 
 ./m5/reference-vm/setup.sh --designated-vm writ-ref-1 --probe-binary /root/writ/writ-probe \
   --image-name ubuntu-24.04-server-cloudimg-amd64.img \
@@ -95,7 +106,7 @@ VM-only negative controls in `trial.sh` (each probe's runtime control runs insid
 | Control | Change | Expected |
 |---|---|---|
 | private copy without the AppArmor profile | `--bwrap` pointing at an unprofiled `root:writ` 0750 copy | P-USERNS `missing` |
-| test uid granted the profile | current script uses group `writ`; the private copy is restricted to the job group | P-AGENT-USERNS `missing` required; resolve the group mismatch before relying on this control |
+| test uid granted the profile | temporary UID in the private copy’s job group; record its identity and require `userns_private_bwrap=allowed` | P-AGENT-USERNS `missing` with reason `userns_private_bwrap: allowed` |
 | no delegation | probe unit without `Delegate=yes` | P-CGROUP `missing` |
 | unsupported filesystem | state, scratch and target roots on a tmpfs | P-FS-TYPE and P-RENAME `missing` |
 | hard links unprotected | `sysctl fs.protected_hardlinks=0` | P-HARDLINK `missing` |

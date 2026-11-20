@@ -1,0 +1,116 @@
+#!/usr/bin/python3 -I
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import socket
+import stat
+import subprocess
+import sys
+import tarfile
+
+ROOT = Path("/opt/writ-ci")
+BIN = ROOT / "bin"
+sys.path.insert(0, str(BIN))
+from gate_evidence import parse, required, validate
+
+PRIVATE = Path("/var/lib/writ-ci")
+ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root", "LC_ALL": "C"}
+
+
+def trusted(path, directory=False):
+    for node in [*reversed(path.parents), path]:
+        info = node.lstat()
+        kind = stat.S_ISDIR if directory or node != path else stat.S_ISREG
+        if info.st_uid or info.st_gid or info.st_mode & 0o022 or not kind(info.st_mode):
+            raise ValueError("unsafe provisioning path")
+    return path
+
+
+def read(path):
+    with trusted(path).open("rb") as stream:
+        return stream.read(65537)
+
+
+def profile(binding):
+    if os.getuid() or os.geteuid() or platform.machine() != "x86_64":
+        raise ValueError("requires designated amd64 guest")
+    check = subprocess.run(["/usr/bin/systemd-detect-virt"], capture_output=True, env=ENV)
+    if check.returncode or check.stdout != b"kvm\n":
+        raise ValueError("requires KVM guest")
+    release = platform.freedesktop_os_release()
+    if (release.get("ID"), release.get("VERSION_ID")) != ("ubuntu", "24.04"):
+        raise ValueError("requires Ubuntu 24.04")
+    name = f"writ-ci-{binding['run_id']}-{binding['attempt']}"
+    marker = Path("/etc/writ-disposable-vm")
+    if (socket.gethostname() != name or read(marker) != f"writ-disposable-vm/1\nname={name}\n".encode()
+            or stat.S_IMODE(marker.stat().st_mode) != 0o600 or marker.stat().st_nlink != 1):
+        raise ValueError("invalid owner designation")
+    if (Path("/sys/module/apparmor/parameters/enabled").read_text().strip() != "Y"
+            or Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").read_text().strip() != "1"):
+        raise ValueError("AppArmor user namespace policy required")
+
+
+def extract(binding, dest):
+    with trusted(ROOT / "source.tar").open("rb") as archive:
+        if hashlib.file_digest(archive, "sha256").hexdigest() != binding["source_archive_sha256"]:
+            raise ValueError("source archive digest mismatch")
+        archive.seek(0)
+        with tarfile.open(fileobj=archive, mode="r:") as tree:
+            seen = set()
+            for member in tree:
+                parts = member.name.split("/")
+                if (any(p in ("", ".", "..") for p in parts) or member.name in seen
+                        or not (member.isdir() or member.isreg()) or member.mode & 0o7000):
+                    raise ValueError("unsupported archive entry")
+                seen.add(member.name)
+                tree.extract(member, dest, filter="data")
+
+
+def main():
+    os.umask(0o077)
+    binding = parse(read(ROOT / "binding.json"))
+    manifest = read(ROOT / "required-results.json")
+    checks = required(manifest, binding)
+    if sys.argv[1:] != [binding["source_sha"]]:
+        raise ValueError("requested SHA differs from admitted SHA")
+    profile(binding)
+    driver = trusted(BIN / "containment-matrix")
+    trusted(PRIVATE, directory=True)
+    work = PRIVATE / "attempt"
+    work.mkdir(mode=0o700)
+    src = work / "source"
+    src.mkdir()
+    extract(binding, src)
+    def run(*args):
+        name = "-".join(args)
+        with (work / f"{name}.stdout").open("xb") as out, (work / f"{name}.stderr").open("xb") as err:
+            proc = subprocess.run([driver, *args], cwd=src, env=ENV, stdin=subprocess.DEVNULL,
+                                  stdout=out, stderr=err)
+        (work / f"{name}.exit").write_text(f"{proc.returncode}\n")
+        proc.check_returncode()
+
+    results = {}
+    try:
+        run("prepare")
+        for check in checks:
+            run("verify", check)
+            results[check] = {"outcome": "pass", "exit_code": 0}
+    finally:
+        run("teardown")
+    evidence = json.dumps({**binding, "results": results}, separators=(",", ":")).encode()
+    validate(evidence, binding, manifest)
+    pending = work / "evidence.tmp"
+    with pending.open("xb") as out:
+        out.write(evidence)
+        out.flush()
+        os.fsync(out.fileno())
+    pending.rename(work / "evidence.json")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, tarfile.TarError, subprocess.SubprocessError):
+        sys.exit("Containment gate refused or failed")

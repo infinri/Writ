@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+test "$#" -eq 1
+exec /usr/bin/sudo -n -- /opt/writ-ci/bin/guest-gate "$1"

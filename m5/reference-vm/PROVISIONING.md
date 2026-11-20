@@ -2,7 +2,7 @@
 
 ## Workstation preflight
 
-The 2026-11-18 read-only preflight ran as the ordinary user in the Debian 13 development sandbox. It found no `/dev/kvm`, QEMU, image or seed utilities, libvirt client or Ubuntu cloud-image keyring, and 16 GiB available on the overlay filesystem. This shell cannot provision the reference guest. On the owner Ubuntu workstation, the 2026-11-17 preflight previously found AMD-V, KVM API 12 as the ordinary login, about 9.3 GiB available RAM and 36 GiB free disk, with QEMU, image and seed tools absent. Recheck the actual owner workstation before proceeding.
+At the 2026-11-20 checkpoint the owner's laptop screenshot showed x86_64, 13 GiB available RAM, 256 GiB available on the home filesystem and a KVM device owned by root:kvm. QEMU, qemu-img and cloud-localds were missing. Repeat the checks below as the ordinary login after installation to confirm effective KVM access and current capacity. The Debian 13 development container has a separate filesystem and no KVM device. The isolated CI runner is a fourth environment and requires its own owner-controlled host.
 
 The owner must provide `qemu-system-x86_64`, `qemu-img` and `cloud-localds` on that Ubuntu workstation (packages `qemu-system-x86`, `qemu-utils`, `cloud-image-utils`), and a trusted cloud-image keyring from `ubuntu-keyring`. Use the ordinary login for all host commands. The reference allocation is 2 vCPUs, 4 GiB RAM and a 24 GiB qcow2 disk. Require 6 GiB available host RAM and 30 GiB free at the selected filesystem before provisioning. Stop if a prerequisite fails.
 
@@ -11,13 +11,19 @@ set -euo pipefail
 umask 077
 vm_dir="${XDG_DATA_HOME:-$HOME}/writ-vms"
 ref=writ-ref-1
+test "$(id -u)" -ne 0
 test "$(uname -m)" = x86_64
+test -d "${vm_dir%/*}" && test -w "${vm_dir%/*}"
+[[ "$vm_dir" = /* && "$vm_dir" != *,* ]]
 for tool in qemu-system-x86_64 qemu-img cloud-localds curl gpgv ssh ssh-keygen ssh-keyscan python3; do
   command -v "$tool"
 done
 test -r /usr/share/keyrings/ubuntu-cloudimage-keyring.gpg
 python3 - <<'PYTHON'
 import fcntl
+import socket
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+    listener.bind(("127.0.0.1", 22224))
 with open("/dev/kvm", "rb+", buffering=0) as device:
     version = fcntl.ioctl(device, 0xae00)
     print(f"KVM API {version}")
@@ -119,14 +125,49 @@ ref_ssh 'test "$(hostname)" = writ-ref-1 && test "$(systemd-detect-virt --vm)" =
 ref_ssh 'sudo systemctl poweroff'
 ```
 
-After QEMU exits, create and check the clean, unmarked snapshot in the first shell. The restore command is `qemu-img snapshot -a fresh disk.qcow2` while QEMU is stopped. Restore it now to confirm rollback before designation. Then boot again.
+After QEMU exits, create the clean, unmarked snapshot in the first shell. For each snapshot, test a disk change across two boots before owner designation. In the first shell:
 
 ```bash
 qemu-img snapshot -c fresh disk.qcow2
 qemu-img snapshot -l disk.qcow2
+start_reference
+```
+
+In the second workstation shell, wait for pinned SSH, write a harmless witness on the guest root filesystem, and record the witness digest on the workstation. The strict host-key check must succeed on every boot.
+
+```bash
+rollback_witness() {
+  ref_ssh 'cloud-init status --wait && test "$(hostname)" = writ-ref-1 && test "$(systemd-detect-virt --vm)" = kvm'
+  ref_ssh 'sudo bash -se' <<'WITNESS'
+set -eu -o noclobber
+umask 077
+cat /proc/sys/kernel/random/uuid > /root/writ-rollback-witness
+sync /root/writ-rollback-witness
+sha256sum /root/writ-rollback-witness
+WITNESS
+  ref_ssh 'sudo systemctl poweroff'
+}
+rollback_check() {
+  ref_ssh 'cloud-init status --wait && test "$(hostname)" = writ-ref-1 && test "$(systemd-detect-virt --vm)" = kvm'
+  ref_ssh 'sudo test ! -e /root/writ-rollback-witness && sudo test ! -L /root/writ-rollback-witness && sudo test ! -e /etc/writ-disposable-vm && sudo test ! -L /etc/writ-disposable-vm'
+}
+rollback_witness > fresh-witness.log
+cat fresh-witness.log
+```
+
+When QEMU exits, restore the snapshot in the first shell and boot.
+
+```bash
 qemu-img snapshot -a fresh disk.qcow2
 qemu-img check disk.qcow2
 start_reference
+```
+
+In the second shell, require `rollback_check` to exit zero and record the result before opening the owner designation session.
+
+```bash
+rollback_check
+printf '%s fresh rollback verified\n' "$(date -u +%FT%TZ)" >> fresh-witness.log
 ```
 
 ## Owner designation and guest trials
@@ -170,13 +211,18 @@ test "$(stat -c '%u:%g %a %F' /etc/writ-disposable-vm)" = '0:0 600 regular file'
 
 ## First guest inventory
 
-Exit the guest SSH session after designation and leave that guest running. Build only the inventory executable at the reviewed exact SHA from a clean checkout on an amd64 Ubuntu 24.04 build system with the pinned repository toolchain available. Bring the private stage directory to the workstation if the build system is separate. The expected SHA for the first run is `083e22c35db139894f2bb378d1f4b4fa5ca286db`. A later reviewed SHA may be used after confirming its verification status.
+Exit the guest SSH session after designation and leave that guest running. Build only the inventory executable at the reviewed exact SHA from a clean checkout on an amd64 Ubuntu 24.04 build system with the pinned repository toolchain available. Bring the private stage directory to the workstation if the build system is separate. The first inventory tests checkpoint `71593d9f9247ca7b52881b177e97b76a5f1a3f4c`. All six ordinary jobs passed in [run 44769052020](https://github.com/infinri/Writ/actions/runs/44769052020). Stage the independent comparison tool separately with its own source identity and digest. Use a fresh clean build checkout of the checkpoint. On that Ubuntu build machine use the reviewed repository installer `bash m1/tools/install-toolchains.sh` if the pinned tools are absent.
 
 ```bash
 set -euo pipefail
 umask 077
-test -z "$(git status --porcelain --untracked-files=no)"
-test "$(git rev-parse HEAD)" = 083e22c35db139894f2bb378d1f4b4fa5ca286db
+test -z "$(git status --porcelain)"
+. /etc/os-release
+test "$ID:$VERSION_ID:$(dpkg --print-architecture)" = ubuntu:24.04:amd64
+source m1/tools/env.sh
+test "$(rustc --version | cut -d' ' -f2)" = 1.99.1
+test "$(cargo --version | cut -d' ' -f2)" = 1.99.1
+test "$(git rev-parse HEAD)" = 71593d9f9247ca7b52881b177e97b76a5f1a3f4c
 cargo build --locked -p writ-hostsys --bin writ-desktop-inventory
 stage=$(mktemp -d)
 install -m 0700 target/debug/writ-desktop-inventory "$stage/"
@@ -192,6 +238,21 @@ tar -C "$stage" -cf - writ-desktop-inventory commit.txt SHA256SUMS |
   ref_ssh 'sudo install -d -m 0700 /root/writ-inventory && sudo tar --no-same-owner -xf - -C /root/writ-inventory'
 ```
 
+Stage the comparison tool from a separately reviewed revision containing this runbook. In the workstation shell with `ref_ssh`, set `review_repo` to that checkout. These commands keep its provenance separate from the checkpoint binary.
+
+```bash
+read -rp 'Absolute path to reviewed comparison-tool checkout: ' review_repo
+read -rp 'Reviewed full comparison-tool commit: ' compare_sha
+[[ "$compare_sha" =~ ^[0-9a-f]{40}$ ]]
+tool_path=m5/reference-vm/compare-inventory.py
+compare_stage=$(mktemp -d)
+git -C "$review_repo" show "$compare_sha:$tool_path" > "$compare_stage/compare-inventory.py"
+printf '%s\n' "$compare_sha" > "$compare_stage/tool-commit.txt"
+(cd "$compare_stage" && sha256sum compare-inventory.py tool-commit.txt > TOOL-SHA256SUMS)
+tar -C "$compare_stage" -cf - compare-inventory.py tool-commit.txt TOOL-SHA256SUMS |
+  ref_ssh 'sudo tar --no-same-owner -xf - -C /root/writ-inventory'
+```
+
 Normalize only the three NSS account rules inside the guest. Verify that `/etc/nsswitch.conf`, `/etc/passwd`, `/etc/group` and `/usr/lib/os-release` are regular root:root files, on their normal filesystems, with no group or other write bits. The snapshot restores original NSS. The four throwaway role accounts deliberately have their own primary groups. Only the agent has the additional `writ-agents` membership.
 
 ```bash
@@ -199,7 +260,7 @@ set -euo pipefail
 export LC_ALL=C
 cd /root/writ-inventory
 sha256sum --check --strict SHA256SUMS
-test "$(cat commit.txt)" = 083e22c35db139894f2bb378d1f4b4fa5ca286db
+test "$(cat commit.txt)" = 71593d9f9247ca7b52881b177e97b76a5f1a3f4c
 install -d -m 0700 /root/writ-evidence
 umask 077
 evidence=$(mktemp -d /root/writ-evidence/inventory.XXXXXXXX)
@@ -303,11 +364,23 @@ if test "$rc" -eq 0; then
 fi
 ```
 
+In the same guest root shell, compare the fixture processes, four endpoints and their holders while the fixtures are still live. Preserve comparison failure alongside the inventory, including cases where a task changed during the independent sweep. The comparison checks the socket cookie encoding and reserved values. It does not independently obtain the socket cookie.
+
+```bash
+sha256sum --check --strict TOOL-SHA256SUMS
+compare_rc=0
+python3 -I compare-inventory.py "$evidence" > "$evidence/comparison.stdout" 2> "$evidence/comparison.stderr" || compare_rc=$?
+printf '%s\n' "$compare_rc" > "$evidence/comparison.exit"
+cp TOOL-SHA256SUMS tool-commit.txt SHA256SUMS commit.txt "$evidence/"
+```
+
+Require both recorded exits to be zero and review the raw observations below before recording success.
+
 Count positive guest evidence only after exit 0 and the final `end` record. Compare the role UID rows and the agent process row with the observations in `expected.txt`, including PID, start ticks (proc stat field 22), all four UIDs and GIDs, and the supplementary group set. Match both TCP listener addresses and port, IPv6-only mode and both Unix endpoint addresses. Match each endpoint inode to a holder row containing the desktop PID and start ticks. The filesystem address hex is `2f686f6d652f777269742d68756d616e2f696e76656e746f72792e736f636b00` (trailing NUL). The abstract address hex is `00777269742d696e76656e746f7279` (leading NUL). Record the actual scope, image and binary checksums, status, exceptions and [inventory limits](DESKTOP-PROBE.md#guest-inventory). Preserve refusal and diagnostic output. Exit 3 means unavailable. Investigate guest process or socket churn, holders, inaccessible tasks and diagnostic availability in that guest before retrying. Export reviewed evidence and restore the snapshot when done.
 
 ## Later reference trials and isolated containment CI
 
-The first inventory uses stand-in targets. The clean rollback discards the temporary inventory accounts. Before the broader reference trials, boot the unmarked guest for package preparation with `start_reference off` and a host network policy that restricts that boot to approved package endpoints. On the guest, install the trial-only packages and create the desktop account again.
+The first inventory uses stand-in targets. The clean rollback discards the temporary inventory accounts. After restoring `fresh` with QEMU stopped, boot with restricted networking and run `rollback_check`. Also verify the inventory accounts and `/root/writ-inventory` are absent, then power off. Before the broader reference trials, boot the unmarked guest for package preparation with `start_reference off` and a host network policy that restricts that boot to approved package endpoints. On the guest, install the trial-only packages and create the desktop account again.
 
 ```bash
 ref_ssh 'sudo apt-get update && sudo apt-get install -y --no-install-recommends acl apparmor-utils bubblewrap busybox-static dbus-x11 dmeventd dmsetup e2fsprogs gnome-keyring xauth xvfb'
@@ -315,7 +388,7 @@ ref_ssh 'sudo useradd -m -s /bin/bash writ-human && sudo chmod 0700 /home/writ-h
 ref_ssh 'sudo systemctl poweroff'
 ```
 
-Wait for QEMU to exit, create a separate unmarked rollback snapshot with `qemu-img snapshot -c trial-ready disk.qcow2`, and restore it once while stopped to verify rollback. Reboot with `start_reference` for restricted networking and repeat the owner designation checks for that boot. The [reference trial commands](README.md#commands) then stage and run the broader checks. Confirm cgroup v2 with `cpu memory pids`, the AppArmor user namespace restriction set to `1`, and ext4 before those trials. Full desktop acceptance still needs the actual disposable session targets and negative controls listed in M5-INTERFACES J-9.
+Wait for QEMU to exit, create a separate unmarked rollback snapshot with `qemu-img snapshot -c trial-ready disk.qcow2`, and boot it with restricted networking (`start_reference`). In the second shell run `rollback_witness > trial-ready-witness.log`. Once QEMU exits, run `qemu-img snapshot -a trial-ready disk.qcow2 && qemu-img check disk.qcow2 && start_reference` in the first shell. Require `rollback_check` in the second shell, confirm the prepared desktop account still exists and repeat the owner designation checks for that boot. The [reference trial commands](README.md#commands) then stage and run the broader checks. Confirm cgroup v2 with `cpu memory pids`, the AppArmor user namespace restriction set to `1`, and ext4 before those trials. Full desktop acceptance still needs the actual disposable session targets and negative controls listed in M5-INTERFACES J-9.
 
 The [isolated containment CI gate](../containment-ci/README.md) requires a separate runner host and control repository, runner group, provisioner, exact gate wrapper and status App. Budget 4 vCPUs, 6 GiB guest RAM, a 24 GiB disk and 30 GiB free host disk per active runner, with 2 GiB available host RAM above the allocation. Each reviewed job attempt requires a fresh overlay and CI-only seed. Destroy it after success, failure or cancellation. The reference guest supplies only reference evidence.
 
@@ -331,6 +404,9 @@ archive="$vm_dir/evidence/${ref}-$(date -u +%Y%m%dT%H%M%SZ).tar"
 ref_ssh 'sudo tar -C /root/writ-evidence-sanitized -cf - .' > "$archive"
 tar -tf "$archive"
 sha256sum "$archive" > "$archive.sha256"
+sha256sum --check --strict "$archive.sha256"
+# Compare the archive bytes to the reviewed files before powering off.
+ref_ssh 'sudo tar -C /root/writ-evidence-sanitized -df -' < "$archive"
 ref_ssh 'sudo systemctl poweroff'
 ```
 

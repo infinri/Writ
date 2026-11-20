@@ -59,6 +59,7 @@ tmpfs_dir=/mnt/writ-tmpfs-control
 xdev=/var/lib/writ/run/xdev-test
 unprofiled="$WRIT_LIBEXEC/bwrap-unprofiled"
 granted=writ-probe-granted
+created_granted=false
 units=()
 
 cleanup() {
@@ -70,7 +71,7 @@ cleanup() {
   rmdir "$tmpfs_dir" 2>/dev/null || true
   if mountpoint -q "$xdev/root/mnt"; then umount "$xdev/root/mnt" || true; fi
   rm -rf -- "$xdev" "$unprofiled"
-  if getent passwd "$granted" >/dev/null; then userdel --remove "$granted" 2>/dev/null || true; fi
+  if [ "$created_granted" = true ]; then userdel --remove "$granted" 2>/dev/null || true; fi
   for u in "${units[@]+"${units[@]}"}"; do systemctl stop "$u" 2>/dev/null || true; done
   rm -rf -- "$share"
 }
@@ -172,20 +173,23 @@ done
 jobscratch="$share/jobside"
 install -d -m 0700 -o "$job_user" -g "$job_user" "$jobscratch"
 RUN_AS="$job_user" run_probe jobside -p Delegate=yes -- --cgroup-delegated --scratch "$jobscratch" "${common[@]}"
-for id in P-USERNS P-FS P-NET P-PID P-KILL P-LIMITS P-FD; do
+jobside_ids=(P-USERNS P-FS P-NET P-PID P-KILL P-LIMITS P-FD)
+for id in "${jobside_ids[@]}"; do
   expect jobside "$id" ok
 done
-python3 - "$ev/baseline.json" >> "$summary" <<'PY'
+python3 - "$ev/baseline.json" "$ev/jobside.json" "${jobside_ids[@]}" >> "$summary" <<'PY'
 import json, sys
-r = json.load(open(sys.argv[1]))
-for p in r["probes"]:
-    c = p["negative_control"]
-    if c["kind"] == "runtime":
-        print(("PASS" if c["result"] == "failed_as_expected" else "FAIL") + f" baseline runtime control {p['id']}: {c['result']}")
-# The baseline alone cannot run the bubblewrap probes (the private copy is executable only by
-# writ-job); governed readiness is the union of baseline and jobside until the launcher-based
-# variants exist (J-11.10), so this line is informational.
-print(f"INFO baseline governed_ready={r['governed_ready']} (bubblewrap probes are in jobside)")
+jobside_ids = set(sys.argv[3:])
+for name, path in zip(("baseline", "jobside"), sys.argv[1:3]):
+    with open(path) as f:
+        r = json.load(f)
+    for p in r["probes"]:
+        if (p["id"] in jobside_ids) != (name == "jobside"):
+            continue
+        c = p["negative_control"]
+        if c["kind"] == "runtime":
+            print(("PASS" if c["result"] == "failed_as_expected" else "FAIL") + f" {name} runtime control {p['id']}: {c['result']}")
+    print(f"INFO {name} governed_ready={r['governed_ready']}")
 PY
 
 # 4a. P-USERNS: a private copy without the AppArmor profile fails.
@@ -193,13 +197,28 @@ install -m 0750 -o root -g writ "$WRIT_PRIVATE_BWRAP" "$unprofiled"
 run_probe userns-control -p Delegate=yes -- --bwrap "$unprofiled" "${common[@]}"
 expect userns-control P-USERNS missing
 
-# 4b. P-AGENT-USERNS: a test uid that may execute the private copy (group writ) gets a
-#     namespace, so the probe must report it.
-useradd --create-home --shell /bin/bash --groups writ "$granted"
+# 4b. Verify the temporary control UID and the particular outcome that caused refusal.
+test "$(stat -c '%u:%g %a' "$WRIT_PRIVATE_BWRAP")" = "0:$(id -g "$job_user") 750"
+useradd --create-home --shell /bin/bash --groups "$job_user" "$granted"
+created_granted=true
+runuser -u "$granted" -- id > "$ev/agent-userns-control.identity"
+runuser -u "$granted" -- test -x "$WRIT_PRIVATE_BWRAP"
 agent_deny agent-deny-granted "$granted"
 run_probe agent-userns-control -- --service-pid "$pid" --agent-report "$share/agent-deny-granted.json"
-expect agent-userns-control P-AGENT-USERNS missing
+python3 - "$share/agent-deny-granted.json" "$ev/agent-userns-control.json" "$(id -u "$granted")" >> "$summary" <<'PY_CONTROL'
+import json, sys
+with open(sys.argv[1]) as f:
+    attempts = json.load(f)
+with open(sys.argv[2]) as f:
+    report = json.load(f)
+private = [a["outcome"] for a in attempts["attempts"] if a["target"] == "userns_private_bwrap"]
+rows = [(p["status"], p["reason"]) for p in report["probes"] if p["id"] == "P-AGENT-USERNS"]
+passed = (attempts["agent_uid"] == int(sys.argv[3]) and private == ["allowed"]
+          and rows == [("missing", "userns_private_bwrap: allowed")])
+print(("PASS" if passed else "FAIL") + f" agent-userns-control: uid={attempts['agent_uid']} private={private} result={rows}")
+PY_CONTROL
 userdel --remove "$granted"
+created_granted=false
 
 # 4c. P-CGROUP: no delegation.
 run_probe cgroup-control -- --cgroup-delegated "${common[@]}"
@@ -228,7 +247,7 @@ if command -v setfacl >/dev/null; then
   setfacl -k /var/lib/writ/stores
   expect acl-control P-ACL missing
 else
-  echo "INFO acl-control not run: setfacl absent (runtime control covers P-ACL)" >> "$summary"
+  echo "FAIL acl-control unavailable: setfacl absent" >> "$summary"
 fi
 
 # 4g. P-AGENT-DENY: a loosely moded canary key readable by the agent must be reported.
@@ -249,4 +268,4 @@ if grep -q '^FAIL' "$summary"; then
   echo "trial: expectations not met; evidence in $ev" >&2
   exit 1
 fi
-echo "trial: every expectation met; evidence in $ev"
+echo "trial: scripted expectations met; full VM checklist still requires separate observations; evidence in $ev"
