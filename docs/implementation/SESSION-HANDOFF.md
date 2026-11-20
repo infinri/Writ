@@ -4,6 +4,19 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 
 ## Current recovery state
 
+Read [WORK-STATE](WORK-STATE.md), [E-107](TEST-EVIDENCE.md#e-107-d-060-optional-policy-removal-and-ag-adv-16-2026-11-20), the [M6 closure checklist](M6-CLOSURE-CHECKLIST.md), and [D-060](DECISION-LOG.md#d-060-supported-synthetic-optional-policy-removal-owner-2026-11-19).
+
+- D-060 implementation `39fbd3fdc33d0b99c49802f016dd6295b937300d` is published on `v2/architecture-rebuild` with [required run 44642143521](https://github.com/infinri/Writ/actions/runs/44642143521). Fetch the branch in an isolated checkout. Verify the fetched checkpoint SHA with `gh run list --repo infinri/Writ --branch v2/architecture-rebuild --workflow v2-docs.yml --commit <sha> --limit 5`, then `gh run view <run-id> --repo infinri/Writ --json headSha,conclusion,jobs`. Require the exact SHA and all six successful jobs.
+- Run the [optional-removal scenario](../../m6/management/README.md#run-signed-optional-policy-removal) and the evaluator command in E-107 to reproduce the new disposable evidence. The independently reviewed fixes cover final source expiry, displayed Decision binding, historical removal rollback and exact receipt recovery after an intervening authorized rollback.
+- The original checkout is intentionally divergent at `a1eee0d40e2e331046640d98497c2fbc1b3e0d0f`. Keep it, unrelated work and private hook-audit material separate. The common ancestor with the starting remote branch is `631985902c1cde5b31e87ec48300fbc09727ca90`.
+- M6 and CC-M2, CC-M3 and CC-M6 remain in progress. The owner must decide [high-stakes quorum](M6-QUORUM-DECISION.md). Check the closure checklist for M6 UI and service requirements and the already scheduled M9 and M10 gates. Governed activation, live deployment and legacy imports require separate authority.
+- Fresh-chat action after the exact-SHA check: record the quorum decision if available, then prioritize the rollback-capable owner-designated Ubuntu 24.04 guest [first inventory](../../m5/reference-vm/PROVISIONING.md#first-guest-inventory), [full VM verification](M5A-GATE-REVIEW.md#4-verify-in-vm-checklist-all-open), and [isolated containment CI](../../m5/containment-ci/README.md) before M7. M6 governed integration depends on M5.
+- Preserve the unresolved E-097 CI stall and all M5 obligations. D-048 and D-049 keep their exact scopes. D-049 expires at the start of 2026-12-18 UTC. ADR-0008 remains APPROVED IN PRINCIPLE. Release and production remain NO-GO.
+
+## Prior checkpoints
+
+### 2026-11-19 (M6 slice 5F checkpoint)
+
 [D-059](DECISION-LOG.md#d-059-m6-slice-5f-headless-capability-pack-administration-owner-2026-11-19) approves the disposable pack registry and test authorities. Read [WORK-STATE](WORK-STATE.md) and [E-106](TEST-EVIDENCE.md#e-106-d-059-disposable-capability-pack-administration-2026-11-19) in a fresh chat.
 
 - Run the [headless pack scenario](../../m6/management/README.md#run-capability-pack-administration). It installs and verifies two signed immutable versions, enables version 1, upgrades to version 2, disables, and recovers the exact receipts after reopening. A selected pack blocks retirement of its referenced custom contract through the D-058 owner. All 44 complete Decisions agree across absent, enabled, upgraded and disabled states.
@@ -11,8 +24,6 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 - Preserve the original checkout at divergent `a1eee0d` and keep unrelated work and private hook-audit material separate.
 - M6 and CC-M2, CC-M3 and CC-M6 remain in progress. Optional policy removal, evaluator quorum, remaining AG-ADV-16 obligations, UI, transport, production authentication and M5-dependent integration remain open. Governed activation, live deployment and legacy imports require separate authority.
 - Prioritize the owner-designated rollback-capable Ubuntu 24.04 guest [first inventory](../../m5/reference-vm/PROVISIONING.md#first-guest-inventory), [full VM checklist](M5A-GATE-REVIEW.md#4-verify-in-vm-checklist-all-open) and separate [isolated containment CI](../../m5/containment-ci/README.md) before M7. D-048 and D-049 remain in force. D-049 expires at the start of 2026-12-18 UTC. ADR-0008 remains APPROVED IN PRINCIPLE. Release and production remain NO-GO.
-
-## Prior checkpoints
 
 ### 2026-11-19 (M6 slice 5E checkpoint)
 
