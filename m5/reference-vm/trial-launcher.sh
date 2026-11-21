@@ -145,7 +145,7 @@ p = sys.argv[1]; c = json.load(open(p)); c["pre_gate_processes"] = 7; json.dump(
 PY
   mkrun trial-eof 'echo ran > /work/marker; sleep 2'
   request trial-eof
-  launch writ trial-eof
+  launch writ trial-eof gate-eof
   sleep 1
   if ls /var/lib/writ-jobs/job-*/work/marker >/dev/null 2>&1; then echo ctl_eof_job_ran=1 >> "$r"; else echo ctl_eof_job_ran=0 >> "$r"; fi
   echo "ctl_eof_started=$(lget trial-eof started)" >> "$r"
@@ -236,8 +236,10 @@ useradd --create-home --shell /bin/bash "$desktop"
 {
   for who in agent:"$agent_user" job:"$job_user" desktop:"$desktop" root:root; do
     name=${who%%:*}; as=${who#*:}
-    mode=peer-access
-    if [ "$name" = root ]; then mode=peer; fi
+    case "$name" in
+      agent|job|desktop) mode=peer-access ;;
+      *) mode=peer ;;
+    esac
     launch "$as" "peer-$name" "$mode"
     echo "peer_$name=$(outcome "peer-$name")"
   done
@@ -400,7 +402,7 @@ request trial-long
 long=$!
 sleep 1
 request default
-launch writ second
+launch writ second peer
 if [ "$(lget second hello)" = 1 ]; then echo second_connection=served; else echo second_connection=refused; fi > "$r"
 wait "$long"
 sleep 1

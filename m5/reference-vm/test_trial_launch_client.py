@@ -1,3 +1,6 @@
+import errno
+import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -9,6 +12,7 @@ import struct
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 
 
 HERE = Path(__file__).resolve().parent
@@ -16,9 +20,23 @@ HERE = Path(__file__).resolve().parent
 
 HELLO = {
     "contract": "writ-launch-hello/1", "instance": "fixture", "build": "release",
-    "launcher_digest": "a" * 64, "exec_digest": "b" * 64, "bwrap_digest": "c" * 64,
-    "bwrap_profile_digest": "d" * 64, "apparmor_profile_digest": "e" * 64,
-    "maxima_digest": "f" * 64, "runtime_profiles": [{"id": "busybox", "digest": "0" * 64}],
+    "launcher_digest": "sha256:" + "a" * 64, "exec_digest": "sha256:" + "b" * 64, "bwrap_digest": "sha256:" + "c" * 64,
+    "bwrap_profile_digest": "sha256:" + "d" * 64, "apparmor_profile_digest": "sha256:" + "e" * 64,
+    "maxima_digest": "sha256:" + "f" * 64, "runtime_profiles": [{"id": "busybox", "digest": "sha256:" + "0" * 64}],
+}
+
+
+REQUEST = {"job_id": "fixture", "limits": {"output_max_bytes": 1024}}
+STARTED = {"contract": "writ-launch-started/1", "job_id": "fixture"}
+REFUSED = {"contract": "writ-launch-refused/1", "job_id": "", "code": "LAUNCH_UNAVAILABLE"}
+RESULT = {
+    "contract": "writ-launch-result/1", "job_id": "fixture", "reason": "exited",
+    "exit_status": 0, "signal": None, "request_digest": "sha256:" + "a" * 64,
+    "kill": {"used": True, "populated_zero": True}, "cpu_usage_usec": 0,
+    "memory_events": {"max": 0, "oom": 0, "oom_kill": 0}, "pids_events": {"max": 0},
+    "output_bytes": {"stdout": 0, "stderr": 0},
+    "digests": {k: "sha256:" + "b" * 64 for k in
+                ("bwrap", "bwrap_profile", "apparmor_profile", "runtime_profile", "exec")},
 }
 
 
@@ -36,7 +54,7 @@ class TrialLaunchClientTest(unittest.TestCase):
         self.client = self.root / "launch-client.py"
         shutil.copyfile(HERE / self.client.name, self.client)
         self.request = self.root / "request.json"
-        self.request.write_text("{}\n")
+        self.request.write_text(json.dumps(REQUEST))
         self.request.chmod(0o644)
         self.job_stdout = self.root / "stdout"
         self.socket = self.root / "launch.sock"
@@ -77,6 +95,12 @@ class TrialLaunchClientTest(unittest.TestCase):
     def test_peer_close_and_incomplete_hello_are_distinct(self):
         for index, (reply, status, outcome) in enumerate([
             (b"", 0, "closed_before_read"),
+            (struct.pack(">IB", 65537, 1), 3, "malformed_response"),
+            (struct.pack(">IB", 5, 1) + b"{}", 3, "malformed_response"),
+            (struct.pack(">IB", 0, 3), 3, "malformed_response"),
+            (control_frame(dict(HELLO, build="unknown")), 3, "malformed_response"),
+            (control_frame(dict(HELLO, exec_digest="wrong")), 3, "malformed_response"),
+            (control_frame(dict(HELLO, instance="1\nresult_reason=exited")), 3, "malformed_response"),
             (b"\x00", 3, "malformed_response"),
             (control_frame(dict(HELLO, contract="unexpected")), 3, "malformed_response"),
             (control_frame({"contract": HELLO["contract"]}), 3, "malformed_response"),
@@ -115,6 +139,32 @@ class TrialLaunchClientTest(unittest.TestCase):
                     self.assertIn("connected=0", diagnostic)
                     self.assertIn("outcome=access_denied_before_connect", diagnostic)
 
+    def test_peer_access_unexpected_errors_and_absolute_deadline(self):
+        spec = importlib.util.spec_from_file_location("trial_client", self.client)
+        client = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(client)
+        for call, error, outcome in [
+            ("connect", PermissionError(errno.EPERM, "operation not permitted"), "unavailable"),
+            ("connect", TimeoutError(), "timeout"),
+            ("getsockopt", PermissionError(errno.EACCES, "permission denied"), "unavailable"),
+        ]:
+            sock = Mock()
+            getattr(sock, call).side_effect = error
+            args = ["client", "--mode", "peer-access", "--request", str(self.request)]
+            with self.subTest(call=call, outcome=outcome), patch.object(client.sys, "argv", args), \
+                    patch.object(client.socket, "socket", return_value=sock), \
+                    patch("sys.stdout", new_callable=io.StringIO) as out, patch("sys.stderr", new_callable=io.StringIO):
+                self.assertEqual(client.main(), 3)
+                self.assertIn(f"outcome={outcome}", out.getvalue().splitlines())
+        sock = Mock()
+        sock.recv.return_value = b"\x00"
+        with patch.object(client.time, "monotonic", side_effect=[0, 2]):
+            with self.assertRaises(TimeoutError):
+                client.read_frame(sock, 1)
+        sock.recv.assert_called_once_with(5)
+        with self.assertRaises(ValueError):
+            client.parse_hello(json.dumps(HELLO).encode("utf-16"))
+
     def test_peer_hello_and_timeout(self):
         for mode, hello, status, outcome in [("peer", True, 0, "hello"),
                                               ("peer-access", False, 3, "timeout")]:
@@ -144,7 +194,7 @@ class TrialLaunchClientTest(unittest.TestCase):
         share = self.root / "share"
         share.mkdir(mode=0o755)
         share.chmod(0o755)
-        (share / "req-default.json").write_text("{}\n")
+        (share / "req-default.json").write_text(json.dumps(REQUEST))
         command = [
             "bash", "-euc",
             'here=$1; share=$2; ev=$3; sock=$4; . "$5"; stage_launch_client; launch "$6" ident',
@@ -164,13 +214,11 @@ class TrialLaunchClientTest(unittest.TestCase):
                     self.assertEqual(struct.unpack("3i", peer)[1], account.pw_uid)
                     conn.sendall(control_frame(HELLO))
                     length, _ = struct.unpack(">IB", request.read(5))
-                    self.assertEqual(json.loads(request.read(length)), {})
-                    data = bytes([1, 0]) + b"fixture stdout"
+                    self.assertEqual(json.loads(request.read(length)), REQUEST)
+                    conn.sendall(control_frame(STARTED))
+                    data = bytes([1, 7]) + b"fixture" + b"fixture stdout"
                     conn.sendall(struct.pack(">IB", len(data), 2) + data)
-                    conn.sendall(control_frame({
-                        "contract": "writ-launch-result/1", "reason": "exited", "exit_status": 0,
-                        "kill": {"populated_zero": True}, "request_digest": "fixture",
-                    }))
+                    conn.sendall(control_frame(dict(RESULT, output_bytes={"stdout": 14, "stderr": 0})))
                 self.assertEqual(process.wait(timeout=10), 0)
         staged = share / "launch-client.py"
         output = share / "launch-ident.out"
@@ -181,6 +229,39 @@ class TrialLaunchClientTest(unittest.TestCase):
         self.assertEqual(staged.read_bytes(), (private / staged.name).read_bytes())
         self.assertEqual(output.read_bytes(), b"fixture stdout")
         self.assertEqual((self.evidence / "launch-ident.exit").read_text(), "0\n")
+
+    def test_incomplete_and_malformed_job_responses_stop_collection(self):
+        started = control_frame(STARTED)
+        result = control_frame(RESULT)
+        data = struct.pack(">IB", 4, 2) + bytes([1, 7]) + b"id"
+        for index, frames in enumerate((
+            b"", started, result, started + started, started + control_frame(REFUSED),
+            data, started + data, control_frame(dict(STARTED, job_id="other")),
+            control_frame(dict(REFUSED, code="other")),
+            control_frame({"contract": REFUSED["contract"], "code": REFUSED["code"]}),
+            started + control_frame(dict(RESULT, kill={"used": True, "populated_zero": "false"})),
+            started + control_frame(dict(RESULT, output_bytes={"stdout": 1, "stderr": 0})),
+            started + result[:-1],
+        )):
+            with self.subTest(index=index), socket.socket(socket.AF_UNIX) as server:
+                self.socket = self.root / f"result-{index}.sock"
+                server.bind(str(self.socket))
+                server.listen()
+                server.settimeout(5)
+                with subprocess.Popen(self.launch_command(), stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE) as process:
+                    conn, _ = server.accept()
+                    with conn, conn.makefile("rb") as request:
+                        conn.settimeout(5)
+                        conn.sendall(control_frame(HELLO))
+                        length, _ = struct.unpack(">IB", request.read(5))
+                        self.assertEqual(json.loads(request.read(length)), REQUEST)
+                        conn.sendall(frames)
+                    stdout, _ = process.communicate(timeout=5)
+                self.assertEqual(process.returncode, 3)
+                self.assertEqual(stdout, b"")
+                self.assertIn("outcome=malformed_response",
+                              (self.evidence / "launch-ident.txt").read_text().splitlines())
 
     def test_launcher_refusal_is_preserved_as_a_successful_client_outcome(self):
         self.client.chmod(0o644)
@@ -194,10 +275,8 @@ class TrialLaunchClientTest(unittest.TestCase):
                     conn.settimeout(5)
                     conn.sendall(control_frame(HELLO))
                     length, _ = struct.unpack(">IB", request.read(5))
-                    self.assertEqual(json.loads(request.read(length)), {})
-                    conn.sendall(control_frame({
-                        "contract": "writ-launch-refused/1", "code": "LAUNCH_UNAVAILABLE",
-                    }))
+                    self.assertEqual(json.loads(request.read(length)), REQUEST)
+                    conn.sendall(control_frame(REFUSED))
                 stdout, _ = process.communicate(timeout=10)
 
         self.assertEqual(process.returncode, 0)

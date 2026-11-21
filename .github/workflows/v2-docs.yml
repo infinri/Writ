@@ -39,6 +39,8 @@ jobs:
           { echo "SQLITE3_INCLUDE_DIR=$d/include"; echo "SQLITE3_LIB_DIR=$d/lib"; echo "SQLITE3_STATIC=1"; echo "PKG_CONFIG_LIBDIR=$d/lib/pkgconfig"; } >> "$GITHUB_ENV"
       - name: Toolchain is the pinned one
         run: cargo --version && rustc --version | grep -q '^rustc 1.99.1 '
+      - name: Reference VM launcher observation regressions (offline, including separate UID)
+        run: sudo python3 -B m5/reference-vm/test_trial_launch_client.py -v
       - name: Proposed model adapter fixtures
         run: |
           rustfmt --edition 2021 --check m5/model-contracts/lib.rs

@@ -7,12 +7,13 @@ identity under test (normally `writ`). Prints `key=value` lines for the launcher
 usage: launch-client.py --socket PATH --request FILE [--mode MODE] [--stdout-file FILE]
 
 MODE (default normal): normal, before-hello, oversized, unknown-field, data-frame, scm-rights,
-no-request, cancel-after-started, peer, peer-access (a negative peer outside the socket group).
+no-request, cancel-after-started, gate-eof, peer, peer-access (a negative peer outside the socket group).
 """
 import argparse
 import array
 import errno
 import json
+import re
 import socket
 import struct
 import sys
@@ -29,48 +30,99 @@ def canonical(obj):
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 
 
-def parse_hello(payload):
+def parse_control(payload):
     def unique_fields(pairs):
         fields = dict(pairs)
         if len(fields) != len(pairs):
-            raise ValueError("duplicate hello field")
+            raise ValueError("duplicate control field")
         return fields
 
-    hello = json.loads(payload, object_pairs_hook=unique_fields)
+    return json.loads(payload.decode("utf-8"), object_pairs_hook=unique_fields)
+
+
+def valid_digest(value):
+    return isinstance(value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+
+
+def parse_hello(payload):
+    hello = parse_control(payload)
     strings = {"contract", "instance", "build", "launcher_digest", "exec_digest",
                "bwrap_digest", "bwrap_profile_digest", "apparmor_profile_digest", "maxima_digest"}
     if (not isinstance(hello, dict) or hello.keys() != strings | {"runtime_profiles"}
             or not all(isinstance(hello[key], str) for key in strings)
-            or hello["contract"] != "writ-launch-hello/1"):
+            or hello["contract"] != "writ-launch-hello/1"
+            or hello["build"] not in ("release", "test-faults")
+            or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", hello["instance"])
+            or ".." in hello["instance"]
+            or not all(valid_digest(hello[k]) for k in strings if k.endswith("_digest"))):
         raise ValueError("invalid launcher hello")
     profiles = hello["runtime_profiles"]
     if not isinstance(profiles, list) or not all(
         isinstance(p, dict) and p.keys() == {"id", "digest"}
-        and all(isinstance(v, str) for v in p.values()) for p in profiles
+        and isinstance(p["id"], str) and re.fullmatch(r"[a-z0-9-][a-z0-9.-]{0,63}", p["id"])
+        and valid_digest(p["digest"]) for p in profiles
     ):
         raise ValueError("invalid hello runtime profiles")
+    if len({p["id"] for p in profiles}) != len(profiles):
+        raise ValueError("duplicate runtime profile")
     return hello
 
 
 def read_frame(sock, deadline):
-    buf = b""
-    while len(buf) < 5:
-        sock.settimeout(max(0.01, deadline - time.monotonic()))
-        chunk = sock.recv(5 - len(buf))
+    def receive(count):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("launcher observation deadline elapsed")
+        sock.settimeout(remaining)
+        return sock.recv(count)
+
+    header = bytearray()
+    while len(header) < 5:
+        chunk = receive(5 - len(header))
         if not chunk:
-            if buf:
+            if header:
                 raise ValueError("truncated frame header")
             return None
-        buf += chunk
-    length, kind = struct.unpack(">IB", buf)
-    payload = b""
+        header.extend(chunk)
+    length, kind = struct.unpack(">IB", header)
+    limits = {CONTROL: 64 * 1024, DATA: 1024 * 1024}
+    if kind not in limits or length > limits[kind]:
+        raise ValueError("invalid frame header")
+    payload = bytearray()
     while len(payload) < length:
-        sock.settimeout(max(0.01, deadline - time.monotonic()))
-        chunk = sock.recv(length - len(payload))
+        chunk = receive(length - len(payload))
         if not chunk:
             raise ValueError("truncated frame payload")
-        payload += chunk
-    return kind, payload
+        payload.extend(chunk)
+    return kind, bytes(payload)
+
+
+def check_result(msg):
+    if msg.keys() != {"contract", "job_id", "request_digest", "reason", "exit_status",
+                      "signal", "kill", "memory_events", "pids_events", "cpu_usage_usec",
+                      "output_bytes", "digests"}:
+        raise ValueError("invalid result fields")
+    if msg["reason"] not in ("exited", "signaled", "timed_out", "output_exceeded",
+                             "cancelled", "start_failed") or not valid_digest(msg["request_digest"]):
+        raise ValueError("invalid result reason or digest")
+    for field in ("signal", "exit_status"):
+        if msg[field] is not None and type(msg[field]) is not int:
+            raise ValueError("invalid result status")
+    if (msg["kill"].keys() != {"used", "populated_zero"}
+            or any(type(v) is not bool for v in msg["kill"].values())):
+        raise ValueError("invalid kill result")
+    counters = [msg["cpu_usage_usec"]]
+    for field, keys in (("memory_events", {"max", "oom", "oom_kill"}),
+                        ("pids_events", {"max"}), ("output_bytes", {"stdout", "stderr"})):
+        if msg[field].keys() != keys:
+            raise ValueError("invalid result counter fields")
+        counters.extend(msg[field].values())
+    if any(type(v) is not int or not 0 <= v < 2**53 for v in counters):
+        raise ValueError("invalid result counter")
+    if (msg["digests"].keys() != {"bwrap", "bwrap_profile", "apparmor_profile",
+                                  "runtime_profile", "exec"}
+            or not all(valid_digest(v) for v in msg["digests"].values())):
+        raise ValueError("invalid result digests")
 
 
 def main():
@@ -102,6 +154,8 @@ def main():
             s.sendall(frame(CONTROL, canonical(request)))
         f = read_frame(s, deadline)
         if f is None:
+            if not peer_test and a.mode != "before-hello":
+                raise ValueError("missing launcher hello")
             raise EOFError
         if f[0] != CONTROL:
             raise ValueError("expected launcher hello frame")
@@ -123,38 +177,66 @@ def main():
             r = dict(request)
             r["source"] = "/etc"
             s.sendall(frame(CONTROL, canonical(r)))
-        elif a.mode in ("normal", "cancel-after-started"):
+        elif a.mode in ("normal", "cancel-after-started", "gate-eof"):
             s.sendall(frame(CONTROL, canonical(request)))
+        job_id = request.get("job_id")
+        output_size = {"stdout": 0, "stderr": 0}
         while not peer_test:
             f = read_frame(s, deadline)
             if f is None:
-                break
+                if out["started"] == "0" and a.mode in (
+                    "no-request", "oversized", "data-frame", "scm-rights", "gate-eof"
+                ):
+                    break
+                raise ValueError("launcher closed without terminal response")
             kind, payload = f
             if kind == DATA:
-                tag, idlen = payload[0], payload[1]
-                if tag == 1:
-                    stdout += payload[2 + idlen:]
+                if out["started"] != "1" or len(payload) < 2 or payload[0] not in (1, 2):
+                    raise ValueError("invalid output frame")
+                end = 2 + payload[1]
+                if end > len(payload) or payload[2:end].decode("utf-8") != job_id:
+                    raise ValueError("invalid output job id")
+                stream = "stdout" if payload[0] == 1 else "stderr"
+                output_size[stream] += len(payload) - end
+                if sum(output_size.values()) > request["limits"]["output_max_bytes"]:
+                    raise ValueError("output exceeds request limit")
+                if stream == "stdout":
+                    stdout.extend(payload[end:])
                 continue
             if kind != CONTROL:
                 raise ValueError("unexpected frame kind")
-            msg = json.loads(payload)
-            c = msg.get("contract")
-            if c not in ("writ-launch-refused/1", "writ-launch-started/1", "writ-launch-result/1"):
-                raise ValueError("unexpected launcher response contract")
+            msg = parse_control(payload)
+            c = msg["contract"]
             if c == "writ-launch-refused/1":
+                if (out["started"] != "0" or msg.keys() != {"contract", "job_id", "code"}
+                        or msg["job_id"] not in ("", job_id) or msg["code"] not in (
+                            "LAUNCH_INVALID", "LAUNCH_PROFILE_UNKNOWN", "LAUNCH_SOURCE_INVALID",
+                            "LAUNCH_LIMIT_EXCEEDED", "LAUNCH_BUSY", "LAUNCH_UNAVAILABLE")):
+                    raise ValueError("invalid launcher refusal")
                 out["outcome"] = "refused:" + msg["code"]
                 break
+            if msg["job_id"] != job_id or not isinstance(job_id, str):
+                raise ValueError("response job id differs")
             if c == "writ-launch-started/1":
+                if out["started"] != "0" or msg.keys() != {"contract", "job_id"}:
+                    raise ValueError("invalid started response")
                 out["started"] = "1"
                 if a.mode == "cancel-after-started":
-                    s.sendall(frame(CONTROL, canonical({"contract": "writ-launch-cancel/1", "job_id": request["job_id"]})))
-            if c == "writ-launch-result/1":
+                    s.sendall(frame(CONTROL, canonical({"contract": "writ-launch-cancel/1", "job_id": job_id})))
+            elif c == "writ-launch-result/1":
+                check_result(msg)
+                if out["started"] == "0" and msg["reason"] not in ("start_failed", "output_exceeded"):
+                    raise ValueError("result before started")
+                if out["started"] == "1" and msg["reason"] != "output_exceeded" and msg["output_bytes"] != output_size:
+                    raise ValueError("incomplete output")
                 out["outcome"] = "finished"
                 out["result_reason"] = msg["reason"]
                 out["result_exit_status"] = "" if msg["exit_status"] is None else str(msg["exit_status"])
                 out["result_populated_zero"] = "true" if msg["kill"]["populated_zero"] else "false"
                 out["result_request_digest"] = msg["request_digest"]
                 break
+            else:
+                raise ValueError("unexpected launcher response contract")
     except EOFError:
         if peer_test:
             out["outcome"] = "closed_before_read"
