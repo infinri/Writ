@@ -241,6 +241,8 @@ class TrialLaunchClientTest(unittest.TestCase):
             control_frame({"contract": REFUSED["contract"], "code": REFUSED["code"]}),
             started + control_frame(dict(RESULT, kill={"used": True, "populated_zero": "false"})),
             started + control_frame(dict(RESULT, output_bytes={"stdout": 1, "stderr": 0})),
+            started + control_frame(dict(RESULT, exit_status=None)),
+            started + control_frame(dict(RESULT, exit_status=2**53)),
             started + result[:-1],
         )):
             with self.subTest(index=index), socket.socket(socket.AF_UNIX) as server:

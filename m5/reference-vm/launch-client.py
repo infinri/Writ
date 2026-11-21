@@ -105,9 +105,13 @@ def check_result(msg):
     if msg["reason"] not in ("exited", "signaled", "timed_out", "output_exceeded",
                              "cancelled", "start_failed") or not valid_digest(msg["request_digest"]):
         raise ValueError("invalid result reason or digest")
-    for field in ("signal", "exit_status"):
-        if msg[field] is not None and type(msg[field]) is not int:
+    for field, minimum, maximum in (("signal", 1, 64), ("exit_status", 0, 255)):
+        value = msg[field]
+        if value is not None and (type(value) is not int or not minimum <= value <= maximum):
             raise ValueError("invalid result status")
+    if ((msg["reason"] == "exited" and msg["exit_status"] is None)
+            or (msg["reason"] == "signaled" and msg["signal"] is None)):
+        raise ValueError("missing result status")
     if (msg["kill"].keys() != {"used", "populated_zero"}
             or any(type(v) is not bool for v in msg["kill"].values())):
         raise ValueError("invalid kill result")
@@ -209,7 +213,8 @@ def main():
             c = msg["contract"]
             if c == "writ-launch-refused/1":
                 if (out["started"] != "0" or msg.keys() != {"contract", "job_id", "code"}
-                        or msg["job_id"] not in ("", job_id) or msg["code"] not in (
+                        or not isinstance(msg["job_id"], str) or msg["job_id"] not in ("", job_id)
+                        or msg["code"] not in (
                             "LAUNCH_INVALID", "LAUNCH_PROFILE_UNKNOWN", "LAUNCH_SOURCE_INVALID",
                             "LAUNCH_LIMIT_EXCEEDED", "LAUNCH_BUSY", "LAUNCH_UNAVAILABLE")):
                     raise ValueError("invalid launcher refusal")
@@ -227,7 +232,8 @@ def main():
                 check_result(msg)
                 if out["started"] == "0" and msg["reason"] not in ("start_failed", "output_exceeded"):
                     raise ValueError("result before started")
-                if out["started"] == "1" and msg["reason"] != "output_exceeded" and msg["output_bytes"] != output_size:
+                if (out["started"] == "1" and msg["reason"] != "output_exceeded"
+                        and msg["output_bytes"] != output_size):
                     raise ValueError("incomplete output")
                 out["outcome"] = "finished"
                 out["result_reason"] = msg["reason"]
