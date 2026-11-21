@@ -415,29 +415,7 @@ impl Ops for RealOps {
     }
 
     fn join_job(&mut self, root: &Path, unit: &str) -> io::Result<()> {
-        let r = ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS;
-        let mount = openat2(
-            CWD,
-            root,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-            ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
-        )?;
-        let unit_fd = openat2(
-            &mount,
-            unit,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-            r,
-        )?;
-        let procs = openat2(
-            &unit_fd,
-            "job/cgroup.procs",
-            OFlags::WRONLY | OFlags::CLOEXEC,
-            Mode::empty(),
-            r,
-        )?;
-        std::fs::File::from(procs).write_all(std::process::id().to_string().as_bytes())
+        crate::cgroup::Cgroups::open_relative(root, unit)?.join_job()
     }
 
     fn lower_rlimit(&mut self, r: Resource, v: u64) -> io::Result<()> {

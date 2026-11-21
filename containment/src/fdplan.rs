@@ -16,7 +16,7 @@
 //! the type from `stat` of `/proc/self/fd/<n>` (equivalent to `F_GETFL` and `fstat` without
 //! borrowing a raw descriptor, which safe Rust cannot do).
 
-use rustix::fs::{openat2, Dir, FileType, Mode, OFlags, ResolveFlags, CWD};
+use rustix::fs::{openat, Dir, FileType, Mode, OFlags, CWD};
 use rustix::io::fcntl_dupfd_cloexec;
 use rustix::pipe::{pipe_with, PipeFlags};
 use std::io;
@@ -46,12 +46,18 @@ pub struct Slots {
 }
 
 fn dev_null() -> io::Result<OwnedFd> {
-    Ok(openat2(
+    // Keep the parent above the reserved slots during the final open.
+    let dev = high(openat(
         CWD,
-        "/dev/null",
-        OFlags::RDONLY | OFlags::CLOEXEC,
+        "/dev",
+        OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
-        ResolveFlags::NO_SYMLINKS,
+    )?)?;
+    Ok(openat(
+        &dev,
+        "null",
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
     )?)
 }
 
@@ -155,12 +161,11 @@ pub fn check_helper_fds(
 
 /// The descriptors open in this process (from `/proc/self/fd`, without the listing's own).
 pub fn list_own_fds(proc_root: &Path) -> io::Result<Vec<i32>> {
-    let fd = openat2(
+    let fd = openat(
         CWD,
         proc_root.join("self/fd").as_path(),
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
         Mode::empty(),
-        ResolveFlags::empty(),
     )?;
     let own = fd.as_fd().as_raw_fd();
     let mut d = Dir::new(fd)?;

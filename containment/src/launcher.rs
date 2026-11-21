@@ -44,7 +44,7 @@ use crate::residue;
 use crate::session::{self, Bounds, Channels, Session, Start};
 use crate::source;
 use rustix::event::{poll, PollFd, PollFlags, Timespec};
-use rustix::fs::{mkdirat, openat2, unlinkat, AtFlags, Mode, OFlags, ResolveFlags};
+use rustix::fs::{mkdirat, openat, unlinkat, AtFlags, Mode, OFlags};
 use std::fs::File;
 use std::io::{self, ErrorKind, Read, Write};
 use std::os::fd::{AsFd, OwnedFd};
@@ -489,12 +489,11 @@ impl Job<'_> {
         let Some(jd) = self.job_dir.take() else {
             return;
         };
-        if let Ok(work) = openat2(
+        if let Ok(work) = openat(
             &jd,
             "work",
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
-            ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS,
         ) {
             let _ = crate::helper::remove_contents(work, self.cfg.source.max_entries + 1);
             let _ = unlinkat(&jd, "work", AtFlags::REMOVEDIR);
@@ -541,12 +540,12 @@ impl Job<'_> {
             Mode::from_raw_mode(0o711),
         )
         .map_err(|_| LaunchCode::Unavailable)?;
-        let jd = openat2(
+        // The name is one component: "job-" plus the validated systemd instance.
+        let jd = openat(
             &root,
             self.job_dir_name.as_str(),
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
-            ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS,
         )
         .map_err(|_| LaunchCode::Unavailable)?;
         rustix::fs::fchmod(&jd, Mode::from_raw_mode(0o711)).map_err(|_| LaunchCode::Unavailable)?;

@@ -9,11 +9,11 @@
 //! [`crate::gate::Gate::close_after`] requires.
 
 use crate::protocol::JobLimits;
-use rustix::fs::{mkdirat, openat2, unlinkat, AtFlags, Mode, OFlags, ResolveFlags, CWD};
+use rustix::fs::{mkdirat, openat, unlinkat, AtFlags, Mode, OFlags, CWD};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, OwnedFd};
-use std::path::Path;
+use std::path::{Component, Path};
 use std::time::{Duration, Instant};
 
 /// Prefix of the launcher's instance units.
@@ -21,9 +21,32 @@ pub const UNIT_PREFIX: &str = "writ-job-launcher@";
 /// Controllers enabled for `<unit>/job`.
 pub const CONTROLLERS: &str = "+memory +pids +cpu";
 
-const RESOLVE: ResolveFlags = ResolveFlags::BENEATH
-    .union(ResolveFlags::NO_SYMLINKS)
-    .union(ResolveFlags::NO_MAGICLINKS);
+const DIR: OFlags = OFlags::DIRECTORY
+    .union(OFlags::CLOEXEC)
+    .union(OFlags::NOFOLLOW);
+
+// Only for the systemd-owned cgroup hierarchy in the launcher's fixed mount namespace.
+// cgroup v2 forbids directory renames. Never use this walk on a job-controlled tree.
+fn open_cgroup_path(parent: &OwnedFd, path: &Path, flags: OFlags) -> io::Result<OwnedFd> {
+    let mut parts = path.components().peekable();
+    let mut dir = None;
+    while let Some(component) = parts.next() {
+        let Component::Normal(name) = component else {
+            return Err(io::Error::other("invalid cgroup path component"));
+        };
+        let base = dir.as_ref().unwrap_or(parent);
+        if parts.peek().is_none() {
+            return Ok(openat(
+                base,
+                name,
+                flags | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )?);
+        }
+        dir = Some(openat(base, name, OFlags::PATH | DIR, Mode::empty())?);
+    }
+    Err(io::Error::other("empty cgroup path"))
+}
 
 /// The launcher unit's cgroup.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -141,24 +164,33 @@ pub struct Cgroups {
 impl Cgroups {
     /// Open the unit directory beneath the cgroup mount.
     pub fn open(cgroup_root: &Path, unit: &UnitPath) -> io::Result<Cgroups> {
-        let root = openat2(
-            CWD,
-            cgroup_root,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-            ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
-        )?;
-        let fd = openat2(
-            &root,
-            unit.rel.as_str(),
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-            RESOLVE,
-        )?;
+        Self::open_relative(cgroup_root, &unit.rel)
+    }
+
+    pub(crate) fn open_relative(cgroup_root: &Path, rel: &str) -> io::Result<Cgroups> {
+        // Mount acquisition forbids links but permits crossing mounts and using the
+        // configured absolute or cwd-relative path. Only the unit lookup is beneath.
+        let mut parts = cgroup_root.components().peekable();
+        let mut mount: Option<OwnedFd> = None;
+        while let Some(part) = parts.next() {
+            let base = mount.as_ref().map_or(CWD, |fd| fd.as_fd());
+            let flags = if parts.peek().is_some() {
+                OFlags::PATH
+            } else {
+                OFlags::RDONLY
+            };
+            mount = Some(openat(base, part.as_os_str(), flags | DIR, Mode::empty())?);
+        }
+        let mount = mount.ok_or_else(|| io::Error::other("empty cgroup mount path"))?;
+        let unit = open_cgroup_path(&mount, Path::new(rel), OFlags::RDONLY | DIR)?;
         Ok(Cgroups {
-            unit: fd,
-            rel: unit.rel.clone(),
+            unit,
+            rel: rel.to_string(),
         })
+    }
+
+    pub(crate) fn join_job(&self) -> io::Result<()> {
+        self.write("job/cgroup.procs", &std::process::id().to_string())
     }
 
     /// The unit path relative to the mount.
@@ -167,24 +199,12 @@ impl Cgroups {
     }
 
     fn write(&self, file: &str, text: &str) -> io::Result<()> {
-        let fd = openat2(
-            &self.unit,
-            file,
-            OFlags::WRONLY | OFlags::CLOEXEC,
-            Mode::empty(),
-            RESOLVE,
-        )?;
+        let fd = open_cgroup_path(&self.unit, Path::new(file), OFlags::WRONLY)?;
         File::from(fd).write_all(text.as_bytes())
     }
 
     fn read(&self, file: &str) -> io::Result<String> {
-        let fd = openat2(
-            &self.unit,
-            file,
-            OFlags::RDONLY | OFlags::CLOEXEC,
-            Mode::empty(),
-            RESOLVE,
-        )?;
+        let fd = open_cgroup_path(&self.unit, Path::new(file), OFlags::RDONLY)?;
         let mut s = String::new();
         File::from(fd).take(64 * 1024).read_to_string(&mut s)?;
         Ok(s)
@@ -199,14 +219,7 @@ impl Cgroups {
 
     /// Whether `<unit>/job` exists.
     pub fn job_exists(&self) -> bool {
-        openat2(
-            &self.unit,
-            "job",
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-            RESOLVE,
-        )
-        .is_ok()
+        open_cgroup_path(&self.unit, Path::new("job"), OFlags::RDONLY | DIR).is_ok()
     }
 
     /// Move `pid` (the launcher) into `<unit>/supervisor` (created if needed), so the unit's
