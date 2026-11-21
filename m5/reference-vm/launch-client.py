@@ -74,7 +74,11 @@ def read_frame(sock, deadline):
         if remaining <= 0:
             raise TimeoutError("launcher observation deadline elapsed")
         sock.settimeout(remaining)
-        return sock.recv(count)
+        # A zero-sized ancillary buffer discards descriptors in the kernel.
+        data, ancillary, flags, _ = sock.recvmsg(count, 0)
+        if ancillary or flags & socket.MSG_CTRUNC:
+            raise ValueError("unexpected ancillary data")
+        return data
 
     header = bytearray()
     while len(header) < 5:

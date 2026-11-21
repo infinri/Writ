@@ -1,3 +1,4 @@
+import array
 import errno
 import importlib.util
 import io
@@ -122,6 +123,24 @@ class TrialLaunchClientTest(unittest.TestCase):
                 self.assertIn("connected=1\n", diagnostic)
                 self.assertIn(f"outcome={outcome}\n", diagnostic)
 
+    def test_peer_hello_with_ancillary_data_stops_collection(self):
+        with socket.socket(socket.AF_UNIX) as server, self.request.open("rb") as handle:
+            server.bind(str(self.socket))
+            server.listen()
+            server.settimeout(5)
+            with subprocess.Popen(self.launch_command(mode="peer-access"), stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE) as process:
+                conn, _ = server.accept()
+                with conn:
+                    conn.sendmsg([control_frame(HELLO)], [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
+                                                           array.array("i", [handle.fileno()]))])
+                stdout, _ = process.communicate(timeout=5)
+            self.assertEqual(process.returncode, 3)
+            self.assertEqual(stdout, b"")
+            diagnostic = (self.evidence / "launch-ident.txt").read_text().splitlines()
+            self.assertIn("outcome=malformed_response", diagnostic)
+            self.assertIn("hello=0", diagnostic)
+
     def test_connect_permission_denial_is_expected_only_for_access_peer(self):
         runner = ("runuser", "-u", "nobody", "--") if os.geteuid() == 0 else ()
         self.client.chmod(0o644)
@@ -157,11 +176,11 @@ class TrialLaunchClientTest(unittest.TestCase):
                 self.assertEqual(client.main(), 3)
                 self.assertIn(f"outcome={outcome}", out.getvalue().splitlines())
         sock = Mock()
-        sock.recv.return_value = b"\x00"
+        sock.recvmsg.return_value = (b"\x00", [], 0, None)
         with patch.object(client.time, "monotonic", side_effect=[0, 2]):
             with self.assertRaises(TimeoutError):
                 client.read_frame(sock, 1)
-        sock.recv.assert_called_once_with(5)
+        sock.recvmsg.assert_called_once_with(5, 0)
         with self.assertRaises(ValueError):
             client.parse_hello(json.dumps(HELLO).encode("utf-16"))
 
