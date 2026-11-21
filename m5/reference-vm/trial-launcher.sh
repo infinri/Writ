@@ -236,15 +236,17 @@ useradd --create-home --shell /bin/bash "$desktop"
 {
   for who in agent:"$agent_user" job:"$job_user" desktop:"$desktop" root:root; do
     name=${who%%:*}; as=${who#*:}
-    launch "$as" "peer-$name" normal
-    if [ "$(lget "peer-$name" hello)" = 1 ]; then echo "peer_$name=hello"; else echo "peer_$name=closed_before_read"; fi
+    mode=peer-access
+    if [ "$name" = root ]; then mode=peer; fi
+    launch "$as" "peer-$name" "$mode"
+    echo "peer_$name=$(outcome "peer-$name")"
   done
   # A peer in a user namespace without mappings (root's own namespace view stays 0 outside).
   record_launch_client peer-overflow unshare -U python3 "$client" \
-    --socket "$sock" --request "$share/req-default.json"
-  if [ "$(lget peer-overflow hello)" = 1 ]; then echo peer_overflow=hello; else echo peer_overflow=closed_before_read; fi
-  launch writ peer-writ no-request
-  if [ "$(lget peer-writ hello)" = 1 ]; then echo peer_writ=hello; else echo peer_writ=closed; fi
+    --socket "$sock" --request "$share/req-default.json" --mode peer
+  echo "peer_overflow=$(outcome peer-overflow)"
+  launch writ peer-writ peer
+  echo "peer_writ=$(outcome peer-writ)"
 } > "$r"
 remove_trial_desktop
 case_line() {  # case_line CASE ID MODE
